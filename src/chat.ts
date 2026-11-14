@@ -140,6 +140,19 @@ export class ChatSessions {
     const {label,...definition}=this.host.model.definition(id)
     return createHash('sha256').update(JSON.stringify(definition)).digest('hex')
   }
+  private bindEntry(c:Conversation){
+    const h=this.host,nativeId=c.nativeId??'chat:'+c.id
+    // An authenticated Chat owns its local context. Existing external scopes
+    // must neither block it nor become its default data/permission scope.
+    if(!h.scopes.enabled()||h.scopes.bindings().some(b=>b.sourceId===c.sourceId&&b.nativeId===nativeId))return
+    const scopeId='@chat:'+stableDigest(c.owner),actor=JSON.stringify([c.sourceId,c.actor])
+    if(!h.store.get('management-scope',scopeId)){
+      const workers=workerProfiles(h.config),backend=c.backendId??h.config.execution.router?.backend??h.config.execution.roles.router??h.config.execution.backend
+      h.scopes.command({action:'scope.put',operationId:'chat-scope:'+stableDigest(c.owner),expectedRevision:0,scope:{id:scopeId,tenantId:scopeId,name:'Chat',managers:[actor],sourceIds:[c.sourceId],workerIds:workers.map(w=>w.id),backendIds:[...new Set([backend,...workers.map(w=>w.backend),...(h.config.execution.management?.backends??[])])]}})
+    }
+    const accountNamespace=h.scopes.bindings().find(b=>b.sourceId===c.sourceId)?.accountNamespace??'local'
+    h.scopes.command({action:'entry.bind',operationId:'chat-entry:'+stableDigest([c.owner,c.sourceId,nativeId]),expectedRevision:0,scopeId,sourceId:c.sourceId,accountNamespace,nativeId,privateActor:actor,history:'group'})
+  }
   list(owner:string,archived=false){return this.rows<Conversation>('chat-conversation','owner',owner).filter(c=>c.archived===archived&&!this.host.memory.cleanup.blocked('chat-conversation',c.id,c)).sort((a,b)=>b.updatedAt-a.updatedAt).map(c=>this.publicConversation(c))}
   space(owner:string,create=false){
     const key='chat-space:'+owner,saved=this.host.store.get<{conversationId?:string;display:'group'|'agents';nativeId?:string}>('settings',key)
@@ -259,9 +272,11 @@ export class ChatSessions {
       if(active&&['queued','running','cancel_requested'].includes(active.state))throw new ChatError('conversation_busy','Wait for the current run or stop it first.')
       const source=this.host.sources.get(c.sourceId)?.config
       if(!source?.enabled||source.kind!=='local'||!source.allowedActors.includes(c.actor))throw new ChatError('source_unavailable','This conversation source is no longer available.')
+      this.bindEntry(c)
       const eventId='chat:'+id+':'+input.clientMessageId
       const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text,addressed:true}) as {triggerId:string}
       const admitted=this.host.routerIngress.get(received.triggerId)
+      if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
       const run:ChatRun={id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,createdAt:Date.now()}
       this.host.store.put('chat-run',run.id,run)

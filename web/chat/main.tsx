@@ -153,6 +153,10 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
       ? L("This conversation is still running.", "当前会话仍在运行。")
       : code === "conversation_missing"
         ? L("This conversation is unavailable.", "此会话暂不可用。")
+        : code === "chat_entry_unavailable"
+          ? L("This Chat entry is unavailable. Check its entry settings.", "当前 Chat 入口不可用，请检查会话入口设置。")
+        : code === "request_not_admitted"
+          ? L("The current entry rules did not accept this message.", "消息未被当前入口规则接收，请检查会话入口设置。")
         : code === "backend_changed"
           ? L(
               "The backend configuration changed. Clear context in Settings to continue.",

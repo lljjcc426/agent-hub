@@ -29,6 +29,49 @@ function enableChatBatch(h:Runtime,id:string,settings:Record<string,number>={}){
 }
 const batchDecision=(action:string)=>({action,title:'Task',scope:'Requested work',question:'Which task should continue?',reason:'Explicit input',rules:[],targetTicketId:null,ruleAssessments:[]})
 
+it('admits built-in Chat when other entries already use scoped Routers without borrowing their context',async()=>{
+ const {h}=fixture()
+ h.scopes.command({action:'scope.put',operationId:'external-scope',expectedRevision:0,scope:{id:'external',tenantId:'external',name:'External team',managers:[JSON.stringify(['local','operator'])],workerIds:['research'],sourceIds:['local'],backendIds:['codex']}})
+ h.scopes.command({action:'entry.bind',operationId:'external-entry',expectedRevision:0,scopeId:'external',sourceId:'local',accountNamespace:'local',nativeId:'external-room'})
+ const external=h.scopes.snapshot(),c=h.chat.space('owner',true).conversation!
+ const first=send(h,c.id,'你好 Router')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(h.chat.view(c.id,'owner').messages.at(-1)?.text).toContain('你好 Router')
+ const trigger=h.store.triggers.get(first.runId)!,context=h.scopes.context(trigger,'local:chat:'+c.id)!,entry=h.scopes.binding(context.route.entryId)
+ expect(entry).toMatchObject({sourceId:'local',nativeId:'chat:'+c.id,privateActor:JSON.stringify(['local','operator']),active:true})
+ expect(context.route.tenantId).not.toBe('external')
+ expect(h.scopes.scope(context.route.scopeId)).toMatchObject({sourceIds:['local'],workerIds:['research','review'],backendIds:['codex']})
+ expect(h.scopes.scope('external')).toEqual(external.scopes[0]);expect(h.scopes.epoch('external')).toBe(1)
+ const original=h.scopes.scope(context.route.scopeId),second=send(h,c.id,'继续对话')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(h.scopes.scope(context.route.scopeId)).toEqual(original)
+ expect(h.scopes.context(h.store.triggers.get(second.runId)!,'local:chat:'+c.id)?.route.entryId).toBe(entry.id)
+})
+
+it('keeps automatically bound Chat memory private to its signed-in owner',async()=>{
+ const {h}=fixture(),existing=h.chat.create('existing-owner');enableChatBatch(h,existing.id)
+ const first=h.chat.space('owner',true).conversation!,second=h.chat.space('another-owner',true).conversation!
+ const sent=send(h,first.id,'Remember my reporting preference'),trigger=h.store.triggers.get(sent.runId)!,context=h.scopes.context(trigger,'local:chat:'+first.id)!,source=h.memory.ingest(context)
+ h.memory.command(context,{action:'remember',operationId:'private-chat-memory',expectedRevision:0,subject:'Reporting preference',content:'Result before evidence',sourceIds:[source.id],visibility:'private',candidate:false},true)
+ await settle(h,()=>h.chat.view(first.id,'owner').run?.state==='completed')
+ const other=h.chat.send(second.id,'another-owner',{clientMessageId:randomUUID(),text:'What do you remember?'})
+ await settle(h,()=>h.chat.view(second.id,'another-owner').run?.state==='completed')
+ const otherContext=h.scopes.context(h.store.triggers.get(other.runId)!,'local:chat:'+second.id)!
+ expect(otherContext.route.tenantId).not.toBe(context.route.tenantId)
+ expect(h.memory.query(otherContext,{query:'reporting'}).items).toEqual([])
+ expect(h.memory.query(context,{query:'reporting'}).items).toHaveLength(1)
+ expect(()=>h.chat.view(first.id,'another-owner')).toThrow('Conversation not found')
+})
+
+it('does not reactivate an explicitly disabled Chat entry while bootstrapping local scopes',()=>{
+ const {h}=fixture(),c=h.chat.create('owner');enableChatBatch(h,c.id)
+ const entry=h.scopes.bindings()[0]!
+ h.scopes.command({action:'entry.bind',operationId:'disable-chat',expectedRevision:entry.revision,scopeId:entry.scopeId,sourceId:entry.sourceId,accountNamespace:entry.accountNamespace,nativeId:entry.nativeId,history:entry.history,active:false})
+ expect(()=>send(h,c.id)).toThrow('This Chat entry is unavailable')
+ expect(h.scopes.binding(entry.id).active).toBe(false)
+ expect(h.store.list('chat-message')).toEqual([])
+})
+
 it('opens memory in the conversation without creating configuration or fabricating remembered content',()=>{
  const {h,calls}=fixture(),c=h.chat.create('owner')
  expect(h.chat.memory(c.id,'owner')).toEqual({unavailable:true})

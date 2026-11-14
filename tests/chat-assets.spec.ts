@@ -11,6 +11,12 @@ it('serves bundled application badges with browser-decodable MIME types',async()
  const runtime=new Runtime(configSchema.parse({stateDir:root,port:0,sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]}),{model:{async run(){throw Error('No model invocation in asset checks')}}})
  const host=await serve(runtime)
  try{
+  for(const method of ['GET','HEAD']){
+   const response=await fetch(host.url+'/webhook-workbench?skill=saved%20skill&version=3&scope=team&entry=room',{method,redirect:'manual'});
+   expect(response.status).toBe(302);
+   expect(response.headers.get('location')).toBe('/configure?skill=saved%20skill&version=3&scope=team&entry=room#automations');
+   expect(await response.text()).toBe('');
+  }
   const files=readdirSync(new URL('../dist/chat/',import.meta.url))
   for(const [extension,type] of [['svg','image/svg+xml'],['ico','image/x-icon'],['png','image/png']]){
    const name=files.find(name=>name.endsWith('.'+extension));expect(name).toBeDefined()

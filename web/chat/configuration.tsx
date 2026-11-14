@@ -9,7 +9,7 @@ let pending: Promise<void> | undefined;
 let memoryElement: HTMLDivElement | undefined;
 let chatElement: HTMLDivElement | undefined;
 const active = () =>
-  location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
+  location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
   location.pathname === "/configure/" ||
   location.pathname === "/");
 async function prepare() {

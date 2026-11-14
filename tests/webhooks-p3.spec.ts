@@ -109,6 +109,17 @@ it('gates console APIs from unsigned event ingress and unauthenticated users',as
  expect((await fetch(app.url+'/webhooks',{headers:{authorization:'Bearer '+token}})).status).toBe(200)
  for(const path of ['/webhooks/rotate','/webhooks/reconcile','/webhooks/goal','/webhooks/dry-run'])expect((await fetch(app.webhookUrl+path,{method:'POST'})).status).toBe(404)
 })
+it('offers human authorization messages rather than automation-generated inputs in the editor catalog',async()=>{
+ const f=fixture();f.config.port=0;f.receive();f.h.webhooks.dispatch()
+ expect(f.h.store.list<any>('router-admission').some(a=>a.state==='accepted'&&!f.h.store.triggers.get(a.triggerId)?.human)).toBe(true)
+ const app=await serve(f.h);cleanups.push(async()=>{app.server.close();await app.closeRuntime();f.closedByServer()})
+ const headers={authorization:'Bearer '+readFileSync(app.tokenPath,'utf8').trim()}
+ const catalog=await(await fetch(app.url+'/router-management/catalog',{headers})).json() as any
+ expect(catalog.contexts.map((c:any)=>c.id)).toEqual(['local:approval'])
+ const snapshot=await(await fetch(app.url+'/webhooks',{headers})).json() as any
+ expect(snapshot.configured).toBe(true)
+})
+
 it('runs the Webhook plugin capability in a real isolated process with no ambient credentials or host writes',async()=>{
  const f=fixture(),entry=join(f.root,'normalizer.ts');writeFileSync(entry,`export default {create(config){return {config,webhook({event}){return {batch:event.data.batch.toUpperCase(),ambient:!!process.env.WH_TEST_AMBIENT}}}}}`)
  const manifest=pluginManifestSchema.omit({apiVersion:true,entry:true,codeSha256:true}).parse({id:'normalizer',kind:'normalizer',label:'Normalizer',version:'1.0.0',stateVersion:1,scopesPath:'/options/scopes',methods:['webhook'],configSchema:{type:'object'}}),pkg=await buildPluginPackage(entry,manifest,join(f.root,'package'))

@@ -323,3 +323,12 @@ Memory is a section of the existing Settings navigation, not a conversation reso
 Do not reintroduce learning switches, entry selectors, candidate approval, source/history drawers, usage ledgers or technical configuration into this surface. Pending suggestions stay separate from saved memories; removing their UI does not approve them. Existing policy, background learning and authorization remain unchanged. Retired URLs lead to Settings, and retired memory tabs are removed without discarding other conversation tools or drafts.
 
 Desktop light/dark and 390px screenshots in docs/images/memory-settings-* use isolated HTTP/SQLite fixtures. They verify the interface, not live-provider behavior or user visual approval.
+
+
+## Event automations in the shared workspace — 2026-11-15
+
+Event automations use `/configure#automations` inside the existing feature rail and header. They inherit the Chat tokens, theme and language. The 28px heading (24px on mobile) and 15px row names follow the existing plugin workspace. The separate green workbench, marketing heading, metric cards and persistent explanatory copy are removed.
+
+Saved automations appear as separated rows with name, event type, receiving state and latest event time. The empty state has one action. Task, event history and connection details are separate views; JSON, key rotation, reconciliation and revocation stay behind disclosures. Creation has two steps: Task and Event connection. One Worker owns the default task, with optional custom rules preserving existing multi-node contracts. Required authorization and credential configuration are retained. Unavailable receivers and missing authorized conversations expose their actual prerequisite instead of letting users complete an unusable form.
+
+No explanatory subtitles or permanent instruction small print. Necessary field labels, state, validation errors and requested setup instructions remain. Saved-skill bindings preserve the pinned contract. Grant creation retries reuse the same operation and expiry for an unchanged draft. The old URL redirects without losing its skill parameters.

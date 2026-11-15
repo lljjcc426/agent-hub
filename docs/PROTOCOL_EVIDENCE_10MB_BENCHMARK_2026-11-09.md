@@ -91,15 +91,15 @@
 | 隔离状态往返 | 基线→最终版→基线→最终版；显式 256000／10000000 预算、106 已知 token、未知覆盖和原件内容保持；没有调用模型、生产升级、原生会话迁移或在途回滚 |
 | 安全审查 | 主扫描覆盖 9 个变更生产文件，后续不可变范围覆盖最后 1 文件修正，均已封存并回读，0 个确认问题；不是上游或整个仓库审计 |
 
-主扫描 `efec8d54-17fe-4a7f-b6f5-83acde3d7d75`：`93787ef..4bd8a5c`。后续扫描 `faebecc4-d418-4c58-acb1-d81c3fee7d1c`：`4bd8a5c..8d6ef06`。后者修复前次独立复核提出的普通计数遗漏问题；没有把前次范围冒充最终覆盖。
+主扫描 （内部记录 ID 不公开）：`93787ef..4bd8a5c`。后续扫描 （内部记录 ID 不公开）：`4bd8a5c..8d6ef06`。后者修复前次独立复核提出的普通计数遗漏问题；没有把前次范围冒充最终覆盖。
 
 扫描工具自身回报主扫描 14,949,217、后续扫描 867,164 token，均标为 `partial` 并包含无效计数记录警告。这些是扫描器对研发对话的归属统计，记录可能重叠，不能相加成完整研发消耗，也未混入前述受控 Router／Worker 试验用量；受控 8 次试验均已单独完整对账。
 
-封存报告：[主范围](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/4bd8a5c9d9e84b536c0fa335701b08c00c62ea36_20261109T112645Z_ikicj53n/report.md)、[最后修正](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/8d6ef06d43a3297af86e9bd0a723c44d5714da62_20261109T121405Z_k752z6rj/report.md)。
+封存报告：主范围（原始记录由维护者私下保管）、最后修正（原始记录由维护者私下保管）。
 
-本地完整试验：[comparison.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-10mb-final/comparison.json)。原生输入还原：[input-audit.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-10mb-final/input-audit.json)。包摘要：[packages.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/packages/protocol-10mb-final/packages.json)。隔离兼容性：[result.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/compatibility-10mb/result.json)。这些私有目录未提交。
+本地完整试验：comparison.json（原始记录由维护者私下保管）。原生输入还原：input-audit.json（原始记录由维护者私下保管）。包摘要：packages.json（原始记录由维护者私下保管）。隔离兼容性：result.json（原始记录由维护者私下保管）。这些私有目录未提交。
 
-全部 8 个实验宿主已经关闭。2026-11-09 20:47:30 +08:00 再次只读核对：现有实例仍指向 `c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2`，健康正常、settings revision 11、active=0，Router／Worker 配置未由本轮更改；发布快照不含新统计账本、无损传输或新协议计数模块。证据：[live-readback.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-10mb-final/live-readback.json)。
+全部 8 个实验宿主已经关闭。2026-11-09 20:47:30 +08:00 再次只读核对：现有实例仍指向 `c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2`，健康正常、settings revision 11、active=0，Router／Worker 配置未由本轮更改；发布快照不含新统计账本、无损传输或新协议计数模块。证据：live-readback.json（原始记录由维护者私下保管）。
 
 **复现**
 

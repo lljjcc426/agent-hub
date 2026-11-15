@@ -1,5 +1,7 @@
 # Router 第一步补齐：普通 API、完整预算与历史正文删除
 
+> 本文中的测试群和机器人名称已匿名化；验收结果与限制保持原意。
+
 后续状态见 [生命周期与迁移收尾验收](ROUTER_LIFECYCLE_ACCEPTANCE_2026-11-07.md)。本文保留当时的 555 项回归和 45/25/6 证据口径，不覆盖历史结果。
 
 2026-11-07（Asia/Shanghai）。代码位于 `work/agenthub-parity-fixes-20261106`，基础提交 `eb0dabb4e0f65f48b175189df46b65319cf01421`。本轮开始时的未提交工作已保留，新增变更以独立指纹核对。
@@ -19,7 +21,7 @@
 | 回归 | TypeScript 通过；36 个测试文件、555 项测试通过 | `check.log` |
 | 管理页 | 实际浏览器验证删除操作与清理进度、删除后旧查询正文消失、共享/撤回、模型设置、390px 布局、键盘焦点、无页面错误 | `browser/final-current3.log`、`browser/result.json`、截图 |
 
-证据根目录：`/Users/alex/Documents/ChatGPT/竞赛/validation/router-scope-completion-20261106`。重跑脚本保存在 `scripts/`，使用隔离状态目录；脚本不是生产部署命令。历史首轮证据仍在 `router-scope-phase1-20261106`。
+证据根目录：原始记录由维护者私下保管。重跑脚本保存在 `scripts/`，使用隔离状态目录；脚本不是生产部署命令。历史首轮证据仍在 `router-scope-phase1-20261106`。
 
 官方服务将请求的 `deepseek-v4-flash` 返回为 `deepseek-flash`；这里记录请求名与实际回执，不把已退役别名宣称为仍在运行的旧版本。[官方更新记录](https://api-docs.deepseek.com/updates/)。DeepSeek 需要在工具上下文中连续保留 `reasoning_content`；测试验证字段存在及原值传递，合法空字符串不冒充丢失推理。[思考模式契约](https://api-docs.deepseek.com/guides/thinking_mode/)。
 
@@ -27,7 +29,7 @@ API 联合验收的 Router 为 low，Worker 1–3 为 high，Worker 4 显式关�
 
 ## 飞书测试的准确边界
 
-用户已授权自行发送。所有测试均以「周催办」机器人身份在「搞大事情」「学情报告页面优化」发送并回读，没有使用用户账号。
+用户已授权自行发送。所有测试均以「验收机器人」机器人身份在「测试群 A」「测试群 B」发送并回读，没有使用用户账号。
 
 连接器正常过滤自身机器人消息以避免反馈循环。因此本轮自动输入是：真实机器人发消息 → 飞书原生回读 → 保留 `human:false` 的操作员重放 → 隔离验收宿主接纳 → 实际模型执行 → 真实平台回复及回读。证据明确标记 `operator_replay_preserving_bot_identity`，不能称为新增真实成员自动入站验收；首轮真实成员无需 @ 的证据保留在历史报告。
 

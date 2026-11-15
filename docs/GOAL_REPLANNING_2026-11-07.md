@@ -62,12 +62,12 @@ flowchart LR
 
 最终证据与复核：
 
-- [真实运行的 25 项验收](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-replanning-20261107/native-9/evidence.json)，完成后只读重查仍全部通过，原始证据文件未覆盖。
-- [独立审计的 31 项检查](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-replanning-20261107/native-9/independent-audit.json) 全部通过：重新计算首条去重与分类总额，核对合同、重启检查点、保留的方案及新审查会话、实际命令/退出码、任务侧网络策略、最终验收文件字节和源代码摘要。
-- [报告篡改反向检查](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-replanning-20261107/native-9-report-tamper/negative-audit.json) 通过：仅修改隔离副本的报告，重查进程退出 1，且仅 `currentFilesMatchAcceptance` 失败；原报告 SHA-256 未变。这验证的是只读验收重查，不是再次启动 Router/Worker 的完整攻击测试。
-- [673 项回归日志](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-replanning-20261107/agenthub-replan-final-673.log)。最后一次生产源文件修改后的完整回归与真实任务均通过，之后只补充审计回执和本文。
+- 真实运行的 25 项验收（原始记录由维护者私下保管），完成后只读重查仍全部通过，原始证据文件未覆盖。
+- 独立审计的 31 项检查（原始记录由维护者私下保管） 全部通过：重新计算首条去重与分类总额，核对合同、重启检查点、保留的方案及新审查会话、实际命令/退出码、任务侧网络策略、最终验收文件字节和源代码摘要。
+- 报告篡改反向检查（原始记录由维护者私下保管） 通过：仅修改隔离副本的报告，重查进程退出 1，且仅 `currentFilesMatchAcceptance` 失败；原报告 SHA-256 未变。这验证的是只读验收重查，不是再次启动 Router/Worker 的完整攻击测试。
+- 673 项回归日志（原始记录由维护者私下保管）。最后一次生产源文件修改后的完整回归与真实任务均通过，之后只补充审计回执和本文。
 
-本机完整证据目录：`/Users/alex/Documents/ChatGPT/竞赛/validation/goal-replanning-20261107`。每轮保留输入合同、阶段状态、PID、模型会话、实际命令、证据读取和实现文件 SHA-256。进程重启验证不等于对所有系统断电、文件系统损坏或未确认外部操作的恢复认证。
+本机完整证据目录：原始记录由维护者私下保管。每轮保留输入合同、阶段状态、PID、模型会话、实际命令、证据读取和实现文件 SHA-256。进程重启验证不等于对所有系统断电、文件系统损坏或未确认外部操作的恢复认证。
 
 ## Review 与兼容性
 
@@ -81,14 +81,14 @@ flowchart LR
 
 | 快照范围 | 结果 | 已封存报告 |
 | --- | --- | --- |
-| `7181925..aae7a65` | 确认 1 项低严重性、高置信度的来源撤销问题 | [首次审查](/Users/alex/.codex/state/plugins/codex-security/scans/review/aae7a65a73be4a251aa380025a5a7d3bb2880868_20261107T055917Z_v3i3704b/report.md) |
-| `aae7a65..4a2eb75` | 修正后的部分覆盖；历史记录保护及正常关闭恢复继续补齐 | [中间审查](/Users/alex/.codex/state/plugins/codex-security/scans/review/4a2eb75a2ce28cfced61deaef6058fb6e0d69952_20261107T060920Z_5yilucrh/report.md) |
-| `4a2eb75..bbbc354` | 来源/关闭修正范围覆盖完整，未发现新引入问题 | [来源与关闭复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/bbbc35461185b2bcfdbfe9300e060fe6409656e5_20261107T061613Z_cc1c32eq/report.md) |
-| `bbbc354..1f65264` | 活动保留修正及验收脚本覆盖完整，未发现新引入问题 | [活动保留复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/1f65264b12a904d2bd4935eeaccce9b8b3c604d1_20261107T063356Z_pdh20q4j/report.md) |
-| `1f65264..b270f59` | 依赖证据及额度语义修正覆盖完整，未发现新引入安全问题 | [依赖证据复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/b270f59bd15a7b19ee2b9a3ca013471166462e45_20261107T064731Z_9nljoabm/report.md) |
-| `b270f59..c5e90fe` | 节点引用关联修正覆盖完整，未发现新引入安全问题 | [节点引用复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/c5e90fe73592c94f6def1b1568d440ca29ec9691_20261107T065753Z_6k8ran7t/report.md) |
-| `c5e90fe..fb47651` | 保留部分覆盖：发现多 owner 语义引用一致性问题，随后以回归复现 | [整体引用复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/fb476510615b1d96fabaa0057ea6fc13c77c9083_20261107T070540Z_jjjzb7gd/report.md) |
-| `fb47651..56147c7` | 多 owner 问题关闭，最终修正范围覆盖完整，未发现新问题 | [最终复审](/Users/alex/.codex/state/plugins/codex-security/scans/review/56147c7b840f7cc32ffa337d6b9f02384868284f_20261107T071121Z_6t85oi3v/report.md) |
+| `7181925..aae7a65` | 确认 1 项低严重性、高置信度的来源撤销问题 | 首次审查（原始记录由维护者私下保管） |
+| `aae7a65..4a2eb75` | 修正后的部分覆盖；历史记录保护及正常关闭恢复继续补齐 | 中间审查（原始记录由维护者私下保管） |
+| `4a2eb75..bbbc354` | 来源/关闭修正范围覆盖完整，未发现新引入问题 | 来源与关闭复审（原始记录由维护者私下保管） |
+| `bbbc354..1f65264` | 活动保留修正及验收脚本覆盖完整，未发现新引入问题 | 活动保留复审（原始记录由维护者私下保管） |
+| `1f65264..b270f59` | 依赖证据及额度语义修正覆盖完整，未发现新引入安全问题 | 依赖证据复审（原始记录由维护者私下保管） |
+| `b270f59..c5e90fe` | 节点引用关联修正覆盖完整，未发现新引入安全问题 | 节点引用复审（原始记录由维护者私下保管） |
+| `c5e90fe..fb47651` | 保留部分覆盖：发现多 owner 语义引用一致性问题，随后以回归复现 | 整体引用复审（原始记录由维护者私下保管） |
+| `fb47651..56147c7` | 多 owner 问题关闭，最终修正范围覆盖完整，未发现新问题 | 最终复审（原始记录由维护者私下保管） |
 
 扫描工具记录的 token 用量按表格顺序为 6,110,698（缓存输入 5,989,760）、3,829,138（缓存输入 3,795,584）、2,084,336（缓存输入 2,014,336）、1,394,166（缓存输入 1,382,144）、2,124,477（缓存输入 2,111,616）、1,175,413（缓存输入 1,170,048）、1,705,535（缓存输入 1,693,824）、1,345,059（缓存输入 1,338,752）。这是工具采集的会话用量，包含大量缓存上下文，不是账单金额，不将不同扫描窗口相加作为净消耗。最终扫描封存时真实任务仍在运行；其完成证据以本文件后续验收记录为准。Daybreak 多次返回 `not_granted`，最后一次为 `unknown`，已提示受保护输出可见性限制；未推断已获得权限，本地审查继续完成。
 

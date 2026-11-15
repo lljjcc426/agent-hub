@@ -48,7 +48,7 @@ Self-review and independent delegated review found and corrected:
 - The real-model test exposed a missing evidence reference: a failure report cited the watchdog recovery ID but the planner/reviewer could not read that record. The accepted observation is now included as immutable failure evidence under the exact referenced ID. An earlier run failed independent plan review for this reason; the successful run above followed the structural fix.
 - Native effort defaults incorrectly affected API backends. Only native Codex receives the global fallback; Anthropic and provider-specific reasoning options have regression coverage.
 
-Codex Security scan `725ea2ce-dd14-4432-a2e8-b5cbed2f3973` completed against its frozen initial patch. It retains three medium findings about stale authorization, stale provider selection and private-text retention, all corrected in the subsequent working tree. That sealed report describes the initial snapshot and separately records remediation; it is not an assertion that the final source is the frozen snapshot. Scan token usage was unavailable.
+Codex Security scan (internal report ID omitted) completed against its frozen initial patch. It retains three medium findings about stale authorization, stale provider selection and private-text retention, all corrected in the subsequent working tree. That sealed report describes the initial snapshot and separately records remediation; it is not an assertion that the final source is the frozen snapshot. Scan token usage was unavailable.
 
 ## Boundaries
 

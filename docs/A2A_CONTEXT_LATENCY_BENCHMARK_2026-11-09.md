@@ -102,9 +102,9 @@ Worker 少了 52,657 个未缓存输入，占整体减少 69,525 的约 75.7%，
 
 正式 8 次结果全部与拥有的原生线程最终累计用量及 provider step 数对账，未知／部分用量调用均为零；这只指后端已回报的用量，不补算未回报的内部失败请求。29 次 Worker 实际输入（含 A／B）均与原始宿主请求逐字相同或可精确还原，203 次完整内联证据交付也全部逐字还原通过。预算观测最大 107,060 字节，全部在共同 10MB 上限内。
 
-Codex Security 三个不可变范围均已封存并回读：`84b7e5a..1a48831` 扫描 `286ba8d1-1350-4254-87b5-42d3bcdd47cb`，`1a48831..b685f36` 扫描 `75eaae05-6bbd-4402-9d06-99bea66a1b53`，`b685f36..5061a3a` 扫描 `ad9d002f-54e4-45f4-a1ef-0823e37a04bd`。覆盖全部 4 个不同的变更生产文件及后续修正，0 个确认安全问题。包含 fresh fork 的独立架构与差异复核、父代理自行 review；这不是整个上游仓库审计，亦不证明模型必然理解某种表示。
+Codex Security 三个不可变范围均已封存并回读：`84b7e5a..1a48831` 扫描 （内部记录 ID 不公开），`1a48831..b685f36` 扫描 （内部记录 ID 不公开），`b685f36..5061a3a` 扫描 （内部记录 ID 不公开）。覆盖全部 4 个不同的变更生产文件及后续修正，0 个确认安全问题。包含 fresh fork 的独立架构与差异复核、父代理自行 review；这不是整个上游仓库审计，亦不证明模型必然理解某种表示。
 
-封存报告：[初始范围](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/1a488311c1e9c04418afb662351d2b0fe60c444b_20261109T132033Z_qx97qj2e/report.md)、[自包含修正](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/b685f3664ec53782ac52ef59c962ce011b94e4a6_20261109T135222Z_xdsj1yia/report.md)、[序列化回退](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/5061a3ae6515ce6bd434b178205282782717db24_20261109T140109Z_lv406dpb/report.md)。扫描器自身回报归属 token 分别 8,097,096／2,472,994／1,102,510，均为 `partial`，有无效计数记录警告且可能相互重叠，不能相加成完整研发消耗，也未混入受控模型试验。见 [扫描用量原始摘要](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/a2a-context-study/security-usage.json)。
+封存报告：初始范围（原始记录由维护者私下保管）、自包含修正（原始记录由维护者私下保管）、序列化回退（原始记录由维护者私下保管）。扫描器自身回报归属 token 分别 8,097,096／2,472,994／1,102,510，均为 `partial`，有无效计数记录警告且可能相互重叠，不能相加成完整研发消耗，也未混入受控模型试验。见 扫描用量原始摘要（原始记录由维护者私下保管）。
 
 **早期候选的失败和成本**
 
@@ -116,20 +116,20 @@ Codex Security 三个不可变范围均已封存并回读：`84b7e5a..1a48831` �
 
 本地证据：
 
-- [原研究逐阶段与已报告用量明细](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-10mb-final/performance-profile.json)
-- [原生断流重试的脱敏日志摘要](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/a2a-context-study/native-gap-log.json)
-- [最终新对照结果](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/comparison.json)
-- [Worker 实际输入逐字还原](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/worker-binding-audit.json)
-- [最终逐阶段、冷输入与原生重试](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/performance-profile.json)
-- [完整证据交付逐字还原](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/input-audit.json)
-- [格式改动的净字节收益](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/encoding-bytes.json)
-- [早期候选及其失败诊断](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-v2/comparison.json)
+- 原研究逐阶段与已报告用量明细（原始记录由维护者私下保管）
+- 原生断流重试的脱敏日志摘要（原始记录由维护者私下保管）
+- 最终新对照结果（原始记录由维护者私下保管）
+- Worker 实际输入逐字还原（原始记录由维护者私下保管）
+- 最终逐阶段、冷输入与原生重试（原始记录由维护者私下保管）
+- 完整证据交付逐字还原（原始记录由维护者私下保管）
+- 格式改动的净字节收益（原始记录由维护者私下保管）
+- 早期候选及其失败诊断（原始记录由维护者私下保管）
 
 原生日志读取仅查询拥有的 thread ID 和对应宿主调用时间段，导出时不包含日志正文或任何凭据。所有试验私有数据位于忽略的 `.local/`。
 
-本地 Codex 适配包 1.0.4 已构建，归档解包后的 digest／代码逐字一致；Agent board 0.1.4 原包 hash 复核通过，未安装或发布。包仅包含适配器，完整变更还包括宿主的规划提示；打包后端的性能回退范围仍适用。隔离基线→最终版→基线→最终版的状态往返也通过：已有 256000／10000000 预算、已知 token、未知覆盖和原件均保留，没有真实模型调用、原生会话迁移或在途任务回滚。证据：[包清单](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/packages/a2a-context-final/packages.json)、[状态兼容记录](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/compatibility-a2a-context-final/result.json)。
+本地 Codex 适配包 1.0.4 已构建，归档解包后的 digest／代码逐字一致；Agent board 0.1.4 原包 hash 复核通过，未安装或发布。包仅包含适配器，完整变更还包括宿主的规划提示；打包后端的性能回退范围仍适用。隔离基线→最终版→基线→最终版的状态往返也通过：已有 256000／10000000 预算、已知 token、未知覆盖和原件均保留，没有真实模型调用、原生会话迁移或在途任务回滚。证据：包清单（原始记录由维护者私下保管）、状态兼容记录（原始记录由维护者私下保管）。
 
-所有实验宿主已关闭。2026-11-09 **22:31:11 +08:00** 只读核对现有实例：仍为 `c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2`，健康正常、settings revision 11、active=0，发布快照中没有本轮 `worker-input.ts`。见 [live-readback.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab-a2a-context-final/live-readback.json)。
+所有实验宿主已关闭。2026-11-09 **22:31:11 +08:00** 只读核对现有实例：仍为 `c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2`，健康正常、settings revision 11、active=0，发布快照中没有本轮 `worker-input.ts`。见 live-readback.json（原始记录由维护者私下保管）。
 
 **复现**
 

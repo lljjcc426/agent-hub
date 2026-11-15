@@ -45,17 +45,17 @@ Worker 的 `ready` 被保留为候选交付，任务在总体验收之前保持�
 分页修复复审范围：`bed7b2f1929b72640bb725eb497454fbea0c734a..1d4340360d0d1ad9218433afa8754b97c2604ea7`，2 个生产文件均已审查，未发现新增可确认安全问题。
 这些提交仅存在于一次性审查副本，实际开发工作树没有提交、推送或部署。
 
-[原始审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/f5bd9836da994b45b0a8a71c741abbb2a3299552_20261107T033212Z_gya_hugh/report.md)
+原始审查报告（原始记录由维护者私下保管）
 
-[修复后审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/892c1809f8e4ebf387cab87ebb15e999051a349c_20261107T043902Z_n44x2smx/report.md)
+修复后审查报告（原始记录由维护者私下保管）
 
-[执行证据审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/c4e78c366152407b60bf470c4e1235daea07cbde_20261107T045817Z_q_dp0rgd/report.md)
+执行证据审查报告（原始记录由维护者私下保管）
 
-[末次修复审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/524f24cdf1c588dad1e46076692df5783f205979_20261107T050251Z_y_cy8mcb/report.md)
+末次修复审查报告（原始记录由维护者私下保管）
 
-[验证协议恢复审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/bed7b2f1929b72640bb725eb497454fbea0c734a_20261107T051217Z_04j24fuj/report.md)
+验证协议恢复审查报告（原始记录由维护者私下保管）
 
-[分页修复审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/review/1d4340360d0d1ad9218433afa8754b97c2604ea7_20261107T052254Z_gnix8ra5/report.md)
+分页修复审查报告（原始记录由维护者私下保管）
 
 扫描工具记录的总 token 分别为 5,842,043、1,932,646、1,275,590、889,216、1,086,579、357,916（含缓存输入，来源是对应扫描期间当前线程的 rollout 统计，不是模型账单或单次独立审查的净成本）。
 
@@ -70,9 +70,9 @@ Worker 的 `ready` 被保留为候选交付，任务在总体验收之前保持�
 - 执行证据核对 7 项全部通过：4 份完整宿主记录覆盖 31 个受管作业，记录的 shell 均为 Seatbelt、workspace-write、network=false，未记录外部工具调用；4 个报告来源文件摘要匹配；实际运行版本与当前代码一致。
 - 验证器实际执行 92 次证据分段读取，没有证据正文被替换成保留回执。最终 30 行 → 12 条唯一记录、18 条重复记录；分类金额 A=220、B=260、C=300，总额 780。
 
-[生命周期证据](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/native-7/evidence.json) · [独立事后核对](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/native-7/independent-audit.json) · [执行证据核对](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/native-7/runtime-evidence.json) · [实际综合报告](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/native-7/workspace/report.md)
+生命周期证据（原始记录由维护者私下保管） · 独立事后核对（原始记录由维护者私下保管） · 执行证据核对（原始记录由维护者私下保管） · 实际综合报告（原始记录由维护者私下保管）
 
-[全量测试日志](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/final-tests.log) · [改动范围与版本摘要](/Users/alex/Documents/ChatGPT/竞赛/validation/goal-verification-20261107/final-integrity.json)
+全量测试日志（原始记录由维护者私下保管） · 改动范围与版本摘要（原始记录由维护者私下保管）
 
 验收脚本：`examples/goal-verification-smoke.ts`。本次实际运行使用 macOS Seatbelt、工作目录可写、shell 网络关闭。Router/验证器为 gpt-6.1-terra medium，Worker 为 gpt-6.1-sol high。模型请求使用现有 native 后端认证。验收专用 scope 显式配置 768,000 字节上下文预算，生产默认值未修改。
 

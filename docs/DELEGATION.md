@@ -137,4 +137,4 @@ Python 环境需要 Playwright 与本机 Chrome。脚本仅操作隔离账号，
 
 按 2026-11-09 的最新决定，跨机器部署与 `delegated-coordinator`（当前 Worker 直接统筹另一实例的 Workers）已取消，不再列为后续待办。本轮固定为同一所有者、同一台机器、一跳 `managed-team`：A Router → B Router → B Workers → A 独立验收。界面中的“远端”指另一个同机实例。
 
-已有 Linux 单实例运行支持保留；正式容器打包、多跳、跨组织、HA 和完整实例运维不属于本轮交付。收尾基线、修复及验证见 [收尾记录](DELEGATION_CLOSEOUT_2026-11-09.md)，当前实际部署见 [部署现状](DEPLOYMENT_STATUS_2026-11-09.md)。
+已有 Linux 单实例运行支持保留；正式容器打包、多跳、跨组织、HA 和完整实例运维不属于本轮交付。收尾基线、修复及验证见 [收尾记录](DELEGATION_CLOSEOUT_2026-11-09.md)，部署、升级与备份方法见 [运维指南](OPERATIONS.md)。

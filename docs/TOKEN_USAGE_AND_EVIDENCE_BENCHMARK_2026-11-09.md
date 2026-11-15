@@ -75,7 +75,7 @@
 | 隔离版本往返 | c9b 旧代码建状态 → 新代码记录用量 → 旧代码打开 → 新代码再打开，既有元数据、数值与未知覆盖保持；没有在途工作或模型调用 |
 | 代码／安全审查 | 独立架构和后端审查、宿主／UI 人工审查完成；最终不可变 `c9b6c6c..d9f6adf` 覆盖 26／26 个变更生产文件，0 个确认安全问题；不是上游 release 的全面审计 |
 
-最终 Codex Security 扫描为 `6bcdefc2-0a43-4214-82ac-b9cf0ffa3e35`，已封存并回读其覆盖与报告。此前原始基线扫描也保留；重接 release 后针对中间提交的扫描因目标被收尾修复替代而取消，未当作最终通过证据。最终报告见 [封存审查报告](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-token-evidence-20261109/d9f6adf2ced3c404a7a0630a5939c189f9f63172_20261109T083806Z_wz8djhkq/report.md)。
+最终 Codex Security 扫描为 （内部记录 ID 不公开），已封存并回读其覆盖与报告。此前原始基线扫描也保留；重接 release 后针对中间提交的扫描因目标被收尾修复替代而取消，未当作最终通过证据。最终报告见 封存审查报告（原始记录由维护者私下保管）。
 
 实际生产升级和带在途任务的回滚不在这次未部署验证内。收尾时再次只读核对：既有实例仍为 c9b release、健康接口正常，发布快照中没有本轮新增的 usage ledger。实验宿主均已关闭。
 
@@ -96,6 +96,6 @@ python3 examples/compare-evidence-cost.py .local/new-ab --native-index /absolute
 
 `--native-index` 可省略；省略时原生对账状态保持未知，不冒充验证成功。该工具仅适用于这组 fresh-thread 原生 CLI 试验，不是所有 provider 的计费对账器。
 
-本地完整记录位于工作区的 `.local/ab/`，含每次 conditions／result、原件快照和失败原因；[comparison.json](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/ab/comparison.json) 为自动对照和原生对账结果。看板截图与检查在 `.local/board-usage-complete/`，其中用量和任务是合成显示记录，不能当成当前真实账单；这套浏览器夹具不调用模型。
+本地完整记录位于工作区的 `.local/ab/`，含每次 conditions／result、原件快照和失败原因；comparison.json（原始记录由维护者私下保管） 为自动对照和原生对账结果。看板截图与检查在 `.local/board-usage-complete/`，其中用量和任务是合成显示记录，不能当成当前真实账单；这套浏览器夹具不调用模型。
 
-可供后续审阅的本地包为 [Agent board 0.1.4](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/packages/final/agent-board-0.1.4.tgz) 和 [Codex CLI 1.0.2](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/packages/final/backend-codex-1.0.2.tgz)，完整 manifest digest、归档 SHA-256 和大小见 [打包清单](/Users/alex/Documents/ChatGPT/竞赛/work/roppo-token-evidence-20261109/.local/packages/final/packages.json)。私有验证日志保留在 `.local/`。这些目录没有提交，不包含在公开插件发行清单中。
+可供后续审阅的本地包为 Agent board 0.1.4（原始记录由维护者私下保管） 和 Codex CLI 1.0.2（原始记录由维护者私下保管），完整 manifest digest、归档 SHA-256 和大小见 打包清单（原始记录由维护者私下保管）。私有验证日志保留在 `.local/`。这些目录没有提交，不包含在公开插件发行清单中。

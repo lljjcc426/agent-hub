@@ -4,15 +4,11 @@
 
 **最新决定：不实施跨机器部署，也不实施 Worker 直接统筹另一实例 Workers 的 `delegated-coordinator`。** 当前交付只保留同一所有者、同机一跳 `managed-team`、结构化目标及独立验收。正文保留原始分析和被取消的设计，不能视为当前路线或运行事实。
 
-实际用法见 [委派说明](DELEGATION.md)，历史首期和第二阶段证据分别见 [首期验收](DELEGATION_ACCEPTANCE_2026-11-09.md)、[目标改造](DELEGATION_GOALS_2026-11-09.md)。当前实例、部署方式及升级边界见 [部署现状](DEPLOYMENT_STATUS_2026-11-09.md)。下面的早期 checkout / release 观察已过时；运行实例没有由本轮改造切换。
+实际用法见 [委派说明](DELEGATION.md)，历史首期和第二阶段证据分别见 [首期验收](DELEGATION_ACCEPTANCE_2026-11-09.md)、[目标改造](DELEGATION_GOALS_2026-11-09.md)。部署方式及升级边界见 [运维指南](OPERATIONS.md)。本文是历史设计，不代表当前运行状态。
 
 ## 1. 当前基线与已有部署方式
 
-本轮检查的 checkout 为 `2f695dde7743052757f72ed89d768ca9a12ba0f4`；2026-11-09 14:42（北京时间）只读回查的运行 release 为 `b4f4b65cb9a0578cc06772d3c032e8139407e343`，采用 `supervise`。宿主健康返回 `ok: true`、版本 `0.10.0`，设置 revision 为 11，Router 为 host 模式，4 个本地 Worker，无活动 Worker，也没有出站工具连接。
-
-这些是带时间的观察，不是持续运行保证。运行 release 比该 checkout 更新，另含执行后端插件和仓库来源续接变更；相关差异已经检查。实施应在包含这些已交付变更的集成基线上创建独立工作树，不能把旧 checkout 直接覆盖到现有部署。实施前重新核对 HEAD、未提交修改、实际 release、设置 revision、插件和活动工作。
-
-整理期间该工作区随后出现并行源码与测试改动，未由本方案审查或纳入固定基线。本次只新增本文，实施时以重新确认的集成结果为准。
+设计基线为 `2f695dde7743052757f72ed89d768ca9a12ba0f4`。实施应基于重新核实的集成版本，避免覆盖并行源码或运行状态。
 
 | 维度 | 已有能力 | 证据及边界 |
 | --- | --- | --- |
@@ -389,4 +385,4 @@ P1 的可交付范围是：同一所有者、两层实例、一个已导出的�
 
 协议可参考 [A2A 的任务、订阅、取消和幂等语义](https://a2a-protocol.org/latest/specification/)；该规范中 Send Message 去重是可选行为，不能代替 Roppo 自己的持久幂等保证。[MCP Tasks 扩展](https://tasks.extensions.modelcontextprotocol.io/)提供异步工具任务机制，但当前出站工具适配器不是已实现的跨实例任务协议。若后续适配这些标准，应固定具体版本并独立做兼容验收，不因名称兼容就推导权限继承或停止保证。
 
-项目上下文参考用户提供的原工作树 `PROJECT_HANDOFF.md`；当前实现见 [委派说明](DELEGATION.md)，已有权限与集成边界见 [PROACTIVE_ROUTER](PROACTIVE_ROUTER.md)、[INTEGRATIONS](INTEGRATIONS.md)、[WORKSPACE_VIEWS](WORKSPACE_VIEWS.md)。历史边界与本方案新增设计分别阅读，不能把计划当成运行事实。
+当前实现见 [委派说明](DELEGATION.md)，已有权限与集成边界见 [PROACTIVE_ROUTER](PROACTIVE_ROUTER.md)、[INTEGRATIONS](INTEGRATIONS.md)、[WORKSPACE_VIEWS](WORKSPACE_VIEWS.md)。历史边界与本方案新增设计分别阅读，不能把计划当成运行事实。

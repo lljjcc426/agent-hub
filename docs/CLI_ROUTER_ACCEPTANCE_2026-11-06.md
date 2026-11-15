@@ -49,7 +49,7 @@ npm start -- router http://127.0.0.1:PORT /absolute/path/to/access-token \
 | 检查 | 实际结果 |
 | --- | --- |
 | 前台模型 | `gpt-6.1-terra`，`medium`；原生 thread/read 与两个 turn_context 均确认 |
-| 前台会话 | `01a1afe5-4c21-7503-8779-f74a8fbdb493`；两个用户消息、同一 Router 会话 |
+| 前台会话 | （内部记录 ID 不公开）；两个用户消息、同一 Router 会话 |
 | Worker 配置 | 四个独立原生会话，全部 `gpt-6.1-sol` / `high` |
 | 首轮 | 四 Worker 分别计算 1+1、2+2、3+3、4+4；Router 最终输出 `VERIFIED 2 4 6 8` |
 | 续聊 | Router 用 send 让 Worker 2 在原 ticket / 原 native thread 复核 2+2，等待新结果后输出 `RECHECKED 2 4 6 8` |

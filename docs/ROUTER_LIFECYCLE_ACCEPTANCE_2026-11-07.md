@@ -1,10 +1,12 @@
 # Router 第一步收尾：生命周期、受控接续、身份与迁移
 
+> 本文中的测试群和机器人名称已匿名化；验收结果与限制保持原意。
+
 2026-11-07，Asia/Shanghai。工作树 `work/agenthub-parity-fixes-20261106`，基础提交 `eb0dabb4e0f65f48b175189df46b65319cf01421`。本轮按实现前 review → 修改 → diff review → 回归 → 真实验证执行；发现新问题先复核契约再修复。没有提交、推送或切换正式部署。
 
 **实现与本地回归已完成；原设计的完整准出仍有一个平台阻塞。** TypeScript 与 37 个文件的 **584 项测试通过**。76 项设计用例为 **69 pass、1 blocked（R14）、6 not_applicable**；6 个 P 用例因未启用外部记忆组件而不适用。不能将该结果写成“全部验收通过”。
 
-本轮证据目录：`/Users/alex/Documents/ChatGPT/竞赛/validation/router-lifecycle-management-20261107`。逐项层级和边界见 `coverage.json`；上轮真实普通 API、预算与正文删除证据保留在 `validation/router-scope-completion-20261106`，本轮不冒称全部重跑。
+本轮证据目录：原始记录由维护者私下保管。逐项层级和边界见 `coverage.json`；上轮真实普通 API、预算与正文删除证据保留在 `validation/router-scope-completion-20261106`，本轮不冒称全部重跑。
 
 ## 已完成的行为
 
@@ -37,7 +39,7 @@
 | 迁移与旧程序 | 有效 Engine 状态迁移后重复事件/命令/inbox 不增加任务、模型调用或出箱；实际旧版 Store 拒绝新库隔离副本，业务指纹不变；`tests/lifecycle-acceptance.spec.ts`、`old-program/result.json` |
 | 管理页 | 真实浏览器覆盖共享/撤回、忘记和解除抑制、正文删除、Router 参数、入口绑定、390px 布局、键盘焦点、减少动态效果与无页面错误；`browser/result.json`、`browser/*.png` |
 
-飞书使用用户已授权的「周催办」机器人身份及本轮创建的测试消息。没有冒充真实成员；自动输入保留 human=false 的操作员重放标识，正常连接器仍过滤自身机器人消息。该轮没有重测真人入站，也没有移除真实群成员或机器人。消息编辑为契约/适配器回归，真实平台仅执行撤回。
+飞书使用用户已授权的「验收机器人」机器人身份及本轮创建的测试消息。没有冒充真实成员；自动输入保留 human=false 的操作员重放标识，正常连接器仍过滤自身机器人消息。该轮没有重测真人入站，也没有移除真实群成员或机器人。消息编辑为契约/适配器回归，真实平台仅执行撤回。
 
 普通 DeepSeek API 的真实调用、预算和统一正文删除结果沿用 [上轮报告](ROUTER_SCOPE_MEMORY_COMPLETION_2026-11-07.md)；本轮没有保存或重新使用聊天中提供的 API 密钥。共享宿主路径和三种 API 协议回归包含在 584 项检查内。
 

@@ -1,5 +1,5 @@
 ---
-name: AgentHub
+name: Roppo
 description: White and dark operator workspace
 colors:
   green: "#171717"
@@ -135,17 +135,17 @@ components:
     width: "min(480px, calc(100vw - 32px))"
 ---
 
-# Design System: AgentHub
+# Roppo design reference
 
 ## Overview
 
 **Creative North Star: "The operator workspace"**
 
-AgentHub uses a pure white default theme and an explicit dark theme, as requested on 2026-11-06. Actions, navigation and agent selection use neutral tones. Green, amber, red and blue are reserved for status or recognizable service badges. The existing layout, local typography and controls remain in place.
+Roppo uses a pure white default theme and an explicit dark theme. Actions, navigation and agent selection use neutral tones. Green, amber, red and blue are reserved for status or recognizable service badges. The existing layout, local typography and controls remain in place.
 
 Hierarchy comes from spacing, type weight, borders and selected states. Configuration nodes expose editable members, while actual execution remains a separate view. The top bar and left navigation retain their established structure. No new font downloads or raster assets were introduced for this extension.
 
-The North Star is a descriptive label for the implemented workspace, not a new creative direction. Surface composition remains in .impeccable/surfaces/src-ui-team-studio-js.md (local historical notes).
+This reference records design conventions and dated interface changes. Earlier layout measurements describe their original surface; later dated sections document subsequent changes. Consult the current implementation before reusing an older layout.
 
 **Key Characteristics:**
 
@@ -154,7 +154,7 @@ The North Star is a descriptive label for the implemented workspace, not a new c
 - Local font stacks, compact form labels and bordered controls.
 - Static configuration relationships; runtime-driven motion belongs to actual Calls.
 
-**Recorded scope and evidence:** The current palette is centralized in `src/ui/theme.css`; the existing shell, forms, Calls graph and team studio consume its semantic variables. `.local/theme-browser-evidence` records rendered light/dark desktop and 390px checks, configuration draft preservation and browser-storage behavior. Screenshots use isolated synthetic fixtures, not live provider execution or user visual sign-off.
+**Recorded scope and evidence:** The current palette is centralized in `src/ui/theme.css`; the existing shell, forms, Calls graph and team studio consume its semantic variables. Historical browser checks covered rendered light/dark desktop and 390px layouts, configuration draft preservation and browser-storage behavior. Screenshots use isolated synthetic fixtures, not live provider execution or user visual sign-off.
 
 ## Colors
 
@@ -206,23 +206,23 @@ The workspace is primarily flat: borders and pale surface changes distinguish co
 - **Workspace picker:** `0 14px 60px #00000029`, with a translucent backdrop (`#00000045`).
 - **Open mobile navigation:** `15px 0 60px #00000029`.
 
-These observed shadow values are also carried in the sidecar; they are not generalized elevation levels for every container.
+These observed shadow values are not generalized elevation levels for every container.
 
 ## Shapes
 
 Controls are restrained rounded rectangles. Buttons and navigation use tighter corners than member cards; the graph and inspector use the broadest panel corners. Inputs preserve their slightly different field radius. Status labels are compact rounded rectangles rather than large capsules. Member icons sit in small square tiles (36px square); icon strokes are thin, round-capped and round-joined. Profile avatars may be circular in the existing shell.
 
-The new graph's lines are simple one-pixel vertical and horizontal segments. Their structure conveys configuration ownership. They are removed where narrow layouts would make the branch arrangement misleading.
+The configuration graph's lines are simple one-pixel vertical and horizontal segments. Their structure conveys configuration ownership. They are removed where narrow layouts would make the branch arrangement misleading.
 
 ## Components
 
-The current motion behavior is recorded in MOTION_2026-11-06.md (local historical notes). Preserve the semantic separation between configured agents, the explicitly labeled user-controlled workflow explanation, and recorded runtime Calls. Short panel transitions use native WAAPI with cancellation handling; reduced-motion retains immediate state changes and readable status. Never make an idle configuration graph look like executing work.
+Preserve the semantic separation between configured agents, the explicitly labeled user-controlled workflow explanation, and recorded runtime Calls. Short panel transitions use native WAAPI with cancellation handling; reduced-motion retains immediate state changes and readable status. Never make an idle configuration graph look like executing work.
 
 ### Buttons
 
 Primary actions use white text on near-black in light mode, and near-black text on off-white in dark mode. Secondary buttons use the current surface and a neutral border; hover uses the neutral hover surface. Both use compact padding, medium text (12px, weight 500, line height 1.4), a minimum height (34px), and increase that minimum to 40px in the mobile shell. Text actions use the neutral action color, weight 550, and underline on hover. Disabled operator buttons reduce opacity to 0.5 and use a default cursor.
 
-The shared operator focus treatment is an outline (3px, offset 3px). Primary, secondary and text buttons use background/border/shadow transitions (160ms ease). API connection actions use this operator button family; current theme contrast results are in `.local/theme-browser-evidence/report.json`. Existing legacy forms and affectUI buttons remain separate families outside that adapter.
+The shared operator focus treatment is an outline (3px, offset 3px). Primary, secondary and text buttons use background/border/shadow transitions (160ms ease). API connection actions use this operator button family. Existing legacy forms and affectUI buttons remain separate families outside that adapter.
 
 ### Fields
 
@@ -281,7 +281,7 @@ Authenticated `/chat`, `/configure` and `/` now use the same application shell: 
 
 The conversation owns a collapsible panel with Files, Browser and Team activity tabs. Browser instances are scoped to the conversation, while authorized login profiles remain reusable. Files previews are read-only and restricted to that conversation's task directories. Team flow continues to reflect recorded execution. The black/white palette and existing controls remain; motion on the shared panel is a brief reveal, with immediate reduced-motion behavior.
 
-Rendered evidence: shared-workspace acceptance (local historical notes).
+Historical acceptance covered the shared workspace using isolated fixtures, not live provider execution.
 
 
 ## Single Chat space and feature rail — 2026-11-14
@@ -292,7 +292,7 @@ Display mode and clearing live in the existing Settings → Chat tab. Two plain 
 
 At 800px and below the feature rail and contact list form a drawer. Expanding feature labels temporarily hides contacts; closing restores focus after the main region leaves inert. Resource tools retain their existing panel and become an overlay when the remaining content width would drop below 360px. The same Router draft survives contact, view, language, theme and settings navigation. Reduced motion removes navigation transitions.
 
-Rendered evidence in `docs/images/chat-space-*` uses an isolated HTTP/SQLite host and deterministic model replies; it verifies UI and execution projection, not a live model’s coding quality.
+Rendered evidence in `images/chat-space-*` uses an isolated HTTP/SQLite host and deterministic model replies; it verifies UI and execution projection, not a live model’s coding quality.
 
 ## Resource launcher and open views — 2026-11-07
 
@@ -304,7 +304,7 @@ Closing the last view restores the launcher. Hiding the whole panel is separate,
 
 The reference's tab contour and address field use 9px upper corners and a 20px field radius; close affordances use 5px. These compact control shapes intentionally supplement existing surface radii. All surfaces keep the existing black/white tokens and reduced-motion behavior.
 
-Evidence: resource-tabs acceptance (local historical notes).
+Historical resource-tab acceptance covered view reuse, closing, persistence and browser-session boundaries.
 
 
 ## Model connections and decision settings — 2026-11-08
@@ -322,7 +322,7 @@ Memory is a section of the existing Settings navigation, not a conversation reso
 
 Do not reintroduce learning switches, entry selectors, candidate approval, source/history drawers, usage ledgers or technical configuration into this surface. Pending suggestions stay separate from saved memories; removing their UI does not approve them. Existing policy, background learning and authorization remain unchanged. Retired URLs lead to Settings, and retired memory tabs are removed without discarding other conversation tools or drafts.
 
-Desktop light/dark and 390px screenshots in docs/images/memory-settings-* use isolated HTTP/SQLite fixtures. They verify the interface, not live-provider behavior or user visual approval.
+Desktop light/dark and 390px screenshots in images/memory-settings-* use isolated HTTP/SQLite fixtures. They verify the interface, not live-provider behavior or user visual approval.
 
 
 ## Event automations in the shared workspace — 2026-11-15

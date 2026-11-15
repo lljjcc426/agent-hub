@@ -20,7 +20,6 @@
 | 原两阶段工作树 | `work/roppo-delegation-20261109`，基线 `c9b6c6c`；45 个已验证文件哈希保持不变 |
 | 原源码归档 | 原工作树 `.local/delegation-closeout-input/source.tar.gz`，SHA-256 `e932712afc58a7e889c2bc5767200ebce58a69c6958fab9033d74117f2b40854` |
 | 最终交付清单 | 收尾工作树 `.local/closeout-source-manifest.json`、`.local/closeout-source.tar.gz` |
-| 当前实际部署 | `c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2`；没有开启本轮委派，详见 [部署现状](DEPLOYMENT_STATUS_2026-11-09.md) |
 
 没有覆盖原工作树、运行 release、私有配置或业务工作目录。集成处理了 8 个重叠源码文件的冲突，保留 Webhook 与委派各自的路由、监听、工具和授权检查；DeepSeek vendor 核心没有改动。
 
@@ -49,7 +48,7 @@
 
 完整检查记录发生在最后一个小分支修正前；该修正另以类型检查和完整委派专项回归覆盖，未将两次结果混称为同一份源码的全量跑分。浏览器仍记录基线 `/workspaces`、`/connection-capabilities` 的兼容性 404；没有新增失败请求或页面脚本异常，不声称所有网络日志为零。
 
-按 `practical-code-review` 与 `security-diff-scan` 完成人工、独立复核和受管 Security 审查。Security scan `fc387e93-f027-4f8d-b4a2-8698fb3a3c45` 已完成并回读：覆盖原冻结差异的 34 个源码文件，确认 1 项中等风险的父级能力收窄检查缺失，修复前后复现已留存。过期续租作为确定的租约正确性问题修正；没有凭此虚构另一条安全权限提升。[Security 密封报告](/Users/alex/.codex/state/plugins/codex-security/scans/roppo-delegation-20261109/c9b6c6cc5c244449c1c144880bcecfdbb6eda3f2_20261109T120946Z_8xs3pw3j/report.md)对应原冻结快照；最终集成另有定向复核与上表验证，不冒充第二次全量 Security 扫描。
+按 `practical-code-review` 与 `security-diff-scan` 完成人工、独立复核和受管 Security 审查。Security scan （内部记录 ID 不公开） 已完成并回读：覆盖原冻结差异的 34 个源码文件，确认 1 项中等风险的父级能力收窄检查缺失，修复前后复现已留存。过期续租作为确定的租约正确性问题修正；没有凭此虚构另一条安全权限提升。Security 密封报告（原始记录由维护者私下保管）对应原冻结快照；最终集成另有定向复核与上表验证，不冒充第二次全量 Security 扫描。
 
 前一阶段真实模型证据仍保留在原工作树 `.local/delegation-goal-native-v2-20261109/result.json`：真实文件读取、节点程序检查与独立整体验收通过。它属于前阶段固定源码，不替代本次集成后的新真实模型验证。
 
@@ -59,4 +58,4 @@
 
 产物和文本验收有明确数量 / 大小限制；对端签名证明实例身份，不证明模型汇报必然真实。本轮没有覆盖完整崩溃 / 时钟 / 高并发压力矩阵。出站核对仍可能受大量失联任务影响，不能把当前本机验证扩大为容量或高可用保证。
 
-本轮交付至此收敛；当前部署方式、升级流程和备份边界见 [部署现状](DEPLOYMENT_STATUS_2026-11-09.md)；具体委派使用见 [操作说明](DELEGATION.md)。
+本轮交付至此收敛；部署方式、升级流程和备份边界见 [运维指南](OPERATIONS.md)；具体委派使用见 [操作说明](DELEGATION.md)。

@@ -74,11 +74,11 @@ OpenAPI 在最终真实回归中恢复为 Top1，护照问题在旧集回归中�
 - 三套质量评估分别关闭并重新构建 Runtime，复用 SQLite 向量并重新验证首个查询。另在旧集运行结束后，用全新 Node 进程 PID `11988` 打开状态：缓存为空、事实向量不重复嵌入、真实模型重新验证一次并命中；事实内容与版本不变，只有既有 `lastUsedAt` 使用记录更新。
 - 在独立状态副本中，用新版移除 `verifyRelevance`，停止后用实际 `3db35f3` Runtime（PID `15659`）读取：32 条授权事实、全部事实与向量哈希、其余策略一致。只设为 `false` 不够，旧 schema 不识别字段本身。无数据库版本变更；未覆盖活动实例或回滚其外部效果。
 - 自 review 覆盖全部生产、测试和脚本差异，另按 review 技能执行独立架构复核。补上输入上限、共享预算说明和旧 schema 回滚说明。浏览器辅助脚本初次失败分别由不匹配的精确 label 和误读请求包装层造成，修正脚本后以全新 fixture 重跑通过。重启辅助脚本最初错误比较了包含正常使用时间更新的全量事实，改为检查其余字段不变后通过；失败日志保留。
-- Codex Security scan `e3be36ab-55c8-4259-a8eb-1f01deece81c` **已完成并封存**，6 个生产源码文件，在审查范围内未发现可确认安全问题。原快照后有期限和输入上限的明确变动，插件保留 `Working-tree contents changed ... results were saved for the original snapshot` 告警；附属证据记录人工复核的变动与最终源文件哈希，不能把快照标识说成最终代码的相同哈希。token 用量工具返回 unavailable，未估算。此前 `4e8d1721` 未封存的扫描保持原状态。
+- Codex Security scan （内部记录 ID 不公开） **已完成并封存**，6 个生产源码文件，在审查范围内未发现可确认安全问题。原快照后有期限和输入上限的明确变动，插件保留 `Working-tree contents changed ... results were saved for the original snapshot` 告警；附属证据记录人工复核的变动与最终源文件哈希，不能把快照标识说成最终代码的相同哈希。token 用量工具返回 unavailable，未估算。此前 `4e8d1721` 未封存的扫描保持原状态。
 
-正式扫描报告（本机）：`/Users/alex/.codex/state/plugins/codex-security/scans/agenthub-memory-20261108/3db35f3e2b715ef944cb609eb1c794ee7bd8c31a_20261108T083459Z_qodliv91/report.md`。
+正式扫描报告（本机）：原始记录由维护者私下保管。
 
-证据根目录：`/Users/alex/Documents/ChatGPT/竞赛/validation/agenthub-memory-relevance-20261108/`。重点文件为 `holdout-freeze.json`、`final-config-freeze.json`、`post-review-source-evidence.json`，`holdout-before/`、`holdout-final/`、`previous-holdout-regression/`、`regression-60s-final/` 的 `results.json` / `evidence.json` / `model-calls.json`，`browser-verified/evidence.json`、`rollback-copy/rollback-after.json` 和测试日志。并发评估的 HTTP server 统计是共享的，原始 `calls.json` 可能含另一测试进程请求；各自 `results.json` 与 `model-calls.json` 独立。交付脚本已按当前语料过滤 transport 统计、按自身事实检查重启嵌入，避免未来并发误计。
+证据根目录：原始记录由维护者私下保管。重点文件为 `holdout-freeze.json`、`final-config-freeze.json`、`post-review-source-evidence.json`，`holdout-before/`、`holdout-final/`、`previous-holdout-regression/`、`regression-60s-final/` 的 `results.json` / `evidence.json` / `model-calls.json`，`browser-verified/evidence.json`、`rollback-copy/rollback-after.json` 和测试日志。并发评估的 HTTP server 统计是共享的，原始 `calls.json` 可能含另一测试进程请求；各自 `results.json` 与 `model-calls.json` 独立。交付脚本已按当前语料过滤 transport 统计、按自身事实检查重启嵌入，避免未来并发误计。
 
 ## 复跑
 

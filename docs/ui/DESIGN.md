@@ -1,4 +1,4 @@
-> Historical entry-layout baseline. Current theme tokens and appearance are defined in [the root DESIGN.md](../../DESIGN.md) and `src/ui/theme.css`; the green palette below is superseded.
+> Historical entry-layout baseline. Current theme tokens and appearance are defined in [the design reference](../DESIGN.md) and `src/ui/theme.css`; the green palette below is superseded.
 
 ---
 name: AgentHub Configuration

@@ -75,7 +75,7 @@ holdout 在实现与模型推理前冻结，SHA-256：`e6b81cf8a2469fadb587ba921
 - 真实本地 HTTP 推理验证：503 标记 partial；服务已完成模型推理但延迟响应时，约 5008ms 超时并降级；推理期间清空拒绝旧结果；关闭 Runtime 取消正在进行的重排，未向已关闭 SQLite 写入。
 - 重新构造 Runtime、再用独立 Node 进程打开同一 SQLite：事实向量不重复计算，查询重新重排并获得相同首项。这里不是对重排请求进行 SIGKILL 续传；检索本身可重新执行。
 - 自 review 覆盖全部本轮源码与测试辅助改动；独立架构复核确认授权/来源/权限变化/关闭顺序。发现并补上了查询关闭排空、以及 UI 小数 step 和每日预算范围标注。
-- Codex Security scan `4e8d1721-3cf3-4c6d-a4e3-548e2ca83dd2`：6 个生产源码文件已审查，最终语义草稿已保存；**报告未完成封存**。首次最终草稿缺少 `coverage.surfaces[].label` 被拒绝，随后 completion 返回 `The latest saved scan draft is incomplete; continue the scan before completing it.` 已修正并保存草稿，但按插件单次 completion 规则没有重试。它不能列作“Security 扫描完成”。随后的 UI 标签和 step 修正另经人工检查与浏览器验证。
+- Codex Security scan （内部记录 ID 不公开）：6 个生产源码文件已审查，最终语义草稿已保存；**报告未完成封存**。首次最终草稿缺少 `coverage.surfaces[].label` 被拒绝，随后 completion 返回 `The latest saved scan draft is incomplete; continue the scan before completing it.` 已修正并保存草稿，但按插件单次 completion 规则没有重试。它不能列作“Security 扫描完成”。随后的 UI 标签和 step 修正另经人工检查与浏览器验证。
 
 证据根目录（本机）：`validation/agenthub-memory-retrieval-20261108/`，相对于外层工作区。关键文件：`root-cause-scores.json`、`holdout-freeze.json`、`final-config-freeze.json`、`calibration-m3-scores.json`、`regression-final/results.json`、`holdout-{baseline,final}/{results,evidence,calls}.json`、`holdout-final/process-restart.json`、`faults-verified/evidence.json`、`rollback-copy/legacy-readback.json`、`browser-final/evidence.json` 和测试日志。调用日志仅含合成文本。
 

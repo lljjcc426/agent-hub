@@ -79,12 +79,15 @@ it('does not create invalid startup entries for absent MCP aliases and disables 
  const binary=join(root,'codex'),log=join(root,'rpc.jsonl')
  writeFileSync(binary,'#!'+process.execPath+`\nconst fs=require('node:fs');if(process.argv.slice(2).some(x=>x.startsWith('mcp_servers.')))process.exit(1);const send=x=>console.log(JSON.stringify(x));require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},line+'\\n');if(!m.id)return;const result=m.method==='config/read'?{config:{mcp_servers:{existing:{command:'safe'}},plugins:{example:{enabled:true}}}}:m.method==='thread/start'?{thread:{id:'native-managed'}}:m.method==='mcpServerStatus/list'?{data:[]}:m.method==='turn/start'?{turn:{id:'turn-managed'}}:{};send({id:m.id,result});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'native-managed',item:{type:'agentMessage',text:'done'}}});send({method:'turn/completed',params:{threadId:'native-managed',turn:{id:'turn-managed',status:'completed'}}})}})\n`,{mode:0o700})
  const model=new CodexModel({codex:binary,effort:'high',turnTimeoutMs:10000})
- await expect(model.run({cwd:root,instructions:'test',input:'test',schema:{},managed:true})).resolves.toMatchObject({text:'done'})
+ const privateState=join(root,'state'),attachment=join(privateState,'assets','file','upload.pdf')
+ await expect(model.run({cwd:root,instructions:'test',input:'test',schema:{},managed:true,privateState,attachments:[attachment,envFile]})).resolves.toMatchObject({text:'done'})
  const calls=readFileSync(log,'utf8').trim().split('\n').map(s=>JSON.parse(s)),config=calls.find(c=>c.method==='thread/start').params.config
  expect(config.mcp_servers).toEqual({existing:{enabled:false}})
  expect(config.plugins).toEqual({example:{enabled:false}})
  expect(config.features.shell_tool).toBe(false)
  expect(config.permissions['superagent-managed'].filesystem[envFile]).toBe('deny')
+ expect(config.permissions['superagent-managed'].filesystem[privateState]).toBe('deny')
+ expect(config.permissions['superagent-managed'].filesystem[attachment]).toBe('read')
 })
 
 it('binds native output to the acknowledged turn even when notifications share its stdout chunk',async()=>{

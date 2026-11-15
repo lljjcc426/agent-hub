@@ -35,6 +35,7 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
+import {chatUploadLimits} from './chat-attachments.ts'
 import {BrowserError} from './browser-contract.ts'
 import {browserRequest} from './browser-http.ts'
 import {serveWebhooks} from './webhook-http.ts'
@@ -108,7 +109,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     res.setHeader('referrer-policy','no-referrer')
     let requestOrigin=''
     try{requestOrigin=requestHostOrigin(req.headers.host,endpoint,runtime.config.http?.publicOrigin)}catch{send(res,403,{error:'Use this host’s local origin',code:'host_origin_required'});return}
-    if(['POST','PATCH'].includes(req.method??'')&&req.headers.origin&&req.headers.origin!==requestOrigin){send(res,403,{error:'Use this page’s own origin',code:'same_origin_required'});return}
+    if(['POST','PATCH','DELETE'].includes(req.method??'')&&req.headers.origin&&req.headers.origin!==requestOrigin){send(res,403,{error:'Use this page’s own origin',code:'same_origin_required'});return}
     const browserOperator=account.configured?account.authorized(req):sessions.authorized(req)
     if((req.method==='GET'||req.method==='HEAD')&&path.startsWith('/chat-assets/')){
       const name=path.slice('/chat-assets/'.length),asset=chatAsset(name)
@@ -169,7 +170,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(req.method==='POST'&&path==='/entry-guide'){const input=z.object({invite:z.string().min(20).max(100)}).strict().parse(await body(req));send(res,200,await entries.invitation(input.invite));return}
     if(changing||unavailable){send(res,503,{error:'The host is applying configuration. Please try again shortly.',code:unavailable?'setup_recovery_required':'configuration_restarting'});return}
     const operator=authorized(req)||browserOperator
-    if(['POST','PATCH'].includes(req.method??'')&&!authorized(req)&&browserOperator&&req.headers.origin!==requestOrigin){send(res,403,{code:'same_origin_required'});return}
+    if(['POST','PATCH','DELETE'].includes(req.method??'')&&!authorized(req)&&browserOperator&&req.headers.origin!==requestOrigin){send(res,403,{code:'same_origin_required'});return}
     if(options.configurationPreview&&req.method==='POST'&&!['/settings','/prompt-preview','/setup-check','/onboarding/plan','/onboarding/check','/onboarding/apply','/entry-setup/probe','/entry-setup/plan','/entry-setup/apply','/entry-setup/model/plan','/entry-setup/model/check','/entry-setup/model/apply','/entry-setup/verification','/operator-link','/logout'].includes(path)){
       if(!operator){send(res,401,{error:'Access token required',code:'token_required'});return}
       send(res,403,{error:'This configuration preview cannot execute work or external actions',code:'preview_restricted'});return
@@ -347,6 +348,23 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if(req.method==='GET'){send(res,200,{conversations:runtime.chat.list(owner,query.get('archived')==='true')});return}
         if(req.method==='POST'){send(res,201,runtime.chat.create(owner));return}
       }
+      const attachment=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/attachments(?:\/([a-f0-9-]{36}))?$/)
+      if(attachment){
+        const conversationId=z.string().uuid().parse(attachment[1]),id=attachment[2]?z.string().uuid().parse(attachment[2]):undefined
+        if(!id&&req.method==='GET'){send(res,200,{attachments:runtime.chat.uploads.drafts(conversationId,owner)});return}
+        if(id&&req.method==='POST'){
+          if(Number(req.headers['content-length'])>chatUploadLimits.maxBytes){req.resume();send(res,413,{code:'attachment_too_large'});return}
+          const name=z.string().trim().min(1).max(255).refine(s=>!/[\x00-\x1f\x7f/\\]/.test(s),'Invalid filename').parse(query.get('name'))
+          const mimeType=z.string().max(150).regex(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/).parse((req.headers['content-type']??'application/octet-stream').split(';')[0])
+          send(res,201,await runtime.chat.uploads.upload(conversationId,owner,id,{name,mimeType},req,()=>requireCurrentOperator(req)));return
+        }
+        if(id&&req.method==='DELETE'){send(res,200,runtime.chat.uploads.remove(conversationId,owner,id));return}
+        if(id&&(req.method==='GET'||req.method==='HEAD')){
+          const file=runtime.chat.uploads.download(conversationId,owner,id),preview=query.get('preview')==='1'&&!!file.previewType
+          res.writeHead(200,{'content-type':preview?file.previewType!:'application/octet-stream','content-length':file.bytes,'content-disposition':(preview?'inline':'attachment')+'; filename="attachment"; filename*=UTF-8\'\''+encodeURIComponent(file.name),'content-security-policy':"default-src 'none'; sandbox"})
+          res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
+        }
+      }
       const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory))?$/)
       if(match){
         const id=match[1]!,action=match[2]
@@ -369,7 +387,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,await runtime.chat.files(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().min(1).max(100000),clientMessageId:z.string().uuid(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().max(100000),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input));return
         }
         if(action==='cancel'&&req.method==='POST'){

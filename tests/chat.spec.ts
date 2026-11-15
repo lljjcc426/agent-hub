@@ -1,5 +1,6 @@
 import {afterEach,expect,it} from 'vitest'
-import {mkdtempSync,rmSync,readFileSync,writeFileSync,mkdirSync,symlinkSync} from 'node:fs'
+import {mkdtempSync,rmSync,readFileSync,writeFileSync,mkdirSync,symlinkSync,existsSync} from 'node:fs'
+import {Readable} from 'node:stream'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {randomUUID} from 'node:crypto'
@@ -8,6 +9,7 @@ import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
 import type {Server} from 'node:http'
+import {chatUploadLimits} from '../src/chat-attachments.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
 afterEach(async()=>{for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()))}for(const h of hosts.splice(0))await h.close();for(const p of roots.splice(0))rmSync(p,{recursive:true,force:true})})
 const report={state:'ready',summary:'Worker checked the evidence',reply:'Worker result',question:null,askedBy:null,handbacks:[]}
@@ -28,6 +30,106 @@ function enableChatBatch(h:Runtime,id:string,settings:Record<string,number>={}){
  h.proactive.command({action:'settings.put',scopeId:'team',operationId:'batch',expectedRevision:0,settings:{enabled:true,debounceMs:0,maxWaitMs:1,cooldownMs:0,...settings}})
 }
 const batchDecision=(action:string)=>({action,title:'Task',scope:'Requested work',question:'Which task should continue?',reason:'Explicit input',rules:[],targetTicketId:null,ruleAssessments:[]})
+
+const upload=(h:Runtime,id:string,name:string,bytes:Buffer,mimeType='application/octet-stream',owner='owner')=>h.chat.uploads.upload(id,owner,randomUUID(),{name,mimeType},Readable.from([bytes]))
+it('uploads arbitrary originals over authenticated HTTP, verifies previews and admits a file-only message idempotently',async()=>{
+ const {h,root}=fixture(),server=await serve(h);servers.push(server.server)
+ const headers={authorization:'Bearer '+readFileSync(join(root,'state/access-token'),'utf8').trim()},conversation=h.chat.create('local-operator')
+ const url=server.url+'/api/chat/conversations/'+conversation.id+'/attachments/'+randomUUID(),bytes=Buffer.from('<svg onload="alert(1)"></svg>')
+ expect((await fetch(url+'?name=example.svg',{method:'POST',body:bytes})).status).toBe(401)
+ expect((await fetch(url+'?name=example.svg',{method:'POST',headers:{...headers,origin:'https://wrong.example'},body:bytes})).status).toBe(403)
+ const response=await fetch(url+'?name='+encodeURIComponent('研究示例.svg'),{method:'POST',headers:{...headers,'content-type':'image/svg+xml'},body:bytes})
+ expect(response.status).toBe(201);const file=await response.json() as any
+ expect(file.previewUrl).toBeUndefined();expect(file).toMatchObject({name:'研究示例.svg',bytes:bytes.length});expect(file.path).toBeUndefined()
+ const download=await fetch(url+'?preview=1',{headers});expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes)
+ expect(download.headers.get('content-type')).toBe('application/octet-stream');expect(download.headers.get('content-disposition')).toContain('attachment;');expect(download.headers.get('content-security-policy')).toContain('sandbox')
+ expect((await fetch(url)).status).toBe(401)
+ expect((await fetch(url,{method:'DELETE',headers:{...headers,origin:'https://wrong.example'}})).status).toBe(403)
+ const input={clientMessageId:randomUUID(),text:'',attachments:[file.id]},message=server.url+'/api/chat/conversations/'+conversation.id+'/messages'
+ const sent=await fetch(message,{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify(input)})
+ expect(sent.status).toBe(202);expect(h.chat.view(conversation.id,'local-operator').messages[0]).toMatchObject({text:'',attachments:[{id:file.id}]})
+ expect((await (await fetch(message,{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify(input)})).json() as any).duplicate).toBe(true)
+ expect((await fetch(url,{method:'DELETE',headers})).status).toBe(409)
+ expect(h.chat.uploads.drafts(conversation.id,'local-operator')).toEqual([])
+ const other=h.chat.create('another-owner');expect(()=>h.chat.uploads.download(conversation.id,'another-owner',file.id)).toThrow('not found');expect(()=>h.chat.uploads.resolve(other.id,'another-owner',[file.id])).toThrow('not found')
+})
+
+it('gives the Router actual paginated text and image tool content, without exposing unsent or other Chat files',async()=>{
+ const observed:unknown[]=[]
+ const {h}=fixture(async r=>{
+  const trigger=JSON.parse(r.input).trigger,resource=trigger.meta.attachments[0].id
+  observed.push(await r.onTool!('router_read',{resource,limit:8},'read-file'))
+  return {reply:'Read the uploaded file.'}
+ }),c=h.chat.create('owner'),file=await upload(h,c.id,'notes.md',Buffer.from('A😀B — attachment content'),'text/markdown')
+ const run=h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'Read this file',attachments:[file.id]})
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(observed[0]).toMatchObject({success:true});expect(JSON.parse((observed[0] as any).contentItems[0].text).text).toBe('A😀B — a')
+ const image=await upload(h,c.id,'pixel.png',Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE9sAAAAASUVORK5CYII=','base64'),'application/octet-stream')
+ expect(image.previewUrl).toContain('?preview=1');expect(image.mimeType).toBe('image/png')
+ await expect(h.resources.read({resource:'asset/'+image.id},{chatTriggerId:run.runId})).rejects.toThrow('not been sent')
+ h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'What is in the image?',attachments:[image.id]})
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(observed[1]).toMatchObject({success:true,contentItems:[{type:'inputImage',imageUrl:expect.stringContaining('data:image/png;base64,')}]})
+ const other=h.chat.create('owner'),otherRun=send(h,other.id)
+ await expect(h.resources.read({resource:'asset/'+file.id},{chatTriggerId:otherRun.runId})).rejects.toThrow('not found')
+ await expect(h.resources.read({resource:'settings'},{chatTriggerId:run.runId})).rejects.toThrow('uploaded file')
+})
+
+it('materializes uploaded originals into the authorized Worker sandbox assets and clears them with Chat history',async()=>{
+ const {h}=fixture(),c=h.chat.create('owner'),file=await upload(h,c.id,'paper.pdf',Buffer.from('%PDF-1.7\nOriginal document\0'))
+ const draft=await upload(h,c.id,'draft.docx',Buffer.from('PK\0office')),run=h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'Review the PDF',attachments:[file.id]})
+ const trigger=h.store.triggers.get(run.runId)!,task=await h.manager.call({action:'assign',revision:0,requestId:'uploaded-file',id:'research',text:'Read the uploaded PDF'},{trigger,discussion:'local:chat:'+c.id})
+ const result=await h.resources.read({resource:'asset/'+file.id},{ticketId:task.ticketId}),copy=JSON.parse(result.text)
+ expect(readFileSync(copy.path)).toEqual(Buffer.from('%PDF-1.7\nOriginal document\0'))
+ const asset=h.store.get<any>('asset',copy.resource.slice(6));expect(asset.ticketId).toBe(task.ticketId);expect(asset.uploadId).toBe(file.id)
+ expect(h.chat.uploads.taskPaths(task.ticketId)).toEqual([copy.path])
+ const readAgain=JSON.parse((await h.resources.read({resource:'asset/'+file.id},{ticketId:task.ticketId})).text);expect(readAgain.path).toBe(copy.path)
+ const other=h.chat.create('owner'),otherRun=send(h,other.id),otherTask=await h.manager.call({action:'assign',revision:0,requestId:'other-file',id:'review',text:'Other work'},{trigger:h.store.triggers.get(otherRun.runId)!,discussion:'local:chat:'+other.id})
+ await expect(h.resources.read({resource:'asset/'+file.id},{ticketId:otherTask.ticketId})).rejects.toThrow('not found')
+ const paths=[copy.path,h.chat.uploads.download(c.id,'owner',file.id).path,h.chat.uploads.download(c.id,'owner',draft.id).path]
+ h.chat.reset('owner',randomUUID())
+ await expect(h.resources.read({resource:'asset/'+file.id},{ticketId:task.ticketId})).rejects.toThrow()
+ await h.memory.cleanup.process({run:async()=>{throw Error('unused')},purge:async()=>({local:'verified',provider:'not_managed'})},async()=>true)
+ for(const path of paths)expect(existsSync(path)).toBe(false)
+})
+
+it('persists draft uploads across restart and removes cancelled or oversized streams without orphan files',async()=>{
+ const f=fixture(),c=f.h.chat.create('owner'),file=await upload(f.h,c.id,'zero.txt',Buffer.alloc(0),'text/plain')
+ await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
+ const h=new Runtime(f.config,{model:f.model});hosts.push(h)
+ expect(h.chat.uploads.drafts(c.id,'owner')).toEqual([file])
+ const id=randomUUID()
+ await expect(h.chat.uploads.upload(c.id,'owner',id,{name:'too-large.bin',mimeType:'application/octet-stream'},Readable.from([Buffer.alloc(chatUploadLimits.maxBytes),Buffer.from('overflow')]))).rejects.toThrow('25 MB')
+ expect(h.store.get('asset',id)).toBeUndefined();expect(existsSync(join(h.config.stateDir,'assets',id))).toBe(false)
+ let release!:()=>void;const gate=new Promise<void>(r=>release=r),removed=randomUUID()
+ const uploading=h.chat.uploads.upload(c.id,'owner',removed,{name:'cancel.bin',mimeType:'application/octet-stream'},(async function*(){yield Buffer.from('first');await gate;yield Buffer.from('last')})())
+ h.chat.uploads.remove(c.id,'owner',removed);release();await expect(uploading).rejects.toThrow()
+ expect(h.store.get('asset',removed)).toBeUndefined();expect(existsSync(join(h.config.stateDir,'assets',removed))).toBe(false)
+ const path=h.chat.uploads.download(c.id,'owner',file.id).path;h.chat.uploads.remove(c.id,'owner',file.id);expect(existsSync(path)).toBe(false)
+})
+
+it('does not consume attachments on failed admission or allow a reused message identity to change files',async()=>{
+ const {h}=fixture(),c=h.chat.create('owner'),file=await upload(h,c.id,'one.txt',Buffer.from('one'))
+ expect(()=>h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:''})).toThrow('Add a message')
+ h.pause(true);expect(()=>h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'read',attachments:[file.id]})).toThrow('not ready');h.pause(false)
+ expect(h.chat.uploads.drafts(c.id,'owner')).toHaveLength(1)
+ const input={clientMessageId:randomUUID(),text:'read',attachments:[file.id]};h.chat.send(c.id,'owner',input)
+ expect(()=>h.chat.send(c.id,'owner',{...input,attachments:[]})).toThrow('different content')
+ expect(h.chat.send(c.id,'owner',input).duplicate).toBe(true)
+})
+
+it('counts simultaneous uploads toward the draft limit and cannot revive a file after Chat reset',async()=>{
+ const {h}=fixture(),c=h.chat.create('owner')
+ let release!:()=>void
+ const gate=new Promise<void>(resolve=>release=resolve),ids=Array.from({length:chatUploadLimits.maxFiles},()=>randomUUID())
+ const uploads=ids.map(id=>h.chat.uploads.upload(c.id,'owner',id,{name:'pending.txt',mimeType:'text/plain'},(async function*(){yield Buffer.from('start');await gate;yield Buffer.from('end')})()))
+ const settled=Promise.allSettled(uploads)
+ await expect(upload(h,c.id,'excess.txt',Buffer.from('extra'))).rejects.toThrow('existing files')
+ const reset=h.chat.reset('owner',randomUUID());release()
+ expect((await settled).every(result=>result.status==='rejected')).toBe(true)
+ await settle(h,()=>h.memory.cleanup.receipts().find(r=>r.id===reset.cleanupId)?.status==='completed')
+ for(const id of ids){expect(h.store.get('asset',id)).toBeUndefined();expect(existsSync(join(h.config.stateDir,'assets',id))).toBe(false)}
+})
 
 it('admits built-in Chat when other entries already use scoped Routers without borrowing their context',async()=>{
  const {h}=fixture()
@@ -273,7 +375,7 @@ it('persists full Router replies and continues the original native thread after 
 it('receives a browser message exactly once and rejects conflicting identity reuse',()=>{
   const {h}=fixture(),c=h.chat.create('owner'),id=randomUUID(),a=send(h,c.id,'First',id)
   expect(send(h,c.id,'First',id)).toEqual({runId:a.runId,duplicate:true})
-  expect(()=>send(h,c.id,'Changed',id)).toThrow('different text')
+  expect(()=>send(h,c.id,'Changed',id)).toThrow('different content')
   expect(h.chat.view(c.id,'owner').messages).toHaveLength(1)
   expect(h.store.jobs().filter(j=>j.kind==='router')).toHaveLength(1)
   expect(()=>send(h,c.id,'Parallel')).toThrow('Wait')

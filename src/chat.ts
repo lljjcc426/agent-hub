@@ -13,10 +13,10 @@ import {stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
 import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
+import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attachments.ts'
+import {ChatError} from './chat-errors.ts'
+export {ChatError} from './chat-errors.ts'
 
-export class ChatError extends Error {
-  constructor(readonly code:string, message:string, readonly status=409){super(message)}
-}
 interface Conversation {
   id:string; owner:string; title:string; createdAt:number; updatedAt:number; archived:boolean
   sourceId:string; actor:string; discussion:string; sequence:number
@@ -24,7 +24,7 @@ interface Conversation {
   nativeId?:string
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
-interface Message {id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string}
+interface Message {id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string}
 interface ChatRun {id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
 type ChatCall=ExecutionCall&{conversationId:string;runId:string}
@@ -38,11 +38,13 @@ export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'ac
 
 /** Browser conversations are a projection of the existing Router, never a second executor. */
 export class ChatSessions {
+  readonly uploads:ChatAttachments
   private listeners=new Map<string,Set<()=>void>>()
   private notifications=new Set<string>()
   private streams=new Map<string,{runId:string;outputId:string;raw:string;authorize?:()=>void;timer?:ReturnType<typeof setTimeout>}>()
   private unsubscribe:()=>void
   constructor(private host:Runtime){
+    this.uploads=new ChatAttachments(host,(id,owner)=>this.get(id,owner))
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_message_page ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message'")
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_call_conversation ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.startedAt')) WHERE kind='chat-call'")
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.status')='streaming'").all()){const m=JSON.parse(String(row.body));host.store.put('chat-message',m.id,{...m,status:'interrupted'})}
@@ -132,7 +134,7 @@ export class ChatSessions {
     if(h.config.execution.router?.mode!=='host')code='host_router_required'
     else if(!this.source())code='local_source_required'
     else if(h.store.get<boolean>('settings','paused'))code='host_paused'
-    return {routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
+    return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
   private publicConversation(c:Conversation){return {id:c.id,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,backend:c.backendId,model:c.model}}
   private fingerprint(id?:string){
@@ -258,14 +260,17 @@ export class ChatSessions {
     try{this.host.memory.validate(owner.manifest);for(const id of owner.inputs)this.host.routerIngress.authority(id)}catch{return}
     this.host.store.atomic(()=>this.reply(message.id,owner.triggerId,message.text))
   }
-  send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string}){
+  send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string;attachments?:string[]}){
     return this.host.store.atomic(()=>{
       const c=this.get(id,owner),text=input.text.trim()
       const previous=this.rows<ChatRun>('chat-run','conversationId',id).find(r=>r.clientMessageId===input.clientMessageId)
       if(previous){
-        if(this.host.store.get<Message>('chat-message','user:'+previous.id)?.text!==text)throw new ChatError('message_conflict','Message identity was reused with different text.')
+        const message=this.host.store.get<Message>('chat-message','user:'+previous.id)
+        if(message?.text!==text||JSON.stringify(message.attachments?.map(a=>a.id)??[])!==JSON.stringify(input.attachments??[]))throw new ChatError('message_conflict','Message identity was reused with different content.')
         return {runId:previous.id,duplicate:true}
       }
+      const attachments=this.uploads.resolve(id,owner,input.attachments??[])
+      if(!text&&!attachments.length)throw new ChatError('message_empty','Add a message or file.',400)
       if(c.archived)throw new ChatError('conversation_archived','Restore this conversation before sending.')
       const ready=this.readiness();if(!ready.ready)throw new ChatError(ready.code,'The Router is not ready to receive a message.')
       try{if(c.backendFingerprint&&this.fingerprint(c.backendId)!==c.backendFingerprint)throw Error()}catch{throw new ChatError('backend_changed','This backend changed. Clear the chat context in Settings to use its new configuration.')}
@@ -275,13 +280,14 @@ export class ChatSessions {
       if(!source?.enabled||source.kind!=='local'||!source.allowedActors.includes(c.actor))throw new ChatError('source_unavailable','This conversation source is no longer available.')
       this.bindEntry(c)
       const eventId='chat:'+id+':'+input.clientMessageId
-      const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text,addressed:true}) as {triggerId:string}
+      const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text:text||attachments.map(a=>a.name).join('\n'),addressed:true,...(attachments.length?{attachments:attachments.map(a=>({id:'asset/'+a.id,name:a.name,mimeType:a.mimeType}))}:{})}) as {triggerId:string}
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
       const run:ChatRun={id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,createdAt:Date.now()}
       this.host.store.put('chat-run',run.id,run)
-      this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId})
+      this.uploads.bind(attachments.map(a=>a.id),run.id)
+      this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(attachments.length?{attachments}:{})})
       return {runId:run.id,duplicate:false}
     })
   }

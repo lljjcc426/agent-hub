@@ -166,6 +166,7 @@ export class CodexModel implements Model {
         }
         const filesystem:Record<string,string>={':root':'deny',':minimal':'read','/opt/homebrew':'read',':tmpdir':'write',':slash_tmp':'write',[request.cwd]:request.sandbox==='workspace-write'?'write':'read'}
         if(request.privateState)filesystem[request.privateState]='deny'
+        for(const path of request.attachments??[])filesystem[path]='read'
         for(const path of hostPrivateFiles())filesystem[path]='deny'
         isolated={...managedContext,mcp_servers:mcp,plugins:Object.fromEntries(Object.keys(effective.plugins??{}).map(name=>[name,{enabled:false}])),features:managedFeatures,default_permissions:'superagent-managed',permissions:{'superagent-managed':{extends:request.sandbox==='workspace-write'?':workspace':':read-only',filesystem,network:{enabled:false}}}}
       }

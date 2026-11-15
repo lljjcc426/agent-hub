@@ -39,6 +39,8 @@ export interface ModelRequest {
   skipContextCompaction?:boolean
   onContextReady?:()=>void
   privateState?:string
+  /** Exact host-owned attachment files, read-only even when nested under privateState. */
+  attachments?:string[]
   onCapabilities?:(value:{mcpServers:string[];disabledPlugins:string[];managed:boolean;backend?:BackendDescription})=>void
   onActive?: (control:NativeControl)=>void
   onHumanRequest?: (request:NativeRequest)=>Promise<unknown>

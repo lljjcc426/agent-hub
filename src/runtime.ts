@@ -42,6 +42,7 @@ import type {WorkerProfile} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
 import {agentOptionsSchema} from './backend-config.ts'
 import {WorkerManager,managementSpecs} from './worker-manager.ts'
+import {chatReadSpec} from './chat-attachments.ts'
 import {Delegations} from './delegation/manager.ts'
 import {teamSpecs} from './delegation/contract.ts'
 import {SubscriptionAccounts} from './backends/subscription.ts'
@@ -480,7 +481,7 @@ export class Runtime {
       const inheritsParent=!this.config.execution.roles.subagent||backendId===parent?.backendId
       const options=inheritsParent?parent?.agentOptions:undefined
       let result
-      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,archiveOnComplete:true,tools:this.availableWorkerSpecs(),onTool:(name,args)=>this.workerTools.call(owner,name,args),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
+      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools:this.availableWorkerSpecs(),onTool:(name,args)=>this.workerTools.call(owner,name,args),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
       finally{this.controls.delete(key);this.controlRevisions.delete(key)}
       const output=report.parse(JSON.parse(result.text));threadId=result.threadId
       this.store.put('transcript',result.turnId,{ticketId:item.ticketId,agentId:item.id,threadId,turnId:result.turnId,text:result.text,at:Date.now()})
@@ -814,7 +815,7 @@ export class Runtime {
       const modelInput=continuity?.input??packet?.input??JSON.stringify(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput)
       const result=await this.runModel({role:'router',...this.chat.binding(triggerId),contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId:scoped?continuity?.reuse:previous?.threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text,
-        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
+        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,...(this.store.get('chat-run',triggerId)?[chatReadSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
         onTool:async(name,args)=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -834,6 +835,10 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
+            if(name==='router_read'&&this.store.get('chat-run',triggerId)){
+              const result=await this.resources.read(args,{chatTriggerId:triggerId})
+              return result?.kind==='image'?{success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}:{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+            }
             if(name==='router_skill'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.skills.readTool(args,scoped))}]}
             if(name==='router_goal'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.goals.command(args,scoped,packet?.manifest))}]}
             if(name==='router_journal'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.continuity.command(args,scoped,packet?.manifest))}]}
@@ -1087,7 +1092,7 @@ export class Runtime {
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...reportSchema,properties:{...reportSchema.properties,handbacks:{...reportSchema.properties.handbacks,maxItems:0}}}:reportSchema,archiveOnComplete:true,
         instructions,
-        managed:true,privateState:this.config.stateDir,tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args),onCapabilities:cap=>this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap}),
+        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args),onCapabilities:cap=>this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap}),
         input: JSON.stringify({...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
         signal: controller.signal,
         onHumanRequest:request=>this.approvals.request(ticket.id,request),

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -16,9 +17,10 @@ import {
   ComposerPrimitive,
   ActionBarPrimitive,
   useAuiState,
+  useMessagePartText,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
+
 import {
   ArrowUp,
   ArrowDown,
@@ -34,7 +36,7 @@ import {
   Check,
   LoaderCircle,
   Square,
-  Copy,
+  Paperclip,
   AlertCircle,
   RefreshCw,
   Wrench,
@@ -52,8 +54,13 @@ import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { BrowserPanel } from "./browser.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
+import {CopyButton} from './copy-button.tsx';
+import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
+import type {ChatAttachment} from '../../src/chat-attachments.ts';
+const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
 import "./style.css";
+import "./rich-content.css";
 import "./navigation.css";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
@@ -78,7 +85,7 @@ const draftKey = (id: string | null) => "roppo.chat.draft." + (id ?? "new");
 const pendingKey = (id: string) => "roppo.chat.pending." + id;
 function savedPending(
   id: string | null,
-): { text: string; id: string; conversationId: string } | null {
+): { text: string; id: string; conversationId: string;attachments?:string[] } | null {
   try {
     const value = id ? JSON.parse(read(pendingKey(id), "null")) : null;
     return value &&
@@ -155,6 +162,8 @@ function IconButton({
 function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
   const { L } = useUI();
   const message =
+    code.startsWith("attachment_")?attachmentError(code,L):
+    code==='sent_refresh_failed'?L('Message sent. Refresh to see the latest replies.','消息已发送，请刷新查看最新回复。'):
     code === "conversation_busy"
       ? L("This conversation is still running.", "当前会话仍在运行。")
       : code === "conversation_missing"
@@ -206,17 +215,18 @@ function runLabel(state: string, L: (en: string, zh: string) => string) {
   return ({queued:L('Waiting for Router','等待 Router'),running:L('Working','处理中'),waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
-  const { calls, workers } = useUI(),
+  const { calls, workers, L } = useUI(),
     id = useAuiState((s) => s.message.id),
+    attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
+    hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime()),
     own = calls.filter((c) => c.runId === id.replace(/^user:/, ""));
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
-        <div className="user-bubble">
-          <MessagePrimitive.Parts />
-        </div>
+        <MessageAttachments files={attachments??[]} L={L}/>
+        {hasText?<div className="user-bubble"><MessagePrimitive.Parts components={{Text:Markdown}}/></div>:null}
         <Timestamp at={createdAt} />
       </MessagePrimitive.Root>
       {own.some((c) => c.kind === "tool") ? (
@@ -227,14 +237,9 @@ function UserMessage() {
     </>
   );
 }
-function Markdown() {
-  return (
-    <MarkdownTextPrimitive
-      smooth={false}
-      components={{ img: ({ alt }) => <span>{alt}</span> }}
-    />
-  );
-}
+function ComposerAttachment(){const {L}=useUI();return <DraftAttachment L={L}/>}
+function PlainText(){const {text}=useMessagePartText();return <span>{text}</span>}
+function Markdown(){const {L}=useUI();return <Suspense fallback={<PlainText/>}><RichMarkdown L={L}/></Suspense>}
 function AssistantMessage() {
   const { L, run, runMessageId, routerLabel } = useUI(),
     id = useAuiState((s) => s.message.id),
@@ -243,6 +248,7 @@ function AssistantMessage() {
     speaker = useAuiState((s) => s.message.metadata.custom?.speaker) as Snapshot["participants"][number]|undefined,
     recipient = useAuiState((s) => s.message.metadata.custom?.recipient) as Snapshot["participants"][number]|undefined,
     status = useAuiState((s) => s.message.status),
+    copyText = useAuiState((s) => s.message.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')),
     hasText = useAuiState((s) =>
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
@@ -272,13 +278,7 @@ function AssistantMessage() {
           <Timestamp at={createdAt} />
           {run && runMessageId === id ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{runLabel(run.state, L)}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
         <ActionBarPrimitive.Root className="message-actions">
-          <ActionBarPrimitive.Copy
-            className="icon-button"
-            aria-label={L("Copy reply", "复制回复")}
-            title={L("Copy reply", "复制回复")}
-          >
-            <Copy size={15} />
-          </ActionBarPrimitive.Copy>
+          <CopyButton value={copyText} L={L}/>
         </ActionBarPrimitive.Root>
         </div>
       </div>
@@ -909,6 +909,7 @@ function Chat(p: ChatProps) {
       text: string;
       id: string;
       conversationId: string;
+      attachments?:string[];
     } | null>(savedPending(id)),
     bodyRef = useRef<HTMLDivElement>(null),
     teamButton = useRef<HTMLButtonElement>(null),
@@ -935,6 +936,14 @@ function Chat(p: ChatProps) {
   }, []);
 
   const participants = snapshot?.participants ?? [{id:"router",label:boot?.routerLabel??"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))];
+  const uploadConversation=useRef<Promise<string>|null>(null),uploadConversationId=useRef(id),[loadingAttachments,setLoadingAttachments]=useState(!!id),[attachmentBlocked,setAttachmentBlocked]=useState(false);
+  const ensureConversation=useCallback(()=>{
+    if(id)return Promise.resolve(id);
+    if(!uploadConversation.current)uploadConversation.current=spaceRequest({},'POST').then(space=>{const target=space.conversation!.id;uploadConversationId.current=target;write(draftKey(target),read(draftKey(null)));return target}).catch(error=>{uploadConversation.current=null;throw error});
+    return uploadConversation.current;
+  },[id]);
+  const attachmentLanguage=useRef(L);attachmentLanguage.current=L;
+  const attachmentAdapter=useMemo(()=>createAttachmentAdapter(ensureConversation,boot?.uploads.maxBytes??25*1024*1024,(en,zh)=>attachmentLanguage.current(en,zh)),[ensureConversation,boot?.uploads.maxBytes]);
   const currentRouter = participants.find(a=>a.id===(snapshot?.routerId??"router"))!;
   const selected = participants.find(a=>a.id===selectedAgent) ?? currentRouter;
   const readonly = display === "agents" && selected?.id !== currentRouter?.id;
@@ -948,6 +957,8 @@ function Chat(p: ChatProps) {
       readonly || !ready?.ready ||
       !!snapshot?.conversation.archived ||
       loading ||
+      loadingAttachments ||
+      attachmentBlocked ||
       sending ||
       running;
   const arrivals = p.arrivals;
@@ -1066,13 +1077,14 @@ function Chat(p: ChatProps) {
     isRunning: !readonly && (running || sending || stopping),
     isLoading: loading,
     isSendDisabled: disabled,
+    adapters:{attachments:attachmentAdapter},
     activeRunId: run?.id,
     messages: (snapshot?.messages ?? []).filter(m => display === "group" || (readonly ? m.speaker?.id===selected.id || m.recipient?.id===selected.id : !m.recipient && (m.role==="user" || !m.speaker || m.speaker.id===selected.id))),
     convertMessage: (m): ThreadMessageLike => ({
       id: m.id,
       role: m.role,
       createdAt: new Date(m.createdAt),
-      metadata:{custom:{speaker:m.speaker,recipient:m.recipient}},
+      metadata:{custom:{speaker:m.speaker,recipient:m.recipient,attachments:m.attachments}},
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
         ? {
@@ -1095,25 +1107,30 @@ function Chat(p: ChatProps) {
         .map((c) => c.text)
         .join("\n")
         .trim();
-      if (!text || sending || readonly) return;
+      const attachments=message.attachments?.map(a=>a.id)??[];
+      if ((!text&&!attachments.length) || sending || readonly) return;
       setSending(true);
       setError("");
       let target = id;
+      let submittedId:string|undefined,accepted=false;
       try {
         if (!target) {
-          target = (await spaceRequest({}, "POST")).conversation!.id;
+          target = await ensureConversation();
         }
         if (
           !pending.current ||
           pending.current.text !== text ||
+          JSON.stringify(pending.current.attachments??[])!==JSON.stringify(attachments) ||
           pending.current.conversationId !== target
         )
           pending.current = {
             text,
             id: crypto.randomUUID(),
             conversationId: target,
+            attachments,
           };
         write(pendingKey(target), JSON.stringify(pending.current));
+        submittedId=pending.current.id;
         write(draftKey(target), text);
         if (!id && alive.current) {
           const url = new URL(location.href);
@@ -1123,9 +1140,11 @@ function Chat(p: ChatProps) {
         if (arrivals.current.conversationId !== target) arrivals.current = {conversationId:target,since:Date.now(),seen:new Set()};
         await api("/conversations/" + target + "/messages", {
           text,
+          attachments,
           clientMessageId: pending.current.id,
           locale: navigator.language || lang,
         });
+        accepted=true;
         pending.current = null;
         write(pendingKey(target), "null");
         write(draftKey(id), "");
@@ -1136,10 +1155,14 @@ function Chat(p: ChatProps) {
           else await refresh();
         }
       } catch (e) {
+        // Admission and refreshing the view are separate: an acknowledged send is no longer a draft.
+        if(accepted){if(alive.current)setError('sent_refresh_failed');return;}
+        if(submittedId&&pending.current?.id!==submittedId)return;
         fail(e);
         write(draftKey(target ?? id), text);
         if (alive.current) {
           runtime.thread.composer.setText(text);
+          for(const attachment of message.attachments??[])await runtime.thread.composer.addAttachment(attachment);
           if (target && target !== id) navigate(target);
         }
       } finally {
@@ -1177,13 +1200,23 @@ function Chat(p: ChatProps) {
       setSnapshot((s) => (s ? { ...s, messages, hasMore: data.hasMore } : s));
     },
   });
+  useEffect(()=>{
+    if(!id)return;
+    let active=true;
+    api<{attachments:ChatAttachment[]}>("/conversations/"+id+"/attachments").then(async result=>{
+      for(const file of result.attachments)if(active&&!runtime.thread.composer.getState().attachments.some(a=>a.id===file.id))await runtime.thread.composer.addAttachment(attachmentParts(file));
+    }).catch(fail).finally(()=>{if(active)setLoadingAttachments(false)});
+    return()=>{active=false};
+  },[runtime,id]);
   useEffect(() => {
     runtime.thread.composer.setText(
       read(draftKey(id)) || savedPending(id)?.text || "",
     );
-    return runtime.thread.composer.subscribe(() =>
-      write(draftKey(id), runtime.thread.composer.getState().text),
-    );
+    return runtime.thread.composer.subscribe(() => {
+      const composer=runtime.thread.composer.getState(),text=composer.text;write(draftKey(id),text);
+      setAttachmentBlocked(composer.attachments.some(a=>a.status.type==='running'||a.status.type==='incomplete'));
+      if(uploadConversationId.current&&uploadConversationId.current!==id)write(draftKey(uploadConversationId.current),text);
+    });
   }, [runtime, id]);
   useEffect(() => {
     const media = matchMedia("(max-width:800px)");
@@ -1201,6 +1234,8 @@ function Chat(p: ChatProps) {
       snapshot?.messages.some((m) => m.clientMessageId === saved.id)
     ) {
       pending.current = null;
+      for(const [index,file] of [...runtime.thread.composer.getState().attachments.entries()].reverse())
+        if(saved.attachments?.includes(file.id))void runtime.thread.composer.getAttachmentByIndex(index).remove();
       if (runtime.thread.composer.getState().text === saved.text)
         runtime.thread.composer.setText("");
     }
@@ -1435,7 +1470,8 @@ function Chat(p: ChatProps) {
                     </div>
                   ) : null}
                   <Readiness ready={ready} />
-                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>setSelectedAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.Root className="composer">
+                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>setSelectedAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
+                    <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                     <ComposerPrimitive.Input
                       className="composer-input"
                       placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
@@ -1444,6 +1480,7 @@ function Chat(p: ChatProps) {
                       maxLength={100000}
                     />
                     <div className="composer-toolbar">
+                      <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
                       <a
                         className="model-link"
                         href="/configure#execution/configuration"
@@ -1501,7 +1538,7 @@ function Chat(p: ChatProps) {
                         )}
                       </div>
                     </div>
-                  </ComposerPrimitive.Root>}
+                  </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                 </div>
               </ThreadPrimitive.Root>
               {panel ? (

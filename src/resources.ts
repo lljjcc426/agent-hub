@@ -11,7 +11,7 @@ import {builtins,promptStatus} from './prompts.ts'
 import {isHostPrivateFile} from './private-files.ts'
 
 export const readSchema=z.object({resource:z.string().min(1).max(2000),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(8000).default(4000),pageSize:z.number().int().min(1).max(50).default(20),cursor:z.string().optional()}).strict()
-export interface Principal {ticketId?:string;assignmentId?:string;agentId?:string;triggerId?:string}
+export interface Principal {ticketId?:string;assignmentId?:string;agentId?:string;triggerId?:string;chatTriggerId?:string}
 export interface ImageResource {kind:'image';mimeType:string;data:string;description?:string}
 export const resourceCatalog=[
  'tool-calls','tool-call/<id>','model-tool-receipt/<id>',
@@ -62,6 +62,10 @@ export class Resources {
  async read(value:unknown,principal:Principal={}):Promise<any>{
   this.host.store.prunePages()
   const input=readSchema.parse(value),{resource,offset,limit,pageSize}=input
+  if(principal.chatTriggerId){
+   if(!/^asset\/[a-f0-9-]{36}$/.test(resource))throw Error('Chat reads require an uploaded file resource')
+   this.host.chat.uploads.authorize(resource.slice(6),principal)
+  }
   if(principal.triggerId){
    const trigger=this.reached(principal,principal.triggerId);this.host.scopes.assertTrigger(trigger)
    const allowed=['trigger/'+trigger.id,'trigger-source/'+trigger.id+'/message','feishu/'+trigger.id+'/message','wecom/'+trigger.id+'/message']
@@ -173,7 +177,9 @@ export class Resources {
   }
   if(resource==='jobs')return this.host.work.list(p.ticketId).filter(w=>!continuation?.priorJobs.includes(w.id)).filter(w=>!p.agentId||w.agentId===p.agentId).reverse().map(w=>({...w,resource:'job/'+w.id}))
   if(head==='asset'){
-   const asset=store.get<any>('asset',id!);if(!asset||p.ticketId&&asset.ticketId!==p.ticketId)throw Error('Attachment is outside this reader')
+   const asset=store.get<any>('asset',id!)
+   if(asset?.kind==='chat-upload')return this.host.chat.uploads.read(id!,p)
+   if(!asset||p.chatTriggerId||p.ticketId&&asset.ticketId!==p.ticketId)throw Error('Attachment is outside this reader')
    if(statSync(asset.path).size>8000000)throw Error('Attachment is too large')
    const data=readFileSync(asset.path);if(data.includes(0))return asset
    return data.toString('utf8')

@@ -91,6 +91,7 @@ export const browserAction = z
     amount: z.number().int().min(1).max(5000).optional(),
     tab: z.string().regex(/^t\d+$/).optional(),
     credentialId: z.string().uuid().optional(),
+    reason: z.string().trim().min(1).max(300).optional(),
     revision: z.number().int().min(0).optional(),
   })
   .strict()
@@ -150,6 +151,7 @@ export const browserToolSchema = z
     amount: z.number().int().min(1).max(5000).optional(),
     tab: z.string().regex(/^t\d+$/).optional(),
     credentialId: z.string().uuid().optional(),
+    reason: z.string().trim().min(1).max(300).optional(),
     revision: z.number().int().min(0).optional(),
     requestId: z.string().min(1).max(200),
     fullPage: z.boolean().optional(),
@@ -159,7 +161,7 @@ export type BrowserToolInput = z.infer<typeof browserToolSchema>;
 export const browserToolDefinition = {
   name: "superagent_browser",
   description:
-    "Use an isolated real browser owned by this assignment, including when the shell sandbox cannot launch Chrome. profiles lists granted login profiles and saved account IDs; open creates a session (optional profileId copies authorized login state for the URL). snapshot returns current refs and revision. screenshot exports a PNG with its hash. For a writable task it also returns workspacePath, a fresh file already saved inside your authorized workspace. Use workspacePath to inspect or rename the screenshot; the attachment path remains host storage and need not be read directly. Read image/<relative-path> to inspect the workspace image. fullPage optionally captures beyond the viewport. click/fill/press MUST use that revision; refresh after a stale reference or human handoff. login fills a sign-in form using a saved credential ID without revealing its password; inspect the returned snapshot and explicitly submit if appropriate. request_takeover lets the user operate this browser. While human control is active, wait for the user; never bypass it. Reuse requestId only for identical input; uncertain actions must be reconciled by reading the page, never blindly repeated.",
+    "Use an isolated real browser owned by this assignment, including when the shell sandbox cannot launch Chrome. Work autonomously; profiles and saved accounts are optional, not prerequisites to opening public pages. profiles lists granted login profiles and saved account IDs; open creates a session (optional profileId copies authorized login state for the URL). snapshot returns current refs and revision. screenshot exports a PNG with its hash and, for writable tasks, workspacePath inside your workspace. Read image/<relative-path> to inspect it. fullPage optionally captures beyond the viewport. click/fill/press MUST use the latest revision. login fills a saved sign-in form without revealing its password; inspect then submit if appropriate. If a required login or verification needs the user, call request_takeover with a short reason in their language, then return waiting without a question. Chat provides takeover and continue controls; returning control automatically resumes this same task. Read a fresh snapshot and continue, without asking the user to repeat the task or creating a replacement Worker. A blocked page is not a completed requested outcome; report its actual limit if the user only asked for a diagnostic. Leave the final page open for inspection; close only discarded browsers. Reuse requestId only for identical input; inspect uncertain actions before repeating a write.",
   validator: browserToolSchema,
   schema: {
     type: "object",
@@ -179,6 +181,7 @@ export const browserToolDefinition = {
       amount: { type: "integer" },
       tab: { type: "string", description: "Stable tab id from tabs, such as t1. Never use a positional index." },
       credentialId: { type: "string" },
+      reason: { type: "string", description: "Short user-facing reason for request_takeover, in the user's language (for example, sign in to continue)." },
       revision: {
         type: "integer",
         description: "Revision returned by the most recent snapshot",

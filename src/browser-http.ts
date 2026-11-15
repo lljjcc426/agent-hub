@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {readFileSync} from 'node:fs';
+import {pipeline} from 'node:stream/promises';
+import {browserFilename} from './browser-files.ts';
 import { z } from "zod";
+import {browserInput} from "./browser-input.ts";
 import type { Runtime } from "./runtime.ts";
 import {
   browserAction,
@@ -9,35 +13,6 @@ import {
 
 const client = z.string().uuid(),
   lease = z.object({ client, epoch: z.number().int().min(0) }).strict();
-const inputEvent = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("click"),
-      x: z.number().min(0).max(10000),
-      y: z.number().min(0).max(10000),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("wheel"),
-      deltaY: z.number().int().min(-3000).max(3000),
-      deltaX: z.number().int().min(-3000).max(3000),
-    })
-    .strict(),
-  z
-    .object({ type: z.literal("text"), text: z.string().min(1).max(4000) })
-    .strict(),
-  z
-    .object({
-      type: z.literal("key"),
-      key: z
-        .string()
-        .regex(
-          /^(?:(?:Control|Meta|Alt|Shift)\+)*(?:Enter|Tab|Escape|Backspace|Delete|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|PageUp|PageDown|[a-z])$/,
-        ),
-    })
-    .strict(),
-]);
 export async function browserRequest(
   host: Runtime,
   user: string,
@@ -56,6 +31,12 @@ export async function browserRequest(
   const clientId = url.searchParams.has("client")
     ? client.parse(url.searchParams.get("client"))
     : undefined;
+  const screenshot=path.match(/^\/api\/browser\/screenshots\/([a-f0-9-]{36})$/);
+  if(screenshot&&(req.method==='GET'||req.method==='HEAD')){
+    const file=manager.screenshot(user,z.string().uuid().parse(screenshot[1]));
+    res.writeHead(200,{'content-type':'image/png','content-length':file.bytes,'cache-control':'private, no-store','content-disposition':(url.searchParams.get('preview')==='1'?'inline':'attachment')+'; filename="screenshot.png"','content-security-policy':"default-src 'none'; sandbox"});
+    res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return;
+  }
   if (path === "/api/browser" && req.method === "GET") {
     const conversationId=url.searchParams.has('conversation')?z.string().uuid().parse(url.searchParams.get('conversation')):undefined
     if(conversationId)host.chat.view(conversationId,user)
@@ -65,6 +46,11 @@ export async function browserRequest(
   if (path === "/api/browser/profiles" && req.method === "POST") {
     send(manager.saveProfile(user, profileInput.parse(await body())), 201);
     return;
+  }
+  if(path==='/api/browser/open'&&req.method==='POST'){
+    const input=z.object({client,conversationId:z.string().uuid()}).strict().parse(await body());
+    host.chat.view(input.conversationId,user);
+    send(await manager.openDefault(user,input.client,input.conversationId));return;
   }
   const profile = path.match(
     /^\/api\/browser\/profiles\/([a-f0-9-]{36})(?:\/(open))?$/,
@@ -104,11 +90,21 @@ export async function browserRequest(
     return;
   }
   const session = path.match(
-    /^\/api\/browser\/sessions\/([a-f0-9-]{36})(?:\/(stream|takeover|release|renew|action|input|close))?$/,
+    /^\/api\/browser\/sessions\/([a-f0-9-]{36})(?:\/(stream|takeover|release|renew|action|input|viewport|selection|close|downloads|download|upload-targets|upload))?$/,
   );
   if (session) {
     const id = z.string().uuid().parse(session[1]),
       action = session[2];
+    if(action==='downloads'&&req.method==='GET'){send(manager.downloads(user,id));return}
+    if(action==='download'&&req.method==='GET'){
+      const name=browserFilename.parse(url.searchParams.get('name')),file=manager.download(user,id,name);
+      res.writeHead(200,{'content-type':'application/octet-stream','content-length':file.bytes,'cache-control':'private, no-store','content-disposition':"attachment; filename=\"download\"; filename*=UTF-8''"+encodeURIComponent(name),'content-security-policy':"default-src 'none'; sandbox"});
+      await pipeline(file.stream,res);return;
+    }
+    if(action==='upload'&&req.method==='POST'){
+      const input=z.object({client,epoch:z.coerce.number().int().min(0),target:z.string().regex(/^[a-f0-9-]{36}-\d+$/),name:browserFilename}).strict().parse(Object.fromEntries(url.searchParams));
+      send(await manager.upload(user,id,input.client,input.epoch,input.target,input.name,req,stillAuthorized));return;
+    }
     if (!action && req.method === "GET") {
       send(await manager.inspect(user, id, clientId));
       return;
@@ -152,7 +148,7 @@ export async function browserRequest(
           res.end();
         }
       };
-      const timer = setInterval(push, 150);
+      const timer = setInterval(push, 33);
       timer.unref();
       res.on("close", () => clearInterval(timer));
       push();
@@ -160,6 +156,9 @@ export async function browserRequest(
     }
     if (req.method === "POST") {
       const raw = await body();
+      if(action==='upload-targets'){
+        const input=lease.parse(raw);send(await manager.uploadTargets(user,id,input.client,input.epoch));return;
+      }
       if (action === "takeover") {
         const input = z
           .object({ client, force: z.boolean().default(false) })
@@ -185,11 +184,19 @@ export async function browserRequest(
         return;
       }
       if (action === "input") {
-        const input = lease.extend({ event: inputEvent }).strict().parse(raw);
+        const input = lease.extend({ event: browserInput }).strict().parse(raw);
         send(
           await manager.input(user, id, input.client, input.epoch, input.event),
         );
         return;
+      }
+      if(action==='viewport'){
+        const input=lease.extend({width:z.number().int().min(320).max(3840),height:z.number().int().min(200).max(2160)}).strict().parse(raw);
+        send(await manager.resize(user,id,input.client,input.epoch,input.width,input.height));return;
+      }
+      if(action==='selection'){
+        const input=lease.parse(raw);
+        send(await manager.selection(user,id,input.client,input.epoch));return;
       }
       const input = lease.parse(raw);
       if (action === "release") {

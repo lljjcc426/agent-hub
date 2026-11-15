@@ -181,7 +181,8 @@ export class Resources {
    if(asset?.kind==='chat-upload')return this.host.chat.uploads.read(id!,p)
    if(!asset||p.chatTriggerId||p.ticketId&&asset.ticketId!==p.ticketId)throw Error('Attachment is outside this reader')
    if(statSync(asset.path).size>8000000)throw Error('Attachment is too large')
-   const data=readFileSync(asset.path);if(data.includes(0))return asset
+   const data=readFileSync(asset.path);if(asset.kind==='browser-screenshot')return imageResource(data)
+   if(data.includes(0))return asset
    return data.toString('utf8')
   }
   if(head==='job'){

@@ -42,6 +42,8 @@ import {
   AlertCircle,
   RefreshCw,
   Wrench,
+  Globe,
+  Hand,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
 import { ResourceWorkspace } from "./resource-workspace.tsx";
@@ -839,6 +841,7 @@ function Chat(p: ChatProps) {
     try { sessionStorage.removeItem("roppo.website." + id); } catch {}
   };
   useEffect(() => write(resourceKey(id), JSON.stringify(resources)), [id, resources]);
+  const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
   const [panelExpanded, setPanelExpanded] = useState(false),
     [pickerRequest, setPickerRequest] = useState(0);
   const creating = useRef(false);
@@ -1429,6 +1432,10 @@ function Chat(p: ChatProps) {
                     <ThreadPrimitive.Messages
                       components={{ UserMessage, AssistantMessage }}
                     />
+                    {(snapshot?.browsers??[]).filter(b=>b.runId===run?.id&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
+                      <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):b.control==='worker'?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
+                      <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
+                    </div>)}
                     {run && !readonly ? (
                       <div className="run-activity" hidden={!!runMessageId && !workers.some(w=>w.tasks.length)} aria-live="polite">
                         {!runMessageId ? <div className={"run-status " + run.state}>
@@ -1558,7 +1565,7 @@ function Chat(p: ChatProps) {
                   {panel === "files" ? (
                     <FilesPanel conversationId={id} L={L} />
                   ) : panel === "browser" && id && !configuring ? (
-                    <BrowserPanel L={L} conversationId={id} requestedUrl={pendingWebsite} onUrlConsumed={consumeWebsite} />
+                    <BrowserPanel L={L} conversationId={id} requestedSession={browserRequest} requestedUrl={pendingWebsite} onUrlConsumed={consumeWebsite} />
                   ) : panel === "activity" ? (
                     <TeamPanel workers={workers}
                       calls={snapshot?.calls?.filter((c) => c.runId === run?.id) ?? []}

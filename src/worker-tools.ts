@@ -102,6 +102,10 @@ export class WorkerTools {
   if(continuation&&result?.id&&continuation.priorJobs.includes(result.id))result={id:result.id,state:result.state,exitCode:result.exitCode,body:'quarantined',replayed:false}
   if(!this.host.validWork(owner))throw Error('Assignment capability ended while the tool was running')
   await this.host.refreshWork(owner)
+  if(name==='superagent_browser'&&args.action==='screenshot'&&result.screenshot.bytes<=8000000){
+   const image=await this.host.resources.read({resource:result.screenshot.resource},owner)
+   return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)},{type:'inputImage',imageUrl:'data:'+image.mimeType+';base64,'+image.data}]}
+  }
   if(result?.kind==='image')return {success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}
   return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
  }

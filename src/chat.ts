@@ -341,7 +341,13 @@ export class ChatSessions {
       return {...displaySpeaker(agent),latestMessage:row?{text:String(row.text),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
     const result={conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
-    return result
+    const screenshots=this.host.browser.screenshots(id)
+    for(const message of [...result.messages].reverse()){
+      if(message.role!=='assistant'||message.status==='streaming')continue
+      const files=screenshots.filter(a=>a.runId===message.runId&&(!participant||a.ticketId===message.ticketId))
+      if(files.length){message.attachments=[...(message.attachments??[]),...files];for(const file of files)screenshots.splice(screenshots.indexOf(file),1)}
+    }
+    return {...result,browsers:this.host.browser.conversation(owner,id)}
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){

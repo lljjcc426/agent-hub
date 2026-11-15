@@ -17,12 +17,14 @@ import {
 } from "lucide-react";
 import type { BrowserManager } from "../../src/browser-manager.ts";
 import type { BrowserAction } from "../../src/browser-contract.ts";
-import {browserPoint} from './browser-geometry.ts';
+import {BrowserViewport} from './browser-viewport.tsx';
+import {BrowserFiles} from './browser-files.tsx';
+import {resourceUrl} from './resource-state.ts';
+import type {BrowserInput} from '../../src/browser-input.ts';
 import "./browser.css";
 
 type State = ReturnType<BrowserManager["list"]>;
 type Session = State["sessions"][number];
-type Frame = { data: string; width: number; height: number; seq: number };
 type L = (en: string, zh: string) => string;
 // Stable while moving between conversations or reopening the panel; unique per document/window.
 const browserClient = crypto.randomUUID();
@@ -77,6 +79,9 @@ const messages: Record<string, [string, string]> = {
     "Close an idle browser to continue.",
     "请关闭闲置浏览器后再继续。",
   ],
+  browser_stream: ["Browser disconnected. Reconnect to continue.","浏览器已断开，请重新连接。"],
+  attachment_too_large: ["File exceeds 25 MB.","文件超过 25 MB。"],
+  browser_assignment_ended: ["The task has ended. Open its retained browser to continue manually.","任务已结束，可接管保留的页面继续操作。"],
   browser_missing: ["This browser has closed.", "此浏览器已关闭。"],
   browser_key_invalid: [
     "Saved accounts could not be unlocked.",
@@ -108,11 +113,10 @@ const messages: Record<string, [string, string]> = {
     </button>
   );
 
-export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {L:L;conversationId:string;requestedUrl?:string;onUrlConsumed?:()=>void}) {
+export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,requestedSession,settingsOnly=false}: {L:L;conversationId?:string;requestedUrl?:string;onUrlConsumed?:()=>void;requestedSession?:{id:string;takeover:boolean;key:number};settingsOnly?:boolean}) {
   const client = browserClient;
   const [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
-    [frame, setFrame] = useState<Frame | null>(null),
     [connected, setConnected] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -131,15 +135,10 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
   const active = useRef(true),
     sessionRef = useRef<Session | undefined>(undefined),
     loading = useRef(false),
-    inputGeneration = useRef(0),
-    image = useRef<HTMLImageElement>(null),
-    keyboard = useRef<HTMLTextAreaElement>(null),
-    compose = useRef(false),
-    inputQueue = useRef<Promise<unknown>>(Promise.resolve()),
+    viewportDrain = useRef<()=>Promise<unknown>>(async()=>{}),
     dialogRef = useRef<HTMLDialogElement>(null),
     triggerRef = useRef<HTMLElement | null>(null);
   const session = data?.sessions.find((s) => s.id === selected),
-    profile = data?.profiles.find((p) => p.id === session?.profileId),
     controlled = !!session?.controlledByYou && connected;
   sessionRef.current = session;
   const fail = (e: unknown) => {
@@ -150,7 +149,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
     if (loading.current) return;
     loading.current = true;
     try {
-      const next = await request<State>("?client=" + client + "&conversation=" + conversationId);
+      const next = await request<State>("?client=" + client + (conversationId ? "&conversation=" + conversationId : ""));
       if (active.current) setData(next);
     } catch (e) {
       fail(e);
@@ -200,29 +199,9 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
     setAddress(session?.url === "about:blank" ? "" : (session?.url ?? ""));
   }, [session?.url, selected]);
   useEffect(() => {
-    setFrame(null);
     setConnected(false);
-    if (!selected) return;
-    let current = true;
-    const source = new EventSource(
-      "/api/browser/sessions/" + selected + "/stream",
-    );
-    source.addEventListener("frame", (event) => {
-      if (active.current && current) {
-        setFrame(JSON.parse((event as MessageEvent).data));
-        setConnected(true);
-      }
-    });
-    source.addEventListener("status", (event) => {
-      if (active.current && current)
-        setConnected(JSON.parse((event as MessageEvent).data).connected);
-    });
-    source.addEventListener("closed", () => {
-      source.close();
-      setConnected(false);
-      void refresh();
-    });
-    source.onerror = () => {if(current)setConnected(false)};
+    if (!selected || settingsOnly) return;
+    let current=true;
     let inspecting = false;
     const inspect = async () => {
       if (inspecting) return;
@@ -244,7 +223,6 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
     const timer = setInterval(() => void inspect(), 5000);
     return () => {
       current = false;
-      source.close();
       clearInterval(timer);
     };
   }, [selected]);
@@ -268,16 +246,9 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
     dialogRef.current?.showModal();
     return () => triggerRef.current?.focus();
   }, [dialog]);
-  const openProfile = (id: string) =>
-    act(async () => {
-      const value = await request<Session>("/profiles/" + id + "/open", {
-        client,conversationId,
-      });
-      update(value);
-      setSelected(value.id);
-    });
   const operation = (operation: Partial<BrowserAction>) =>
     act(async () => {
+      await viewportDrain.current();
       const s = sessionRef.current;
       if (!s) return;
       update(
@@ -293,43 +264,39 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
         }),
       );
     });
-  const handledUrl = useRef('');
-  useEffect(() => {
-    if (!requestedUrl) { handledUrl.current = ''; return; }
-    // A launcher request must not navigate a Worker's active page or bypass its lease.
-    if (!session?.personal || !controlled || busy || handledUrl.current === requestedUrl) return;
-    handledUrl.current = requestedUrl;
-    onUrlConsumed?.();
-    void operation({ action: 'new_tab', url: requestedUrl });
-  }, [requestedUrl, session?.id, session?.personal, controlled, busy]);
-  const input = (event: unknown) => {
-    const captured = sessionRef.current;
-    if (!captured?.controlledByYou || !connected) return;
-    const generation = inputGeneration.current;
-    inputQueue.current = inputQueue.current
-      .catch(() => {})
-      .then(async () => {
-        if (
-          generation !== inputGeneration.current ||
-          !active.current ||
-          sessionRef.current?.id !== captured.id ||
-          sessionRef.current?.epoch !== captured.epoch
-        )
-          return;
-        try {
-          update(
-            await request<Session>("/sessions/" + captured.id + "/input", {
-              client,
-              epoch: captured.epoch,
-              event,
-            }),
-          );
-        } catch (e) {
-          inputGeneration.current++;
-          fail(e);
-        }
-      });
+  const handledUrl=useRef('');
+  useEffect(()=>{
+    if(!requestedUrl){handledUrl.current='';return;}
+    if(busy||!data||handledUrl.current===requestedUrl)return;
+    handledUrl.current=requestedUrl;
+    void act(async()=>{
+      await viewportDrain.current();
+      const value=session?.personal&&controlled?session:await request<Session>('/open',{client,conversationId});
+      update(value);setSelected(value.id);
+      update(await request<Session>('/sessions/'+value.id+'/action',{client,epoch:value.epoch,operation:{action:'new_tab',url:requestedUrl}}));
+      onUrlConsumed?.();
+    });
+  },[requestedUrl,data,busy]);
+  const input = (event: BrowserInput) => {
+    const captured=sessionRef.current;
+    if(!captured?.controlledByYou)return Promise.resolve();
+    return request('/sessions/'+captured.id+'/input',{client,epoch:captured.epoch,event});
   };
+  const openDefault=()=>act(async()=>{
+    await viewportDrain.current();
+    const value=await request<Session>('/open',{client,conversationId});update(value);setSelected(value.id);
+  });
+  const handledSession=useRef(0);
+  useEffect(()=>{
+    if(busy||!requestedSession||!data?.sessions.some(s=>s.id===requestedSession.id)||handledSession.current===requestedSession.key)return;
+    handledSession.current=requestedSession.key;
+    void act(async()=>{
+      await viewportDrain.current();
+      setSelected(requestedSession.id);
+      if(requestedSession.takeover)update(await request<Session>('/sessions/'+requestedSession.id+'/takeover',{client}));
+    });
+  },[requestedSession,data,busy]);
+
   const newProfile = () => {
     setProfileId("");
     setProfileName(L("Personal browser", "个人浏览器"));
@@ -358,65 +325,13 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
         (s.title || L("Browser", "浏览器"));
   return (
     <aside
-      className="browser-panel" aria-label={L("Browser", "浏览器")} id="browser-panel">
-      <div className="browser-select">
-        <select
-          aria-label={L("Browser session", "浏览器会话")}
-          value={selected}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          <option value="" disabled>
-            {L("Choose a browser", "选择浏览器")}
-          </option>
-          {data?.sessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {labelFor(s)}
-            </option>
-          ))}
-        </select>
-        <Button
-          label={L("New browser profile", "新建浏览器资料")}
-          onClick={newProfile}
-          disabled={busy}
-        >
-          <Plus size={17} />
-        </Button>
-        <Button
-          label={L("Saved accounts", "已保存账号")}
-          onClick={accounts}
-          disabled={!data?.profiles.length}
-        >
-          <KeyRound size={17} />
-        </Button>
-        <Button
-          label={L("Browser profile settings", "浏览器资料设置")}
-          onClick={() => {
-            if (profile) {
-              setProfileId(profile.id);
-              setProfileName(profile.name);
-              setGrants(profile.allowedWorkers);
-              setDialog("profile");
-            }
-          }}
-          disabled={!profile}
-        >
-          <Settings2 size={17} />
-        </Button>
-      </div>
-      {!!data?.profiles.length && (
-        <div className="browser-profiles">
-          {data.profiles.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => void openProfile(p.id)}
-              disabled={busy}
-            >
-              <Globe size={12} />
-              {p.name}
-            </button>
-          ))}
-        </div>
-      )}
+      className={'browser-panel'+(settingsOnly?' browser-settings':'')} aria-label={L("Browser", "浏览器")} id="browser-panel">
+      {settingsOnly && <div className="browser-select">
+        <h2>{L('Browsers','浏览器')}</h2>
+        <Button label={L('New browser','新建浏览器')} onClick={newProfile} disabled={busy}><Plus size={17}/></Button>
+        <Button label={L('Saved accounts','已保存账号')} onClick={accounts} disabled={!data?.profiles.length}><KeyRound size={17}/></Button>
+      </div>}
+      {settingsOnly?<div className="browser-profile-list">{data?.profiles.map(p=><button key={p.id} onClick={()=>{setProfileId(p.id);setProfileName(p.name);setGrants(p.allowedWorkers);setDialog('profile')}}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
       {error && !dialog && (
         <div className="browser-error" role="alert">
           <span>
@@ -432,14 +347,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
           </Button>
         </div>
       )}
-      {requestedUrl && (!session?.personal || !controlled) ? (
-        <div className="browser-pending-site" role="status">
-          <span>{L('Choose a personal browser to open this website.', '选择个人浏览器以打开此网站。')}</span>
-          <strong title={requestedUrl}>{requestedUrl}</strong>
-          <Button label={L('Cancel opening website','取消打开网站')} onClick={()=>onUrlConsumed?.()}><X size={14}/></Button>
-        </div>
-      ) : null}
-      {session ? (
+      {!settingsOnly && (session ? (
         <>
           <form
             className="browser-address"
@@ -448,9 +356,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
               if (address.trim())
                 void operation({
                   action: "navigate",
-                  url: /^https?:\/\//.test(address)
-                    ? address
-                    : "https://" + address,
+                  url: resourceUrl(address) ?? "https://www.google.com/search?q=" + encodeURIComponent(address.trim()),
                 });
             }}
           >
@@ -544,99 +450,16 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
               <Plus size={15} />
             </Button>
           </div>
-          <div
-            className={"browser-viewport" + (controlled ? " controlled" : "")}
-            onPointerDown={(e) => {
-              if (!controlled || !frame || !image.current) return;
-              e.preventDefault();
-              keyboard.current?.focus();
-              const point=browserPoint({x:e.clientX,y:e.clientY},image.current.getBoundingClientRect(),{width:image.current.naturalWidth,height:image.current.naturalHeight},frame.width);
-              if(point)input({type:'click',...point});
-            }}
-            onWheel={(e) => {
-              if (controlled)
-                input({
-                  type: "wheel",
-                  deltaY: Math.round(Math.max(-3000, Math.min(3000, e.deltaY))),
-                  deltaX: Math.round(Math.max(-3000, Math.min(3000, e.deltaX))),
-                });
-            }}
-          >
-            {frame ? (
-              <img
-                ref={image}
-                src={"data:image/jpeg;base64," + frame.data}
-                alt={L("Live browser page", "浏览器实时页面")}
-                draggable={false}
-              />
-            ) : (
-              <div className="browser-loading">
-                <LoaderCircle size={24} className="spin" />
-                {L("Connecting to browser", "正在连接浏览器")}
-              </div>
-            )}
-            {!connected && frame && (
-              <div className="browser-disconnected">
-                {L("Browser disconnected", "浏览器连接已断开")}
-              </div>
-            )}
-            <textarea
-              className="browser-keyboard"
-              aria-label={L("Browser keyboard input", "浏览器键盘输入")}
-              aria-description={L("Press F6 to focus the address bar", "\u6309 F6 \u56de\u5230\u5730\u5740\u680f")}
-              ref={keyboard}
-              disabled={!controlled}
-              onCompositionStart={() => {
-                compose.current = true;
-              }}
-              onCompositionEnd={(e) => {
-                compose.current = false;
-                if (e.currentTarget.value)
-                  input({ type: "text", text: e.currentTarget.value });
-                e.currentTarget.value = "";
-              }}
-              onChange={(e) => {
-                if (!compose.current && e.target.value) {
-                  input({ type: "text", text: e.target.value });
-                  e.target.value = "";
-                }
-              }}
-              onKeyDown={(e) => {
-                if (compose.current || e.nativeEvent.isComposing) return;
-                if(e.key === "F6"){e.preventDefault();e.stopPropagation();document.querySelector<HTMLInputElement>(".browser-address input")?.focus();return;}
-                if (
-                  [
-                    "Enter",
-                    "Tab",
-                    "Escape",
-                    "Backspace",
-                    "Delete",
-                    "ArrowLeft",
-                    "ArrowRight",
-                    "ArrowUp",
-                    "ArrowDown",
-                    "Home",
-                    "End",
-                    "PageUp",
-                    "PageDown",
-                  ].includes(e.key) ||
-                  ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a")
-                ) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  input({
-                    type: "key",
-                    key:
-                      (e.ctrlKey ? "Control+" : "") +
-                      (e.metaKey ? "Meta+" : "") +
-                      (e.shiftKey ? "Shift+" : "") +
-                      (e.key.length === 1 ? e.key.toLowerCase() : e.key),
-                  });
-                }
-              }}
-            />
-          </div>
+          <BrowserViewport key={session.id} id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={!busy} input={input} drainRef={viewportDrain}
+            resize={(width,height)=>request('/sessions/'+session.id+'/viewport',{client,epoch:session.epoch,width,height})}
+            selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
+            onConnected={setConnected} onError={fail} L={L}/>
           <footer className="browser-control">
+            <select aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{const id=e.target.value;void act(async()=>{await viewportDrain.current();setSelected(id)})}}>{data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}</select>
+            <Button label={L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
+            <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
+            <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>
+            {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<details className="browser-logins"><summary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></summary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></details>:null}
             <span>
               {busy ? (
                 <LoaderCircle size={14} className="spin" />
@@ -663,7 +486,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    await inputQueue.current;
+                    await viewportDrain.current();
                     update(
                       await request<Session>(
                         "/sessions/" + session.id + "/release",
@@ -676,7 +499,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
                 <Play size={14} />
                 {session.personal || session.ended
                   ? L("Release control", "结束操作")
-                  : L("Return to Worker", "交还 Worker")}
+                  : L("Continue task", "继续任务")}
               </button>
             ) : (
               <button
@@ -704,18 +527,18 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
       ) : (
         <div className="browser-empty">
           <Globe size={34} />
-          <h2>{L("Your browser, ready for work", "你的浏览器，随时可用")}</h2>
+          <h2>{L("Browser", "浏览器")}</h2>
           <button
             className="browser-primary"
             disabled={busy || data?.enabled === false}
-            onClick={newProfile}
+            onClick={()=>void openDefault()}
           >
             <Plus size={16} />
-            {L("Create browser", "创建浏览器")}
+            {L("Open browser", "打开浏览器")}
           </button>
           {!data && <LoaderCircle size={18} className="spin" />}
         </div>
-      )}
+      ))}
       {dialog && (
         <dialog
           ref={dialogRef}
@@ -751,6 +574,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
                     { name: profileName, allowedWorkers: grants },
                   );
                   closeDialog();
+                  if(settingsOnly){await refresh();return;}
                   const s = await request<Session>(
                     "/profiles/" + p.id + "/open",
                     { client,conversationId },

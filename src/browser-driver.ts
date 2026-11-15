@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import {inputMessages,type BrowserInput} from './browser-input.ts';
 import type { z } from "zod";
 import {
   BrowserError,
@@ -42,6 +43,7 @@ export interface BrowserDriver {
     status?: (connected: boolean) => void,
   ): Promise<() => void>;
   close(session: DriverSession): Promise<void>;
+  input(session: DriverSession, event: BrowserInput): Promise<void>;
 }
 
 /** Fixed command adapter. No shell, no ambient agent-browser config, no attachment to user Chrome. */
@@ -51,6 +53,7 @@ export class AgentBrowserDriver implements BrowserDriver {
   private executable: string | undefined;
   private binary: string;
   private prefix: string[];
+  private streams = new Map<string,WebSocket>();
   constructor(
     private root: string,
     private options: z.infer<typeof browserConfigSchema>,
@@ -190,6 +193,8 @@ export class AgentBrowserDriver implements BrowserDriver {
         "roppo-" + s.id,
         "--profile",
         s.directory,
+        "--download-path",
+        join(s.directory,"downloads"),
         ...(this.executable ? ["--executable-path", this.executable] : []),
         "--json",
         ...args,
@@ -302,9 +307,27 @@ export class AgentBrowserDriver implements BrowserDriver {
       });
     });
     onStatus?.(true);
-    return () => socket.terminate();
+    this.streams.set(s.id,socket);
+    return () => {if(this.streams.get(s.id)===socket)this.streams.delete(s.id);socket.terminate()};
+  }
+  async input(s:DriverSession,event:BrowserInput) {
+    const socket=this.streams.get(s.id);
+    if(!socket||socket.readyState!==WebSocket.OPEN)throw new BrowserError('browser_stream','Browser disconnected. Reconnect before interacting.');
+    // Ping/pong is an ordering barrier: the pinned upstream reader processes each
+    // input before reading the next message. Release waits for this queue to drain.
+    await new Promise<void>((resolve,reject)=>{
+      const marker=randomUUID();
+      const finish=(error?:Error)=>{clearTimeout(timer);socket.off('pong',pong);socket.off('close',closed);error?reject(error):resolve()};
+      const pong=(data:Buffer)=>{if(data.toString()===marker)finish()};
+      const closed=()=>finish(new BrowserError('browser_uncertain','Browser disconnected while processing input.'));
+      const timer=setTimeout(()=>finish(new BrowserError('browser_uncertain','Browser input was not acknowledged.')),this.options.timeoutMs);
+      socket.on('pong',pong);socket.once('close',closed);
+      for(const message of inputMessages(event))socket.send(JSON.stringify(message));
+      socket.ping(marker);
+    });
   }
   async close(s: DriverSession) {
+    this.streams.get(s.id)?.terminate();this.streams.delete(s.id);
     await this.run(s, ["close"]);
   }
 }

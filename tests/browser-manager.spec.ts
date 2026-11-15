@@ -20,11 +20,14 @@ import type { BrowserDriver, DriverSession } from "../src/browser-driver.ts";
 import type { WorkOwner } from "../src/work.ts";
 import type { Model } from "../src/model.ts";
 import { serve } from "../src/server.ts";
+import type {BrowserInput} from '../src/browser-input.ts';
 import type { Server } from "node:http";
 
 const screenshotBytes=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=","base64");
 
 class Driver implements BrowserDriver {
+  inputs: BrowserInput[]=[];
+  async input(_:DriverSession,event:BrowserInput){this.inputs.push(event)}
   tabs = new Map<string, any[]>();
   calls: { id: string; args: string[] }[] = [];
   closed: string[] = [];
@@ -139,7 +142,7 @@ const model: Model = {
     };
   },
 };
-async function fixture() {
+async function fixture(testModel:Model=model) {
   const root = mkdtempSync(join(tmpdir(), "roppo-browser-"));
   roots.push(root);
   const driver = new Driver();
@@ -163,7 +166,7 @@ async function fixture() {
       },
     ],
   });
-  const host = new Runtime(config, { model, browserDriver: driver });
+  const host = new Runtime(config, { model:testModel, browserDriver: driver });
   hosts.push(host);
   host.receive("local", "alice", {
     id: "one",
@@ -539,7 +542,7 @@ it("vault survives restart and fails closed when its key is missing or changed",
   unlinkSync(join(root, "vault.key"));
   expect(() => new BrowserVault(root)).toThrow("original browser vault key");
 });
-it("revokes assignment capabilities and closes only that assignment browser", async () => {
+it("revokes Worker authority while retaining the ended page for human inspection", async () => {
   const { host, owner, driver } = await fixture(),
     s = await open(host, owner),
     p = host.browser.saveProfile("alice", {
@@ -548,9 +551,15 @@ it("revokes assignment capabilities and closes only that assignment browser", as
     }),
     personal = await host.browser.openPersonal("alice", p.id, randomUUID());
   await host.stop(owner.ticketId);
-  for (let i = 0; i < 100 && !driver.closed.includes(s.id); i++)
-    await new Promise((r) => setTimeout(r, 1));
-  expect(driver.closed).toContain(s.id);
+  expect(driver.closed).not.toContain(s.id);
+  expect(host.browser.list('alice').sessions.find(v=>v.id===s.id)?.ended).toBe(true);
+  const client=randomUUID(),human=await host.browser.takeover('alice',s.id,client);
+  const navigated=await host.browser.action('alice',s.id,client,human.epoch,{action:'navigate',url:'https://example.com/after-task'});
+  expect(navigated.url).toBe('https://example.com/after-task');
+  await host.browser.action('alice',s.id,client,human.epoch,{action:'new_tab',url:'https://example.com/new'});
+  expect(driver.calls.some(c=>c.args[0]==='tab'&&c.args[1]==='new')).toBe(true);
+  await host.browser.release('alice',s.id,client,human.epoch);
+  expect(host.browser.list('alice').sessions.find(v=>v.id===s.id)?.control).toBe('ended');
   expect(driver.closed).not.toContain(personal.id);
   expect(
     host.browser.list("alice").sessions.some((v) => v.id === personal.id),
@@ -584,6 +593,17 @@ it("HTTP browser routes require authentication and same-origin writes; password 
   });
   expect(response.status).toBe(201);
   const p: any = await response.json();
+  const client=randomUUID();
+  const opened=await fetch(server.url+'/api/browser/profiles/'+p.id+'/open',{method:'POST',headers,body:JSON.stringify({client})});
+  expect(opened.status).toBe(200);
+  const browser:any=await opened.json();
+  for(const [route,extra] of [['viewport',{width:900,height:600}],['selection',{}]] as const){
+    const result=await fetch(server.url+'/api/browser/sessions/'+browser.id+'/'+route,{method:'POST',headers,body:JSON.stringify({client,epoch:browser.epoch,...extra})});
+    expect(result.status).toBe(200);
+    const invalid=await fetch(server.url+'/api/browser/sessions/'+browser.id+'/'+route,{method:'POST',headers,body:JSON.stringify({client:randomUUID(),epoch:browser.epoch,...extra})});
+    expect(invalid.status).toBe(409);
+  }
+
   const bad = await fetch(server.url + "/api/browser/profiles", {
     method: "POST",
     headers: { ...headers, origin: "https://elsewhere.example" },
@@ -644,7 +664,7 @@ it("closing while a browser starts cancels initialization before the final drive
   expect(host.browser.list("alice").sessions).toHaveLength(0);
   expect(driver.closed).toHaveLength(1);
 });
-it("force transfer invalidates the previous window and normalizes scaled mouse coordinates", async () => {
+it("force transfer invalidates the previous window and preserves page coordinates", async () => {
   const { host, owner, driver } = await fixture(),
     s = await open(host, owner),
     a = randomUUID(),
@@ -665,12 +685,7 @@ it("force transfer invalidates the previous window and normalizes scaled mouse c
     x: 100.4,
     y: 221.8,
   });
-  expect(driver.calls.find((c) => c.args[0] === "mouse")?.args).toEqual([
-    "mouse",
-    "move",
-    "100",
-    "222",
-  ]);
+  expect(driver.inputs).toEqual([{type:'click',x:100.4,y:221.8}]);
 });
 it("redacts reflected saved passwords from snapshots and stored receipts", async () => {
   const { host, owner, driver } = await fixture(),
@@ -895,3 +910,109 @@ it('checks conversation ownership before filtering or opening browser sessions o
   expect((await call('/profiles/'+profile.id+'/open',{client,conversationId:c.id})).status).toBe(200)
   const listing:any=await (await call('?conversation='+c.id)).json();expect(listing.sessions).toHaveLength(1);expect(listing.sessions[0].conversationId).toBe(c.id)
 })
+
+it('resumes the same assignment after takeover with a new authorized note and fresh refs',async()=>{
+ const {host,owner}=await fixture(),s=await open(host,owner),client=randomUUID();
+ const waiting:any=await host.browser.tool(owner,{action:'request_takeover',sessionId:s.id,reason:'请登录',requestId:'login'});
+ expect(waiting.instruction).toContain('same assignment');
+ expect(host.browser.waiting(owner.ticketId,owner.assignmentId)?.handoffReason).toBe('请登录');
+ const before=host.store.tickets.get(owner.ticketId)!.inputs.map(i=>i.id);
+ const human=await host.browser.takeover('alice',s.id,client);
+ await host.browser.release('alice',s.id,client,human.epoch);
+ const ticket=host.store.tickets.get(owner.ticketId)!;
+ expect(ticket.assignments.at(-1)!.id).toBe(owner.assignmentId);
+ const note=ticket.inputs.find(i=>!before.includes(i.id))!;
+ expect(note.kind).toBe('note');
+ expect(host.browser.waiting(owner.ticketId,owner.assignmentId)).toBeUndefined();
+ await expect(host.browser.tool(owner,{action:'click',sessionId:s.id,ref:'@e1',revision:s.revision,requestId:'stale'})).rejects.toThrow('fresh snapshot');
+ const fresh:any=await host.browser.tool(owner,{action:'snapshot',sessionId:s.id,requestId:'fresh'});
+ await expect(host.browser.tool(owner,{action:'click',sessionId:s.id,ref:'@e1',revision:fresh.revision,requestId:'continue'})).resolves.toBeTruthy();
+});
+
+it('does not run a CLI command or capture tabs for each human input',async()=>{
+ const {host,owner,driver}=await fixture(),s=await open(host,owner),client=randomUUID();
+ const human=await host.browser.takeover('alice',s.id,client),before=driver.calls.length;
+ await host.browser.input('alice',s.id,client,human.epoch,{type:'pointer',phase:'move',x:80,y:90,button:'left',clickCount:0,modifiers:0});
+ await host.browser.input('alice',s.id,client,human.epoch,{type:'text',text:'你好 😀'});
+ expect(driver.calls).toHaveLength(before);expect(driver.inputs).toHaveLength(2);
+});
+
+it('opening a default browser reuses a personal profile without granting it to Workers',async()=>{
+ const {host}=await fixture(),client=randomUUID();
+ const first=await host.browser.openDefault('alice',client,'browser-conversation');
+ const second=await host.browser.openDefault('alice',client,'browser-conversation');
+ expect(second.id).toBe(first.id);
+ expect(host.browser.list('alice').profiles).toHaveLength(1);
+ expect(host.browser.list('alice').profiles[0]!.allowedWorkers).toEqual([]);
+});
+
+it('keeps a task open during takeover and completes the same assignment after release',async()=>{
+ let ready=false;
+ const {host,owner}=await fixture({async run(r){
+   const result=await model.run(r);
+   if(!r.ephemeral&&ready)result.text=JSON.stringify({state:'ready',summary:'Done',reply:'Done',question:null,handbacks:[]});
+   return result;
+ }});
+ const s=await open(host,owner),client=randomUUID();
+ await host.browser.tool(owner,{action:'request_takeover',sessionId:s.id,reason:'Sign in',requestId:'takeover'});
+ ready=true;host.engine.note(owner.ticketId,'Check the pending task');
+ for(let i=0;i<100;i++){await host.tick();await new Promise(r=>setTimeout(r,2));if(host.store.tickets.get(owner.ticketId)!.undelivered.length===0)break}
+ expect(host.store.tickets.get(owner.ticketId)!.ended).toBeUndefined();
+ expect(host.store.tickets.get(owner.ticketId)!.assignments.at(-1)!.report?.state).toBe('waiting');
+ const human=await host.browser.takeover('alice',s.id,client);
+ await host.browser.release('alice',s.id,client,human.epoch);
+ for(let i=0;i<100;i++){await host.tick();await new Promise(r=>setTimeout(r,2));if(host.store.tickets.get(owner.ticketId)!.ended)break}
+ const done=host.store.tickets.get(owner.ticketId)!;
+ expect(done.ended).toBeTruthy();expect(done.assignments.at(-1)!.id).toBe(owner.assignmentId);
+});
+
+it('reclaims an unwatched finished browser at capacity without closing a watched page',async()=>{
+ const {host,owner,driver}=await fixture();host.config.browser.maxSessions=1;
+ const s=await open(host,owner),unsubscribe=await host.browser.subscribe('alice',s.id);
+ host.browser.endAssignment(owner.ticketId,owner.assignmentId);
+ await expect(open(host,owner)).rejects.toThrow('Close an idle');
+ expect(driver.closed).not.toContain(s.id);
+ unsubscribe();await open(host,owner);
+ expect(driver.closed).toContain(s.id);expect(host.browser.list('alice').sessions).toHaveLength(1);
+});
+
+it('returns browser screenshots visually to the Worker and includes noninteractive page text',async()=>{
+ const {host,owner,driver}=await fixture(),s=await open(host,owner);
+ const output=await host.workerTools.call(owner,'superagent_browser',{action:'screenshot',sessionId:s.id,requestId:'visual-proof'});
+ expect(output.success).toBe(true);
+ expect(output.contentItems.map(i=>i.type)).toEqual(['inputText','inputImage']);
+ expect(output.contentItems[1]).toMatchObject({imageUrl:'data:image/png;base64,'+screenshotBytes.toString('base64')});
+ expect(driver.calls.filter(c=>c.args[0]==='snapshot').every(c=>!c.args.includes('-c')&&!c.args.includes('-i'))).toBe(true);
+ const asset=JSON.parse(output.contentItems[0]!.text!).screenshot;
+ expect(host.browser.screenshots('browser-conversation')[0]).toMatchObject({id:asset.id,previewUrl:'/api/browser/screenshots/'+asset.id+'?preview=1'});
+ await expect(host.resources.read({resource:asset.resource},{...owner,ticketId:'foreign'})).rejects.toThrow();
+});
+
+it('authorizes browser file transfers over HTTP and preserves selected files until close',async()=>{
+ const {host,driver}=await fixture(),server=await serve(host);servers.push(server.server);
+ const headers={authorization:'Bearer '+readFileSync(join(host.config.stateDir,'access-token'),'utf8').trim()},client=randomUUID();
+ const profile=host.browser.saveProfile('local-operator',{name:'Files',allowedWorkers:[]}),s=await host.browser.openPersonal('local-operator',profile.id,client);
+ const base=server.url+'/api/browser/sessions/'+s.id;
+ writeFileSync(join(host.config.stateDir,'browser','profiles',profile.id,'downloads','download.txt'),'downloaded 😀');
+ expect(await fetch(base+'/downloads',{headers}).then(r=>r.json())).toEqual([{name:'download.txt'}]);
+ const downloaded=await fetch(base+'/download?name=download.txt',{headers});expect(downloaded.status).toBe(200);expect(await downloaded.text()).toBe('downloaded 😀');
+ expect((await fetch(base+'/download?name=..%2Fprivate',{headers})).status).toBe(400);
+ const query=new URLSearchParams({client,epoch:String(s.epoch),target:randomUUID()+'-0',name:'upload.txt'});
+ const uploaded=await fetch(base+'/upload?'+query,{method:'POST',headers,body:'selected 😀'});expect(uploaded.status).toBe(200);
+ const path=driver.calls.find(c=>c.args[0]==='upload')!.args[2]!;expect(readFileSync(path,'utf8')).toBe('selected 😀');
+ query.set('client',randomUUID());expect((await fetch(base+'/upload?'+query,{method:'POST',headers,body:'wrong window'})).status).toBe(409);
+ await host.browser.closeOwned('local-operator',s.id,client,s.epoch);expect(()=>readFileSync(path)).toThrow();
+});
+
+it('serves screenshot previews only to the owning Chat',async()=>{
+ const {host,owner}=await fixture();host.config.execution.router={mode:'host'};
+ const c=host.chat.create('local-operator');
+ host.store.put('chat-run','browser-chat-run',{id:'browser-chat-run',triggerId:'browser-chat-run',conversationId:c.id,clientMessageId:randomUUID(),createdAt:Date.now()});
+ const s=await open(host,owner),result:any=await host.browser.tool(owner,{action:'screenshot',sessionId:s.id,requestId:'chat-image'});
+ const server=await serve(host);servers.push(server.server);
+ const headers={authorization:'Bearer '+readFileSync(join(host.config.stateDir,'access-token'),'utf8').trim()},url=server.url+'/api/browser/screenshots/'+result.screenshot.id+'?preview=1';
+ expect((await fetch(url)).status).toBe(401);
+ const image=await fetch(url,{headers});expect(image.status,image.ok?'':await image.clone().text()).toBe(200);expect(image.headers.get('content-type')).toBe('image/png');expect(Buffer.from(await image.arrayBuffer())).toEqual(screenshotBytes);
+ host.store.put('chat-conversation',c.id,{...host.store.get<any>('chat-conversation',c.id),owner:'someone-else'});
+ expect((await fetch(url,{headers})).status).toBe(404);
+});

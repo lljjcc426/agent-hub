@@ -4,6 +4,7 @@ declare module "virtual:configuration-content" {
     active: () => boolean;
     memory: () => HTMLElement;
     chat: () => HTMLElement;
+    browser: () => HTMLElement;
   }): {
     activate: (language: string) => void;
     language: (language: string) => void;

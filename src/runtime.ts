@@ -1137,6 +1137,7 @@ export class Runtime {
       }
       if(output.state==='ready'&&!this.webhooks.continuations.readyAllowed(ticket.id)){output.state='blocked';output.summary='Required external event evidence is missing or expired. '+output.summary;output.question=null}
       if(this.webhooks.continuations.pending(ticket.id,assignmentId)&&!['failed','blocked','dropped'].includes(output.state)){output.state='waiting';output.question=null}
+      if(this.browser.waiting(ticket.id,assignmentId)&&output.state==='ready'){output.state='waiting';output.question=null;output.reply=''}
       const extraInputs=taskView(this.store,current).undelivered.filter(id=>!inputs.some(i=>i.id===id)).length>0
       const handoff=['blocked','failed','dropped'].includes(output.state)||!extraInputs&&(output.state==='ready'||!!output.question)
       if(handoff)await this.work.handoff(ticket.id,assignmentId)

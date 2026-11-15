@@ -5,6 +5,10 @@ import { evidenceBytes } from "./goal-artifacts.ts";
 import type { Runtime } from "./runtime.ts";
 import type { WorkOwner } from "./work.ts";
 import { workerProfiles } from "./worker-pool.ts";
+import type {BrowserInput} from "./browser-input.ts";
+import { allowNewTaskInputs } from "./task-context.ts";
+import type {ChatAttachment} from './chat-attachments.ts';
+import {browserDownloads,browserDownload,browserUpload} from './browser-files.ts';
 import {
   AgentBrowserDriver,
   type BrowserDriver,
@@ -35,6 +39,8 @@ interface Session extends DriverSession {
   client?: string;
   leaseUntil: number;
   ended: boolean;
+  maxTabs: number;
+  handoffReason?: string;
   closing: boolean;
   tabs: { id: string; index: number; url: string; title: string; active?: boolean }[];
   url: string;
@@ -55,6 +61,11 @@ interface Receipt {
   fingerprint: string;
   state: "running" | "complete" | "uncertain";
   result?: unknown;
+}
+interface BrowserScreenshot {
+  id:string;kind:'browser-screenshot';conversationId?:string;runId?:string;
+  ticketId:string;assignmentId:string;path:string;name:string;bytes:number;mime:'image/png';
+  resource:string;sha256:string;url:string;title:string;
 }
 const hash = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
@@ -135,8 +146,7 @@ export class BrowserManager {
     this.timer = setInterval(() => {
       for (const s of this.sessions.values()) {
         if (s.owner && !s.ended && !host.validWork(s.owner)) {
-          s.ended = true;
-          if (s.control === "worker") void this.closeSession(s).catch(() => {});
+          this.endAssignment(s.owner.ticketId, s.owner.assignmentId);
         }
         if (s.control === "human" && s.leaseUntil < Date.now()) {
           s.control = "paused";
@@ -266,6 +276,8 @@ export class BrowserManager {
       revision: s.revision,
       controlledByYou: s.control === "human" && s.client === client,
       ended: s.ended,
+      handoffReason: s.handoffReason,
+      ticketId: s.owner?.ticketId,
       tabs: s.tabs,
       url: s.url,
       title: s.title,
@@ -299,6 +311,25 @@ export class BrowserManager {
         enabled: w.browser?.enabled !== false,
       })),
     };
+  }
+  conversation(user: string, conversationId: string) {
+    return [...this.sessions.values()]
+      .filter(s => s.ready && !s.closing && s.user === user && s.conversationId === conversationId && !s.personal)
+      .map(s => ({...this.view(s), runId: this.host.taskAuthority(s.owner!.ticketId)?.parentTrigger}));
+  }
+  waiting(ticketId: string, assignmentId: string) {
+    return [...this.sessions.values()].find(s => !s.ended && !s.closing && s.owner?.ticketId === ticketId && s.owner.assignmentId === assignmentId && s.control !== 'worker');
+  }
+  screenshots(conversationId:string): (ChatAttachment & {runId?:string;ticketId:string})[] {
+    return this.host.store.list<BrowserScreenshot>('asset')
+      .filter(a=>a.kind==='browser-screenshot'&&a.conversationId===conversationId&&!this.host.memory.cleanup.blocked('asset',a.id,a))
+      .map(a=>({id:a.id,name:a.name,mimeType:a.mime,bytes:a.bytes,runId:a.runId,ticketId:a.ticketId,url:'/api/browser/screenshots/'+a.id,previewUrl:'/api/browser/screenshots/'+a.id+'?preview=1'}));
+  }
+  screenshot(user:string,id:string) {
+    const asset=this.host.store.get<BrowserScreenshot>('asset',id);
+    if(asset?.kind!=='browser-screenshot'||!asset.conversationId||this.host.memory.cleanup.blocked('asset',id,asset))throw new BrowserError('browser_missing','Screenshot is unavailable.');
+    this.host.chat.view(asset.conversationId,user);
+    return asset;
   }
   saveProfile(
     user: string,
@@ -359,7 +390,6 @@ export class BrowserManager {
     if (s.url !== (active?.url ?? "about:blank")) s.revision++;
     s.url = active?.url ?? "about:blank";
     s.title = active?.title ?? "";
-    s.updatedAt = Date.now();
     if (s.personal && s.profileId) {
       const p = this.profile(s.profileId, s.user);
       this.host.store.put("browser-profile", p.id, {
@@ -381,6 +411,12 @@ export class BrowserManager {
     browserUrl.parse(url);
     await this.recovery;
     this.enabled();
+    if (this.sessions.size >= this.host.config.browser.maxSessions) {
+      const retained = [...this.sessions.values()]
+        .filter(s => s.ended && !s.watchers && s.control === 'ended' && !s.closing)
+        .sort((a, b) => a.updatedAt - b.updatedAt)[0];
+      if (retained) await this.closeSession(retained);
+    }
     if (this.sessions.size >= this.host.config.browser.maxSessions)
       throw new BrowserError(
         "browser_capacity",
@@ -397,6 +433,9 @@ export class BrowserManager {
         personal && p ? p.id : id,
       );
     mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // Upload selections belong to one browser lifetime, including a recovered profile.
+    rmSync(join(directory,'uploads'),{recursive:true,force:true});
+    mkdirSync(join(directory,'downloads'),{recursive:true,mode:0o700});
     const s: Session = {
       id,
       directory,
@@ -411,6 +450,7 @@ export class BrowserManager {
       revision: 0,
       leaseUntil: 0,
       ended: false,
+      maxTabs: principal?.maxTabs ?? 8,
       closing: false,
       tabs: [],
       url: "about:blank",
@@ -530,6 +570,11 @@ export class BrowserManager {
     if (s.control === "paused") await this.takeover(user, s.id, client);
     return this.view(s, client);
   }
+  async openDefault(user:string,client:string,conversationId:string) {
+    const existing=this.host.store.list<BrowserProfile>('browser-profile').find(p=>p.owner===user);
+    const profile=existing??this.saveProfile(user,{name:'Browser',allowedWorkers:[]});
+    return this.openPersonal(user,profile.id,client,conversationId);
+  }
   async takeover(user: string, id: string, client: string, force = false) {
     const s = this.session(id, user);
     if (s.control === "human" && s.client === client) {
@@ -589,13 +634,15 @@ export class BrowserManager {
       s.client = undefined;
       s.revision++;
       s.control = s.personal ? "paused" : s.ended ? "ended" : "worker";
+      s.handoffReason = undefined;
       s.updatedAt = Date.now();
     });
-    if (s.owner && !s.ended && this.host.validWork(s.owner))
-      this.host.engine.note(
-        s.owner.ticketId,
-        "The user returned browser control. Read a fresh browser snapshot before continuing; old element references have expired.",
-      );
+    if (s.owner && !s.ended && this.host.validWork(s.owner)) this.host.store.atomic(() => {
+      const prior = this.host.store.tickets.get(s.owner!.ticketId)!.inputs.map(i => i.id);
+      this.host.engine.note(s.owner!.ticketId,
+        `The user returned browser ${s.id}. Continue the same task autonomously. Read a fresh browser snapshot first; previous element references have expired.`);
+      allowNewTaskInputs(this.host.store, s.owner!.ticketId, prior);
+    });
     return this.view(s, client);
   }
   async subscribe(user: string, id: string) {
@@ -668,68 +715,58 @@ export class BrowserManager {
     id: string,
     client: string,
     epoch: number,
-    event: {
-      type: "click" | "wheel" | "text" | "key";
-      x?: number;
-      y?: number;
-      deltaY?: number;
-      deltaX?: number;
-      text?: string;
-      key?: string;
-    },
+    event: BrowserInput,
   ) {
-    const s = this.session(id, user);
-    this.human(s, client, epoch);
-    return this.enqueue(s, async () => {
-      const guard = () => this.human(s, client, epoch);
-      guard();
-      if (event.type === "click") {
-        for (const args of [
-          [
-            "mouse",
-            "move",
-            String(Math.round(event.x!)),
-            String(Math.round(event.y!)),
-          ],
-          ["mouse", "down", "left"],
-          ["mouse", "up", "left"],
-        ]) {
-          guard();
-          await this.driver.run(s, args, s.controller.signal);
-        }
-      } else if (
-        event.type === "key" &&
-        /^(Control|Meta)\+a$/.test(event.key ?? "")
-      )
-        await this.driver.evaluate(
-          s,
-          `(()=>{const e=document.activeElement;if(e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&typeof e.select==='function')e.select();else document.execCommand('selectAll')})()`,
-          s.controller.signal,
-        );
-      else if (event.type === "wheel")
-        await this.driver.run(
-          s,
-          [
-            "mouse",
-            "wheel",
-            String(event.deltaY ?? 0),
-            String(event.deltaX ?? 0),
-          ],
-          s.controller.signal,
-        );
-      else if (event.type === "key")
-        await this.driver.run(s, ["press", event.key!], s.controller.signal);
-      else
-        await this.driver.evaluate(
-          s,
-          `document.execCommand('insertText',false,${JSON.stringify(event.text ?? "")})`,
-          s.controller.signal,
-        );
+    const s=this.session(id,user);
+    this.human(s,client,epoch);
+    return this.enqueue(s,async()=>{
+      this.human(s,client,epoch);
+      await this.driver.input(s,event);
       s.revision++;
-      await this.capture(s, s.controller.signal);
-      return this.view(s, client);
+      return this.view(s,client);
     });
   }
+  async resize(user:string,id:string,client:string,epoch:number,width:number,height:number) {
+    const s=this.session(id,user);this.human(s,client,epoch);
+    return this.enqueue(s,async()=>{
+      this.human(s,client,epoch);
+      await this.driver.run(s,['set','viewport',String(width),String(height)],s.controller.signal);
+      s.revision++;
+      return this.view(s,client);
+    });
+  }
+  async selection(user:string,id:string,client:string,epoch:number) {
+    const s=this.session(id,user);this.human(s,client,epoch);
+    return this.enqueue(s,async()=>{
+      this.human(s,client,epoch);
+      const text=await this.driver.evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;const text=e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&e.selectionStart!==null?e.value.slice(e.selectionStart,e.selectionEnd):d.getSelection()?.toString()||'';return text})()`,s.controller.signal);
+      return {text};
+    });
+  }
+  downloads(user:string,id:string){return browserDownloads(this.session(id,user).directory)}
+  download(user:string,id:string,name:string){return browserDownload(this.session(id,user).directory,name)}
+  async uploadTargets(user:string,id:string,client:string,epoch:number){
+    const s=this.session(id,user);this.human(s,client,epoch);
+    return this.enqueue(s,async()=>{
+      this.human(s,client,epoch);
+      return this.driver.evaluate(s,`Array.from(document.querySelectorAll('input[type="file"]')).filter(e=>!e.disabled).map((e,i)=>{e.dataset.roppoUpload = ${JSON.stringify(randomUUID())}+'-'+i;return {id:e.dataset.roppoUpload,label:e.labels?.[0]?.innerText||e.getAttribute('aria-label')||e.name||('File '+(i+1)),accept:e.accept}})`,s.controller.signal);
+    });
+  }
+  async upload(user:string,id:string,client:string,epoch:number,target:string,name:string,body:AsyncIterable<Uint8Array>,authorized:()=>boolean){
+    const s=this.session(id,user);this.human(s,client,epoch);
+    return this.enqueue(s,async()=>{
+      this.human(s,client,epoch);
+      await browserUpload(s.directory,name,body,async path=>{
+        if(!authorized())throw new BrowserError('browser_control_required','Sign in again before uploading.',401);
+        this.human(s,client,epoch);
+        await this.driver.run(s,['upload',`input[type="file"][data-roppo-upload="${target}"]`,path],s.controller.signal);
+        this.human(s,client,epoch);
+        s.revision++;
+      });
+      return this.view(s,client);
+    });
+  }
+
   private async perform(s: Session, input: BrowserAction, guard: () => void) {
     guard();
     const signal = s.controller.signal;
@@ -741,8 +778,7 @@ export class BrowserManager {
         "browser_stale_snapshot",
         "The page or control changed. Read a fresh snapshot.",
       );
-    const max = s.owner ? this.principal(s.owner).maxTabs : 8;
-    if (input.action === "new_tab" && s.tabs.length >= max)
+    if (input.action === "new_tab" && s.tabs.length >= s.maxTabs)
       throw new BrowserError(
         "browser_tab_limit",
         "This browser has reached its tab limit.",
@@ -752,6 +788,8 @@ export class BrowserManager {
     if (input.action === "request_takeover") {
       s.control = "paused";
       s.epoch++;
+      s.handoffReason = input.reason;
+      s.updatedAt = Date.now();
       return;
     }
     if (input.action === "login") {
@@ -797,12 +835,13 @@ export class BrowserManager {
         await this.driver.run(s, actions[input.action]!, signal);
     }
     if (input.action !== "snapshot") s.revision++;
+    s.updatedAt = Date.now();
     await this.capture(s, signal);
   }
   private async snapshot(s: Session) {
     const result = await this.driver.run(
       s,
-      ["snapshot", "-c"],
+      ["snapshot"],
       s.controller.signal,
     );
     s.revision++;
@@ -936,7 +975,7 @@ export class BrowserManager {
             const bytes=evidenceBytes(directory,"screenshot.png",32*1024*1024);
             if(!bytes||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))throw new BrowserError("browser_screenshot","Browser did not return a PNG screenshot.");
             chmodSync(path,0o400);
-            const screenshot={id,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex")};
+            const screenshot:BrowserScreenshot={id,kind:'browser-screenshot',conversationId:s.conversationId,runId:this.host.taskAuthority(owner.ticketId)?.parentTrigger,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex"),url:s.url,title:s.title};
             const page=await this.snapshot(s);
             guard();
             // The native model's filesystem policy excludes host state. Deliver
@@ -976,7 +1015,7 @@ export class BrowserManager {
           await this.perform(s, action, guard);
           const result =
             action.action === "request_takeover"
-              ? this.view(s)
+              ? {...this.view(s), instruction: 'Return waiting without a question. The user can take over from Chat; returning control wakes this same assignment automatically. Do not report ready or create another task.'}
               : await this.snapshot(s);
           record("complete", result);
           return result;
@@ -1012,6 +1051,7 @@ export class BrowserManager {
       if (drain) await s.queue.catch(() => {});
       try {
         await this.driver.close(s);
+        rmSync(join(s.directory,'uploads'),{recursive:true,force:true});
         if (!s.personal) rmSync(s.directory, { recursive: true, force: true });
         const row = this.host.store.get<any>("browser-session", s.id);
         this.host.store.put("browser-session", s.id, { ...row, active: false });
@@ -1028,10 +1068,10 @@ export class BrowserManager {
       ) {
         s.ended = true;
         s.epoch++;
-        if (["human", "paused", "handoff"].includes(s.control)) {
-          s.control = "paused";
-          s.client = undefined;
-        } else void this.closeSession(s).catch(() => {});
+        s.control = "ended";
+        s.client = undefined;
+        s.handoffReason = undefined;
+        s.updatedAt = Date.now();
       }
   }
   async close() {

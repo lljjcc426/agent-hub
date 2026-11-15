@@ -30,6 +30,13 @@ const site = createServer(async (req, res) => {
     res.end();
     return;
   }
+  if(url.pathname==='/download'){
+    res.writeHead(200,{'content-type':'text/plain; charset=utf-8','content-disposition':'attachment; filename="browser-lab.txt"'});
+    res.end('Roppo browser transfer verified. 中文 😀\n');return;
+  }
+  if(url.pathname==='/inputs'){
+    html(`<h1>Browser inputs</h1><label>Text<input id="text" aria-label="Text" value="选择文字 中文 😀"></label><label>Drag slider<input id="slider" type="range" min="0" max="100" value="10" oninput="document.querySelector('#slider-value').textContent=this.value"></label><output id="slider-value">10</output><button id="hover" onmouseenter="this.textContent='Hover works'" onmouseleave="this.textContent='Hover here'" oncontextmenu="event.preventDefault();this.textContent='Right click works'">Hover here</button><label>Upload document<input type="file" aria-label="Upload document" onchange="this.files[0].text().then(text=>document.querySelector('#upload-result').textContent=text)"></label><pre id="upload-result"></pre><a href="/download" download>Download document</a><div style="height:600px"></div><p>Scroll reached the end.</p>`);return;
+  }
   if (req.method === "POST" && url.pathname === "/login") {
     let raw = "";
     for await (const part of req) raw += part;
@@ -80,8 +87,8 @@ const siteUrl = "http://127.0.0.1:" + (site.address() as any).port;
 const config = configSchema.parse({
   stateDir: join(root, "state"),
   port: Number(process.env.ROPPO_BROWSER_PORT ?? 0),
-  work: { sandboxDriver: "disabled", network: false },
-  turnTimeoutMs: 180000,
+  work: { sandboxDriver: native ? "codex" : "disabled", network: false },
+  turnTimeoutMs: native ? 600000 : 180000,
   execution: {
     router: { mode: "host", model: "gpt-6.1-terra", effort: "medium" },
     management: { enabled: true, maxWorkers: 4 },
@@ -107,6 +114,7 @@ const config = configSchema.parse({
       id: "local",
       kind: "local",
       cwd: join(root, "workspace"),
+      sandbox: "workspace-write",
       allowedActors: ["operator"],
       workspace: { mode: "source" },
     },

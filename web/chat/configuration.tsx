@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {createPortal} from "react-dom";
+import {BrowserPanel} from './browser.tsx';
 import {ChatSettings} from './chat-settings.tsx';
 import {MemorySettings} from "./memory.tsx";
 import type { mount } from "virtual:configuration-content";
@@ -7,6 +8,7 @@ let controller: ReturnType<typeof mount> | undefined;
 let element: HTMLDivElement | undefined;
 let pending: Promise<void> | undefined;
 let memoryElement: HTMLDivElement | undefined;
+let browserElement: HTMLDivElement | undefined;
 let chatElement: HTMLDivElement | undefined;
 const active = () =>
   location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
@@ -20,7 +22,8 @@ async function prepare() {
         element.className = "management-content";
         memoryElement = document.createElement("div");
         chatElement = document.createElement("div");
-        controller = module.mount({ element, active, memory: () => memoryElement!, chat: () => chatElement! });
+        browserElement = document.createElement("div");
+        controller = module.mount({ element, active, memory: () => memoryElement!, chat: () => chatElement!, browser: () => browserElement! });
       })
       .catch((error) => {
         pending = undefined;
@@ -41,6 +44,7 @@ export function Configuration({
 }) {
   const outlet = useRef<HTMLDivElement>(null),
     [error, setError] = useState(false),
+    [browserTarget,setBrowserTarget]=useState<HTMLDivElement|null>(null),
     [chatTarget, setChatTarget] = useState<HTMLDivElement|null>(null),
     [memoryTarget, setMemoryTarget] = useState<HTMLDivElement|null>(null);
   const pickerHandled = useRef(0);
@@ -61,6 +65,7 @@ export function Configuration({
         outlet.current?.append(element!);
         setMemoryTarget(memoryElement!);
         setChatTarget(chatElement!);
+        setBrowserTarget(browserElement!);
         if (latest.current.visible) {
           controller!.activate(latest.current.language);
           if (pickerRequest > pickerHandled.current) {
@@ -88,6 +93,7 @@ export function Configuration({
       <div ref={outlet} />
       {visible && route.split("#")[1] === "advanced/memory" && memoryTarget ? createPortal(<MemorySettings L={(en, zh) => language === "en" ? en : zh}/>, memoryTarget) : null}
       {visible && route.split("#")[1] === "advanced/chat" && chatTarget ? createPortal(<ChatSettings L={(en, zh) => language === "en" ? en : zh}/>, chatTarget) : null}
+      {visible && route.split("#")[1] === "advanced/browser" && browserTarget ? createPortal(<BrowserPanel settingsOnly L={(en,zh)=>language==="en"?en:zh}/>, browserTarget) : null}
       {error ? (
         <button
           className="configuration-retry"

@@ -6,12 +6,14 @@ The browser lives on the right side of the session and shares the tab panel with
 
 ## Usage
 
-1. Create a browser profile and sign in to websites manually inside it, or save an account from the key button and choose **Fill**. After filling, you or the Worker confirm the submission; CAPTCHAs and two-factor authentication can be completed by a human.
-2. In the browser profile settings, choose which Workers may reuse these saved logins. Every Worker can use a blank, isolated browser by default; personal login profiles must be authorized separately.
-3. Submit web tasks to the Router. The browser tabs show only the current session's personal browser and Worker instances, where you can watch the live screen, the page tabs, and the control state.
-4. Click **Take over** and the host completes the control handover. When you are done, click **Return to Worker**; the Worker receives a continuation input and must take a new page snapshot. A different window must click **Transfer control to this window** to replace the original operator.
+1. Ask the Router to perform a web task. A Worker opens an isolated browser autonomously; **View page** in Chat opens the matching session.
+2. When your own sign-in or verification is needed, the task waits and Chat offers **Take control**. After signing in, click **Continue task**. The original Worker reads a fresh snapshot and continues the same task without another instruction.
+3. For manual browsing, click **Open browser**. A default profile is created automatically. Names, saved accounts and Worker login grants live in **Settings → Browser**; none are prerequisites for public browsing.
+4. Finished pages remain available for manual navigation and new tabs. The old Worker loses authority. Another window can use **Take over here** to transfer control.
 
-Supported input covers mouse clicks, scrolling, text/paste/IME, common keys, and select-all. Press F6 in the remote input area to return to the address bar; Escape operates the remote page, while Escape inside the account dialog only closes the dialog. Light and dark themes, expanded panels, and narrow viewports are supported; the page itself has no outer scrolling.
+Input includes pointer movement, down/up, drag selection, right-button events, scrolling, text/paste/IME and common keys. Copy/cut writes the remote selection to the local clipboard and requires browser clipboard permission. F6 focuses the address bar, which accepts URLs or search terms. During manual control the remote viewport follows the panel size; watching preserves the Worker's viewport.
+
+**Browser files** uploads one file up to 25 MB into a standard file input on the current page and retrieves completed downloads. Selected uploads remain until the browser closes so a form can submit later. Task downloads are removed with their browser; save them before closing. File selection currently covers standard inputs in the main document, not every cross-origin frame, custom file manager or system file dialog.
 
 ## Persistence and isolation
 
@@ -21,7 +23,7 @@ A personal browser uses its own Chrome profile and keeps persistent website cook
 
 When reusing a personal login, Roppo first exports the authorized profile and then copies only the cookies and origin storage that match the target URLs into the task browser. Later changes made by the Worker are not written back to the personal profile. When several browsers use the same website account, the business data on the website's server still belongs to that one account; local browser isolation cannot remove write conflicts at the website's business layer. Tasks of this kind should be serialized by the Router, or use different website accounts.
 
-Commands inside one session run serially. A manual takeover first blocks subsequent Worker commands and then waits for commands that already started to finish; stale control generations, stale snapshots, and stale tab references are rejected. After a manual-control lease expires the browser stays paused, and Worker write operations do not resume automatically. When a task ends its task browsers are reclaimed; a browser handed over to a human is kept for inspection and can no longer be operated by the old task. Background idle instances are reclaimed according to configuration. Only browsers that are actively being watched open a screen stream.
+Commands inside one session run serially. A manual takeover first blocks subsequent Worker commands and then waits for commands that already started to finish; stale control generations, stale snapshots, and stale tab references are rejected. After a manual-control lease expires the browser stays paused, and Worker write operations do not resume automatically. Finished pages are retained for human inspection and operation. Idle instances are reclaimed according to configuration; at capacity an unwatched, uncontrolled finished browser is reclaimed first. Only browsers that are actively being watched open a screen stream.
 
 `superagent_browser` is the actual tool shared by the API backend and native Codex Workers. It provides the `profiles`, `open`, `navigate`, `snapshot`, `click`, `fill`, `press`, `scroll`, tab, `login`, `request_takeover`, and `close` operations. Element operations must carry the revision of the most recent snapshot, and tabs are addressed by stable IDs such as `t1`. A repeated `requestId` is not executed again, and unconfirmed write operations after a timeout or host interruption are not replayed automatically.
 
@@ -58,4 +60,8 @@ The tools page in a Worker's configuration can turn off browser access and set a
 
 Browser data lives under `<stateDir>/browser`. The existing database backup command does not include the whole Chrome profile: when migrating or backing up, stop the host and save the database, this directory, and the external key together. Restoring only the database does not restore logins, and a lost key cannot be used to recover saved passwords. Website session lifetime, cross-site SSO, device binding, and two-factor authentication remain decided by each website; permanent logins or unconditional migration across machines are not promised.
 
-Current acceptance covers macOS with local Chrome. Linux/Windows, arbitrary external websites, Chrome extensions, downloads/file pickers, system Passkeys, and complex cross-site login flows are not counted as passing items. See the [acceptance record](BROWSER_ACCEPTANCE_2026-11-07.md) and the [open-source licenses](THIRD_PARTY_BROWSER.md).
+Current acceptance covers macOS with local Chrome. Linux/Windows, arbitrary external websites, Chrome extensions, system Passkeys, and complex cross-site login flows are not counted as passing items. See the [acceptance record](BROWSER_ACCEPTANCE_2026-11-07.md) and the [open-source licenses](THIRD_PARTY_BROWSER.md).
+
+Workers can export a PNG using `screenshot`, with optional `fullPage`. The tool records a task-owned attachment, hash and, for writable workspaces, `workspacePath`. Images up to 8 MB are returned visually to the model and can be read through `superagent_read asset/<id>`. Chat displays a downloadable thumbnail. Screenshot attachments survive browser closure and follow task-history cleanup.
+
+Human input uses agent-browser's existing WebSocket input protocol instead of starting a CLI and querying tabs for each click or scroll. Pointer moves and wheel events are coalesced. The latest JPEG is checked every 33 ms; this is a delivery ceiling, not a measured frame-rate guarantee. See [upstream Streaming](https://agent-browser.dev/streaming).

@@ -15,7 +15,7 @@ The community lives in this repository. You do not need a separate account beyon
 
 Maintainers review contributions and decide what is merged and released. Anyone may propose a change. Substantial changes should begin with a discussion of the problem, user experience, compatibility, and a way to verify the result. Record the accepted scope in an issue, then link the implementation PR.
 
-The [roadmap](../ROADMAP.md) describes priorities without promising dates. There is no formal steering committee or guaranteed review schedule. Changes to governance should be discussed publicly before being adopted.
+The [roadmap](ROADMAP.md) describes priorities without promising dates. There is no formal steering committee or guaranteed review schedule. Changes to governance should be discussed publicly before being adopted.
 
 ## Issue triage
 

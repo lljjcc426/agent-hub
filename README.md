@@ -157,7 +157,7 @@ npm ci
 npm run check
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for development and isolated testing. Follow the [roadmap](ROADMAP.md), [community guide](docs/COMMUNITY.md), and [code of conduct](CODE_OF_CONDUCT.md). Report sensitive issues through the [security policy](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for development and isolated testing. Follow the [roadmap](docs/ROADMAP.md), [community guide](docs/COMMUNITY.md), and [code of conduct](CODE_OF_CONDUCT.md). Report sensitive issues through the [security policy](SECURITY.md).
 
 ## License & acknowledgements
 

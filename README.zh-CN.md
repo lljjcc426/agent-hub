@@ -154,7 +154,7 @@ npm ci
 npm run check
 ```
 
-开发和隔离测试请参阅[贡献指南](CONTRIBUTING.zh-CN.md)。了解[路线图](ROADMAP.md)、[社区指南](docs/COMMUNITY.md)和[行为准则](CODE_OF_CONDUCT.md)。敏感问题请通过[安全政策](SECURITY.md)中的私密渠道报告。
+开发和隔离测试请参阅[贡献指南](CONTRIBUTING.zh-CN.md)。了解[路线图](docs/ROADMAP.md)、[社区指南](docs/COMMUNITY.md)和[行为准则](CODE_OF_CONDUCT.md)。敏感问题请通过[安全政策](SECURITY.md)中的私密渠道报告。
 
 ## 许可证与致谢
 

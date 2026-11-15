@@ -11,7 +11,7 @@ This is a direction for discussion, not a release schedule. Proposed work become
 - Persistent personal browser profiles, local password storage, assignment isolation, and human takeover.
 - MCP clients, office and GitHub sources, and custom adapter interfaces.
 
-Availability is not universal platform acceptance; see the [README boundaries](README.md#status-and-boundaries).
+Availability is not universal platform acceptance; see the [README boundaries](../README.md#current-scope).
 
 ## Next priorities
 

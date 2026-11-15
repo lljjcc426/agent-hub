@@ -1,3 +1,5 @@
+import '../../src/ui/tab-motion.js';
+import '../../src/ui/tab-motion.css';
 import {
   createContext,
   useCallback,
@@ -868,6 +870,7 @@ function Chat(p: ChatProps) {
   const currentView=views.find(view=>view.id===pluginId);
   const pageNames: Record<string, string> = {
     tasks: L("Workspace", "工作区"),
+    "tasks/active": L("Tasks", "任务"),
     "tasks/history": L("Tasks", "任务"),
     attention: L("Needs your attention", "待处理"),
     automations: L("Event automations", "事件自动化"),
@@ -876,7 +879,7 @@ function Chat(p: ChatProps) {
     models: L("Model connections", "模型连接"),
     connections: L("Conversation entries", "会话入口"),
     integrations: L("Plugins & tools", "插件与工具"),
-    prompts: L("Shared instructions", "共享指令"),
+    prompts: L("Behavior rules", "行为规则"),
     advanced: L("Settings", "设置"),
     usage: L("Usage guide", "使用指引"),
   };

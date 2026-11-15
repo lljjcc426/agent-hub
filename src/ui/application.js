@@ -28,10 +28,11 @@ function led(ok, done = true) {
   return el('span', 'led ' + (done ? (ok ? 'ok' : 'bad') : 'wait'))
 }
 function updateBar() {
+  updatePromptActions()
   const bar = document.getElementById('savebar')
   if (!bar) return
   const count = changed().length,
-    show = S.authed && (dirty() || S.latest),
+    show = S.authed && (dirty() || S.latest) && (!document.getElementById('prompt-rules-save') || changed().some(key => key !== 'prompts') || [...S.errors.keys()].some(path => !path.startsWith('prompts'))),
     was = bar.hidden
   bar.hidden = !show
   if (!show) return
@@ -85,6 +86,7 @@ function languagePicker() {
   return language
 }
 function render(focusTitle = false) {
+  globalThis[Symbol.for('roppo.tab-motion')]?.capture()
   const motionSnapshot = WorkspaceMotion.capture()
   workflowStoryUnmount()
   executionUnmount()
@@ -306,6 +308,7 @@ async function refreshStatus() {
   })
 }
 function resetDraft(base) {
+  promptPreviewOpen = false
   S.base = base
   S.draft = clone(base.config)
   S.latest = null
@@ -589,7 +592,6 @@ async function previewPrompt() {
       ...Object.fromEntries(draftKeys.map(key => [key, S.draft[key]]))
     })
     S.preview = { ...result, fromDraft, baseRevision: S.base.revision }
-    setNotice('success', 'Effective instructions composed.', '已生成合成指令。')
   })
 }
 window.addEventListener('beforeunload', (e) => {

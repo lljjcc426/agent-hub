@@ -57,7 +57,7 @@ export function FeatureNavigation({
         href: "/configure#tasks/history",
         label: L("Tasks", "任务"),
         Icon: History,
-        current: configuring && hash === "tasks/history",
+        current: configuring && ["tasks/active", "tasks/history"].includes(hash),
       },
       {
         href: "/configure#attention",
@@ -100,7 +100,7 @@ export function FeatureNavigation({
       },
       {
         href: "/configure#prompts",
-        label: L("Shared instructions", "共享指令"),
+        label: L("Behavior rules", "行为规则"),
         Icon: MessageSquare,
         current: configuring && hash.startsWith("prompts"),
       },

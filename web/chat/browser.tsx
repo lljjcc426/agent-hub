@@ -510,6 +510,7 @@ export function BrowserPanel({L,conversationId,requestedUrl='',onUrlConsumed}: {
               <div key={t.index} className={t.active ? "active" : ""}>
                 <button
                   role="tab"
+                  data-motion-key={t.id}
                   aria-selected={!!t.active}
                   disabled={!controlled || busy}
                   onClick={() =>

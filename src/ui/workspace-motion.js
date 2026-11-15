@@ -23,32 +23,29 @@ const WorkspaceMotion = (() => {
       const style = getComputedStyle(node)
       return { opacity: style.opacity, transform: style.transform }
     }
-    const inspector = inFlight('#team-inspector'), panel = inFlight('#team-tab-panel')
+    const inspector = inFlight('#team-inspector')
     const nodes = new Map([...document.querySelectorAll('[data-team-id]')].map(node => {
       const rect = node.getBoundingClientRect()
       return [node.dataset.teamId, { x: rect.left + scrollX, y: rect.top + scrollY }]
     }))
     active.forEach(animation => animation.cancel()); active.clear()
-    return { previous, nodes, inspector, panel }
+    return { previous, nodes, inspector }
   }
   function settle(snapshot) {
     const next = {
       route: JSON.stringify([S.surface, entryState.role, entryState.page, entryState.selected, workspaceContext.activeId,
         entryState.page === 'execution' ? executionView.mode : '', entryState.page === 'advanced' ? S.advancedKey : '']),
-      member: teamStudio.selected, tab: teamStudio.tab, explain: teamStudio.explain
+      member: teamStudio.selected, explain: teamStudio.explain
     }
     previous = next
     const old = snapshot.previous
     if (!old || media.matches || document.hidden) return
     if (old.route !== next.route) {
-      enter(document.querySelector('.operator-body'), 0, 7, 200)
       return
     }
     if (!document.querySelector('.team-studio')) return
     if (old.member !== next.member) animate(document.getElementById('team-inspector'),
       [snapshot.inspector || { opacity: .45, transform: 'translateX(8px)' }, { opacity: 1, transform: 'none' }], 220)
-    else if (old.tab !== next.tab) animate(document.getElementById('team-tab-panel'),
-      [snapshot.panel || { opacity: .45, transform: 'translateY(5px)' }, { opacity: 1, transform: 'none' }], 180)
     if (!old.explain && next.explain) enter(document.querySelector('.team-explanation'), 0, -6, 240)
     for (const node of document.querySelectorAll('[data-team-id]')) {
       const from = snapshot.nodes.get(node.dataset.teamId), rect = node.getBoundingClientRect()

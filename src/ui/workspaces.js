@@ -164,7 +164,7 @@ function workspaceHome() {
     add(el('div', 'workspace-start-actions'),
       opButton(L('Connect a model', '接入模型'), controlNewModel, 'text-button', 'cpu'),
       opButton(L('Connect your conversation', '接入会话入口'), () => opNavigate('catalog'), 'text-button', 'conversations'),
-      opButton(L('Set shared instructions', '设置共享指令'), () => opNavigate('prompts'), 'text-button', 'prompts')))
+      opButton(L('Set behavior rules', '设置行为规则'), () => opNavigate('prompts'), 'text-button', 'prompts')))
   main.append(add(el('div', 'workspace-overview'), members, setup), opSection(L('Work in progress', '进行中的任务'), null,
     opButton(L('All tasks', '全部任务'), () => opNavigate('activity'), 'text-button')))
   if (operator.work?.understanding?.length) for (const request of operator.work.understanding) main.append(el('p', 'understanding-request', L('Understanding: ', '正在理解：') + request.title))

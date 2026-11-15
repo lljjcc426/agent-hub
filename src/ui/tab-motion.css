@@ -1,0 +1,25 @@
+/* One marker survives selection changes; transform/opacity animate without moving the controls. */
+[data-tab-motion=ready] { position: relative; }
+.tab-motion-indicator {
+  position: absolute; display: block; pointer-events: none; z-index: 1;
+  background: var(--c-text, var(--ink, #171717)); border-radius: 1px;
+  transform-origin: left top; opacity: 1;
+}
+.tab-motion-pill {
+  z-index: 0; border-radius: calc(var(--ui-seg-r, 11px) - var(--ui-seg-pad, 4px));
+  background: var(--ui-seg-pill, var(--c-bg, #fff));
+  box-shadow: var(--ui-seg-pill-shadow, 0 1px 3px #00000014);
+}
+[data-tab-motion=ready] > :is(button,a,.resource-tab,.active) { position: relative; }
+[data-tab-motion=ready] > :is(button,a) { z-index: 1; }
+[data-tab-motion=ready].ui-seg__track > .ui-seg__pill { visibility: hidden; }
+.operator-workspace [data-tab-motion=ready] > :is(.workspace-tab,.prompt-rules-tab)[aria-current=page],
+.operator-workspace [data-tab-motion=ready] > .prompt-rules-tab[aria-selected=true],
+.market-tabs[data-tab-motion=ready] > a[aria-current],
+.automation-tabs[data-tab-motion=ready] > button[aria-current] { border-bottom-color: transparent; }
+:is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab,.browser-tabs>div) {
+  transition: color 140ms ease, background-color 140ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab,.browser-tabs>div) { transition: none; }
+}

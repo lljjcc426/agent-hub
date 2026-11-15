@@ -16,6 +16,8 @@ function controlField(id,label,value,onChange,options=null,placeholder=''){
  return add(el('div','control-field'),title,input)
 }
 let promptTarget = 'shared'
+let promptPreviewOpen = false
+let promptPreviewFocus = 'prompt-preview-close'
 function executionDraft() {
   const config = S.draft
   const route = config.execution || S.base.config.execution
@@ -60,6 +62,10 @@ function editPrompt(target, text) {
   set(S.draft, 'prompts.' + target, text)
   S.preview = null
   document.getElementById('control-prompt-preview')?.remove()
+  if (S.notice?.level === 'success') {
+    S.notice = null
+    document.getElementById('notice')?.replaceChildren()
+  }
   updateBar()
 }
 function promptTemplate(part) {
@@ -89,95 +95,161 @@ function promptTemplate(part) {
     }, 'button')
   ))
 }
-function controlPrompts() {
-  const templates = entryState.promptView === 'templates'
-  const nav = workspaceTabs(L('Prompt views', '提示词视图'), [
-    [L('Role instructions', '角色指令'), !templates, () => opNavigate('prompts', '', { view: 'roles' })],
-    [L('Team and templates', '团队与模板'), templates, () => opNavigate('prompts', '', { view: 'templates' })]
-  ])
-  const result = [opHeading(L('Prompts', '提示词'), null), nav]
-  const preview = add(el('div', 'settings-stack'),
-    selector('preview-role', L('Instruction role', '合成指令角色'), [['router', 'Router'], ['worker', 'Worker']], S.previewRole, role => {
-      S.previewRole = role
-      S.previewMode = ''
-      S.preview = null
-      render()
-    }),
+function promptDisclosure(id, title, content) {
+  const disclosure = detail(title, content)
+  disclosure.id = id
+  disclosure.open = document.getElementById(id)?.open || false
+  return disclosure
+}
+function promptRuleField(target, title, placeholder = '') {
+  const input = el('textarea', 'prompt-rule-input')
+  input.id = 'prompt-rule-' + target.replaceAll('.', '-')
+  input.value = get(S.draft.prompts, target) || ''
+  input.placeholder = placeholder
+  input.oninput = () => editPrompt(target, input.value)
+  const label = el('label', 'prompt-rule-label', title)
+  label.htmlFor = input.id
+  return add(el('div', 'prompt-rule-field'), label, input)
+}
+function updatePromptActions() {
+  const button = document.getElementById('prompt-rules-save')
+  if (!button) return
+  button.disabled = !!S.busy || !!entryState.busy || (!S.latest && (S.errors.size > 0 || !changed().includes('prompts')))
+  button.querySelector('span').textContent = S.latest ? L('Review conflict', '核对冲突')
+    : S.busy === 'save' ? L('Saving…', '保存中…') : L('Save changes', '保存更改')
+}
+function closePromptPreview() {
+  promptPreviewOpen = false
+  document.getElementById('prompt-rules-preview-dialog')?.close()
+  render()
+  document.getElementById('prompt-rules-preview')?.focus({ preventScroll: true })
+}
+function openPromptPreview() {
+  promptPreviewFocus = 'prompt-preview-close'
+  promptPreviewOpen = true
+  S.preview = null
+  void previewPrompt()
+}
+function promptPreviewDialog() {
+  if (!promptPreviewOpen) return null
+  const dialog = el('dialog', 'prompt-preview-dialog')
+  dialog.id = 'prompt-rules-preview-dialog'
+  dialog.setAttribute('aria-labelledby', 'prompt-preview-title')
+  const title = el('h2', '', L('Instruction preview', '指令预览'))
+  title.id = 'prompt-preview-title'
+  const close = opButton(L('Close', '关闭'), closePromptPreview, 'button')
+  close.id = 'prompt-preview-close'
+  const change = (focus, update) => { promptPreviewFocus = focus; update(); S.preview = null; void previewPrompt() }
+  const role = selector('preview-role', L('View role', '查看角色'), [['router', 'Router'], ['worker', 'Worker']], S.previewRole,
+    value => change('preview-role', () => { S.previewRole = value; S.previewMode = ''; S.previewWorkerId = '' }))
+  const context = detail(L('Preview scenario', '预览场景'), add(el('div', 'prompt-preview-options'),
     selector('preview-mode', L('Task mode', '任务模式'), [
-      ['', L('From entry configuration', '按入口配置')],
-      ['standalone', L('Standalone task', '独立任务')],
+      ['', L('From entry configuration', '按入口配置')], ['standalone', L('Standalone task', '独立任务')],
       ...(S.previewRole === 'worker' ? [['delegated', L('Router delegation', 'Router 委派')]] : []),
-      ['goal', L('Managed goal', '受管理目标')],
-      ['project', L('Code project', '代码项目')],
-      ...(S.previewRole === 'worker' ? [['subagent', L('Worker helper', 'Worker 助手')]] : []),
-    ], S.previewMode, mode => { S.previewMode = mode; S.preview = null; render() }),
-    selector('preview-source', L('Saved entry', '已保存入口'), [['', L('Default entry', '默认入口')],
+      ['goal', L('Managed goal', '受管理目标')], ['project', L('Code project', '代码项目')],
+      ...(S.previewRole === 'worker' ? [['subagent', L('Worker helper', 'Worker 助手')]] : [])
+    ], S.previewMode, value => change('preview-mode', () => { S.previewMode = value })),
+    selector('preview-source', L('Entry', '会话入口'), [['', L('Default entry', '默认入口')],
       ...(S.base.config.sources || []).map(source => [source.id, source.label || source.id])
-    ], S.previewSourceId, id => { S.previewSourceId = id; S.preview = null; render() }),
+    ], S.previewSourceId, value => change('preview-source', () => { S.previewSourceId = value })),
     S.previewRole === 'worker' ? selector('preview-worker', 'Worker', [['', L('Default Worker', '默认 Worker')],
       ...executionDraft().workers.map(worker => [worker.id, worker.label || worker.id])
-    ], S.previewWorkerId, id => { S.previewWorkerId = id; S.preview = null; render() }) : null,
-    opButton(L('Preview complete role instructions', '预览完整角色指令'), previewPrompt, 'button'),
-    el('p', 'hint', L('Uses the selected configuration and task mode. Task-specific context uses placeholders.', '按所选配置与任务模式组装，具体任务上下文使用占位符。')))
-  if (S.preview) {
-    const output = detail(S.preview.fromDraft
-      ? L('Draft instructions (based on r', '草稿合成指令（基于 r') + S.preview.baseRevision + ')'
-      : L('Saved instructions (r', '已保存的合成指令（r') + S.preview.revision + ')', add(el('div', 'stack'),
-        el('p', 'hint', [S.preview.mode, S.preview.workerId, S.preview.backendId].filter(Boolean).join(' · ')),
-        S.preview.baseInstructions ? detail(L('Managed runtime base', '受管理运行基础指令'), raw(S.preview.baseInstructions)) : null,
-        ...(S.preview.sections || []).map(section => detail(section.id, add(el('div', 'stack'), el('p', 'hint', section.source), raw(section.text)))),
-        detail(L('Combined role text', '完整角色文本'), raw(S.preview.text)),
-        el('p', 'hint', L('Task input and output/tool schemas are supplied separately. Provider framing and platform-owned instructions are outside this preview.', '任务输入与输出、工具 schema 单独提供；此处不包含模型服务的协议封装和平台内部指令。'))))
-    output.id = 'control-prompt-preview'
-    output.open = true
-    preview.append(output)
+    ], S.previewWorkerId, value => change('preview-worker', () => { S.previewWorkerId = value })) : null))
+  // Keep the scenario controls open while the selected scenario is recomposed.
+  const previous = document.querySelector('#prompt-rules-preview-dialog .prompt-preview-scenario')
+  context.className = 'prompt-preview-scenario'
+  context.open = previous?.open || false
+  const body = el('div', 'prompt-preview-body')
+  if (S.busy === 'preview') {
+    const loading = el('p', 'prompt-preview-status', L('Generating preview…', '正在生成预览…'))
+    loading.setAttribute('role', 'status')
+    body.append(loading)
+  } else if (S.preview) {
+    body.append(el('p', 'prompt-preview-status', S.preview.fromDraft ? L('Unsaved draft', '未保存的草稿') : L('Saved rules', '已保存的规则')),
+      raw(S.preview.text))
+    if (S.preview.baseInstructions) body.append(detail(L('Runtime base rules', '运行基础规则'), raw(S.preview.baseInstructions)))
+  } else if (S.notice?.level === 'error') {
+    body.append(noticeView(), opButton(L('Retry', '重试'), previewPrompt, 'button'))
   }
-  if (templates) {
-    result.push(add(el('div', 'workspace-settings settings-with-aside'),
-      add(el('div', 'settings-stack'),
-        group(L('Team instructions', '团队指令'), null,
-          inputField('prompts.team.communication', L('Communication', '沟通'), { type: 'area' }),
-          inputField('prompts.team.scope', L('Scope', '范围'), { type: 'area' }),
-          inputField('prompts.team.delivery', L('Delivery expectations', '交付要求'), { type: 'area' })),
-        group(L('Built-in templates', '内置模板'), null,
-          ...(S.promptIndex?.parts || []).map(promptTemplate),
-          S.promptIndex ? null : opButton(L('Load templates', '读取模板'), loadPrompts, 'button')),
-        detail(L('Team skills', '团队技能'), jsonField('prompts.skills', L('Skills (JSON)', '技能（JSON）'), { objectType: 'object' }))),
-      panel(L('Effective instructions', '生效指令'), preview)))
-    return result
-  }
-  const roles = [['shared', L('Shared', '共享')], ['router', 'Router'], ['worker', 'Worker'], ['delivery', L('Reply format', '回复格式')]]
-  const label = ({
-    shared: L('Applies to Router and every Worker', '作用于 Router 和所有 Worker'),
-    router: L('When to accept work and how to define its scope', '何时接任务，如何确定处理范围'),
-    worker: L('How work is carried out and checked', '如何执行任务和验证结果'),
-    delivery: L('How replies are formatted', '结果如何组织和回复')
-  })[promptTarget]
-  const roleTabs = affectSegmented({
-    id: 'prompt-role', label: L('Instruction target', '指令用途'), value: promptTarget,
-    options: roles.map(([value, label]) => ({ value, label, controls: 'prompt-role-panel' })),
-    onChange: value => {
-      promptTarget = value
-      if (value === 'router' || value === 'worker') S.previewRole = value
-      S.previewMode = ''
-      S.preview = null
-      render()
+  dialog.append(add(el('div', 'prompt-preview-heading'), title, close), role, context, body)
+  dialog.oncancel = event => { event.preventDefault(); closePromptPreview() }
+  queueMicrotask(() => {
+    if (dialog.isConnected && promptPreviewOpen && !dialog.open &&
+        (typeof configurationHost === 'undefined' || !configurationHost || configurationHost.active())) {
+      dialog.showModal()
+      if (!S.busy) dialog.querySelector('#' + CSS.escape(promptPreviewFocus))?.focus({ preventScroll: true })
     }
   })
-  roleTabs.classList.add('workspace-role-tabs')
-  const input = el('textarea', 'prompt-editor')
-  input.id = 'control-prompt-editor'
-  input.value = S.draft.prompts?.[promptTarget] || ''
-  input.placeholder = L('Leave empty to use built-in instructions.', '留空使用系统默认指令。')
-  input.oninput = () => editPrompt(promptTarget, input.value)
-  const field = el('label', 'prompt-purpose', label)
-  field.htmlFor = input.id
-  const editor = add(el('section', 'prompt-config'), field, input)
-  editor.id = 'prompt-role-panel'
-  editor.setAttribute('role', 'tabpanel')
-  editor.setAttribute('aria-labelledby', 'prompt-role-' + promptTarget)
-  result.push(roleTabs, add(el('div', 'settings-with-aside'), editor, panel(L('Effective instructions', '生效指令'), preview)))
-  return result
+  return dialog
+}
+function controlPrompts() {
+  const page = el('section', 'prompt-rules-page')
+  const preview = opButton(L('Preview instructions', '预览指令'), openPromptPreview, 'button')
+  preview.id = 'prompt-rules-preview'
+  const saveButton = opButton(L('Save changes', '保存更改'), () => S.latest ? revealRecovery() : save(['prompts']), 'button primary')
+  saveButton.id = 'prompt-rules-save'
+  page.append(opHeading(L('Behavior rules', '行为规则'), null, preview, saveButton))
+  const roles = [['shared', L('General rules', '通用规则')], ['router', L('Router rules', 'Router 规则')], ['worker', L('Worker rules', 'Worker 规则')]]
+  const tabs = el('div', 'prompt-rules-tabs')
+  tabs.setAttribute('role', 'tablist')
+  tabs.setAttribute('aria-label', L('Rule target', '规则对象'))
+  const select = target => {
+    promptTarget = target
+    if (target !== 'shared') S.previewRole = target
+    S.previewMode = ''
+    S.preview = null
+    render()
+    document.getElementById('prompt-tab-' + target)?.focus({ preventScroll: true })
+  }
+  for (const [target, label] of roles) {
+    const tab = opButton(label, () => select(target), 'prompt-rules-tab')
+    tab.id = 'prompt-tab-' + target
+    tab.setAttribute('role', 'tab')
+    tab.setAttribute('aria-selected', String(promptTarget === target))
+    tab.setAttribute('aria-controls', 'prompt-rules-panel')
+    tab.tabIndex = promptTarget === target ? 0 : -1
+    tabs.append(tab)
+  }
+  tabs.onkeydown = event => {
+    const index = roles.findIndex(([target]) => event.target.id === 'prompt-tab-' + target)
+    if (index < 0) return
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : -1
+    if (next < 0) return
+    event.preventDefault()
+    select(roles[next][0])
+  }
+  const form = el('div', 'prompt-rules-form')
+  form.id = 'prompt-rules-panel'
+  form.setAttribute('role', 'tabpanel')
+  form.setAttribute('aria-labelledby', 'prompt-tab-' + promptTarget)
+  if (promptTarget === 'shared') {
+    form.append(
+      promptRuleField('team.communication', L('Communication', '沟通方式'), L('Use the language of the request; lead with the result.', '使用用户的语言，先说结论，再说明依据。')),
+      promptRuleField('team.scope', L('Work scope', '工作范围'), L('Describe the work your team handles.', '填写团队负责的工作和处理范围。')),
+      promptRuleField('team.delivery', L('Delivery standards', '交付标准'), L('Provide usable results, files and verification.', '提供可直接使用的结果、文件或链接，以及检查情况。')))
+  } else {
+    form.classList.add('prompt-rules-role')
+    form.append(promptRuleField(promptTarget, promptTarget === 'router' ? L('Task coordination', '任务协调要求') : L('Task execution', '任务执行要求'),
+      promptTarget === 'router' ? L('Define how Router accepts, delegates and follows up on work.', '填写接收需求、分派任务和汇报结果的要求。') : L('Define how Workers carry out and check their work.', '填写执行任务、检查结果和交付产物的要求。')))
+  }
+  const advanced = detail(L('Advanced settings', '高级设置'), add(el('div', 'prompt-advanced-fields'),
+    promptRuleField('shared', L('Additional shared rules', '补充通用规则')),
+    promptRuleField('delivery', L('Reply format', '回复格式')),
+    promptDisclosure('prompt-builtins', L('Built-in rules', '内置规则'), add(el('div', 'prompt-template-list'),
+      ...(S.promptIndex?.parts || []).map(promptTemplate),
+      S.promptIndex ? null : opButton(L('View built-in rules', '查看内置规则'), loadPrompts, 'button'))),
+    promptDisclosure('prompt-skills', L('Team skills', '团队技能'), jsonField('prompts.skills', L('Skills (JSON)', '技能（JSON）'), { objectType: 'object' }))))
+  advanced.className = 'prompt-rules-advanced'
+  advanced.open = entryState.promptView === 'templates'
+  advanced.ontoggle = () => {
+    if (!advanced.isConnected) return
+    entryState.promptView = advanced.open ? 'templates' : 'roles'
+  }
+  advanced.querySelector('summary').append(icon('forward'))
+  page.append(tabs, form, advanced)
+  const dialog = promptPreviewDialog()
+  if (dialog) page.append(dialog)
+  return [page]
 }
 function controlNewConnection(id) {
   opNavigate('detail', id, { creating: true, source: '' })

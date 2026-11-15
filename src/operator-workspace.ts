@@ -9,9 +9,10 @@ import {workerSpecs} from './worker-tools.ts'
 const text=(value:unknown,limit=1800)=>typeof value==='string'?value.slice(0,limit):''
 /** Operator-only projections. No configuration, credentials or native protocol history are copied into the work list. */
 export function operatorWorkspace(host:Runtime,offset=0,limit=25,filter:{state?:string;search?:string}={}){
- const status={paused:host.isPaused,active:host.activeExecutions},tickets=host.store.tickets.list(),deliveries=host.store.deliveries(),approvals=host.store.list<Approval>('approval').filter(a=>a.status==='pending'&&a.expiresAt>Date.now())
- const runs=host.store.list<Run>('run'),model=(id:string)=>host.config.backends[id]?.model??host.config.model,router=host.config.execution.router?.backend??host.config.execution.roles.router??host.config.execution.backend
- const activity=host.activity.list().reverse().sort((a,b)=>b.startedAt-a.startedAt).map(call=>{
+ const status={paused:host.isPaused,active:host.activeExecutions},tickets=host.store.tickets.list().filter(t=>!host.memory.cleanup.blocked('ticket',t.id,t)),deliveries=host.store.deliveries(),approvals=host.store.list<Approval>('approval').filter(a=>a.status==='pending'&&a.expiresAt>Date.now())
+ const visibleTickets=new Set(tickets.map(t=>t.id))
+ const runs=host.store.list<Run>('run').filter(r=>visibleTickets.has(r.ticketId)),model=(id:string)=>host.config.backends[id]?.model??host.config.model,router=host.config.execution.router?.backend??host.config.execution.roles.router??host.config.execution.backend
+ const activity=host.activity.list().filter(call=>(!call.ticketId||visibleTickets.has(call.ticketId))&&!host.memory.cleanup.blocked('execution-call',call.id,call)).reverse().sort((a,b)=>b.startedAt-a.startedAt).map(call=>{
   const source=host.config.sources.find(s=>s.id===call.sourceId),client=call.triggerId&&host.store.get<{client:string}>('entry-client-event',call.triggerId)?.client
   const parent=call.parentId?host.store.get<import('./execution-activity.ts').ExecutionCall>('execution-call',call.parentId):undefined,backendId=call.backend??parent?.backend,backend=backendId?host.config.backends[backendId]:undefined
   return {id:call.id,parentId:call.parentId,kind:call.kind,name:call.name,workerId:call.workerId,subagent:!!call.agentId,ticketId:call.ticketId,entryId:client||source?.kind||'generic',backend:backend?.label??backendId,model:call.model??parent?.model,state:call.state,startedAt:call.startedAt,endedAt:call.endedAt,configurationResource:call.kind==='tool'?undefined:'agent-configuration/'+call.id}
@@ -30,7 +31,7 @@ export function operatorWorkspace(host:Runtime,offset=0,limit=25,filter:{state?:
  const workflowActions=host.workflows.forOperator()
  const all=tickets.map(project).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)),attention=all.filter(t=>t.state==='attention')
  const represented=new Set(tickets.flatMap(t=>t.origin.triggerIds)),evaluating=new Set(host.store.threads.list().flatMap(t=>t.evaluating?.triggerIds??[]))
- const understanding=host.store.list<Trigger>('trigger').filter(t=>evaluating.has(t.id)&&!represented.has(t.id)).map(t=>({id:t.id,title:text(t.text,140),state:'understanding',entryId:host.store.get<{client:string}>('entry-client-event',t.id)?.client??host.config.sources.find(s=>s.id===t.source)?.kind??'generic',updatedAt:t.at}))
+ const understanding=host.store.list<Trigger>('trigger').filter(t=>evaluating.has(t.id)&&!represented.has(t.id)&&!host.memory.cleanup.blocked('trigger',t.id,t)).map(t=>({id:t.id,title:text(t.text,140),state:'understanding',entryId:host.store.get<{client:string}>('entry-client-event',t.id)?.client??host.config.sources.find(s=>s.id===t.source)?.kind??'generic',updatedAt:t.at}))
  const activeTasks=all.filter(task=>['running','queued','ready'].includes(task.state))
  const query=filter.search?.trim().toLowerCase()
  const filtered=all.filter(task=>(!filter.state||task.state===filter.state)&&
@@ -39,7 +40,7 @@ export function operatorWorkspace(host:Runtime,offset=0,limit=25,filter:{state?:
   projectReviews,workflowActions,tasks:filtered.slice(offset,offset+limit),activeTasks:activeTasks.slice(0,100),activeTotal:activeTasks.length,attention:attention.slice(0,50),attentionTotal:attention.length+workflowActions.length+projectReviews.length,understanding:understanding.slice(0,25),counts:{running:all.filter(t=>t.state==='running').length,replied:all.filter(t=>t.state==='replied').length,attention:attention.length+workflowActions.length+projectReviews.length},sources:host.store.list('source-health'),liveSources:host.store.list('source-live')}
 }
 export function operatorTask(host:Runtime,id:string){
- const ticket=host.store.tickets.get(id);if(!ticket)return undefined
+ const ticket=host.store.tickets.get(id);if(!ticket||host.memory.cleanup.blocked('ticket',id,ticket))return undefined
  const trigger=host.store.triggers.get(ticket.origin.triggerId),source=host.config.sources.find(s=>s.id===trigger?.source),run=host.store.get<any>('run',id)
  const summary=operatorWorkspace(host,0,host.store.tickets.list().length).tasks.find(t=>t.id===id)!
  const rawUrl=trigger?.meta?.url

@@ -51,3 +51,34 @@ it('retains a valid inventory on failed refresh and allows explicit retry',async
   expect(b.get('entryState.inventoryError')).toBe(false)
   expect(b.get('entryState.data.entries')).toEqual([{id:'recovered'}])
 })
+it('keeps the in-progress task tab separate from the workspace home and restores it from its URL',()=>{
+ const b=inventoryBrowser()
+ b.context.setInterval=()=>0;b.context.clearTimeout=()=>{}
+ b.context.history.pushState=(_state:unknown,_title:string,url:URL)=>Object.assign(b.context.location,{href:url.href,hash:url.hash})
+ runInContext(readFileSync(new URL('../src/ui/operator-workspace.js',import.meta.url),'utf8'),b.context)
+ b.get(`
+   let promptPreviewOpen=false;
+   const executionView={};
+   function render(){}
+   function opHeading(){return null}
+   function opButton(){return null}
+   function opEmpty(){return null}
+   function workspaceTabs(label,items){return items}
+   entryState.page='home';
+   const taskTabs=opTasks()[1];
+   entryState.page='activity';
+   taskTabs[0][2]();
+ `)
+ expect(b.get('entryState.page')).toBe('active-tasks')
+ expect(b.get('workspaceHash()')).toBe('tasks/active')
+ expect(b.context.location.hash).toBe('#tasks/active')
+ expect(b.get('opPages()[entryState.page]')).toBe('Tasks')
+ expect(b.get('opTasks()[1].map(tab=>tab[1])')).toEqual([true,false])
+ b.get(`taskTabs[1][2]()`)
+ expect(b.get('entryState.page')).toBe('activity')
+ expect(b.get('workspaceHash()')).toBe('tasks/history')
+ b.context.location.hash='#tasks/active';b.get('applyWorkspaceLocation()')
+ expect(b.get('entryState.page')).toBe('active-tasks')
+ b.context.location.hash='#tasks';b.get('applyWorkspaceLocation()')
+ expect(b.get('entryState.page')).toBe('home')
+})

@@ -88,7 +88,7 @@ function entrySafeDetail(value) {
   return text.slice(0, 1200)
 }
 const workspacePages = {
-  tasks: 'home', 'tasks/history': 'activity', attention: 'attention', connections: 'catalog',
+  tasks: 'home', 'tasks/active': 'active-tasks', 'tasks/history': 'activity', attention: 'attention', connections: 'catalog',
   'connections/new': 'catalogue', models: 'models', 'models/new': 'model-new',
   deployments: 'deployments', integrations: 'integrations', execution: 'execution', prompts: 'prompts', usage: 'usage'
 }
@@ -155,7 +155,9 @@ function entryNavigate(page, id = '', options = {}) {
   if (page === 'prompts' && options.view) entryState.promptView = options.view
   if (page === 'model-new' && !entryModel.creating) resetNewModel()
   const enteringHistory = page === 'activity' && entryState.page !== 'activity'
+  const enteringActiveTasks = page === 'active-tasks' && entryState.page !== 'active-tasks'
   if (enteringHistory) operator.offset = 0
+  if (page !== 'prompts') promptPreviewOpen = false
   entryState.page = page
   entryState.error = null
   if (S.notice?.level === 'success') S.notice = null
@@ -169,7 +171,7 @@ function entryNavigate(page, id = '', options = {}) {
   if (!options.fromLocation) updateWorkspaceLocation()
   render(true)
   if (page === 'advanced' && !S.authed) void loadConnectInfo()
-  if (enteringHistory && S.authed)
+  if ((enteringHistory || enteringActiveTasks) && S.authed)
     void entryRun('work-page', readOperatorWork)
   if (S.authed) void ensureEntryInventory()
   return true

@@ -12,10 +12,10 @@ Object.assign(icons, {
 })
 const opPages = () => ({
   home: L('Workspace', '工作区'), attention: L('Needs your attention', '待我处理'),
-  activity: L('Tasks', '任务'), catalog: L('Conversation entries', '会话入口'),
+  activity: L('Tasks', '任务'), 'active-tasks': L('Tasks', '任务'), catalog: L('Conversation entries', '会话入口'),
   catalogue: L('New connection', '新建接入'), detail: entryName(entryState.selected),
   models: L('Model connections', '模型连接'), 'model-new': L('New model connection', '新建模型连接'),
-  deployments: L('Deployments', '部署'), integrations: L('Tools and apps', '工具与应用'), execution: L('Agent team', 'Agent 团队'), prompts: L('Shared instructions', '共享指令'),
+  deployments: L('Deployments', '部署'), integrations: L('Tools and apps', '工具与应用'), execution: L('Agent team', 'Agent 团队'), prompts: L('Behavior rules', '行为规则'),
   usage: L('Usage guide', '使用指引'), advanced: L('Settings', '设置')
 })
 function opButton(text,callback,kind='button',glyph){const button=action(text,callback,kind,glyph);if(kind.includes('icon-button')&&glyph){button.setAttribute('aria-label',text);button.title=text;button.replaceChildren(icon(glyph))}return button}
@@ -200,7 +200,7 @@ function opTasks() {
   const result = [opHeading(L('Tasks', '任务'), null,
     opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
     workspaceTabs(L('Task views', '任务视图'), [
-      [L('In progress', '进行中'), !history, () => opNavigate('home')],
+      [L('In progress', '进行中'), !history, () => opNavigate('active-tasks')],
       [L('Work history', '任务记录'), history, () => opNavigate('activity')]
     ])]
   if (!history) {
@@ -388,7 +388,7 @@ function renderOperatorWorkspace(){
   const chatLink=add(el('a','operator-nav-link'),icon('prompts'),el('span','',L('Conversations','对话')));chatLink.href='/chat';nav.append(chatLink)
   for(const [page,glyph]of [['home','overview'],['activity','work'],['attention','inbox'],['execution','execution'],['models','cpu'],['deployments','monitor'],['catalog','sources'],['integrations','work'],['prompts','prompts']]){
     if(page==='execution')nav.append(el('span','nav-group',L('Configuration','配置')))
-    const b=opButton('',()=>opNavigate(page,'',page==='execution'?{view:'configuration'}:undefined),'operator-nav-link');b.replaceChildren(icon(glyph),el('span','',opPages()[page]));if(page===entryState.page||page==='catalog'&&['detail','catalogue'].includes(entryState.page)||page==='models'&&entryState.page==='model-new')b.setAttribute('aria-current','page');if(page==='attention'&&operator.work?.attentionTotal)b.append(el('span','nav-count',operator.work.attentionTotal));nav.append(b)
+    const b=opButton('',()=>opNavigate(page,'',page==='execution'?{view:'configuration'}:undefined),'operator-nav-link');b.replaceChildren(icon(glyph),el('span','',opPages()[page]));if(page===entryState.page||page==='activity'&&entryState.page==='active-tasks'||page==='catalog'&&['detail','catalogue'].includes(entryState.page)||page==='models'&&entryState.page==='model-new')b.setAttribute('aria-current','page');if(page==='attention'&&operator.work?.attentionTotal)b.append(el('span','nav-count',operator.work.attentionTotal));nav.append(b)
   }
   const host=add(el('div','host-mini'),el('span','status-dot'),add(el('div'),el('strong','',L('Management host','管理宿主')),el('span','',location.host)),icon('monitor'))
   const guideLink = opButton(L('Usage guide','使用指引'),()=>opNavigate('usage'),'utility-link','book')
@@ -409,7 +409,7 @@ function renderOperatorWorkspace(){
   if(operator.error)main.append(add(el('div','alert warning'),el('p','',L('Work status could not be loaded. Existing values may be outdated.','任务状态未能读取，已有数据可能已过时。')),opButton(L('Refresh','刷新'),refreshEntries,'button')))
   const content=el('fieldset','operator-body');content.disabled=!!entryState.busy||!!S.busy
   const views = {
-    home: workspaceHome, activity: opTasks, attention: opAttention, catalog: opCatalogue, catalogue: opCatalogue,
+    home: workspaceHome, activity: opTasks, 'active-tasks': opTasks, attention: opAttention, catalog: opCatalogue, catalogue: opCatalogue,
     detail: opConnection, models: opModels, 'model-new': opModels, execution: controlExecution,
     deployments: renderDeployments, integrations: controlIntegrations, prompts: controlPrompts, usage: opUsage, advanced: renderWorkspaceSettings
   }
@@ -417,7 +417,7 @@ function renderOperatorWorkspace(){
   if (entryState.page === 'advanced' && S.statusError) main.append(el('p','alert warning',L('Host status is unavailable. Refresh in Host status.','宿主状态暂不可用，请在宿主状态中刷新。')))
   const ready = S.authed && S.base
   const waitingForEntries = needsEntryInventory() && !entryState.data
-  const waitingForWork = ['home','activity','attention'].includes(entryState.page) && !operator.work && !operator.error
+  const waitingForWork = ['home','activity','active-tasks','attention'].includes(entryState.page) && !operator.work && !operator.error
   if (!ready || waitingForEntries || waitingForWork) {
     const failed = !entryState.loading && !ready || waitingForEntries && entryState.inventoryError
     const state = el('div', 'workspace-page-loading')
@@ -457,11 +457,11 @@ document.addEventListener('keydown',event=>{
 const editingProjectReview=()=>[...document.querySelectorAll('textarea[id^="feedback-"]')].some(field=>field===document.activeElement||field.value.trim())
 let operatorPolling=false
 setInterval(async()=>{
-  if(operatorPolling||document.hidden||S.surface!=='entries'||!S.authed||entryState.role!=='operator'||entryState.busy||S.busy||operator.drawer||operator.menu||!['home','attention','activity'].includes(entryState.page))return
+  if(operatorPolling||document.hidden||S.surface!=='entries'||!S.authed||entryState.role!=='operator'||entryState.busy||S.busy||operator.drawer||operator.menu||!['home','attention','activity','active-tasks'].includes(entryState.page))return
   if(entryState.page==='attention'&&editingProjectReview())return
-  const page=entryState.page,previous=JSON.stringify([operator.work?.projectReviews,operator.work?.workflowActions,operator.work?.tasks,operator.work?.attention,operator.work?.understanding,operator.work?.paused,operator.work?.active,operator.error])
+  const page=entryState.page,previous=JSON.stringify([operator.work?.projectReviews,operator.work?.workflowActions,operator.work?.tasks,operator.work?.activeTasks,operator.work?.activeTotal,operator.work?.attention,operator.work?.understanding,operator.work?.paused,operator.work?.active,operator.error])
   operatorPolling=true
-  try{await readOperatorWork();if(S.surface==='entries'&&page===entryState.page&&!operator.drawer&&!operator.menu&&!entryState.busy&&!editingProjectReview()&&previous!==JSON.stringify([operator.work?.projectReviews,operator.work?.workflowActions,operator.work?.tasks,operator.work?.attention,operator.work?.understanding,operator.work?.paused,operator.work?.active,operator.error]))render()}
+  try{await readOperatorWork();if(S.surface==='entries'&&page===entryState.page&&!operator.drawer&&!operator.menu&&!entryState.busy&&!editingProjectReview()&&previous!==JSON.stringify([operator.work?.projectReviews,operator.work?.workflowActions,operator.work?.tasks,operator.work?.activeTasks,operator.work?.activeTotal,operator.work?.attention,operator.work?.understanding,operator.work?.paused,operator.work?.active,operator.error]))render()}
   finally{operatorPolling=false}
 },10000)
 window.addEventListener('resize',()=>{if(operator.menu&&window.innerWidth>700)setOperatorMenu(false)})

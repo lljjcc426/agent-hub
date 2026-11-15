@@ -26,6 +26,7 @@ export const configurationScripts = [
   "integrations.js",
   "workspace-motion.js",
   "workflow-story.js",
+  "tab-motion.js",
   "application.js",
 ];
 export const configurationStyles = [
@@ -41,4 +42,5 @@ export const configurationStyles = [
   "workflow-story.css",
   "integrations.css",
   "models-page.css",
+  "tab-motion.css",
 ];

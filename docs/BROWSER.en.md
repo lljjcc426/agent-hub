@@ -2,6 +2,8 @@
 
 [English](BROWSER.en.md) · [简体中文](BROWSER.md)
 
+[Browser experience acceptance, 2026-11-15 (Chinese)](BROWSER_ACCEPTANCE_2026-11-15.md)
+
 The browser lives on the right side of the session and shares the tab panel with **Files** and **Team activity**. The button in the top-right corner collapses or reopens the panel; the left side no longer has a separate browser entry. The Router keeps handling communication and dispatch, and Workers operate their own browsers through host tools; no second model planning loop is introduced.
 
 ## Usage

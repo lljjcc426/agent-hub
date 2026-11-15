@@ -721,7 +721,11 @@ export class BrowserManager {
     this.human(s,client,epoch);
     return this.enqueue(s,async()=>{
       this.human(s,client,epoch);
-      await this.driver.input(s,event);
+      // The stream forwards key events, but Chromium on macOS needs an editing
+      // command for select-all. Keep it in the same guarded input queue.
+      if(event.type==='key'&&((event.key.toLowerCase()==='a'&&[2,4].includes(event.modifiers??0))||/^(Control|Meta)\+a$/i.test(event.key)))
+        await this.driver.evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;if(e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&typeof e.select==='function')e.select();else d.execCommand('selectAll')})()`,s.controller.signal);
+      else await this.driver.input(s,event);
       s.revision++;
       return this.view(s,client);
     });

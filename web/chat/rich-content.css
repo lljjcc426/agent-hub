@@ -24,6 +24,7 @@
 .draft-attachment>img{width:40px;height:40px;object-fit:cover;border-radius:6px}
 .draft-attachment[data-failed=true] .attachment-info>span{color:var(--c-error,var(--c-text))}
 .message-attachments{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;max-width:100%;margin-bottom:8px}
+.assistant-body .message-attachments{justify-content:flex-start}
 .message-attachments .chat-attachment{max-width:320px;min-width:200px;text-decoration:none}
 .message-attachments .chat-attachment:hover{background:var(--c-hover)}
 .message-attachments .image-attachment{display:grid;grid-template-columns:minmax(0,1fr) auto;padding:6px;max-width:260px;min-width:120px}

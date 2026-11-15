@@ -455,7 +455,19 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
             onConnected={setConnected} onError={fail} L={L}/>
           <footer className="browser-control">
-            <select aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{const id=e.target.value;void act(async()=>{await viewportDrain.current();setSelected(id)})}}>{data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}</select>
+            <select aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
+              const id=e.target.value;
+              void act(async()=>{
+                await viewportDrain.current();
+                if(id.startsWith('profile:')){
+                  const value=await request<Session>('/profiles/'+id.slice(8)+'/open',{client,conversationId});
+                  update(value);setSelected(value.id);
+                }else setSelected(id);
+              });
+            }}>
+              {data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}
+              {data?.profiles.filter(p=>!data.sessions.some(s=>s.personal&&s.profileId===p.id)).map(p=><option key={p.id} value={'profile:'+p.id}>{p.name}</option>)}
+            </select>
             <Button label={L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
             <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
             <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>

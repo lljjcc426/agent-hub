@@ -248,6 +248,7 @@ function Markdown(){const {L}=useUI();return <Suspense fallback={<PlainText/>}><
 function AssistantMessage() {
   const { L, run, runMessageId, routerLabel } = useUI(),
     id = useAuiState((s) => s.message.id),
+    attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime()),
     speaker = useAuiState((s) => s.message.metadata.custom?.speaker) as Snapshot["participants"][number]|undefined,
@@ -279,6 +280,7 @@ function AssistantMessage() {
       </div>
       <div className="assistant-body">
         <MessagePrimitive.Parts components={{ Text: Markdown }} />
+        <MessageAttachments files={attachments??[]} L={L}/>
         <div className="message-footer">
           <Timestamp at={createdAt} />
           {run && runMessageId === id ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{runLabel(run.state, L)}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}

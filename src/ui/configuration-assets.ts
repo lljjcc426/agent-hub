@@ -30,6 +30,7 @@ export const configurationScripts = [
   "application.js",
 ];
 export const configurationStyles = [
+  "typography.css",
   "configuration.css",
   "operator-workspace.css",
   "workspace-settings.css",

@@ -20,7 +20,13 @@ export function useWorkspaceViews(){
 }
 export function WorkspaceView({id,view,dark,language}:{id:string;view?:ViewCatalogItem;dark:boolean;language:'en'|'zh-CN'}){
   const frame=useRef<HTMLIFrameElement>(null),port=useRef<MessagePort|null>(null),[documentText,setDocumentText]=useState(''),[error,setError]=useState(false),[attempt,setAttempt]=useState(0)
-  const environment=useRef({dark,language});environment.current={dark,language}
+  const [compactTypography,setCompactTypography]=useState(()=>matchMedia('(max-width: 800px)').matches)
+  const environment=useRef({dark,language,compactTypography});environment.current={dark,language,compactTypography}
+  useEffect(()=>{
+    const media=matchMedia('(max-width: 800px)'),change=()=>setCompactTypography(media.matches)
+    change();media.addEventListener('change',change)
+    return()=>media.removeEventListener('change',change)
+  },[])
   const boot=useRef<()=>void>(()=>{})
   useEffect(()=>{
     let alive=true,busy=false,queued=false,navigating=false,revision=0,lastRefresh=0
@@ -79,7 +85,7 @@ export function WorkspaceView({id,view,dark,language}:{id:string;view?:ViewCatal
     const missing=setTimeout(()=>{if(!view&&alive)setError(true)},10000)
     return()=>{alive=false;lifetime.abort();pending?.abort();clearTimeout(timer);clearTimeout(missing);port.current?.close();port.current=null;boot.current=()=>{};document.removeEventListener('visibilitychange',visibility)}
   },[id,view?.digest,view?.available,attempt])
-  useEffect(()=>{port.current?.postMessage({type:'environment',dark,language})},[dark,language])
+  useEffect(()=>{port.current?.postMessage({type:'environment',dark,language,compactTypography})},[dark,language,compactTypography])
   return <section className="workspace-view-outlet" aria-label={view?.label[language]??id}>
     {error?<div className="workspace-view-placeholder" role="alert"><p>{language==='en'?'This workspace view is unavailable. Check its installation and permissions.':'此看板暂不可用，请检查插件安装及权限。'}</p><button onClick={()=>setAttempt(n=>n+1)}>{language==='en'?'Try again':'重试'}</button></div>:documentText?<iframe ref={frame} title={view?.label[language]??id} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={documentText} onLoad={()=>boot.current()}/>:<div className="workspace-view-placeholder" role="status">{language==='en'?'Loading workspace view…':'正在加载看板…'}</div>}
   </section>

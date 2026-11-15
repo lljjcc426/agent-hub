@@ -18,5 +18,5 @@ export interface ViewSnapshot {
   listening:{limit:number;admissions:{id:string;sourceId:string;at:string;state:string;basis:'explicit'|'inferred'|'none'}[];batches:{id:string;messages:number;phase:string}[]};
   decision:{mode:'off'|'shadow'|'advisory';scope:'workspace';retained:number;probesExcluded:number;inputTokens:number|null;outputTokens:number|null;inputReported:number;outputReported:number;records:{id:string;at:number;mode:string;model:string;status:string;latencyMs:number;actions:string[]}[]};
 }
-export type HostViewMessage={type:'environment';dark:boolean;language:'en'|'zh-CN'}|{type:'snapshot';data:ViewSnapshot}|{type:'connection';state:'loading'|'live'|'stale'|'hidden'}
+export type HostViewMessage={type:'environment';dark:boolean;language:'en'|'zh-CN';compactTypography?:boolean}|{type:'snapshot';data:ViewSnapshot}|{type:'connection';state:'loading'|'live'|'stale'|'hidden'}
 export type ViewHostMessage={type:'refresh'}|{type:'query';query:ViewQuery}|{type:'navigate';destination:'tasks'|'attention'|'team'|'models'|'conversation'|'browser'}

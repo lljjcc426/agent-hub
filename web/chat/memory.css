@@ -1,14 +1,14 @@
 .memory-settings{max-width:800px;color:var(--c-text)}
-.memory-settings h2{font-size:16px;font-weight:600;line-height:1.5;margin:0 0 8px}
+.memory-settings h2{font-size:var(--roppo-font-section);font-weight:600;line-height:1.5;margin:0 0 8px}
 .memory-settings .memory-note{padding:20px 0;border-bottom:1px solid var(--c-line)}
 .memory-settings .memory-note:last-child{border-bottom:0}
 .memory-settings .memory-content{font-size:14px;line-height:1.75;margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
 .memory-settings .memory-context{font-size:12px;line-height:1.6;color:var(--c-muted);margin:6px 0 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .memory-settings .memory-actions{display:flex;align-items:center;gap:20px;margin-top:12px}
 .memory-settings .memory-actions button{display:inline-flex;align-items:center;gap:6px;min-height:32px}
-.memory-settings .memory-edit label{display:flex;flex-direction:column;gap:8px;font-size:13px}
+.memory-settings .memory-edit label{display:flex;flex-direction:column;gap:8px;font-size:var(--roppo-font-body)}
 .memory-settings .memory-edit textarea{background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-line);border-radius:7px;padding:10px 12px;font:inherit;min-width:0;width:100%;min-height:104px;line-height:1.65;resize:vertical}
 .memory-settings .memory-delete{display:flex;align-items:center;gap:20px;margin-top:12px;font-size:13px}
 .memory-settings .memory-delete .memory-actions{margin-top:0}
 .memory-settings .memory-error,.memory-settings .memory-empty{font-size:13px;line-height:1.65;color:var(--c-muted);margin:12px 0}
-@media(max-width:700px){.memory-settings .memory-edit textarea{font-size:16px}.memory-settings .memory-actions button{min-height:40px}.memory-settings .memory-delete{flex-wrap:wrap;gap:8px 20px}}
+@media(max-width:700px){.memory-settings .memory-edit textarea{font-size:var(--roppo-font-input)}.memory-settings .memory-actions button{min-height:40px}.memory-settings .memory-delete{flex-wrap:wrap;gap:8px 20px}}

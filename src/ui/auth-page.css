@@ -388,7 +388,7 @@ input {
   background: var(--hover);
 }
 .language-button {
-  font-size: 13px;
+  font-size: var(--roppo-font-control);
 }
 .auth-content {
   width: 100%;
@@ -397,7 +397,7 @@ input {
   padding: 64px 0;
 }
 .form-title {
-  font-size: 32px;
+  font-size: var(--roppo-font-page);
   line-height: 1.25;
   letter-spacing: -0.03em;
   font-weight: 600;
@@ -418,7 +418,7 @@ input {
   gap: 8px;
 }
 .auth-label {
-  font-size: 13px;
+  font-size: var(--roppo-font-body);
   font-weight: 550;
   line-height: 1.5;
 }
@@ -426,6 +426,7 @@ input {
   position: relative;
 }
 .auth-input {
+  font-size: var(--roppo-font-input);
   display: block;
   width: 100%;
   min-height: 48px;
@@ -499,7 +500,7 @@ input {
   background: transparent;
   padding: 8px 0;
   min-height: 44px;
-  font-size: 13px;
+  font-size: var(--roppo-font-control);
   text-decoration: underline;
   text-decoration-color: transparent;
   text-underline-offset: 4px;
@@ -513,7 +514,7 @@ input {
   border: 0;
   padding: 12px 18px;
   font-weight: 550;
-  font-size: 14px;
+  font-size: var(--roppo-font-control);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -679,7 +680,7 @@ input {
   border: 1px solid var(--line);
 }
 .account-heading h1 {
-  font-size: 28px;
+  font-size: var(--roppo-font-page);
   letter-spacing: -0.02em;
   font-weight: 600;
 }
@@ -700,7 +701,7 @@ input {
   padding: 32px 0;
 }
 .account-section h2 {
-  font-size: 16px;
+  font-size: var(--roppo-font-section);
   font-weight: 600;
   margin: 0 0 8px;
 }
@@ -817,11 +818,11 @@ input {
     max-width: 420px;
   }
   .form-title {
-    font-size: 28px;
+    font-size: var(--roppo-font-page);
     margin-bottom: 28px;
   }
   .auth-input {
-    font-size: 16px;
+    font-size: var(--roppo-font-input);
   }
   .auth-footer {
     margin-top: auto;
@@ -857,7 +858,7 @@ input {
     max-width: 45ch;
   }
   .account-heading h1 {
-    font-size: 24px;
+    font-size: var(--roppo-font-page);
   }
   .account-session {
     flex-direction: column;
@@ -1148,7 +1149,7 @@ html.auth-viewport body {
     margin-top: 32px;
   }
   .auth-shell .form-title {
-    font-size: 28px;
+    font-size: var(--roppo-font-page);
     margin-bottom: 20px;
   }
   .auth-shell .auth-form {
@@ -1203,7 +1204,7 @@ html.auth-viewport body {
     gap: 6px;
   }
   .auth-shell .form-title {
-    font-size: 26px;
+    font-size: var(--roppo-font-page);
   }
 }
 @media (prefers-reduced-motion: reduce) {

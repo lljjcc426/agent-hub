@@ -61,6 +61,7 @@ import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
+import "../../src/ui/typography.css";
 import "./style.css";
 import "./rich-content.css";
 import "./navigation.css";

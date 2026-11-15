@@ -1,11 +1,11 @@
 /* The selected visual applies to execution content, never to the host chrome. */
 .execution-page { container-type:inline-size; color:var(--text-primary); }
-.execution-page .page-heading { align-items:center; margin-bottom:64px; }
-.execution-page .page-heading h1 { font-size:36px; line-height:1.2; font-weight:650; letter-spacing:-.025em; }
+.execution-page .page-heading { align-items:center; margin-bottom:28px; }
+.execution-page .page-heading h1 { font-size:var(--roppo-font-page); line-height:1.2; font-weight:650; letter-spacing:-.025em; }
 .execution-page .execution-actions { display:flex; justify-content:flex-end; gap:12px; margin-bottom:30px; }
 .execution-page .execution-form { border:0; padding:0; margin:0; min-width:0; }
-.execution-page .ui-button { font-family:inherit; --radius:6px; --ui-btn-focus:var(--focus-soft); --ui-btn-ink:var(--text-primary); --ui-btn-fill:var(--surface-selected); --ui-btn-hover:var(--action); --h:44px; --px:15px; --fs:17px; }
-.execution-page .heading-actions>.ui-button { --h:48px; --fs:18px; }
+.execution-page .ui-button { font-family:inherit; --radius:6px; --ui-btn-focus:var(--focus-soft); --ui-btn-ink:var(--text-primary); --ui-btn-fill:var(--surface-selected); --ui-btn-hover:var(--action); --h:44px; --px:15px; --fs:var(--roppo-font-control); }
+.execution-page .heading-actions>.ui-button { --h:48px; --fs:var(--roppo-font-control); }
 .execution-page .ui-button[data-variant="primary"] { background:var(--action); color: var(--on-action); border-color:var(--action); box-shadow:none; }
 .execution-page .ui-button[data-variant="primary"]:hover:not(:disabled) { background:var(--action-hover); border-color:var(--action-hover); box-shadow:none; }
 .execution-page .ui-button[data-variant="secondary"] { color:var(--text-primary); border-color:var(--border-strong); box-shadow:none; }
@@ -15,38 +15,38 @@
 .execution-wires { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:-1; }
 .execution-sources { grid-column:1; display:flex; flex-direction:column; align-items:stretch; gap:24px; min-width:0; }
 .execution-source-list { display:grid; gap:22px; }
-.execution-page .execution-source { display:flex; align-items:center; gap:12px; min-height:66px; padding:13px 14px; background:var(--surface); border:1px solid var(--border-strong); border-radius:7px; font:inherit; font-size:20px; line-height:1.25; font-weight:600; color:var(--text-primary); text-align:left; min-width:0; }
+.execution-page .execution-source { display:flex; align-items:center; gap:12px; min-height:66px; padding:13px 14px; background:var(--surface); border:1px solid var(--border-strong); border-radius:7px; font:inherit; font-size:var(--roppo-font-body); line-height:1.25; font-weight:600; color:var(--text-primary); text-align:left; min-width:0; }
 .execution-source>span:last-child { overflow-wrap:anywhere; }
 .execution-page .execution-source:hover { border-color:var(--action); background:var(--surface-soft); }
 .execution-page .execution-source:focus-visible { outline:2px solid var(--action); outline-offset:3px; }
 .execution-source-logo { width:28px; height:28px; object-fit:contain; flex:none; }
 .execution-source .app-mark { width:28px; height:28px; padding:4px; border-radius:5px; flex:none; }
-.execution-sources>.ui-button { padding-inline:8px; --fs:18px; --gap:6px; --h:46px; }
+.execution-sources>.ui-button { padding-inline:8px; --fs:var(--roppo-font-control); --gap:6px; --h:46px; }
 .execution-no-sources { color:var(--text-muted); font-size:13px; }
 .execution-router { grid-column:3; background:var(--surface-selected); border:1px solid var(--diagram-line); border-radius:8px; padding:20px 17px 15px; min-width:0; display:grid; gap:17px; }
-.execution-page .execution-router h2 { font-size:28px; font-weight:650; line-height:1.25; margin:0; }
+.execution-page .execution-router h2 { font-size:var(--roppo-font-section); font-weight:650; line-height:1.25; margin:0; }
 .execution-page .control-field { min-width:0; gap:6px; }
-.execution-page .control-field label { font-size:17px; line-height:1.2; font-weight:450; }
-.execution-page .control-field input,.execution-page .control-field select { background:var(--surface); border:1px solid var(--border-strong); border-radius:6px; height:39px; min-height:39px; font:inherit; font-size:20px; line-height:1.1; padding:6px 10px; color:var(--text-primary); }
+.execution-page .control-field label { font-size:var(--roppo-font-body); line-height:1.2; font-weight:450; }
+.execution-page .control-field input,.execution-page .control-field select { background:var(--surface); border:1px solid var(--border-strong); border-radius:6px; height:39px; min-height:39px; font:inherit; font-size:var(--roppo-font-input); line-height:1.1; padding:6px 10px; color:var(--text-primary); }
 .execution-page .control-field input::placeholder { color:var(--text-muted); opacity:1; }
 .execution-page .control-field input:focus-visible,.execution-page .control-field select:focus-visible { outline:2px solid var(--action); outline-offset:2px; }
-.execution-page .execution-edit-instructions { justify-self:start; align-self:start; padding-inline:0; height:30px; --h:30px; --fs:17px; --gap:6px; border:0; text-align:left; }
+.execution-page .execution-edit-instructions { justify-self:start; align-self:start; padding-inline:0; height:30px; --h:30px; --fs:var(--roppo-font-control); --gap:6px; border:0; text-align:left; }
 .execution-page .execution-edit-instructions .icon { width:16px; height:16px; }
-.execution-queue { grid-column:5; display:grid; place-items:center; justify-self:center; background:var(--surface); border:1px solid var(--diagram-line); border-radius:7px; padding:11px 8px; font-size:16px; line-height:1.25; text-align:center; }
+.execution-queue { grid-column:5; display:grid; place-items:center; justify-self:center; background:var(--surface); border:1px solid var(--diagram-line); border-radius:7px; padding:11px 8px; font-size:var(--roppo-font-body); line-height:1.25; text-align:center; }
 .execution-workers { grid-column:7; min-width:0; border:1px solid var(--border-strong); border-radius:8px; background:var(--surface); }
 .execution-pool-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:17px 20px; border-bottom:1px solid var(--border-subtle); }
-.execution-page .execution-pool-heading h2 { font-size:28px; line-height:1.25; font-weight:650; margin:0; }
+.execution-page .execution-pool-heading h2 { font-size:var(--roppo-font-section); line-height:1.25; font-weight:650; margin:0; }
 .execution-pool-heading .control-field { flex-direction:row; align-items:center; gap:10px; }
 .execution-count-range { font-size:12px; color:var(--text-muted); white-space:nowrap; }
 .execution-stepper { display:flex; align-items:stretch; border:1px solid var(--border-strong); border-radius:6px; overflow:hidden; height:33px; }
-.execution-page .execution-stepper .ui-button { --h:31px; --px:8px; min-width:30px; --fs:18px; border:0; border-radius:0; background:var(--surface); box-shadow:none; color:var(--action); }
+.execution-page .execution-stepper .ui-button { --h:31px; --px:8px; min-width:30px; --fs:var(--roppo-font-control); border:0; border-radius:0; background:var(--surface); box-shadow:none; color:var(--action); }
 .execution-page .execution-stepper .ui-button:hover:not(:disabled) { background:var(--surface-selected); }
-.execution-page .execution-stepper select { appearance:none; width:35px; min-width:35px; border:0; border-inline:1px solid var(--border-subtle); height:31px; min-height:31px; border-radius:0; padding:0; text-align:center; font-size:14px; }
+.execution-page .execution-stepper select { appearance:none; width:35px; min-width:35px; border:0; border-inline:1px solid var(--border-subtle); height:31px; min-height:31px; border-radius:0; padding:0; text-align:center; font-size:var(--roppo-font-input); }
 .execution-page .execution-stepper select:focus-visible { outline-offset:-2px; }
 .execution-worker { padding:16px 20px 12px; min-width:0; }
 .execution-worker+.execution-worker { border-top:1px solid var(--border-subtle); }
 .execution-worker-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:11px; }
-.execution-page .execution-worker h3 { font-size:22px; line-height:1.25; font-weight:600; margin:0; }
+.execution-page .execution-worker h3 { font-size:var(--roppo-font-section); line-height:1.25; font-weight:600; margin:0; }
 .execution-worker-fields { display:grid; grid-template-columns:1fr 1.18fr; gap:17px; margin-bottom:8px; }
 .execution-active { font-size:11px; color:var(--action); }
 .execution-worker-task { font-size:12px; margin-top:8px; overflow-wrap:anywhere; }
@@ -61,27 +61,27 @@
 .execution-page .execution-instructions { position:fixed; inset:0; margin:auto; height:fit-content; padding:24px; width:min(620px,calc(100vw - 32px)); max-width:620px; max-height:calc(100dvh - 40px); overflow:auto; border:1px solid var(--border-strong); border-radius:12px; background:var(--surface); color:var(--text-primary); box-shadow:0 18px 70px var(--shadow-dialog); }
 .execution-instructions::backdrop { background:var(--overlay); }
 .execution-dialog-heading { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom:20px; }
-.execution-page .execution-dialog-heading h2 { margin:0; font-size:20px; }
+.execution-page .execution-dialog-heading h2 { margin:0; font-size:var(--roppo-font-dialog); }
 .execution-instructions .ui-seg { font-family:inherit; --ui-seg-focus:var(--focus-soft); --ui-seg-tray:var(--surface-selected); --ui-seg-ink:var(--action); --ui-seg-text:var(--text-primary); }
 .execution-instructions .ui-seg__opt { font:inherit; border:0; background:transparent; cursor:pointer; }
 .execution-instruction-panel { display:grid; gap:10px; margin-top:22px; }
-.execution-instruction-panel label { font-size:13px; }
+.execution-instruction-panel label { font-size:var(--roppo-font-body); }
 .execution-instruction-panel textarea { min-height:230px; width:100%; resize:vertical; padding:12px; border:1px solid var(--border-strong); border-radius:6px; font:inherit; line-height:1.6; }
 .execution-instruction-panel textarea:focus-visible { outline:2px solid var(--action); outline-offset:2px; }
 .execution-dialog-actions { display:flex; justify-content:flex-end; margin-top:18px; }
 @container (max-width:1060px) {
  .execution-graph { grid-template-columns:135px 18px 190px 28px 52px 28px minmax(260px,1fr); min-height:480px; }
  .execution-source-list { gap:16px; }
- .execution-page .execution-source { font-size:13px; padding:10px; gap:8px; min-height:56px; }
+ .execution-page .execution-source { font-size:var(--roppo-font-body); padding:10px; gap:8px; min-height:56px; }
  .execution-source-logo,.execution-source .app-mark { width:24px; height:24px; }
  .execution-pool-heading { gap:10px; padding:14px; flex-wrap:wrap; }
  .execution-worker { padding:16px 14px 12px; }
  .execution-worker-fields { gap:10px; grid-template-columns:1fr; }
- .execution-page .execution-router h2,.execution-page .execution-pool-heading h2 { font-size:19px; }
- .execution-page .control-field input,.execution-page .control-field select { font-size:16px; }
- .execution-page .control-field label { font-size:14px; }
- .execution-page .execution-worker h3 { font-size:18px; }
- .execution-page .execution-edit-instructions { --fs:14px; }
+ .execution-page .execution-router h2,.execution-page .execution-pool-heading h2 { font-size:var(--roppo-font-section); }
+ .execution-page .control-field input,.execution-page .control-field select { font-size:var(--roppo-font-input); }
+ .execution-page .control-field label { font-size:var(--roppo-font-body); }
+ .execution-page .execution-worker h3 { font-size:var(--roppo-font-section); }
+ .execution-page .execution-edit-instructions { --fs:var(--roppo-font-control); }
  .execution-pool-heading .control-field { gap:6px; }
  .execution-count-range { display:none; }
 }
@@ -98,25 +98,25 @@
  .execution-worker-fields { grid-template-columns:1fr 1fr; gap:14px; }
  .execution-pool-heading { flex-wrap:nowrap; }
  .execution-page .page-heading { margin-bottom:28px; }
- .execution-page .page-heading h1 { font-size:28px; }
+ .execution-page .page-heading h1 { font-size:var(--roppo-font-page); }
  .execution-bottom { align-items:flex-start; flex-wrap:wrap; margin-top:26px; }
 }
 @container (max-width:400px) {
  .execution-page .page-heading { gap:14px; }
  .execution-worker-fields { grid-template-columns:1fr; }
  .execution-worker { padding:16px; }
- .execution-page .control-field input,.execution-page .control-field select { font-size:16px; }
+ .execution-page .control-field input,.execution-page .control-field select { font-size:var(--roppo-font-input); }
  .execution-pool-heading { padding:14px 16px; flex-wrap:wrap; }
- .execution-instruction-panel textarea { font-size:16px; }
+ .execution-instruction-panel textarea { font-size:var(--roppo-font-input); }
 }
 @media (prefers-reduced-motion:reduce) { .execution-page .ui-button,.execution-page .ui-seg__pill { transition:none; animation:none; } }
 /* Tool Access Map: independent nodes, with live relationships and call inspection. */
 .execution-graph { grid-template-columns:145px 30px 205px 28px 62px 42px minmax(290px,1fr) 48px 190px; --tam-line:var(--diagram-line); --tam-accent:var(--action); --tam-off:var(--diagram-off); align-items:center; }
-.execution-page .execution-source { width:100%; font-size:14px; padding:10px; gap:8px; min-height:56px; }
+.execution-page .execution-source { width:100%; font-size:var(--roppo-font-body); padding:10px; gap:8px; min-height:56px; }
 .execution-source-logo,.execution-source .app-mark { width:24px; height:24px; }
 .execution-source-list { gap:16px; }
 .execution-source-group { min-width:0; }
-.execution-page .execution-call-count { --fs:11px; --h:24px; --px:0px; border:0; padding:0; min-height:24px; white-space:nowrap; }
+.execution-page .execution-call-count { --fs:var(--roppo-font-control); --h:24px; --px:0px; border:0; padding:0; min-height:24px; white-space:nowrap; }
 .execution-call-count[data-state="running"] { color:var(--action); }
 .execution-call-count[data-state="failed"],.execution-call-count[data-state="interrupted"] { color:var(--status-danger); }
 .execution-page .execution-workers { border:0; border-radius:0; background:transparent; }
@@ -127,14 +127,14 @@
 .execution-node-select { background:none; border:0; border-radius:4px; padding:0; margin:0; font:inherit; color:inherit; text-align:left; cursor:pointer; }
 .execution-node-select:focus-visible { outline:2px solid var(--action); outline-offset:4px; }
 .execution-page .execution-router>.execution-worker-heading { margin-bottom:0; }
-.execution-page .execution-router h2,.execution-page .execution-pool-heading h2 { font-size:24px; }
-.execution-page .execution-worker h3 { font-size:20px; }
-.execution-page .control-field input,.execution-page .control-field select { font-size:16px; }
-.execution-page .control-field label { font-size:13px; }
-.execution-page .execution-edit-instructions { --fs:14px; }
+.execution-page .execution-router h2,.execution-page .execution-pool-heading h2 { font-size:var(--roppo-font-section); }
+.execution-page .execution-worker h3 { font-size:var(--roppo-font-section); }
+.execution-page .control-field input,.execution-page .control-field select { font-size:var(--roppo-font-input); }
+.execution-page .control-field label { font-size:var(--roppo-font-body); }
+.execution-page .execution-edit-instructions { --fs:var(--roppo-font-control); }
 .execution-tools { grid-column:9; grid-row:1; display:grid; gap:12px; min-width:0; align-content:center; }
 .execution-tools-heading { display:flex; align-items:baseline; gap:10px; justify-content:space-between; padding:0 0 6px; }
-.execution-page .execution-tools-heading h2 { font-size:20px; margin:0; }
+.execution-page .execution-tools-heading h2 { font-size:var(--roppo-font-section); margin:0; }
 .execution-tools-heading>span { font-size:12px; color:var(--text-muted); }
 .execution-tool { display:grid; gap:5px; text-align:left; border:1px solid var(--border-strong); background:var(--surface); padding:11px 13px; min-height:58px; color:var(--text-primary); cursor:pointer; transition:border-color .2s,box-shadow .2s; }
 .execution-tool-name { font-size:14px; font-weight:550; overflow-wrap:anywhere; }
@@ -154,7 +154,7 @@
 .execution-call-item>strong { font-size:13px; }
 .execution-call-item>span,.execution-call-item>time { font-size:11px; color:var(--text-muted); }
 .execution-call-inspector { min-width:0; }
-.execution-call-inspector h3 { margin:0 0 20px; font-size:20px; }
+.execution-call-inspector h3 { margin:0 0 20px; font-size:var(--roppo-font-dialog); }
 .execution-call-inspector dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:12px 22px; margin:0 0 24px; font-size:13px; }
 .execution-call-inspector dt { color:var(--text-muted); }
 .execution-call-inspector dd { margin:0; overflow-wrap:anywhere; }
@@ -162,7 +162,7 @@
  .execution-graph { grid-template-columns:135px 18px 190px 28px 52px 28px minmax(260px,1fr); }
  .execution-tools { grid-column:1/-1; grid-row:2; grid-template-columns:repeat(3,minmax(0,1fr)); margin-top:40px; align-content:start; }
  .execution-tools-heading { grid-column:1/-1; }
- .execution-page .execution-worker h3 { font-size:18px; }
+ .execution-page .execution-worker h3 { font-size:var(--roppo-font-section); }
 }
 @container(max-width:760px){
  .execution-graph,.execution-graph[data-dense="true"] { grid-template-columns:1fr; }
@@ -217,8 +217,8 @@
 .execution-map-history:hover { text-decoration:underline; }
 .execution-map-history:focus-visible { outline:2px solid var(--action); outline-offset:3px; }
 .execution-map-center-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; border-top:1px solid var(--border-subtle); padding-top:8px; }
-.execution-page .execution-map-center-actions .execution-map-configure { --h:30px; --fs:12px; --px:0px; border:0; }
-.execution-page .execution-map-center-actions .execution-edit-instructions { --fs:12px; }
+.execution-page .execution-map-center-actions .execution-map-configure { --h:30px; --fs:var(--roppo-font-control); --px:0px; border:0; }
+.execution-page .execution-map-center-actions .execution-edit-instructions { --fs:var(--roppo-font-control); }
 .execution-call-map .execution-map-queue { position:absolute; top:50%; left:calc(75% - 20px); transform:translate(-50%,-50%); border:1px solid var(--diagram-line); border-radius:7px; padding:8px 10px; font-size:12px; background:var(--surface-soft); z-index:2; }
 @container(max-width:800px){
  .execution-call-overview { padding:0 22px 24px; }

@@ -31,7 +31,11 @@ function Board(){
     const receive=(message:HostViewMessage)=>{
       if(message.type==='snapshot')setData(message.data)
       if(message.type==='connection')setConnection(message.state)
-      if(message.type==='environment'){setLanguage(message.language);document.documentElement.classList.toggle('dark',message.dark);document.documentElement.lang=message.language}
+      if(message.type==='environment'){
+        setLanguage(message.language);document.documentElement.classList.toggle('dark',message.dark);document.documentElement.lang=message.language
+        // Match the host window's typography even when the navigation narrows this iframe.
+        if(message.compactTypography!==undefined)document.documentElement.dataset.typography=message.compactTypography?'compact':'regular'
+      }
     }
     listeners.add(receive);for(const message of latest.values())receive(message);return()=>{listeners.delete(receive)}
   },[])

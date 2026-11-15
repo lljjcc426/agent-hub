@@ -26,7 +26,7 @@ colors:
 typography:
   headline:
     fontFamily: '"Avenir Next", "PingFang SC", system-ui, sans-serif'
-    fontSize: "clamp(24px, 2.6vw, 34px)"
+    fontSize: "28px"
     fontWeight: 650
     lineHeight: 1.25
     letterSpacing: "-0.02em"
@@ -49,7 +49,7 @@ typography:
     lineHeight: 1.5
   label:
     fontFamily: '"Avenir Next", "PingFang SC", system-ui, sans-serif'
-    fontSize: "13px"
+    fontSize: "14px"
     fontWeight: 550
   help:
     fontFamily: '"Avenir Next", "PingFang SC", system-ui, sans-serif'
@@ -183,9 +183,22 @@ The sun/moon button in each page header switches between white and dark. The cho
 
 **Body and heading stack:** the frontmatter's local Avenir Next / PingFang SC / system stack. **Segmented controls:** the existing Inter / system fallback stack. **Structured JSON:** `ui-monospace, SFMono-Regular, Consolas, monospace`. These are CSS family requests, not claims that a downloaded font is installed or loaded.
 
-The active page-heading size is fluid; ordinary section titles are compact and the selected member's inspector title is slightly larger. Body paragraphs use a looser line height (1.7) than the inherited body value. Member names use a compact title (15px), field labels use the label role, and helper copy uses the help role. There is no separate marketing display scale or regular geometric type ratio.
+`src/ui/typography.css` defines fixed UI roles shared by the Chat shell, configuration, public guide and account screens. Repeated roles use the same size instead of local display scales. Font families, colors and content structure retain the existing product identity.
 
-**Pre-existing variation:** `workspace-settings.css` overrides the earlier system-stack declaration and smaller page-heading rule in `operator-workspace.css`. `affect-ui.css` retains its own segmented-control font family; `execution-page.css` retains larger local control sizes. These files were unchanged by the team-studio extension. This document records the resulting cascade rather than treating the earlier declarations as the rendered truth or silently standardizing them.
+| UI role | Desktop | Window up to 800px |
+| --- | --- | --- |
+| Page heading | 28px | 24px |
+| Dialog / inspector title | 18px | 18px |
+| Section heading | 16px | 16px |
+| Dense body and field label | 14px | 14px |
+| Button and page tab | 14px | 14px |
+| Form input | 14px | 16px |
+| Reading text | 16px | 16px |
+| Secondary metadata | 12px | 12px |
+
+Chat Markdown, formulas, code, diagram annotations, status badges and brand lettering retain their content-specific hierarchy. Input sizes follow the shared breakpoint independently of each page's layout breakpoint. Buttons retain their touch height when their labels become smaller.
+
+The packaged Agent board declares the same role values in its sandboxed document. The host sends the window's compact typography state with its existing environment message, so expanding navigation does not shrink the board heading earlier than the other pages. Older hosts retain the board's local responsive fallback.
 
 ## Layout
 
@@ -220,13 +233,13 @@ Preserve the semantic separation between configured agents, the explicitly label
 
 ### Buttons
 
-Primary actions use white text on near-black in light mode, and near-black text on off-white in dark mode. Secondary buttons use the current surface and a neutral border; hover uses the neutral hover surface. Both use compact padding, medium text (12px, weight 500, line height 1.4), a minimum height (34px), and increase that minimum to 40px in the mobile shell. Text actions use the neutral action color, weight 550, and underline on hover. Disabled operator buttons reduce opacity to 0.5 and use a default cursor.
+Primary actions use white text on near-black in light mode, and near-black text on off-white in dark mode. Secondary buttons use the current surface and a neutral border; hover uses the neutral hover surface. Both use compact padding, medium text (14px, weight 500, line height 1.4), a minimum height (34px), and increase that minimum to 40px in the mobile shell. Text actions use the neutral action color, weight 550, and underline on hover. Disabled operator buttons reduce opacity to 0.5 and use a default cursor.
 
 The shared operator focus treatment is an outline (3px, offset 3px). Primary, secondary and text buttons use background/border/shadow transitions (160ms ease). API connection actions use this operator button family. Existing legacy forms and affectUI buttons remain separate families outside that adapter.
 
 ### Fields
 
-Team fields use white fill, a defined border, full available width and 10px 11px padding. Labels sit above fields with a 7px gap; the field stack uses a 20px gap. Selects are 42px high. Textareas resize vertically, have a minimum height (130px) and line height (1.7). Invalid numeric inputs receive an error border and associated message; helper copy and `aria-describedby` retain meaning beyond visual styling. Disabled prompt areas use a soft background and muted text. Team fields remain 13px in the current mobile CSS; the separate advanced settings forms have their own 16px mobile override. No system-wide mobile input-size normalization is claimed here.
+Team fields use white fill, a defined border, full available width and 10px 11px padding. Labels sit above fields with a 7px gap; the field stack uses a 20px gap. Selects are 42px high. Textareas resize vertically, have a minimum height (130px) and line height (1.7). Invalid numeric inputs receive an error border and associated message; helper copy and `aria-describedby` retain meaning beyond visual styling. Disabled prompt areas use a soft background and muted text. Team and advanced settings fields use the shared 14px input role, increasing to 16px when the host window is at most 800px wide.
 
 ### Navigation and segmented tabs
 

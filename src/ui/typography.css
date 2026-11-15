@@ -1,0 +1,18 @@
+/* Shared UI roles for the Chat shell, configuration pages and account screens.
+   Reading content (Markdown, formulas and code) keeps its own content hierarchy. */
+:root {
+  --roppo-font-page: 28px;
+  --roppo-font-dialog: 18px;
+  --roppo-font-section: 16px;
+  --roppo-font-body: 14px;
+  --roppo-font-control: 14px;
+  --roppo-font-input: 14px;
+  --roppo-font-reading: 16px;
+  --roppo-font-meta: 12px;
+}
+@media (max-width: 800px) {
+  :root {
+    --roppo-font-page: 24px;
+    --roppo-font-input: 16px;
+  }
+}

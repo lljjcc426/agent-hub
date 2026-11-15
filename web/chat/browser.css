@@ -60,7 +60,7 @@
   border: 0;
   background: var(--c-bg);
   color: var(--c-text);
-  font-size: 13px;
+  font-size: var(--roppo-font-input);
   padding: 7px;
 }
 .browser-profiles {
@@ -96,7 +96,7 @@
   background: var(--c-bg);
   color: var(--c-text);
   height: 31px;
-  font-size: 12px;
+  font-size: var(--roppo-font-input);
   padding: 0 9px;
   margin-inline: 4px;
 }
@@ -251,7 +251,7 @@
   color: var(--c-muted);
 }
 .browser-empty h2 {
-  font-size: 20px;
+  font-size: var(--roppo-font-dialog);
   font-weight: 550;
   letter-spacing: -0.3px;
   margin: 0;
@@ -291,7 +291,7 @@
   margin-bottom: 20px;
 }
 .browser-dialog h2 {
-  font-size: 18px;
+  font-size: var(--roppo-font-dialog);
   font-weight: 600;
   margin: 0;
 }
@@ -304,7 +304,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--roppo-font-body);
 }
 .browser-dialog input:not([type="checkbox"]),
 .browser-dialog select {
@@ -314,7 +314,7 @@
   border-radius: 7px;
   background: var(--c-bg);
   color: var(--c-text);
-  font-size: 14px;
+  font-size: var(--roppo-font-input);
 }
 .browser-dialog fieldset {
   border: 0;
@@ -322,7 +322,7 @@
   margin: 5px 0;
 }
 .browser-dialog legend {
-  font-size: 12px;
+  font-size: var(--roppo-font-body);
   margin-bottom: 12px;
 }
 .browser-dialog .browser-grant {
@@ -341,7 +341,7 @@
   margin-top: 10px;
 }
 .browser-dialog-actions > button:not(.browser-primary) {
-  font-size: 12px;
+  font-size: var(--roppo-font-control);
   padding: 9px;
 }
 .browser-account-list {
@@ -414,16 +414,16 @@
     padding-inline: 12px;
   }
   .browser-address input {
-    font-size: 16px;
+    font-size: var(--roppo-font-input);
   }
   .browser-dialog input:not([type="checkbox"]) {
-    font-size: 16px;
+    font-size: var(--roppo-font-input);
   }
   .browser-dialog {
     padding: 20px;
   }
   .browser-empty h2 {
-    font-size: 18px;
+    font-size: var(--roppo-font-dialog);
   }
 }
 @media (prefers-reduced-motion: reduce) {

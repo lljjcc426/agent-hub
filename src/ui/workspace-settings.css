@@ -2,7 +2,7 @@
 .operator-workspace {
   font-family: "Avenir Next", "PingFang SC", system-ui, sans-serif;
 }
-.operator-workspace .page-heading h1 { font-size: clamp(24px, 2.6vw, 34px); line-height: 1.25; }
+.operator-workspace .page-heading h1 { font-size: var(--roppo-font-page); line-height: 1.25; }
 .operator-workspace .usage-steps { margin: 0; padding: 0 0 0 22px; }
 .operator-workspace .usage-steps li { padding: 10px 0 14px 5px; border-bottom: 1px solid var(--line); }
 .operator-workspace .usage-steps p { margin-top: 5px; }
@@ -24,7 +24,7 @@
   margin-bottom: -1px;
   color: var(--muted);
   border-bottom: 2px solid transparent;
-  font-size: 13px;
+  font-size: var(--roppo-font-control);
 }
 .operator-workspace .workspace-tab:hover { background: var(--surface-soft); }
 .operator-workspace .workspace-tab[aria-current] {
@@ -55,11 +55,11 @@
   border-radius: 8px 8px 0 0;
   background: var(--surface-soft);
 }
-.operator-workspace .workspace-settings :is(.section-head,.panel) h2 { font-size: 16px; }
+.operator-workspace .workspace-settings :is(.section-head,.panel) h2 { font-size: var(--roppo-font-section); }
 .operator-workspace .workspace-settings .field { padding: 8px 0; align-items: center; gap: 12px; }
-.operator-workspace .workspace-settings .field-label { font-size: 13px; }
+.operator-workspace .workspace-settings .field-label { font-size: var(--roppo-font-body); }
 .operator-workspace .workspace-settings :is(select,textarea,input:not([type="checkbox"])) {
-  font-size: 13px;
+  font-size: var(--roppo-font-input);
   min-height: 34px;
   border-color: var(--line);
 }
@@ -96,16 +96,16 @@
 .operator-workspace .workspace-search input { max-width: 290px; }
 .operator-workspace .workspace-search select { width: auto; max-width: 100%; }
 .operator-workspace .workspace-table { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-.operator-workspace .workspace-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.operator-workspace .workspace-table table { width: 100%; border-collapse: collapse; font-size: var(--roppo-font-body); }
 .operator-workspace .workspace-table :is(th,td) {
   padding: 11px 14px;
   text-align: left;
   border-bottom: 1px solid var(--line);
   overflow-wrap: anywhere;
 }
-.operator-workspace .workspace-table th { font-size: 12px; font-weight: 650; color: var(--muted); background: var(--surface-soft); }
+.operator-workspace .workspace-table th { font-size: var(--roppo-font-meta); font-weight: 650; color: var(--muted); background: var(--surface-soft); }
 .operator-workspace .workspace-table tr:last-child td { border-bottom: 0; }
-.operator-workspace .workspace-table small { display: block; margin-top: 3px; font-size: 11px; }
+.operator-workspace .workspace-table small { display: block; margin-top: 3px; font-size: var(--roppo-font-meta); }
 .operator-workspace .table-title { display: flex; align-items: center; gap: 9px; }
 .operator-workspace .table-title > div { min-width: 0; }
 .operator-workspace .table-title .text-button { text-align: left; white-space: normal; }
@@ -124,7 +124,7 @@
 @media (max-width: 680px) {
   .operator-workspace .settings-with-aside { grid-template-columns: minmax(0, 1fr); }
   .operator-workspace .workspace-settings .field:not(:has(.switch)) { grid-template-columns: minmax(0, 1fr); gap: 5px; }
-  .operator-workspace .workspace-settings :is(select,textarea,input:not([type="checkbox"])) { font-size: 16px; }
+  .operator-workspace .workspace-settings :is(select,textarea,input:not([type="checkbox"])) { font-size: var(--roppo-font-input); }
   .operator-workspace .revision-line { grid-template-columns: 1fr 1fr; gap: 8px; }
   .operator-workspace .revision-line button { justify-self: start; }
   .operator-workspace .workspace-table :is(table,tbody,tr,td) { display: block; }
@@ -135,7 +135,7 @@
   .operator-workspace .workspace-table td:not(:first-child):has(> :not(button)) { display: flex; gap: 7px; align-items: baseline; }
   .operator-workspace .workspace-table td:not(:first-child):has(> :not(button))::before {
     content: attr(data-label);
-    font-size: 11px;
+    font-size: var(--roppo-font-meta);
     color: var(--muted);
   }
 }
@@ -156,64 +156,66 @@
 
 /* Behavior rules: the editor stays focused; composition lives in the preview dialog. */
 .operator-workspace .prompt-rules-page { min-width: 0; }
-.operator-workspace .prompt-rules-page .page-heading { align-items: center; gap: 24px; margin-bottom: 32px; }
-.operator-workspace .prompt-rules-page .page-heading h1 { font-size: 40px; line-height: 1.25; font-weight: 700; letter-spacing: -.02em; }
-.operator-workspace .prompt-rules-page .heading-actions { display: flex; gap: 16px; flex-wrap: wrap; }
-.operator-workspace .prompt-rules-page .heading-actions .button { min-height: 48px; padding: 10px 26px; border-radius: 8px; font-size: 20px; font-weight: 600; }
-.operator-workspace .prompt-rules-tabs { display: flex; gap: 30px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
-.operator-workspace .prompt-rules-tab { padding: 16px 8px; margin: 0 0 -1px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--body); font: inherit; font-size: 20px; cursor: pointer; white-space: nowrap; }
+.operator-workspace .prompt-rules-page .page-heading { align-items: center; gap: 20px; margin-bottom: 24px; }
+.operator-workspace .prompt-rules-page .page-heading h1 { font-size: var(--roppo-font-page); line-height: 1.25; font-weight: 700; letter-spacing: -.02em; }
+.operator-workspace .prompt-rules-page .heading-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.operator-workspace .prompt-rules-page .heading-actions .button { min-height: 36px; padding: 8px 14px; border-radius: 8px; font-size: var(--roppo-font-control); font-weight: 600; }
+.operator-workspace .prompt-rules-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+.operator-workspace .prompt-rules-tab { padding: 10px 8px; margin: 0 0 -1px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--body); font: inherit; font-size: var(--roppo-font-control); cursor: pointer; white-space: nowrap; }
 .operator-workspace .prompt-rules-tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 650; }
 .operator-workspace .prompt-rules-tab:hover { background: var(--rail); }
 .operator-workspace .prompt-rules-tab:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .operator-workspace .prompt-rules-form,
 .operator-workspace .prompt-rules-advanced { width: min(1120px, 87.5%); }
-.operator-workspace .prompt-rules-form { display: grid; gap: 26px; }
-.operator-workspace .prompt-rule-field { display: grid; gap: 14px; min-width: 0; }
-.operator-workspace .prompt-rule-label { color: var(--ink); font-size: 26px; font-weight: 650; line-height: 1.35; }
-.operator-workspace .prompt-rule-input { box-sizing: border-box; width: 100%; min-height: 112px; padding: 16px 20px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 20px; line-height: 1.65; resize: vertical; }
+.operator-workspace .prompt-rules-form { display: grid; gap: 20px; }
+.operator-workspace .prompt-rule-field { display: grid; gap: 8px; min-width: 0; }
+.operator-workspace .prompt-rule-label { color: var(--ink); font-size: var(--roppo-font-body); font-weight: 650; line-height: 1.35; }
+.operator-workspace .prompt-rule-input { box-sizing: border-box; width: 100%; min-height: 96px; padding: 12px 14px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: var(--roppo-font-input); line-height: 1.65; resize: vertical; }
 .operator-workspace .prompt-rule-input::placeholder { color: var(--muted); opacity: 1; }
-.operator-workspace .prompt-rules-role .prompt-rule-input { min-height: 320px; }
-.operator-workspace .prompt-rules-advanced { border-top: 1px solid var(--line); margin-top: 36px; padding: 0; }
-.operator-workspace .prompt-rules-advanced > summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 0; color: var(--ink); font-size: 22px; font-weight: 600; cursor: pointer; list-style: none; }
+.operator-workspace .prompt-rules-role .prompt-rule-input { min-height: 260px; }
+.operator-workspace .prompt-rules-advanced { border-top: 1px solid var(--line); margin-top: 24px; padding: 0; }
+.operator-workspace .prompt-rules-advanced > summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; color: var(--ink); font-size: var(--roppo-font-body); font-weight: 600; cursor: pointer; list-style: none; }
 .operator-workspace .prompt-rules-advanced > summary::-webkit-details-marker { display: none; }
-.operator-workspace .prompt-rules-advanced > summary .icon { width: 22px; height: 22px; }
+.operator-workspace .prompt-rules-advanced > summary .icon { width: 18px; height: 18px; }
 .operator-workspace .prompt-rules-advanced[open] > summary .icon { transform: rotate(90deg); }
-.operator-workspace .prompt-advanced-fields { display: grid; gap: 26px; padding: 16px 0 24px; }
-.operator-workspace .prompt-advanced-fields :is(summary, .field-label, textarea, .button) { font-size: 16px; }
-.operator-workspace .prompt-advanced-fields .prompt-rule-label { font-size: 20px; }
-.operator-workspace .prompt-advanced-fields .prompt-rule-input { font-size: 18px; }
+.operator-workspace .prompt-advanced-fields { display: grid; gap: 20px; padding: 16px 0 24px; }
+.operator-workspace .prompt-advanced-fields :is(summary, .field-label, .button) { font-size: var(--roppo-font-control); }
+.operator-workspace .prompt-advanced-fields textarea { font-size: var(--roppo-font-input); }
+.operator-workspace .prompt-advanced-fields .prompt-rule-label { font-size: var(--roppo-font-body); }
+.operator-workspace .prompt-advanced-fields .prompt-rule-input { font-size: var(--roppo-font-input); }
 .operator-workspace .prompt-template-list { display: grid; gap: 16px; padding: 16px 0; }
 .operator-workspace .prompt-template-list textarea { min-height: 180px; line-height: 1.6; }
 .operator-workspace dialog.prompt-preview-dialog { position: fixed; inset: 0; box-sizing: border-box; width: min(980px, calc(100vw - 48px)); max-width: none; height: auto; max-height: calc(100dvh - 64px); margin: auto; padding: 28px 32px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); overflow: auto; }
 .operator-workspace .prompt-preview-dialog[open] { display: block; }
 .operator-workspace .prompt-preview-dialog::backdrop { background: var(--overlay-backdrop, rgb(0 0 0 / .35)); }
 .operator-workspace .prompt-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
-.operator-workspace .prompt-preview-heading h2 { font-size: 26px; margin: 0; }
-.operator-workspace .prompt-preview-dialog .button { font-size: 16px; min-height: 42px; }
+.operator-workspace .prompt-preview-heading h2 { font-size: var(--roppo-font-dialog); margin: 0; }
+.operator-workspace .prompt-preview-dialog .button { font-size: var(--roppo-font-control); min-height: 42px; }
 .operator-workspace .prompt-preview-dialog .field { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 16px; align-items: center; padding: 12px 0; }
-.operator-workspace .prompt-preview-dialog :is(.field-label, select, summary) { font-size: 17px; }
+.operator-workspace .prompt-preview-dialog :is(.field-label, summary) { font-size: var(--roppo-font-body); }
+.operator-workspace .prompt-preview-dialog select { font-size: var(--roppo-font-input); }
 .operator-workspace .prompt-preview-dialog select { min-height: 44px; }
 .operator-workspace .prompt-preview-scenario { margin: 8px 0 24px; }
 .operator-workspace .prompt-preview-scenario > summary { padding: 12px 0; cursor: pointer; }
-.operator-workspace .prompt-preview-status { font-size: 18px; font-weight: 600; margin: 20px 0 14px; }
-.operator-workspace .prompt-preview-body pre { font: inherit; font-size: 16px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; padding: 20px; background: var(--rail); border: 1px solid var(--line); border-radius: 8px; }
+.operator-workspace .prompt-preview-status { font-size: var(--roppo-font-body); font-weight: 600; margin: 20px 0 14px; }
+.operator-workspace .prompt-preview-body pre { font: inherit; font-size: var(--roppo-font-body); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; padding: 20px; background: var(--rail); border: 1px solid var(--line); border-radius: 8px; }
 .operator-workspace .prompt-preview-body > details { margin-top: 24px; }
 @media (max-width: 900px) {
   .operator-workspace .prompt-rules-form, .operator-workspace .prompt-rules-advanced { width: 100%; }
 }
 @media (max-width: 680px) {
   .operator-workspace .prompt-rules-page .page-heading { align-items: flex-start; flex-direction: column; gap: 20px; margin-bottom: 20px; }
-  .operator-workspace .prompt-rules-page .page-heading h1 { font-size: 30px; }
+  .operator-workspace .prompt-rules-page .page-heading h1 { font-size: var(--roppo-font-page); }
   .operator-workspace .prompt-rules-page .heading-actions { width: 100%; gap: 12px; }
-  .operator-workspace .prompt-rules-page .heading-actions .button { flex: 1; padding: 10px 14px; font-size: 16px; }
+  .operator-workspace .prompt-rules-page .heading-actions .button { flex: 1; min-height: 40px; padding: 10px 14px; font-size: var(--roppo-font-control); }
   .operator-workspace .prompt-rules-tabs { gap: 4px; margin-bottom: 24px; }
-  .operator-workspace .prompt-rules-tab { flex: 1; min-width: 0; white-space: normal; padding: 14px 4px; font-size: 16px; }
-  .operator-workspace .prompt-rule-label { font-size: 20px; }
-  .operator-workspace .prompt-rule-input { padding: 14px 16px; font-size: 16px; min-height: 128px; }
-  .operator-workspace .prompt-rules-advanced > summary { font-size: 20px; }
+  .operator-workspace .prompt-rules-tab { flex: 1; min-width: 0; white-space: normal; padding: 14px 4px; font-size: var(--roppo-font-control); }
+  .operator-workspace .prompt-rule-label { font-size: var(--roppo-font-body); }
+  .operator-workspace .prompt-rule-input { padding: 12px 14px; font-size: var(--roppo-font-input); min-height: 104px; }
+  .operator-workspace .prompt-rules-advanced > summary { font-size: var(--roppo-font-body); }
   .operator-workspace dialog.prompt-preview-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 32px); padding: 20px; }
   .operator-workspace .prompt-preview-dialog .field { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 }
 @media (max-width: 380px) {
-  .operator-workspace .prompt-rules-tab { font-size: 15px; padding-inline: 2px; word-break: keep-all; }
+  .operator-workspace .prompt-rules-tab { font-size: var(--roppo-font-control); padding-inline: 2px; word-break: keep-all; }
 }

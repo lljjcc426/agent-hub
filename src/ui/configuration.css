@@ -90,18 +90,18 @@ dd {
   margin: 0;
 }
 h1 {
-  font-size: 2.4rem;
+  font-size: var(--roppo-font-page);
   line-height: 1.13;
   letter-spacing: -0.038em;
   font-weight: 650;
 }
 h2 {
-  font-size: 1.22rem;
+  font-size: var(--roppo-font-section);
   letter-spacing: -0.023em;
   line-height: 1.35;
 }
 h3 {
-  font-size: 1rem;
+  font-size: var(--roppo-font-section);
   font-weight: 630;
   line-height: 1.45;
 }
@@ -303,7 +303,7 @@ pre {
   text-decoration: none;
   border-radius: 7px;
   font-weight: 570;
-  font-size: 0.88rem;
+  font-size: var(--roppo-font-control);
   min-height: 38px;
   padding: 8px 13px;
   line-height: 1.35;
@@ -335,7 +335,7 @@ pre {
   border: 0;
   background: transparent;
   color: var(--body);
-  font-size: 0.88rem;
+  font-size: var(--roppo-font-control);
   max-width: 110px;
 }
 .mobile-nav {
@@ -518,7 +518,7 @@ fieldset {
 }
 .field-label {
   font-weight: 570;
-  font-size: 0.93rem;
+  font-size: var(--roppo-font-body);
 }
 .field small {
   display: block;
@@ -539,7 +539,7 @@ textarea {
   border-radius: 6px;
   background: var(--surface);
   padding: 8px 10px;
-  font-size: 0.93rem;
+  font-size: var(--roppo-font-input);
   line-height: 1.45;
   min-width: 0;
 }
@@ -805,10 +805,10 @@ pre {
     padding-inline: 5%;
   }
   .topbar .tools .text-action {
-    font-size: 0.85rem;
+    font-size: var(--roppo-font-control);
   }
   h1 {
-    font-size: 2rem;
+    font-size: var(--roppo-font-page);
   }
   .field {
     grid-template-columns: minmax(0, 1fr) minmax(150px, 1.2fr);
@@ -868,7 +868,7 @@ pre {
   input:not([type="checkbox"]),
   select:not(.lang),
   textarea {
-    font-size: 16px;
+    font-size: var(--roppo-font-input);
   }
   .field:has(.switch) {
     grid-template-columns: 1fr auto;
@@ -939,7 +939,7 @@ pre {
   margin-bottom: 24px;
 }
 .guide-intro h1 {
-  font-size: 2.25rem;
+  font-size: var(--roppo-font-page);
   letter-spacing: -0.035em;
 }
 .guide-intro p,
@@ -968,7 +968,7 @@ pre {
   padding: 6px 3px;
   min-height: 38px;
   color: var(--muted);
-  font-size: 0.91rem;
+  font-size: var(--roppo-font-control);
   text-align: start;
   line-height: 1.35;
 }
@@ -1008,7 +1008,7 @@ pre {
   margin-bottom: 22px;
 }
 .guide-title h2 {
-  font-size: 1.55rem;
+  font-size: var(--roppo-font-section);
   letter-spacing: -0.03em;
 }
 .guide-body,
@@ -1138,7 +1138,7 @@ pre {
   padding: 18px;
 }
 .guide-result h3 {
-  font-size: 1.12rem;
+  font-size: var(--roppo-font-section);
 }
 @media (max-width: 780px) {
   .guide-main {
@@ -1148,7 +1148,7 @@ pre {
     min-height: 58px;
   }
   .guide-intro h1 {
-    font-size: 1.95rem;
+    font-size: var(--roppo-font-page);
   }
   .guide-steps {
     margin-bottom: 23px;
@@ -1171,7 +1171,7 @@ pre {
     gap: 3px;
   }
   .guide-header .text-action {
-    font-size: 0.85rem;
+    font-size: var(--roppo-font-control);
     padding: 7px 4px;
   }
   .guide-header .text-action .icon,
@@ -1185,10 +1185,10 @@ pre {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
-    font-size: 0.76rem;
+    font-size: var(--roppo-font-control);
   }
   .guide-title h2 {
-    font-size: 1.37rem;
+    font-size: var(--roppo-font-section);
   }
   .guide-choice {
     padding: 13px 12px;
@@ -1360,7 +1360,7 @@ pre {
   margin: 10px 0 6px;
 }
 .entry-heading h1 {
-  font-size: 2.25rem;
+  font-size: var(--roppo-font-page);
   line-height: 1.2;
   letter-spacing: -0.035em;
 }
@@ -1433,7 +1433,7 @@ pre {
 .entry-section > h2,
 .entry-section-heading h2 {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: var(--roppo-font-section);
 }
 .entry-section > p {
   margin: 10px 0 18px;
@@ -1699,7 +1699,7 @@ pre {
     flex-wrap: wrap;
   }
   .entry-heading h1 {
-    font-size: 1.9rem;
+    font-size: var(--roppo-font-page);
   }
   .entry-role-row {
     gap: 13px;
@@ -1737,7 +1737,7 @@ pre {
   .entry-field input,
   .entry-field select,
   .entry-invite-controls input {
-    font-size: 16px;
+    font-size: var(--roppo-font-input);
   }
   .entry-check-list li {
     flex-wrap: wrap;

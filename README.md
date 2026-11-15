@@ -1,34 +1,89 @@
 <p align="center">
-  <img src="docs/images/roppo-hero.png" alt="Roppo — One conversation. A team of agents." width="100%">
+  <img src="src/ui/assets/agents/router.webp" alt="Roppo" width="88">
 </p>
+<h1 align="center">Roppo</h1>
 
+<p align="center"><strong>Your personal agent. A team when the work needs one.</strong></p>
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
-  <br>
-  <a href="#quick-start">Quick start</a> · <a href="#your-workspace">Workspace</a> · <a href="#documentation">Docs</a> · <a href="https://github.com/pythc/agent-hub/discussions">Community</a>
+  English · <a href="README.zh-CN.md">简体中文</a><br>
+  <a href="#product-tour">Watch the video</a> · <a href="#your-workspace">Explore Roppo</a> · <a href="#quick-start">Get started</a> · <a href="https://github.com/pythc/agent-hub/discussions">Community</a>
 </p>
-
 <p align="center">
   <a href="https://github.com/pythc/agent-hub/actions/workflows/ci.yml"><img src="https://github.com/pythc/agent-hub/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-181818" alt="Apache 2.0 license"></a>
-  <a href="https://github.com/pythc/agent-hub/discussions"><img src="https://img.shields.io/badge/join-the_community-181818" alt="Join the community"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-181818" alt="Apache 2.0"></a>
 </p>
 
-**Roppo is a local-first workspace for your AI team.** Give a task to the Router. It coordinates Workers, follows their progress, and brings the results back to your conversation. Files, browsers, tool calls, and team activity stay beside the work.
+**Tell Roppo what you want done, then review the result.** Roppo is an open-source, local-first workspace for coding, research, documents and recurring work. Your Router keeps the conversation and coordinates execution; a Worker normally owns the whole task, with additional help when it is useful.
 
-Built on the domain core of [DeepSeek Super Agent](https://github.com/deepseek-ai/dsh-superagent-prototype). Bring your own model access, configure each agent, and keep your workspace on your own machine.
+## Product tour
 
-## Product walkthrough
+[![Watch the English Roppo product video](docs/images/product/english-tour.gif)](https://github.com/pythc/agent-hub/raw/refs/heads/main/docs/media/roppo-product-en.mp4)
 
-[![Roppo decision-layer walkthrough](docs/images/roppo-decision-flow.png)](docs/media/roppo-concept-1080p.mp4)
+**[Watch the English video · 2:57 · 1080p](https://github.com/pythc/agent-hub/raw/refs/heads/main/docs/media/roppo-product-en.mp4)** — English UI and captions, no voiceover. This concept film includes the broader product vision. The screenshots and interaction GIFs below show the running interface with isolated demo data. [Media notes](docs/images/README.md#product-tour-media).
 
-A 2:39 concept walkthrough of model setup, group-chat intake, the optional decision layer, and visible teamwork. The interface and activity are staged; this is not a production run.
+## Your workspace
 
-[1080p MP4](docs/media/roppo-concept-1080p.mp4) · [Editable source](demos/roppo-concept-video/README.md)
+![Roppo Chat with an Agents list, a follow-up question and a rendered formula](docs/images/product/files-math.jpg)
+
+### Start with the outcome
+
+> “Review this launch brief, check the numbers, and give me a concise plan for Monday.”
+
+Attach the material and send one message. Follow the task, tool calls and replies in the same conversation. Add a correction or stop a run whenever you need to.
+
+![An attached brief becomes a delegated task and a formatted result in Chat](docs/images/product/chat-flow.gif)
+
+Other places to start:
+
+| Work | Try asking |
+| --- | --- |
+| Code | “The summary cuts emoji in half. Fix it, add a regression check, and show me the result.” |
+| Research | “Compare these three options using their official sources, then recommend one for this project.” |
+| Documents | “Compare this brief with the spreadsheet and list the numbers that do not agree.” |
+| Recurring work | “Every weekday at 9, summarize the open issues and tell me what needs attention.” |
+
+### One conversation. Two views.
+
+Use **Group chat** to see Router and Workers together. Switch to the **Agents** list to focus on a particular agent and its latest message. Worker conversations are read-only; keep talking to your Router.
+
+![Switching from group chat to the Agents list, inspecting a Worker and changing theme](docs/images/product/agents-view.gif)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/product/agents-dark.jpg">
+  <img src="docs/images/product/agents.jpg" alt="The Atlas Worker conversation, with Router instructions and a read-only composer" width="100%">
+</picture>
+
+### Bring your files. Keep the details readable.
+
+Upload documents, spreadsheets, images, code or archives. Send multiple files together, drag them in, or paste an image. Replies render Markdown, tables, code and LaTeX; original attachments stay available to download.
+
+![Attaching a launch brief to a natural-language request](docs/images/product/attachments.jpg)
+
+Up to **10 files per message, 25 MiB each**. Understanding a particular format depends on the chosen model and task tools. [Files and formulas →](docs/CHAT_FILES_MATH_ACCEPTANCE.md)
+
+### Let it learn how you work
+
+Start with a task, then express preferences naturally as you go. Roppo can retain useful preferences and working context for later tasks. Saved memories live in **Settings**, with just **Edit** and **Delete** when you need to adjust them.
+
+![Saved memories with Edit and Delete controls in Settings, shown in Chinese](docs/images/memory-settings-light.png)
+
+Give your Router and Workers their own names, models and tools. Use **Behavior rules** for shared preferences and role instructions, and preview the assembled instructions before saving. Chat display and clearing built-in Chat memory and context also live in Settings.
+
+### Work where the task starts
+
+Connect **Feishu, Slack, Linear and GitHub** through the available source adapters and plugins. Extend the toolset with **MCP** and app integrations. Keep each task connected to its source conversation or issue.
+
+For repeatable workflows, use schedules or signed event automations. Inspect incoming events, task outcomes and delivery receipts in the workspace. The host must stay running for scheduled work. [Integrations](docs/PLUGINS.md) · [Schedules](docs/PROACTIVE_ROUTER.md) · [Event automations](docs/WEBHOOKS.md)
+
+![The event automations workspace with enabled workflows, shown in Chinese](docs/images/automation-workspace-light.jpg)
+
+### Keep the browser beside the work
+
+Workers can use isolated browser sessions with selected saved login state. Open the browser beside the conversation, inspect the page, and **take over** when a site needs your input. Files and team activity are available in the same side panel. [Browser guide →](docs/BROWSER.en.md)
 
 ## Quick start
 
-You need **Node.js 22.19+**, Git, and a supported model connection.
+You need **Node.js 22.19+**, Git and a supported model connection.
 
 ```sh
 git clone https://github.com/pythc/agent-hub.git
@@ -37,138 +92,48 @@ npm ci
 ./start.sh
 ```
 
-1. **Create your local account.** The browser opens automatically. Keep your recovery code.
-2. **Connect a model.** Add your connection in **Model connections**.
-3. **Set up your team.** In **Agent team**, select a hosted Router and configure your Workers.
-4. **Start a conversation.** Give the Router a task and watch the team work.
+Create your local account, connect a model, configure a hosted Router and at least one Worker, then open **Conversations**. No Roppo cloud account is required. The launcher keeps your installation in `~/.agent-hub`.
 
-No Roppo cloud account is required. The launcher creates or reopens your installation in `~/.agent-hub`. Returning to an existing deployment? [Start it with its original configuration](docs/OPERATIONS.md#start-the-right-instance).
+Prefer Docker? With Docker and Compose running:
 
-With Docker and Compose already running, run `./deployment/compose.sh up` from this repository. It builds a Linux runtime with Bubblewrap and Chromium, keeps private data in a dedicated volume, and prints a local setup link. Configure an API model in the web UI. See [Docker setup, backups and upgrades](docs/DOCKER.md) (中文) for supported environments and commands.
+```sh
+./deployment/compose.sh up
+```
 
-## Your workspace
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/workspace-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/workspace-light.png">
-  <img src="docs/images/workspace-dark.png" alt="Roppo workspace with a conversation, tool calls, and team activity" width="100%">
-</picture>
-
-The running interface with isolated demo data; model names and results shown are fixtures.
-
-### One conversation, a coordinated team
-
-Talk to the **Router** while **Workers** carry out delegated tasks. Configure the Router and 1–10 Workers independently: model, instructions, reasoning, provider parameters, and tools. Follow up or interrupt from the same conversation.
-
-### See the work as it happens
-
-Stream replies, expand tool calls, and follow real Worker activity. Tasks and execution history persist across host restarts. Failed calls remain visible, and uncertain external actions need reconciliation before retrying.
-
-### A browser beside your task
-
-Open files, browsers, and team activity in closable tabs. Browser profiles retain login state; passwords can be saved in Roppo's local encrypted vault. Grant Workers access to selected login state, with a separate writable browser session for each assignment. **Take over** whenever a task needs you.
-
-### Make it your workspace
-
-Switch between light and dark themes, use English or Chinese, and collapse the sidebar to focus. Connect the same host to MCP clients, Feishu, WeCom, GitHub, or your own source adapters.
-
-Try a task such as:
-
-- “Compare these options, check their official sources, and prepare a recommendation.”
-- “Implement this change, ask another Worker to review it, and show me the test results.”
-- “Inspect this website with the browser. Pause when you need me to sign in.”
+This builds the Linux runtime with Chromium and Bubblewrap, creates a persistent data volume, and prints a local setup link. [Docker setup and upgrades](docs/DOCKER.md) · [Reopen an existing installation](docs/OPERATIONS.md#start-the-right-instance)
 
 ## Bring your own models
 
-| Access | Supported adapters | Setup |
-| --- | --- | --- |
-| **Model API** | OpenAI Responses, OpenAI Chat Completions, Anthropic Messages | Compatible endpoint, model, and credentials |
-| **CLI** | Native Codex app-server | Codex installed and authenticated on the host |
-| **Subscription** · experimental | Direct ChatGPT sign-in | Eligible provider account; subject to provider availability and usage rules |
+| Connection | Options |
+| --- | --- |
+| Model API | OpenAI Responses, OpenAI Chat Completions and Anthropic Messages compatible endpoints |
+| Local CLI | Native Codex app-server, using your installed and authenticated Codex |
+| Experimental | Direct ChatGPT sign-in; protocol-tested, live-account acceptance still pending |
 
-API-only setups do not require Codex. Each role can use its own connection. Reasoning options depend on the selected model; unsupported options produce an error.
-
-Direct ChatGPT sign-in has protocol regression coverage but still needs live-account acceptance. It is separate from the native Codex path. Additional subscription providers and CLIs need adapters. [Model setup →](docs/MODELS.md)
-
-<details>
-<summary><strong>Set up the embedded browser</strong></summary>
-
-On macOS, Roppo can use installed Google Chrome. Otherwise, install the browser runtime or set `browser.executablePath`:
-
-```sh
-npx agent-browser install
-```
-
-Create a profile from the conversation's browser tab, sign in, and choose which Workers may reuse that login state. Taking over pauses Worker control until you hand it back.
-
-The password vault is separate from your everyday Chrome password manager. Isolated sessions using the same website account still share that account's server-side data. See the [browser guide](docs/BROWSER.en.md).
-
-</details>
-
-## Built on Super Agent
-
-```mermaid
-flowchart LR
-    You <--> Router
-    Router <--> Research[Research Worker]
-    Router <--> Build[Build Worker]
-    Router <--> Review[Review Worker]
-    Research --> Tools[Tools & isolated browsers]
-    Build --> Tools
-    Review --> Tools
-```
-
-The Router owns the conversation; Workers report back to it. The host tracks admission, assignments, follow-ups, reports, and delivery explicitly: accepted work is not yet completed work.
-
-Roppo preserves 15 domain-core files from DeepSeek's prototype at `8c32a9d`. The workspace, persistent Router, model adapters, and browser are Roppo extensions. This does not imply identical model behavior or complete upstream integration parity. See [parity](docs/PARITY.md) and [third-party notices](THIRD_PARTY.md). Roppo is an independent project.
+Choose connections per agent. API-only setups do not require Codex. [Model setup →](docs/MODELS.md)
 
 ## Current scope
 
-Roppo is **personal-first and under active development**: one local account per deployment. Organization identity, tenant isolation, and enterprise permissions are future work.
-
-Local-first means local workspace storage; model requests still go to your provider. Native installs bind to loopback; Compose publishes only to host loopback. Remote access needs a separately configured secure connection. Browser acceptance covers macOS with Chrome and the documented Linux ARM64 container; other Linux environments and Windows remain pending. Before upgrading, read the [backup and operations guide](docs/OPERATIONS.md).
+Roppo is **personal-first and under active development**, with one local personal account per deployment. Organization identity, roles and multi-tenant access are future work. Data and runtime state are stored locally; requests to external models and connected services follow the connections you configure. Integration setup and available tools vary by adapter and provider.
 
 ## Documentation
 
-| Use Roppo | Extend Roppo |
+| Start using Roppo | Go deeper |
 | --- | --- |
-| [Models and connections](docs/MODELS.md) | [Backend protocols](docs/BACKENDS.md) · 中文 |
-| [Operations and backups](docs/OPERATIONS.md) | [Sources and tools](docs/INTEGRATIONS.md) · 中文 |
-| [Docker Compose](docs/DOCKER.md) · 中文 | Linux single-instance setup and controlled upgrades |
-| [Local instance delegation](docs/DELEGATION.md) · 中文 | [Operations and recovery](docs/OPERATIONS.md) |
-| [Local accounts](docs/PERSONAL_ACCOUNT.md) · 中文 | [MCP clients](docs/clients/README.md) · 中文 |
-| [Conversations](docs/CHAT.md) · 中文 | [Core semantics and parity](docs/PARITY.md) · 中文 |
-| [Agent board](plugins/agent-board/README.md) | [Workspace view plugins](docs/WORKSPACE_VIEWS.md) |
-| [Plugin marketplace](docs/PLUGIN-MARKETPLACE.md) | [Marketplace design](docs/PLUGIN-MARKETPLACE-DESIGN.md) |
-| [Browser and handoff](docs/BROWSER.en.md) | [Office integrations](docs/OFFICE.md) · 中文 |
-| [Proactive Router and token costs](docs/PROACTIVE_ROUTER.md) | Admission, follow-ups, context and compatibility |
-| [Long-running goals and acceptance](docs/GOAL_ACCEPTANCE_2026-11-07.md) · 中文 | [Failure-driven replanning](docs/GOAL_REPLANNING_2026-11-07.md) · 中文 |
-| [Scoped memory and continuity](docs/EMBEDDED_KNOWLEDGE_AND_CONTINUITY_2026-11-07.md) · 中文 | Embedded document library and sourced context |
-| [Webhooks and acceptance callbacks](docs/WEBHOOKS.md) · 中文 | Signed events, approved automation, durable delivery and recovery |
+| [Chat](docs/CHAT.md) · [Models](docs/MODELS.md) | [Configuration](docs/CONFIGURATION.md) · [Execution backends](docs/BACKENDS.md) |
+| [Browser](docs/BROWSER.en.md) · [Plugins](docs/PLUGINS.md) | [Plugin development](docs/EXECUTION_PLUGINS.md) · [Webhooks](docs/WEBHOOKS.md) |
+| [Docker](docs/DOCKER.md) · [Operations](docs/OPERATIONS.md) | [Architecture and core provenance](docs/PARITY.md) · [Roadmap](docs/ROADMAP.md) |
 
 ## Build with us
 
-Questions, workflows, bug reports, and contributions are welcome in English or Chinese.
+Bring a workflow, report a bug or contribute an improvement. English and Chinese are both welcome.
 
-[Introduce yourself](https://github.com/pythc/agent-hub/discussions/4) · [Start a discussion](https://github.com/pythc/agent-hub/discussions) · [Report a bug](https://github.com/pythc/agent-hub/issues/new/choose) · [Find a first issue](https://github.com/pythc/agent-hub/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)
-
-```sh
-npm ci
-npm run check
-```
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for development and isolated testing. Follow the [roadmap](docs/ROADMAP.md), [community guide](docs/COMMUNITY.md), and [code of conduct](CODE_OF_CONDUCT.md). Report sensitive issues through the [security policy](SECURITY.md).
+[Discussions](https://github.com/pythc/agent-hub/discussions) · [Report a bug](https://github.com/pythc/agent-hub/issues/new/choose) · [Contributing](CONTRIBUTING.md) · [Community guide](docs/COMMUNITY.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
 
 ## License & acknowledgements
 
-Roppo is licensed under [Apache-2.0](LICENSE). Third-party components retain their licenses, including the DeepSeek domain core under MIT. See [NOTICE](NOTICE) and [THIRD_PARTY.md](THIRD_PARTY.md).
+Roppo builds on the domain core of [DeepSeek Super Agent](https://github.com/deepseek-ai/dsh-superagent-prototype), with its own persistent Router, workspace, adapters and browser integration. It is an independent project; see [provenance and extension boundaries](docs/PARITY.md).
 
-Built with [DeepSeek Super Agent](https://github.com/deepseek-ai/dsh-superagent-prototype), [assistant-ui](https://github.com/assistant-ui/assistant-ui), [agent-browser](https://github.com/vercel-labs/agent-browser), React, Vite, and the MCP SDK.
+Licensed under [Apache-2.0](LICENSE). Third-party components retain their licenses, including the DeepSeek core under MIT. Thanks to [assistant-ui](https://github.com/assistant-ui/assistant-ui), [agent-browser](https://github.com/vercel-labs/agent-browser), React, Vite and the MCP SDK. [NOTICE](NOTICE) · [Third-party licenses](THIRD_PARTY.md)
 
 The repository and CLI retain the name `agent-hub`.
-
-Developer source packages: see [Plugins](docs/PLUGINS.md) for Feishu, Slack and Linear adapters and controlled upgrade/rollback.
-Optional [decision layer](docs/DECISION-LAYER.md): connect Jev, model APIs or a local model for intent classification, with record-only and advisory modes.
-
-
-Execution CLI plugin SDK, capability admission and versioned recovery: [Execution plugins](docs/EXECUTION_PLUGINS.md).

@@ -154,7 +154,7 @@ function workspaceHome() {
     opButton(L('Configure team', '配置团队'), () => opNavigate('execution', '', { view: 'configuration' }), 'button primary', 'execution')))
   const members = add(el('div'), el('h2', '', L('Your agent team', '你的 Agent 团队')))
   members.append(add(el('div', 'workspace-team-summary'), add(el('span', 'team-avatar'), icon('execution')),
-    add(el('div'), el('h3', '', 'Router'), el('p', '', route.routerModel || controlConnections().find(item => item.id === route.router)?.model || L('Connection default model', '连接默认模型'))),
+    add(el('div'), el('h3', '', route.routerOptions.label || 'Router'), el('p', '', route.routerModel || controlConnections().find(item => item.id === route.router)?.model || L('Connection default model', '连接默认模型'))),
     opButton(L('Configure Router', '配置 Router'), () => { teamStudio.selected = 'router'; opNavigate('execution', '', { view: 'configuration' }) }, 'text-button')))
   for (const [index, worker] of route.workers.entries()) members.append(add(el('div', 'workspace-team-summary'),
     add(el('span', 'team-avatar'), icon('cpu')), add(el('div'), el('h3', '', worker.label || 'Worker ' + (index + 1)),

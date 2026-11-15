@@ -5,7 +5,7 @@ function executionModeTabs(){
 }
 function executionActors(){
  const architecture=operator.work?.architecture,services=controlConnections(),label=id=>services.find(s=>s.id===id)?.label||(id==='codex'?'Codex':L('Model service','模型服务'))
- return [{kind:'router',id:'router',name:'Router',backend:label(architecture?.router.backend),model:architecture?.router.model},...(architecture?.workers||[]).map((worker,index)=>({kind:'worker',id:worker.id,name:worker.label||'Worker '+(index+1),backend:label(worker.backend),model:worker.model}))]
+ return [{kind:'router',id:'router',name:architecture?.router.label||'Router',backend:label(architecture?.router.backend),model:architecture?.router.model},...(architecture?.workers||[]).map((worker,index)=>({kind:'worker',id:worker.id,name:worker.label||'Worker '+(index+1),backend:label(worker.backend),model:worker.model}))]
 }
 const executionActorValue=actor=>actor.kind+':'+actor.id
 function executionCurrentActor(){const actors=executionActors();return actors.find(actor=>actor.kind===executionView.selected?.kind&&(actor.kind==='router'||actor.id===executionView.selected.id))||actors[0]}
@@ -46,7 +46,7 @@ function executionMapBody(){
   const queue=el('div','execution-map-queue tam-node',L('Queue','队列'));queue.dataset.mapKey='queue';map.append(queue)
  }else{
   const names=operator.work?.architecture?.tools||[],router=actors[0]
-  left.append(executionMapNode({key:'caller-router',kind:'router',id:'router',name:'Router',model:router.model,action:()=>executionPickActor(router,true),glyph:'activity'}))
+  left.append(executionMapNode({key:'caller-router',kind:'router',id:'router',name:router.name,model:router.model,action:()=>executionPickActor(router,true),glyph:'activity'}))
   names.forEach((name,index)=>{(index<Math.floor(names.length/2)?left:right).append(executionMapNode({key:'tool-'+name,kind:'tool',id:name,name:L(...(executionToolLabels[name]||[name,name]))}))})
  }
  const center=el('section','execution-map-center tam-node');center.dataset.mapKey='center'

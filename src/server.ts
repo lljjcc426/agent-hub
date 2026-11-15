@@ -369,7 +369,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,await runtime.chat.files(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().min(1).max(100000),clientMessageId:z.string().uuid()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().min(1).max(100000),clientMessageId:z.string().uuid(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input));return
         }
         if(action==='cancel'&&req.method==='POST'){

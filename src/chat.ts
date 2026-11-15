@@ -25,7 +25,7 @@ interface Conversation {
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 interface Message {id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string}
-interface ChatRun {id:string; conversationId:string; triggerId:string; clientMessageId:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean}
+interface ChatRun {id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
 type ChatCall=ExecutionCall&{conversationId:string;runId:string}
 export type ChatRunState='queued'|'running'|'waiting'|'completed'|'failed'|'cancel_requested'|'cancelled'
@@ -132,7 +132,7 @@ export class ChatSessions {
     if(h.config.execution.router?.mode!=='host')code='host_router_required'
     else if(!this.source())code='local_source_required'
     else if(h.store.get<boolean>('settings','paused'))code='host_paused'
-    return {workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
+    return {routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
   private publicConversation(c:Conversation){return {id:c.id,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,backend:c.backendId,model:c.model}}
   private fingerprint(id?:string){
@@ -211,8 +211,8 @@ export class ChatSessions {
     this.host.store.put('chat-conversation',c.id,{...latest,sequence,updatedAt:at,...(!latest.title&&m.role==='user'?{title:m.text.replace(/\s+/g,' ').slice(0,70)}:{})})
   }
   private router(triggerId:string):Speaker {
-    const route=this.host.store.get<{routerId:string;scopeId:string}>('router-route',triggerId)
-    return {id:route?.routerId??'router',label:route?this.host.scopes.scope(route.scopeId).name+' · Router':'Router',kind:'router'}
+    const route=this.host.store.get<{routerId:string;scopeId:string}>('router-route',triggerId),scope=route?this.host.scopes.scope(route.scopeId):undefined
+    return {id:route?.routerId??'router',label:scope?.router?.label??this.host.config.execution.router?.label??(route&&!route.scopeId.startsWith('@chat:')?scope!.name+' · Router':'Router'),kind:'router'}
   }
   private worker(id:string):Speaker {return {id,label:workerProfiles(this.host.config).find(w=>w.id===id)?.label??id,kind:'worker'}}
   delegated(id:string,triggerId:string,ticketId:string,workerId:string,text:string){
@@ -234,6 +234,7 @@ export class ChatSessions {
     }catch{return}
     this.message(c,{id:'worker:'+message.id,runId:run.id,role:'assistant',text:message.text,status:'complete',speaker:this.worker(assignment.workerId),recipient:this.router(run.triggerId),ticketId:message.ticketId});this.changed(c.id)
   }
+  locale(triggerId:string){return this.host.store.get<ChatRun>('chat-run',triggerId)?.locale}
   binding(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(!run)return
@@ -257,7 +258,7 @@ export class ChatSessions {
     try{this.host.memory.validate(owner.manifest);for(const id of owner.inputs)this.host.routerIngress.authority(id)}catch{return}
     this.host.store.atomic(()=>this.reply(message.id,owner.triggerId,message.text))
   }
-  send(id:string,owner:string,input:{clientMessageId:string;text:string}){
+  send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string}){
     return this.host.store.atomic(()=>{
       const c=this.get(id,owner),text=input.text.trim()
       const previous=this.rows<ChatRun>('chat-run','conversationId',id).find(r=>r.clientMessageId===input.clientMessageId)
@@ -278,7 +279,7 @@ export class ChatSessions {
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
-      const run:ChatRun={id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,createdAt:Date.now()}
+      const run:ChatRun={id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,createdAt:Date.now()}
       this.host.store.put('chat-run',run.id,run)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId})
       return {runId:run.id,duplicate:false}
@@ -327,12 +328,13 @@ export class ChatSessions {
     for(const row of identities)if(row.speaker){const speaker=JSON.parse(String(row.speaker)) as Speaker;participants.set(speaker.id,speaker)}
     const router=this.router(last?.triggerId??'');participants.set(router.id,router)
     for(const worker of workers)participants.set(worker.id,this.worker(worker.id))
-    const latestMessage=this.host.store.db.prepare("SELECT substr(json_extract(body,'$.text'),1,280) AS text,json_extract(body,'$.role') AS role,json_extract(body,'$.speaker.label') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?) ORDER BY json_extract(body,'$.sequence') DESC LIMIT 1")
+    const displaySpeaker=(speaker:Speaker)=>({...speaker,label:speaker.kind==='worker'?workers.find(w=>w.id===speaker.id)?.label??speaker.label:speaker.id===router.id?router.label:this.host.config.execution.router?.label??speaker.label})
+    const latestMessage=this.host.store.db.prepare("SELECT substr(json_extract(body,'$.text'),1,280) AS text,json_extract(body,'$.role') AS role,json_extract(body,'$.speaker') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?) ORDER BY json_extract(body,'$.sequence') DESC LIMIT 1")
     const agents=[router,...[...participants.values()].filter(p=>p.id!==router.id).sort((a,b)=>Number(b.kind==='router')-Number(a.kind==='router'))].map(agent=>{
       const target=agent.id===router.id?null:agent.id,row=latestMessage.get(id,target,target,target)
-      return {...agent,latestMessage:row?{text:String(row.text),role:row.role as 'user'|'assistant',speaker:row.speaker?String(row.speaker):null}:null}
+      return {...displaySpeaker(agent),latestMessage:row?{text:String(row.text),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
-    const result={conversation:this.publicConversation(c),messages:messages.slice(-100),hasMore:messages.length>100,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     return result
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */

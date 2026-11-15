@@ -332,3 +332,12 @@ Event automations use `/configure#automations` inside the existing feature rail 
 Saved automations appear as separated rows with name, event type, receiving state and latest event time. The empty state has one action. Task, event history and connection details are separate views; JSON, key rotation, reconciliation and revocation stay behind disclosures. Creation has two steps: Task and Event connection. One Worker owns the default task, with optional custom rules preserving existing multi-node contracts. Required authorization and credential configuration are retained. Unavailable receivers and missing authorized conversations expose their actual prerequisite instead of letting users complete an unusable form.
 
 No explanatory subtitles or permanent instruction small print. Necessary field labels, state, validation errors and requested setup instructions remain. Saved-skill bindings preserve the pinned contract. Grant creation retries reuse the same operation and expiry for an unchanged draft. The old URL redirects without losing its skill parameters.
+
+
+## Chat presentation and agent names — 2026-11-15
+
+Chat retains the neutral shell and R-shaped avatars. User bubbles have 8px vertical padding and zero paragraph margin; content determines their height. Timestamps are real message/tool start times, displayed at 11px with a full date and time on hover. The current Router run status and copy action share the message footer. A run without an assistant reply keeps its standalone status; stopped, waiting and failed runs never display as completed.
+
+New messages and tool rows enter once with a 240ms, 6px vertical reveal. The arrival baseline belongs to the persistent Chat space, including first-send creation. History loads, reloads and Agent switches do not replay arrivals. Native disclosures animate their contents over 200ms where supported; reduced motion makes both arrivals and disclosures immediate. Tool actors, times and role labels reuse compact metadata typography, with 11px as the Chat metadata size.
+
+Names are edited in Agent team → Essentials using the existing revisioned save flow. Router and Worker retain their roles and stable IDs; labels update in the transcript, Agents list, tool rows, composer, team view and runtime prompt. Historic message bodies remain evidence, while their speaker labels reflect current configuration. Language follows the explicit request or current human message; browser locale is a fallback for language-neutral input, separate from interface language.

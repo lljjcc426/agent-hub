@@ -16,7 +16,7 @@ function teamCurrent() {
   const index = workers.findIndex(worker => worker.id === teamStudio.selected)
   if (index < 0) teamStudio.selected = 'router'
   return index < 0
-    ? { router: true, index: -1, value: S.draft.execution.router || {}, path: 'execution.router', name: 'Router' }
+    ? { router: true, index: -1, value: S.draft.execution.router || {}, path: 'execution.router', name: S.draft.execution.router?.label || 'Router' }
     : { router: false, index, value: workers[index], path: 'execution.workers.' + index, name: workers[index].label || 'Worker ' + (index + 1) }
 }
 function teamMaterializeWorkers() {
@@ -115,13 +115,13 @@ function teamGraph() {
   const source = add(el('div', 'team-origin'), icon('conversations'), el('span', '', L('You & your team', '你与团队')),
     opButton(L('Conversation entries', '会话入口'), () => opNavigate('catalog'), 'text-button'))
   const model = route.routerModel || connections.find(item => item.id === route.router)?.model
-  const router = teamNode('router', 'Router', L('Coordinates work and returns results', '统筹任务 · 汇总结果'), model)
+  const router = teamNode('router', S.draft.execution.router?.label || 'Router', 'Router', model)
   const line = el('div', 'team-route-label', L('Delegates work · receives results', '分派任务 · 接收结果'))
   line.setAttribute('aria-hidden', 'true')
   const list = el('div', 'team-worker-list')
   for (const [index, worker] of workers.entries()) {
     const status = worker.state === 'paused' ? L('Intake: paused', '接单设置：暂停') : worker.state === 'retiring' ? L('Retire after existing work', '完成已有任务后退出') : ''
-    list.append(teamNode(worker.id, worker.label || 'Worker ' + (index + 1), L('Executor', '执行者'),
+    list.append(teamNode(worker.id, worker.label || 'Worker ' + (index + 1), 'Worker',
       worker.model || connections.find(item => item.id === worker.backend)?.model, status))
   }
   const addWorker = opButton(L('Add Worker', '添加 Worker'), () => teamAddWorker(), 'button', 'plus')
@@ -178,6 +178,9 @@ function teamPrompt(current) {
 function teamBasics(current) {
   const route = executionDraft(), backend = current.router ? route.router : current.value.backend
   const fields = el('div', 'team-fields')
+  const name = teamField('team-name', L('Name', '名称'), current.value.label || '', value => teamWrite('label', value.trim() || undefined), { placeholder: current.name })
+  name.querySelector('input').maxLength = 100
+  fields.append(name)
   if (current.router && teamFeatures().options) fields.append(teamField('team-router-mode', L('Router mode', 'Router 模式'), current.value.mode || 'assessment', value => { teamWrite('mode', value); render() }, {
     values: [['assessment', L('Task intake', '任务受理')], ['host', L('Persistent host Router', '宿主持久 Router')], ['client', L('Current CLI is Router', '当前 CLI 会话作为 Router')]],
     help: L('Client mode uses the model and session of your connected CLI.', '客户端模式使用已接入 CLI 的模型与会话。')
@@ -187,7 +190,7 @@ function teamBasics(current) {
       opButton(L('Conversation entries', '会话入口'), () => opNavigate('catalog'), 'button'))
     return fields
   }
-  if (!current.router) fields.append(teamField('team-name', L('Name', '名称'), current.value.label || '', value => teamWrite('label', value.trim() || undefined), { placeholder: current.name }))
+
   fields.append(teamField('team-backend', L('Model connection', '模型连接'), backend, value => {
     teamWrite('backend', value); teamWrite('model', undefined); render()
   }, { values: controlConnections().map(service => [service.id, service.label]) }))
@@ -307,7 +310,7 @@ function teamInspector() {
   const current = teamCurrent(), pane = el('section', 'team-inspector'); pane.id = 'team-inspector'
   const title = el('h2', '', current.name); title.id = 'team-inspector-title'; title.tabIndex = -1
   pane.append(add(el('div', 'team-inspector-heading'), add(el('span', 'team-avatar'), icon(current.router ? 'execution' : 'cpu')),
-    add(el('div'), title, el('span', 'team-help', current.router ? L('Manager', '管理者') : L('Executor', '执行者')))))
+    add(el('div'), title, el('span', 'team-help', current.router ? 'Router' : 'Worker'))))
   const tabs = affectSegmented({ id: 'team-tabs', label: L('Agent settings', 'Agent 设置'), value: teamStudio.tab,
     options: [['essentials', L('Essentials', '基本配置')], ['tools', L('Tools & control', '工具与管理')], ['advanced', L('Advanced', '高级参数')]].map(([value, label]) => ({ value, label, controls: 'team-tab-panel' })),
     onChange: value => { teamStudio.tab = value; render() } })

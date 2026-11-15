@@ -61,6 +61,7 @@ type Conversation = Snapshot["conversation"];
 type Ready = Snapshot["readiness"] & { user?: { displayName: string } };
 type Worker = Snapshot["workers"][number];
 type Language = "en" | "zh-CN";
+type Arrivals = {conversationId:string;since:number;seen:Set<string>};
 const read = (key: string, fallback = "") => {
   try {
     return localStorage.getItem(key) ?? fallback;
@@ -125,6 +126,10 @@ const Context = createContext({
   L: (en: string, zh: string) => en,
   calls: [] as Snapshot["calls"],
   workers: [] as Worker[],
+  routerLabel: 'Router',
+  run: null as Snapshot['run'],
+  runMessageId: '',
+  arrivals: {since: Infinity, seen: new Set<string>()},
 });
 const useUI = () => useContext(Context);
 function IconButton({
@@ -187,16 +192,32 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     </div>
   );
 }
+function useArrival(id: string, createdAt: number) {
+  const { arrivals } = useUI();
+  const [fresh] = useState(() => createdAt >= arrivals.since && !arrivals.seen.has(id));
+  useEffect(() => { arrivals.seen.add(id); }, [arrivals, id]);
+  return fresh || undefined;
+}
+function Timestamp({ at }: { at: Date | number }) {
+  const { lang } = useUI(), date = new Date(at);
+  return <time className="message-time" dateTime={date.toISOString()} title={new Intl.DateTimeFormat(lang, {dateStyle:'medium', timeStyle:'medium'}).format(date)}>{new Intl.DateTimeFormat(lang, {hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)}</time>;
+}
+function runLabel(state: string, L: (en: string, zh: string) => string) {
+  return ({queued:L('Waiting for Router','等待 Router'),running:L('Working','处理中'),waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
+}
 function UserMessage() {
   const { calls, workers } = useUI(),
     id = useAuiState((s) => s.message.id),
+    createdAt = useAuiState((s) => s.message.createdAt),
+    arrival = useArrival(id, createdAt.getTime()),
     own = calls.filter((c) => c.runId === id.replace(/^user:/, ""));
   return (
     <>
-      <MessagePrimitive.Root className="message user-message">
+      <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
         <div className="user-bubble">
           <MessagePrimitive.Parts />
         </div>
+        <Timestamp at={createdAt} />
       </MessagePrimitive.Root>
       {own.some((c) => c.kind === "tool") ? (
         <div className="message-tool-activity">
@@ -215,7 +236,10 @@ function Markdown() {
   );
 }
 function AssistantMessage() {
-  const { L } = useUI(),
+  const { L, run, runMessageId, routerLabel } = useUI(),
+    id = useAuiState((s) => s.message.id),
+    createdAt = useAuiState((s) => s.message.createdAt),
+    arrival = useArrival(id, createdAt.getTime()),
     speaker = useAuiState((s) => s.message.metadata.custom?.speaker) as Snapshot["participants"][number]|undefined,
     recipient = useAuiState((s) => s.message.metadata.custom?.recipient) as Snapshot["participants"][number]|undefined,
     status = useAuiState((s) => s.message.status),
@@ -227,11 +251,13 @@ function AssistantMessage() {
   return (
     <MessagePrimitive.Root
       className="message assistant-message"
+      data-arrival={arrival}
       data-streaming={streaming ? "true" : undefined}
     >
       <div className="assistant-identity">
         <AgentAvatar id={speaker?.id} kind={speaker?.kind} size={32} />
-        <strong>{speaker?.label ?? "Router"}</strong>
+        <strong>{speaker?.label ?? routerLabel}</strong>
+        {speaker && speaker.label !== (speaker.kind === "worker" ? "Worker" : "Router") ? <span className="agent-role">{speaker.kind === "worker" ? "Worker" : "Router"}</span> : null}
         {recipient ? <span className="message-recipient">→ {recipient.label}</span> : null}
         {streaming ? (
           <span className="output-state">
@@ -242,13 +268,9 @@ function AssistantMessage() {
       </div>
       <div className="assistant-body">
         <MessagePrimitive.Parts components={{ Text: Markdown }} />
-        {status?.type === "incomplete" ? (
-          <div className="partial-status">
-            {status.reason === "cancelled"
-              ? L("Output stopped", "输出已停止")
-              : L("Output interrupted", "输出中断")}
-          </div>
-        ) : null}
+        <div className="message-footer">
+          <Timestamp at={createdAt} />
+          {run && runMessageId === id ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{runLabel(run.state, L)}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
         <ActionBarPrimitive.Root className="message-actions">
           <ActionBarPrimitive.Copy
             className="icon-button"
@@ -258,6 +280,7 @@ function AssistantMessage() {
             <Copy size={15} />
           </ActionBarPrimitive.Copy>
         </ActionBarPrimitive.Root>
+        </div>
       </div>
     </MessagePrimitive.Root>
   );
@@ -346,6 +369,7 @@ function ToolCalls({
   workers: Worker[];
 }) {
   const { L } = useUI(),
+    arrival = useArrival('tools:' + calls[0]!.runId, calls[0]!.startedAt),
     [open, setOpen] = useState(true),
     [now, setNow] = useState(Date.now()),
     tools = calls.filter((c) => c.kind === "tool"),
@@ -423,6 +447,7 @@ function ToolCalls({
   return (
     <details
       className="tool-activity"
+      data-arrival={arrival}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
     >
@@ -433,46 +458,50 @@ function ToolCalls({
         <ChevronDown size={14} />
       </summary>
       <div className="tool-calls">
-        {tools.map((call) => {
-          const actor =
-              workers.find((w) => w.id === call.workerId)?.label ??
-              (call.workerId || "Router"),
-            target =
-              workers.find((w) => w.id === call.target)?.label ?? call.target,
-            title = names[call.action ?? call.name] ?? call.name,
-            elapsed = Math.max(0, (call.endedAt ?? now) - call.startedAt);
-          return (
-            <details
-              className="tool-call"
-              key={call.id}
-              data-state={call.state}
-            >
-              <summary>
-                <StatusIcon state={call.state} />
-                <span className="tool-call-title">
-                  <strong>
-                    {title}
-                    {target ? " · " + target : ""}
-                  </strong>
-                  <span>{actor}</span>
-                </span>
-                <span className="tool-call-time">
-                  {(elapsed / 1000).toFixed(1)}s
-                </span>
-                <ChevronDown size={13} />
-              </summary>
-              <dl>
-                <dt>{L("Tool", "工具")}</dt>
-                <dd>{call.name}</dd>
-                <dt>{L("Status", "状态")}</dt>
-                <dd>{states[call.state]}</dd>
-              </dl>
-            </details>
-          );
-        })}
+        {tools.map(call => <ToolCall key={call.id} call={call} workers={workers} names={names} states={states} now={now} />)}
       </div>
     </details>
   );
+}
+function ToolCall({call, workers, names, states, now}: {call: Snapshot['calls'][number];workers: Worker[];names: Record<string,string>;states: Record<string,string>;now: number}) {
+  const { L, routerLabel } = useUI(), arrival = useArrival('call:' + call.id, call.startedAt);
+  const actor =
+      workers.find((w) => w.id === call.workerId)?.label ??
+      (call.workerId || routerLabel),
+    target =
+      workers.find((w) => w.id === call.target)?.label ?? call.target,
+    title = names[call.action ?? call.name] ?? call.name,
+    elapsed = Math.max(0, (call.endedAt ?? now) - call.startedAt);
+  return (
+    <details
+      className="tool-call"
+      data-arrival={arrival}
+      data-state={call.state}
+    >
+      <summary>
+        <StatusIcon state={call.state} />
+        <span className="tool-call-title">
+          <strong>
+            {title}
+            {target ? " · " + target : ""}
+          </strong>
+          <span>{actor}</span>
+        </span>
+        <Timestamp at={call.startedAt} />
+        <span className="tool-call-time">
+          {(elapsed / 1000).toFixed(1)}s
+        </span>
+        <ChevronDown size={13} />
+      </summary>
+      <dl>
+        <dt>{L("Tool", "工具")}</dt>
+        <dd>{call.name}</dd>
+        <dt>{L("Status", "状态")}</dt>
+        <dd>{states[call.state]}</dd>
+      </dl>
+    </details>
+  );
+
 }
 function TeamPanel({
   workers,
@@ -485,7 +514,7 @@ function TeamPanel({
   connected: boolean;
   calls: Snapshot["calls"];
 }) {
-  const { L } = useUI(),
+  const { L, routerLabel } = useUI(),
     flow = connected && workers.some((w) => workerState(w) === "running");
   return (
     <aside
@@ -503,7 +532,7 @@ function TeamPanel({
             data-state={active && connected ? "running" : "idle"}
           >
             <AgentAvatar size={28} />
-            <strong>Router</strong>
+            <strong>{routerLabel}</strong>
             {active && connected ? (
               <LoaderCircle size={13} className="spin" />
             ) : null}
@@ -610,6 +639,7 @@ function Readiness({ ready }: { ready: Ready | null }) {
   );
 }
 function App() {
+  const chatArrivals = useRef<Arrivals>({conversationId:'',since:Infinity,seen:new Set()});
 
   const [route, setRoute] = useState(
     location.pathname + location.search + location.hash,
@@ -738,6 +768,7 @@ function App() {
         aria-live="polite"
       />
       <Chat
+        arrivals={chatArrivals}
         key={id ?? "new"}
         {...{
           id,
@@ -759,6 +790,7 @@ function App() {
   );
 }
 type ChatProps = {
+  arrivals: React.RefObject<Arrivals>;
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
@@ -902,7 +934,7 @@ function Chat(p: ChatProps) {
     return () => observer.disconnect();
   }, []);
 
-  const participants = snapshot?.participants ?? [{id:"router",label:"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))];
+  const participants = snapshot?.participants ?? [{id:"router",label:boot?.routerLabel??"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))];
   const currentRouter = participants.find(a=>a.id===(snapshot?.routerId??"router"))!;
   const selected = participants.find(a=>a.id===selectedAgent) ?? currentRouter;
   const readonly = display === "agents" && selected?.id !== currentRouter?.id;
@@ -918,6 +950,11 @@ function Chat(p: ChatProps) {
       loading ||
       sending ||
       running;
+  const arrivals = p.arrivals;
+  if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
+    conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
+  };
+  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.recipient)?.id ?? '' : '';
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -1083,9 +1120,11 @@ function Chat(p: ChatProps) {
           url.search = "";
           history.replaceState(null, "", url);
         }
+        if (arrivals.current.conversationId !== target) arrivals.current = {conversationId:target,since:Date.now(),seen:new Set()};
         await api("/conversations/" + target + "/messages", {
           text,
           clientMessageId: pending.current.id,
+          locale: navigator.language || lang,
         });
         pending.current = null;
         write(pendingKey(target), "null");
@@ -1187,18 +1226,6 @@ function Chat(p: ChatProps) {
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
-  const runLabels: Record<string, string> = {
-    queued: L("Waiting for Router", "等待 Router"),
-    running: L("Working on your request", "正在处理你的请求"),
-    waiting: L("Waiting for your input", "等待你的补充"),
-    completed: L("Complete", "已完成"),
-    cancel_requested: L("Stopping this run…", "正在停止本次任务…"),
-    cancelled: L("Run stopped", "已停止本次任务"),
-    failed: L(
-      "Router couldn’t finish this request. You can send a follow-up to retry.",
-      "Router 未能完成本次请求，可以补充消息后重试。",
-    ),
-  };
   return (
     <Context.Provider
       value={{
@@ -1206,6 +1233,10 @@ function Chat(p: ChatProps) {
         L,
         calls: snapshot?.calls ?? [],
         workers,
+        routerLabel:currentRouter.label,
+        run: run ?? null,
+        runMessageId,
+        arrivals:arrivals.current,
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
@@ -1243,7 +1274,7 @@ function Chat(p: ChatProps) {
               const latest=agent.latestMessage,prefix=latest?.role==='user'?L('You: ','你：'):latest?.speaker&&latest.speaker!==agent.label?latest.speaker+': ':'';
               const preview=latest?prefix+latest.text.replace(/\s+/g,' ').trim():L('No messages yet','暂无消息');
               return <button key={agent.id} className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{setSelectedAgent(agent.id);if(narrow)closeNavigation()}}>
-                <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name">{agent.label}</span><small title={preview}>{preview}</small></span>
+                <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name"><span className="agent-label">{agent.label}</span><span className="agent-role">{agent.kind === "worker" ? "Worker" : "Router"}</span></span><small title={preview}>{preview}</small></span>
               </button>
             })}</div>
           </aside> : null}
@@ -1360,11 +1391,11 @@ function Chat(p: ChatProps) {
                       components={{ UserMessage, AssistantMessage }}
                     />
                     {run && !readonly ? (
-                      <div className="run-activity" aria-live="polite">
-                        <div className={"run-status " + run.state}>
+                      <div className="run-activity" hidden={!!runMessageId && !workers.some(w=>w.tasks.length)} aria-live="polite">
+                        {!runMessageId ? <div className={"run-status " + run.state}>
                           <StatusIcon state={run.state} />
-                          <span>{runLabels[run.state]}</span>
-                        </div>
+                          <span>{runLabel(run.state, L)}</span>
+                        </div> : null}
                         {workers.some((w) => w.tasks.length) ? (
                           <details className="inline-team" open={undefined}>
                             <summary>
@@ -1407,8 +1438,8 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>setSelectedAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.Root className="composer">
                     <ComposerPrimitive.Input
                       className="composer-input"
-                      placeholder={L("Message Router…", "向 Router 发送消息…")}
-                      aria-label={L("Message Router", "向 Router 发送消息")}
+                      placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
+                      aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
                       rows={2}
                       maxLength={100000}
                     />
@@ -1418,7 +1449,7 @@ function Chat(p: ChatProps) {
                         href="/configure#execution/configuration"
                         title={L("Router configuration", "Router 配置")}
                       >
-                        <span>Router</span>
+                        <span className="composer-agent-name">{currentRouter.label}</span>
                         <span className="model-separator">·</span>
                         <span className="model-name">
                           {current?.model ||

@@ -59,3 +59,14 @@ it('uses the execution adapter suffix for per-Agent instructions',()=>{
  expect(()=>previewInstructions(c,{role:'worker',workerId:'missing'})).toThrow('Unknown preview Worker')
  expect(()=>previewInstructions(c,{role:'router',mode:'subagent'})).toThrow('belongs to a Worker')
 })
+
+
+it('previews configured names and the same language contract for Router and Worker',()=>{
+ const c=config();c.execution.router!.label='Rory';c.execution.workers![1]!.label='Atlas'
+ for(const [role,workerId,name] of [['router',undefined,'Rory'],['worker','two','Atlas']] as const){
+  const preview=previewInstructions(c,{role,workerId})
+  expect(preview.text).toContain('"agentName":"'+name+'"')
+  expect(preview.text).toContain('explicitly requested language first')
+  expect(preview.text).toContain('supplied replyLocale')
+ }
+})

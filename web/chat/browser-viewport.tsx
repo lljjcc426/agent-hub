@@ -7,6 +7,7 @@ import {
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import type { BrowserInput } from "../../src/browser-input.ts";
 import { browserPoint } from "./browser-geometry.ts";
+import { BrowserInputQueue } from "./browser-input-queue.ts";
 
 type Props = {
   id: string;
@@ -46,10 +47,8 @@ export function BrowserViewport({
     button: "none" as "none" | "left" | "right" | "middle",
   });
   const composing = useRef(false),
-    pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 }),
-    pending = useRef<BrowserInput[]>([]),
-    flushing = useRef(false),
-    alive = useRef(true);
+    pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [queue] = useState(() => new BrowserInputQueue());
   const callbacks = useRef({ input, resize, selection, onConnected, onError });
   callbacks.current = { input, resize, selection, onConnected, onError };
   const [state, setState] = useState<
@@ -57,15 +56,11 @@ export function BrowserViewport({
     >("connecting"),
     [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-      pending.current = [];
-    };
-  }, []);
+    return () => queue.cancel();
+  }, [queue]);
   useEffect(() => {
-    pending.current = [];
-  }, [id, epoch, controlled]);
+    queue.cancel();
+  }, [id, epoch, controlled, queue]);
   useEffect(() => {
     frame.current = null;
     setState("connecting");
@@ -118,43 +113,14 @@ export function BrowserViewport({
       observer.disconnect();
     };
   }, [controlled, state, id, epoch]);
-  const flushPromise = useRef<Promise<unknown>>(Promise.resolve());
-  const flush = () => {
-    if (flushing.current) return flushPromise.current;
-    flushing.current = true;
-    return (flushPromise.current = (async () => {
-      try {
-        while (pending.current.length && alive.current) {
-          const event = pending.current.shift()!;
-          await callbacks.current.input(event);
-        }
-      } catch (error) {
-        pending.current = [];
-        callbacks.current.onError(error);
-        throw error;
-      } finally {
-        flushing.current = false;
-      }
-    })());
+  const report = (error: unknown) => {
+    if (!(error instanceof DOMException && error.name === "AbortError"))
+      callbacks.current.onError(error);
   };
-  drainRef.current = flush;
+  drainRef.current = () => queue.drain();
   const send = (event: BrowserInput) => {
     if (!controlled || !accepting || state !== "connected") return;
-    const last = pending.current.at(-1);
-    if (
-      event.type === "pointer" &&
-      event.phase === "move" &&
-      last?.type === "pointer" &&
-      last.phase === "move"
-    )
-      pending.current[pending.current.length - 1] = event;
-    else if (event.type === "wheel" && last?.type === "wheel") {
-      last.deltaX = Math.max(-3000, Math.min(3000, last.deltaX + event.deltaX));
-      last.deltaY = Math.max(-3000, Math.min(3000, last.deltaY + event.deltaY));
-      last.x = event.x;
-      last.y = event.y;
-    } else pending.current.push(event);
-    void flush().catch(() => {});
+    void queue.input(event, callbacks.current.input).catch(report);
   };
   const point = (x: number, y: number) => {
     const img = image.current,
@@ -220,19 +186,23 @@ export function BrowserViewport({
   };
   const copy = async (cut: boolean) => {
     try {
-      const selected = flush().then(() => callbacks.current.selection());
+      const { selection, input } = callbacks.current;
+      const selected = queue.run(selection);
+      void selected.catch(report);
       const text = selected.then(({ text }) => new Blob([text], { type: "text/plain" }));
-      await navigator.clipboard.write([
+      const written = navigator.clipboard.write([
         new ClipboardItem({ "text/plain": text }),
       ]);
-      if (cut && (await selected).text)
-        await callbacks.current.input({
-          type: "key",
-          key: "Backspace",
-          code: "Backspace",
-        });
+      // The queue can be cancelled before this write's turn. Its rejection is
+      // still reported by the queued operation when that operation runs.
+      void written.catch(() => {});
+      await queue.run(async () => {
+        await written;
+        if (cut && (await selected).text)
+          await input({ type: "key", key: "Backspace", code: "Backspace" });
+      });
     } catch (error) {
-      callbacks.current.onError(error);
+      report(error);
     }
   };
   useEffect(() => {
@@ -313,6 +283,8 @@ export function BrowserViewport({
           const text = e.clipboardData.getData("text/plain");
           if (text) send({ type: "text", text });
         }}
+        onCopy={(e) => { e.preventDefault(); void copy(false); }}
+        onCut={(e) => { e.preventDefault(); void copy(true); }}
         onKeyDown={(e) => {
           if (composing.current || e.nativeEvent.isComposing) return;
           if (e.key === "F6") {

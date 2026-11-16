@@ -37,6 +37,9 @@ const site = createServer(async (req, res) => {
   if(url.pathname==='/inputs'){
     html(`<h1>Browser inputs</h1><label>Text<input id="text" aria-label="Text" value="选择文字 中文 😀"></label><label>Drag slider<input id="slider" type="range" min="0" max="100" value="10" oninput="document.querySelector('#slider-value').textContent=this.value"></label><output id="slider-value">10</output><button id="hover" onmouseenter="this.textContent='Hover works'" onmouseleave="this.textContent='Hover here'" oncontextmenu="event.preventDefault();this.textContent='Right click works'">Hover here</button><label>Upload document<input type="file" aria-label="Upload document" onchange="this.files[0].text().then(text=>document.querySelector('#upload-result').textContent=text)"></label><pre id="upload-result"></pre><a href="/download" download>Download document</a><div style="height:600px"></div><p>Scroll reached the end.</p>`);return;
   }
+  if(url.pathname==='/editors'){
+    html(`<h1>Text editing</h1><label>Multiline<textarea id="multiline" aria-label="Multiline" rows="4" style="display:block;width:95%;font:inherit"></textarea></label><label>Rich text<div id="rich" contenteditable="true" role="textbox" aria-label="Rich text" style="min-height:80px;border:1px solid #aaa;padding:12px"></div></label><button onclick="document.querySelector('pre').textContent=JSON.stringify({multiline:document.querySelector('#multiline').value,rich:document.querySelector('#rich').innerText},null,2)">Read back</button><pre style="white-space:pre-wrap"></pre>`);return;
+  }
   if (req.method === "POST" && url.pathname === "/login") {
     let raw = "";
     for await (const part of req) raw += part;

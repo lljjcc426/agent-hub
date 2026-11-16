@@ -1251,7 +1251,7 @@ function Chat(p: ChatProps) {
   }, [snapshot, runtime]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) {
+      if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented) {
         if (menu) {
           closeNavigation();
         } else if (panel) {

@@ -278,7 +278,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
     });
   },[requestedUrl,data,busy]);
   const input = (event: BrowserInput) => {
-    const captured=sessionRef.current;
+    const captured=session;
     if(!captured?.controlledByYou)return Promise.resolve();
     return request('/sessions/'+captured.id+'/input',{client,epoch:captured.epoch,event});
   };

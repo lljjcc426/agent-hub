@@ -211,6 +211,9 @@ export class AgentBrowserDriver implements BrowserDriver {
         "Browser returned an unreadable response.",
       );
     }
+    // Bulk text uses one stdin batch command; unlike normal CLI replies, the
+    // pinned batch protocol returns an array with a `result` field.
+    if (args[0] === "batch") result = { ...result[0], data: result[0].result };
     if (!result.success)
       throw new BrowserError(
         "browser_command_failed",
@@ -313,6 +316,12 @@ export class AgentBrowserDriver implements BrowserDriver {
   async input(s:DriverSession,event:BrowserInput) {
     const socket=this.streams.get(s.id);
     if(!socket||socket.readyState!==WebSocket.OPEN)throw new BrowserError('browser_stream','Browser disconnected. Reconnect before interacting.');
+    if(event.type==='text' && (Array.from(event.text).length>1 || /[\r\n]/.test(event.text))){
+      // insertText preserves multiline pastes and IME phrases. stdin keeps
+      // typed secrets out of process arguments; single characters stay on the stream.
+      await this.run(s,['batch'],undefined,JSON.stringify([['keyboard','inserttext',event.text]]));
+      return;
+    }
     // Ping/pong is an ordering barrier: the pinned upstream reader processes each
     // input before reading the next message. Release waits for this queue to drain.
     await new Promise<void>((resolve,reject)=>{

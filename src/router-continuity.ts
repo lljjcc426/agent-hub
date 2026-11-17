@@ -64,7 +64,7 @@ export class RouterContinuity {
   const key=this.key(c),events=this.events(c).filter(e=>!e.triggerIds.some(id=>pending.has(id))),requirements=this.commitments(c)
   const checkpoint=this.host.store.get<any>('router-checkpoint',key)
   const safeCheckpoint=checkpoint&&checkpoint.text&&Array.isArray(checkpoint.triggerIds)&&this.validInputs(checkpoint.triggerIds)&&this.validContext(checkpoint.contextId)&&checkpoint.eventIds.every((id:string)=>events.some(e=>e.id===id))?checkpoint:undefined
-  const history=events.filter(e=>e.kind==='user'||!safeCheckpoint?.eventIds.includes(e.id)).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds}))
+  const history=events.filter(e=>e.kind==='user'||!safeCheckpoint?.eventIds.includes(e.id)).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds,...(kind==='user'?{quotedMessages:triggerIds.map(id=>this.host.chat.quoteForTrigger(id)).filter(Boolean)}:{})}))
   const envelope={...JSON.parse(packet.input),continuity:{history,requirements,legacyUnavailable,...(safeCheckpoint?{checkpoint:{text:safeCheckpoint.text,eventIds:safeCheckpoint.eventIds}}:{}),notice:'History is sourced background. Latest user instructions and current authorization govern. Retain all active constraints; continue unresolved goals. legacyUnavailable counts pre-upgrade replies without verifiable provenance; do not claim complete recovery if nonzero.'}}
   const max=this.host.scopes.scope(c.route.scopeId).contextBytes
   const previous=this.host.store.get<any>('router-session',key)

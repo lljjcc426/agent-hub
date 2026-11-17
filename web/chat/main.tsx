@@ -17,7 +17,6 @@ import {
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
-  ActionBarPrimitive,
   useAui,
   useAuiState,
   useMessagePartText,
@@ -63,7 +62,9 @@ import {RouterModelControl} from './router-model.tsx';
 
 import {ChatCompanion} from "./companion.tsx";
 import {companionStatus} from "./companion-state.ts";
-import {CopyButton} from './copy-button.tsx';
+import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
+import {useChatMotion} from './chat-motion.ts';
+import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
@@ -73,6 +74,7 @@ import "./style.css";
 import "./rich-content.css";
 import "./navigation.css";
 import "./chat-layout.css";
+import "./message-interactions.css";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
 type Conversation = Snapshot["conversation"];
@@ -96,7 +98,7 @@ const draftKey = (id: string | null) => "roppo.chat.draft." + (id ?? "new");
 const pendingKey = (id: string) => "roppo.chat.pending." + id;
 function savedPending(
   id: string | null,
-): { text: string; id: string; conversationId: string;attachments?:string[] } | null {
+): { text: string; id: string; conversationId: string;attachments?:string[];quote?:ChatQuote } | null {
   try {
     const value = id ? JSON.parse(read(pendingKey(id), "null")) : null;
     return value &&
@@ -109,6 +111,11 @@ function savedPending(
     return null;
   }
 }
+const quoteKey=(id:string|null)=>"roppo.chat.draft.quote."+(id??"new");
+function savedQuote(id:string|null):DraftQuote|null {
+  try{return JSON.parse(read(quoteKey(id),'null'))}catch{return null}
+}
+const quoteReference=(quote:DraftQuote|null):ChatQuote|undefined=>quote?{messageId:quote.messageId,...(quote.excerpt?{excerpt:quote.excerpt}:{})}:undefined;
 class ApiError extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -173,6 +180,9 @@ function IconButton({
 function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
   const { L } = useUI();
   const message =
+    code==='message_missing'?L('The original message is no longer available.','原消息已不可用。'):
+    code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
+    code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
     code.startsWith("attachment_")?attachmentError(code,L):
     code==='sent_refresh_failed'?L('Message sent. Refresh to see the latest replies.','消息已发送，请刷新查看最新回复。'):
     code === "conversation_busy"
@@ -238,9 +248,11 @@ function UserMessage() {
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
+        <UserQuote/>
         <MessageAttachments files={attachments??[]} L={L}/>
-        {hasText?<div className="user-bubble"><MessagePrimitive.Parts components={{Text:Markdown}}/></div>:null}
-        <Timestamp at={createdAt} />
+        {hasText?<div className="user-bubble" data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>:null}
+        <Reactions id={id}/>
+        <div className="message-footer"><Timestamp at={createdAt}/><MessageActions id={id}/></div>
       </MessagePrimitive.Root>
       {own.some((c) => c.kind === "tool") ? (
         <div className="message-tool-activity">
@@ -250,6 +262,7 @@ function UserMessage() {
     </>
   );
 }
+function UserQuote(){const quote=useAuiState(s=>s.message.metadata.custom?.quote) as ChatQuoteView|undefined;return <QuotedMessage quote={quote}/>}
 function ComposerAttachment(){const {L}=useUI();return <DraftAttachment L={L}/>}
 function PlainText(){const {text}=useMessagePartText();return <span>{text}</span>}
 function Markdown(){const {L}=useUI();return <Suspense fallback={<PlainText/>}><RichMarkdown L={L}/></Suspense>}
@@ -262,7 +275,6 @@ function AssistantMessage() {
     speaker = useAuiState((s) => s.message.metadata.custom?.speaker) as Snapshot["participants"][number]|undefined,
     recipient = useAuiState((s) => s.message.metadata.custom?.recipient) as Snapshot["participants"][number]|undefined,
     status = useAuiState((s) => s.message.status),
-    copyText = useAuiState((s) => s.message.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')),
     hasText = useAuiState((s) =>
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
@@ -287,14 +299,13 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        <MessagePrimitive.Parts components={{ Text: Markdown }} />
+        <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>
         <MessageAttachments files={attachments??[]} L={L}/>
+        <Reactions id={id}/>
         <div className="message-footer">
           <Timestamp at={createdAt} />
           {run && runMessageId === id ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{runLabel(run.state, L)}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
-        <ActionBarPrimitive.Root className="message-actions">
-          <CopyButton value={copyText} L={L}/>
-        </ActionBarPrimitive.Root>
+        <MessageActions id={id}/>
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -494,7 +505,7 @@ function ToolCall({call, workers, names, states, now}: {call: Snapshot['calls'][
       data-state={call.state}
     >
       <summary>
-        <StatusIcon state={call.state} />
+        <span className="tool-state" key={call.state}><StatusIcon state={call.state}/></span>
         <span className="tool-call-title">
           <strong>
             {title}
@@ -929,12 +940,19 @@ function Chat(p: ChatProps) {
       id: string;
       conversationId: string;
       attachments?:string[];
+      quote?:ChatQuote;
     } | null>(savedPending(id)),
     bodyRef = useRef<HTMLDivElement>(null),
     threadRef = useRef<HTMLDivElement>(null),
     panelOpener = useRef<HTMLElement|null>(null),
     teamButton = useRef<HTMLButtonElement>(null),
     menuButton = useRef<HTMLButtonElement>(null);
+  const [quote,setQuote]=useState<DraftQuote|null>(()=>savedQuote(id)),[around,setAround]=useState<string>();
+  const locateAfterLoad=useRef<string|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
+  const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
+  const saveQuote=useCallback((value:DraftQuote|null)=>{quoteCurrent.current=value;setQuote(value);write(quoteKey(id),JSON.stringify(value))},[id]);
+  const motion=useChatMotion(threadRef,(id??'new')+':'+selectedAgent+':'+(around??'latest'),!!around,snapshot?.messages.at(-1)?.id);
+  useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
   useEffect(() => {
     const thread=threadRef.current, transcript=thread?.querySelector<HTMLElement>('.transcript');
     if(!thread||!transcript)return;
@@ -980,6 +998,7 @@ function Chat(p: ChatProps) {
   const selected = participants.find(a=>a.id===selectedAgent) ?? currentRouter;
   const readonly = display === "agents" && selected?.id !== currentRouter?.id;
   const participantFilter = readonly ? selected.id : undefined;
+  const viewKey=JSON.stringify([id,participantFilter,around]),viewRef=useRef(viewKey);viewRef.current=viewKey;
   const ready = snapshot?.readiness ?? boot,
     run = snapshot?.run,
     reply = snapshot?.reply,
@@ -1005,12 +1024,13 @@ function Chat(p: ChatProps) {
   const refresh = useCallback(async () => {
     if (!id) return;
     const version = ++fetchVersion.current;
-    const data = await api<Snapshot>("/conversations/" + id + (participantFilter ? "?participant="+encodeURIComponent(participantFilter) : ""));
+    const query=new URLSearchParams();if(participantFilter)query.set('participant',participantFilter);if(around)query.set('around',around);
+    const data = await api<Snapshot>("/conversations/" + id + "?"+query);
     if (!alive.current || version !== fetchVersion.current) return;
     const older = messagesRef.current.filter(
       (m) => m.sequence < (data.messages[0]?.sequence ?? Infinity),
     );
-    const messages = [...older, ...data.messages];
+    const messages = [...older, ...data.messages].map(m=>reactionWrites.current.has(m.id)?{...m,reactions:reactionWrites.current.get(m.id)!.reactions}:m);
     messagesRef.current = messages;
     setSnapshot({
       ...data,
@@ -1023,7 +1043,8 @@ function Chat(p: ChatProps) {
       write(pendingKey(id), "null");
       if (read(draftKey(id)) === saved.text) write(draftKey(id), "");
     }
-  }, [id, participantFilter]);
+  }, [id, participantFilter, around]);
+  const refreshCurrent=useRef(refresh);refreshCurrent.current=refresh;
   useEffect(() => {
     alive.current = true;
     messagesRef.current=[];setLoading(!!id);setSnapshot(s=>s?{...s,messages:[]}:s);
@@ -1116,7 +1137,7 @@ function Chat(p: ChatProps) {
       id: m.id,
       role: m.role,
       createdAt: new Date(m.createdAt),
-      metadata:{custom:{speaker:m.speaker,recipient:m.recipient,attachments:m.attachments}},
+      metadata:{custom:{speaker:m.speaker,recipient:m.recipient,attachments:m.attachments,quote:m.quote,reactions:m.reactions}},
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
         ? {
@@ -1139,7 +1160,7 @@ function Chat(p: ChatProps) {
         .map((c) => c.text)
         .join("\n")
         .trim();
-      const attachments=message.attachments?.map(a=>a.id)??[];
+      const attachments=message.attachments?.map(a=>a.id)??[],sentQuote=quoteReference(quote);
       if ((!text&&!attachments.length) || sending || readonly) return;
       setSending(true);
       setError("");
@@ -1152,6 +1173,7 @@ function Chat(p: ChatProps) {
         if (
           !pending.current ||
           pending.current.text !== text ||
+          JSON.stringify(pending.current.quote??null)!==JSON.stringify(sentQuote??null) ||
           JSON.stringify(pending.current.attachments??[])!==JSON.stringify(attachments) ||
           pending.current.conversationId !== target
         )
@@ -1160,6 +1182,7 @@ function Chat(p: ChatProps) {
             id: crypto.randomUUID(),
             conversationId: target,
             attachments,
+            quote:sentQuote,
           };
         write(pendingKey(target), JSON.stringify(pending.current));
         submittedId=pending.current.id;
@@ -1173,10 +1196,14 @@ function Chat(p: ChatProps) {
         await api("/conversations/" + target + "/messages", {
           text,
           attachments,
+          quote:sentQuote,
           clientMessageId: pending.current.id,
           locale: navigator.language || lang,
         });
         accepted=true;
+        if(JSON.stringify(quoteReference(quoteCurrent.current)??null)===JSON.stringify(sentQuote??null))saveQuote(null);
+        motion.latest();
+        if(around)setAround(undefined);
         pending.current = null;
         write(pendingKey(target), "null");
         write(draftKey(id), "");
@@ -1184,7 +1211,7 @@ function Chat(p: ChatProps) {
         await refreshList();
         if (alive.current) {
           if (target !== id) navigate(target);
-          else await refresh();
+          else if(!around)await refreshCurrent.current();
         }
       } catch (e) {
         // Admission and refreshing the view are separate: an acknowledged send is no longer a draft.
@@ -1204,13 +1231,14 @@ function Chat(p: ChatProps) {
     hasEarlier: snapshot?.hasMore ?? false,
     onLoadEarlier: async () => {
       if (!id || !snapshot?.messages.length) return;
+      const version=viewRef.current;
       const data = await api<Snapshot>(
         "/conversations/" +
           id +
           "/messages?before=" +
           snapshot.messages[0]!.sequence + (participantFilter ? "&participant="+encodeURIComponent(participantFilter) : ""),
       );
-      if (!alive.current) return;
+      if (!alive.current||version!==viewRef.current) return;
       const ids = new Set(messagesRef.current.map((m) => m.id));
       const messages = [
         ...data.messages.filter((m) => !ids.has(m.id)),
@@ -1254,6 +1282,7 @@ function Chat(p: ChatProps) {
       snapshot?.messages.some((m) => m.clientMessageId === saved.id)
     ) {
       pending.current = null;
+      if(JSON.stringify(quoteReference(quote)??null)===JSON.stringify(saved.quote??null))saveQuote(null);
       for(const [index,file] of [...runtime.thread.composer.getState().attachments.entries()].reverse())
         if(saved.attachments?.includes(file.id))void runtime.thread.composer.getAttachmentByIndex(index).remove();
       if (runtime.thread.composer.getState().text === saved.text)
@@ -1281,6 +1310,43 @@ function Chat(p: ChatProps) {
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
+  const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId)};
+  const quoteMessage=(value:DraftQuote)=>{
+    saveQuote(value);selectAgent(currentRouter.id);
+    requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus({preventScroll:true}));
+  };
+  const locateMessage=async(messageId:string)=>{
+    const version=++locateRequest.current;
+    if(motion.locate(messageId))return;
+    try{
+      const data=await api<Snapshot>('/conversations/'+id+'?around='+encodeURIComponent(messageId));
+      if(!alive.current||version!==locateRequest.current)return;
+      const message=data.messages.find(m=>m.id===messageId)!;
+      const participant=message.speaker?.kind==='worker'?message.speaker.id:message.recipient?.kind==='worker'?message.recipient.id:currentRouter.id;
+      locateAfterLoad.current=messageId;
+      if(display==='agents')setSelectedAgent(participant);
+      setAround(messageId);
+    }catch(e){fail(e)}
+  };
+  const reactMessage=(messageId:string,emoji:string)=>{
+    const previous=reactionWrites.current.get(messageId),message=messagesRef.current.find(m=>m.id===messageId);if(!message||!id)return;
+    const reactions=new Set(previous?.reactions??message.reactions??[]),active=!reactions.has(emoji);
+    if(active)reactions.add(emoji);else reactions.delete(emoji);
+    const update={reactions:[...reactions],promise:Promise.resolve(message.reactions??[])};
+    reactionWrites.current.set(messageId,update);
+    messagesRef.current=messagesRef.current.map(m=>m.id===messageId?{...m,reactions:update.reactions}:m);
+    setSnapshot(s=>s?{...s,messages:messagesRef.current}:s);
+    update.promise=(previous?.promise??Promise.resolve(message.reactions??[])).then(async confirmed=>{
+      try{confirmed=(await api<{reactions:string[]}>('/conversations/'+id+'/reactions',{messageId,emoji,active})).reactions}catch{if(alive.current)setError('reaction_failed')}
+      if(reactionWrites.current.get(messageId)===update){
+        reactionWrites.current.delete(messageId);
+        messagesRef.current=messagesRef.current.map(m=>m.id===messageId?{...m,reactions:confirmed}:m);
+        if(alive.current){setSnapshot(s=>s?{...s,messages:messagesRef.current}:s);await refreshCurrent.current().catch(fail)}
+      }
+      return confirmed;
+    });
+  };
+  const latestMessages=()=>{locateRequest.current++;locateAfterLoad.current=null;if(around)setAround(undefined);motion.latest()};
   return (
     <Context.Provider
       value={{
@@ -1295,6 +1361,7 @@ function Chat(p: ChatProps) {
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
+        <InteractionProvider L={L} messages={snapshot?.messages??[]} reply={quoteMessage} react={reactMessage} locate={messageId=>void locateMessage(messageId)}>
         <div
           className={
             "chat-shell" +
@@ -1328,7 +1395,7 @@ function Chat(p: ChatProps) {
             <div className="agent-list">{participants.map(agent=>{
               const latest=agent.latestMessage,prefix=latest?.role==='user'?L('You: ','你：'):latest?.speaker&&latest.speaker!==agent.label?latest.speaker+': ':'';
               const preview=latest?prefix+latest.text.replace(/\s+/g,' ').trim():L('No messages yet','暂无消息');
-              return <div key={agent.id} className="agent-contact-row"><button className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{setSelectedAgent(agent.id);if(narrow)closeNavigation()}}>
+              return <div key={agent.id} className="agent-contact-row"><button className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{selectAgent(agent.id);if(narrow)closeNavigation()}}>
                 <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name"><span className="agent-label">{agent.label}</span><span className="agent-role">{agent.kind === "worker" ? "Worker" : "Router"}</span></span><small title={preview}>{preview}</small></span>
               </button><a className="agent-manage" href={"/configure#execution/configuration/"+encodeURIComponent(agent.kind==='router'?'router':agent.id)} aria-label={L('Manage ','管理 ')+agent.label} title={L('Manage ','管理 ')+agent.label}><SlidersHorizontal size={15}/></a></div>
             })}</div>
@@ -1425,7 +1492,7 @@ function Chat(p: ChatProps) {
                 className="thread"
                 inert={panelExpanded || (panelOverlay && !!panel)}
               >
-                <ThreadPrimitive.Viewport className="transcript">
+                <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                   <div className="transcript-inner">
                     <ThreadPrimitive.LoadEarlier className="load-earlier">
                       {L("Load earlier messages", "加载更早的消息")}
@@ -1477,12 +1544,9 @@ function Chat(p: ChatProps) {
                   </div>
                 </ThreadPrimitive.Viewport>
                 <div className="composer-area">
-                  <ThreadPrimitive.ScrollToBottom
-                    className="scroll-bottom"
-                    aria-label={L("Scroll to latest", "回到最新消息")}
-                  >
-                    <ArrowDown size={17} />
-                  </ThreadPrimitive.ScrollToBottom>
+                  <button type="button" className="scroll-bottom" data-visible={!motion.atBottom||!!around} tabIndex={!motion.atBottom||around?0:-1} aria-hidden={motion.atBottom&&!around} aria-label={L("Scroll to latest", "回到最新消息")} onClick={latestMessages}>
+                    <ArrowDown size={16}/>{motion.unread?<span>{L('New messages','有新消息')}</span>:around?<span>{L('Back to latest','回到最新')}</span>:null}
+                  </button>
                   {error ? (
                     <ErrorNotice code={error} clear={() => setError("")} />
                   ) : null}
@@ -1496,7 +1560,8 @@ function Chat(p: ChatProps) {
                     </div>
                   ) : null}
                   <Readiness ready={ready} />
-                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>setSelectedAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
+                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
+                    <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                     <ComposerPrimitive.Input
                       className="composer-input"
@@ -1565,6 +1630,7 @@ function Chat(p: ChatProps) {
             </div>
           </main>
         </div>
+        </InteractionProvider>
       </AssistantRuntimeProvider>
     </Context.Provider>
   );

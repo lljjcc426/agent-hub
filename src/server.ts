@@ -372,7 +372,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions))?$/)
       if(match){
         const id=match[1]!,action=match[2]
         if(action==='memory'&&req.method==='GET'){send(res,200,runtime.chat.memory(id,owner));return}
@@ -387,14 +387,19 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if((!action||action==='messages')&&req.method==='GET'){
           const before=query.has('before')?z.coerce.number().int().positive().parse(query.get('before')):undefined
           const participant=query.has('participant')?z.string().min(1).max(300).parse(query.get('participant')):undefined
-          send(res,200,runtime.chat.view(id,owner,before,participant));return
+          const around=query.has('around')?z.string().min(1).max(500).parse(query.get('around')):undefined
+          send(res,200,runtime.chat.view(id,owner,before,participant,around));return
         }
         if(action==='files'&&req.method==='GET'){
           const input=z.object({ticket:z.string().min(1).optional(),path:z.string().max(1800).optional(),kind:z.enum(['directory','files']).optional(),offset:z.coerce.number().int().nonnegative().optional(),cursor:z.string().uuid().optional()}).strict().parse(Object.fromEntries(query))
           send(res,200,await runtime.chat.files(id,owner,input));return
         }
+        if(action==='reactions'&&req.method==='POST'){
+          const input=z.object({messageId:z.string().min(1).max(500),emoji:z.string().min(1).max(32),active:z.boolean()}).strict().parse(await body(req))
+          send(res,200,runtime.chat.react(id,owner,input));return
+        }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().max(100000),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().max(100000),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input));return
         }
         if(action==='cancel'&&req.method==='POST'){

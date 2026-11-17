@@ -5,7 +5,7 @@ import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 const root=process.env.MEMORY_BROWSER_DIR??'/tmp/agenthub-memory-browser-'+Date.now();mkdirSync(root,{recursive:true})
 const config=configSchema.parse({stateDir:join(root,'state'),port:0,acceptMode:'auto',work:{sandboxDriver:'disabled'},execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'one',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,workspace:{mode:'source'},allowedActors:['alice']}]})
-const h=new Runtime(config,{model:{async run(){throw Error('Browser fixture does not execute models')}}});h.pause(true)
+const h=new Runtime(config,{model:{async run(){throw Error('Browser fixture does not execute models')},async purge(){return {local:'verified',provider:'not_managed'}}}});h.pause(true)
 h.scopes.command({action:'scope.put',operationId:'scope',expectedRevision:0,scope:{id:'team',tenantId:'test',name:'Memory browser',managers:[JSON.stringify(['local','alice'])],workerIds:['one'],sourceIds:['local'],backendIds:['codex']}})
 for(const name of ['a','b'])h.scopes.command({action:'entry.bind',operationId:name,expectedRevision:0,scopeId:'team',sourceId:'local',accountNamespace:'local',nativeId:name,history:'group'})
 let n=0

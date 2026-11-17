@@ -111,6 +111,23 @@ with sync_playwright() as p:
     assert '简洁、坦诚、先核实事实' in Path(dl.value.path()).read_text()
     page.screenshot(path=str(root/'persona.png'),full_page=True)
     check('personality import is a saved draft and survives reload; export matches it')
+    before_reset=context.request.get(f['url']+'/settings').json()['current']
+    entry=private()
+    assert context.request.post(f['url']+'/api/chat/memory',headers={'origin':f['url']},data={'entryId':entry['id'],'action':'learning','enabled':True,'revision':entry['revision']}).ok
+    page.evaluate("""id=>{localStorage.setItem('roppo.chat.draft.'+id,'OLD RESET DRAFT');localStorage.setItem('roppo.resources.'+id,'OLD RESOURCE STATE');localStorage.setItem('roppo.chat.panel.'+id,'files');sessionStorage.setItem('roppo.website.'+id,'https://example.com/old') }""",f['chat'])
+    navigate('/configure#advanced/chat')
+    page.get_by_role('button',name='清空所有记忆和上下文',exact=True).click()
+    expect(page.get_by_role('group',name='确认清空')).to_contain_text('手动设置的人格')
+    page.get_by_role('button',name='确认清空',exact=True).click()
+    expect(page.get_by_text('个人记忆已恢复到初始状态。',exact=True)).to_be_visible(timeout=15000)
+    assert context.request.get(f['url']+'/settings').json()['current']==before_reset
+    assert context.request.get(f['url']+'/api/chat/space').json()['conversation'] is None
+    assert not any(c.get('conversationId') for c in workspace())
+    assert context.request.get(f['url']+'/api/chat/conversations/'+f['chat']).status>=400
+    assert page.evaluate("id=>!localStorage.getItem('roppo.chat.draft.'+id)&&!localStorage.getItem('roppo.resources.'+id)&&!localStorage.getItem('roppo.chat.panel.'+id)&&!sessionStorage.getItem('roppo.website.'+id)",f['chat'])
+    page.reload();expect(page.get_by_text('个人记忆已恢复到初始状态。',exact=True)).to_be_visible()
+    page.screenshot(path=str(root/'reset-completed.png'),full_page=True)
+    check('confirmed reset clears personal contexts, learning and local drafts while retaining manual personality and all settings')
     assert not errors,errors
     browser.close()
 (root/'evidence.json').write_text(json.dumps({'ok':True,'checks':checks,'errors':errors},ensure_ascii=False,indent=2))

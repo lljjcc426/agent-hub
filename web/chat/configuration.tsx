@@ -63,6 +63,7 @@ export function Configuration({
         if (!alive) return;
         setError(false);
         outlet.current?.append(element!);
+        memoryElement!.classList.add("memory-mount");
         setMemoryTarget(memoryElement!);
         setChatTarget(chatElement!);
         setBrowserTarget(browserElement!);

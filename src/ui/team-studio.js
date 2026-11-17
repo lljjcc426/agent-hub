@@ -57,7 +57,7 @@ function teamAddWorker(cloneSelected = false) {
   if (workers.length >= 10) return
   const selected = workers.find(worker => worker.id === teamStudio.selected)
   let index = 1
-  while (workers.some(worker => worker.id === 'worker-' + index)) index++
+  while (workers.some(worker => worker.id === 'worker-' + index) || (S.snap?.retiredWorkerIds || []).includes('worker-' + index)) index++
   const worker = cloneSelected && selected ? { ...clone(selected), id: 'worker-' + index,
     label: (selected.label || L('Worker', '执行者')) + L(' copy', ' 副本') }
     : { id: 'worker-' + index, backend: executionDraft().router }
@@ -72,10 +72,10 @@ function teamAddWorker(cloneSelected = false) {
 }
 function teamRemoveWorker() {
   const current = teamCurrent()
-  if (current.router || teamWorkers().length <= 1) return
+  if (current.router) return
   confirmWorkspaceAction(L('Remove this Worker?', '移除此 Worker？'),
-    L('Remove it from the configuration. Existing work is not cancelled; its history is retained.',
-      '将其从配置中移除。正在执行的任务不会因此取消，历史记录会保留。'),
+    L('Remove it from the configuration. Finish or cancel its tasks before saving. History is retained.',
+      '将其从配置中移除。保存前需完成或取消其任务，历史记录会保留。'),
     L('Remove Worker', '移除 Worker'), () => {
       const previous = teamWorkers(), workers = previous.filter(worker => worker.id !== teamStudio.selected)
       for (const map of [S.buffers, S.errors]) {
@@ -353,10 +353,11 @@ function teamInspector() {
   panel.append(({ essentials: teamBasics, tools: teamTools, advanced: teamAdvanced })[teamStudio.tab](current))
   panel.addEventListener('input', teamUpdatePreview)
   pane.append(tabs, panel)
+  if (current.router) pane.append(el('p', 'team-help', L('One Router is required. You can rename it or replace its model connection and instructions.', '保留一个 Router。可修改名称，或更换模型连接与指令。')))
   if (!current.router) {
     const copy = opButton(L('Duplicate', '复制 Worker'), () => teamAddWorker(true), 'button')
     copy.disabled = teamWorkers().length >= 10
-    const remove = opButton(L('Remove', '移除'), teamRemoveWorker, 'text-button team-danger'); remove.disabled = teamWorkers().length <= 1
+    const remove = opButton(L('Remove', '移除'), teamRemoveWorker, 'text-button team-danger')
     pane.append(add(el('div', 'team-inspector-footer'), copy, remove))
   }
   return pane

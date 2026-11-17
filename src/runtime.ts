@@ -1292,7 +1292,17 @@ export class Runtime {
   updateSettings(revision:number,patch:unknown) {
     this.manager?.validateSettings(patch)
     const previous=makePolicy(this.config,()=>this.paused,this.sourceRegistry).version
-    const saved=this.settings.save(revision,patch)
+    const oldWorkers=workerProfiles(this.config)
+    const saved=this.store.atomic(()=>{
+      const saved=this.settings.save(revision,patch)
+      const removed=oldWorkers.filter(w=>!workerProfiles(this.config).some(next=>next.id===w.id))
+      for(const worker of removed)this.store.put('retired-worker',worker.id,{profile:worker,at:Date.now()})
+      for(const scope of this.store.list<import('./router-scope.ts').ManagementScope>('management-scope')){
+        const workerIds=scope.workerIds.filter(id=>!removed.some(w=>w.id===id))
+        if(workerIds.length!==scope.workerIds.length)this.store.put('management-scope',scope.id,{...scope,workerIds,revision:scope.revision+1})
+      }
+      return saved
+    })
     for(const source of this.sources.values()){const current=this.config.sources.find(s=>s.id===source.config.id);if(current)Object.assign(source.config,current)}
     const next=makePolicy(this.config,()=>this.paused,this.sourceRegistry).version
     if(previous!==next)this.engine.policyChanged(previous,next)

@@ -1333,9 +1333,9 @@ function Chat(p: ChatProps) {
             <div className="agent-list">{participants.map(agent=>{
               const latest=agent.latestMessage,prefix=latest?.role==='user'?L('You: ','你：'):latest?.speaker&&latest.speaker!==agent.label?latest.speaker+': ':'';
               const preview=latest?prefix+latest.text.replace(/\s+/g,' ').trim():L('No messages yet','暂无消息');
-              return <button key={agent.id} className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{setSelectedAgent(agent.id);if(narrow)closeNavigation()}}>
+              return <div key={agent.id} className="agent-contact-row"><button className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{setSelectedAgent(agent.id);if(narrow)closeNavigation()}}>
                 <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name"><span className="agent-label">{agent.label}</span><span className="agent-role">{agent.kind === "worker" ? "Worker" : "Router"}</span></span><small title={preview}>{preview}</small></span>
-              </button>
+              </button><a className="agent-manage" href={"/configure#execution/configuration/"+encodeURIComponent(agent.kind==='router'?'router':agent.id)} aria-label={L('Manage ','管理 ')+agent.label} title={L('Manage ','管理 ')+agent.label}><SlidersHorizontal size={15}/></a></div>
             })}</div>
           </aside> : null}
           {menu ? (

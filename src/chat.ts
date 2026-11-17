@@ -169,9 +169,9 @@ export class ChatSessions {
     if(!h.store.get('management-scope',scopeId)){
       h.scopes.command({action:'scope.put',operationId:'chat-scope:'+stableDigest(c.owner),expectedRevision:0,scope:{id:scopeId,tenantId:scopeId,name:'Chat',managers:[actor],sourceIds:[c.sourceId],workerIds:workers.map(w=>w.id),backendIds}})
     }else{
-      const scope=h.scopes.scope(scopeId),added=backendIds.filter(id=>!scope.backendIds.includes(id)),workerIds=[...new Set([...scope.workerIds,...workers.map(w=>w.id)])]
+      const scope=h.scopes.scope(scopeId),added=backendIds.filter(id=>!scope.backendIds.includes(id)),workerIds=workers.map(w=>w.id)
       // This personal scope follows host-selected models; existing task grants and memory stay valid.
-      if(added.length||workerIds.length!==scope.workerIds.length)h.store.put('management-scope',scopeId,{...scope,workerIds,backendIds:[...scope.backendIds,...added],revision:scope.revision+1})
+      if(added.length||JSON.stringify(workerIds)!==JSON.stringify(scope.workerIds))h.store.put('management-scope',scopeId,{...scope,workerIds,backendIds:[...scope.backendIds,...added],revision:scope.revision+1})
     }
     if(bound)return
     const accountNamespace=h.scopes.bindings().find(b=>b.sourceId===c.sourceId)?.accountNamespace??'local'
@@ -349,11 +349,9 @@ export class ChatSessions {
       else if(jobs.length&&jobs.every(j=>j.state==='done'))state='completed'
     }
     const workers=workerProfiles(this.host.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:tasks.filter(t=>t.workerId===w.id)}))
-    for(const workerId of new Set(tasks.map(t=>t.workerId)))if(!workers.some(w=>w.id===workerId))workers.push({id:workerId,label:workerId,model:undefined,state:'retiring',tasks:tasks.filter(t=>t.workerId===workerId)})
     const calls=this.host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.conversationId')=? ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 200").all(id).map(r=>JSON.parse(String(r.body)) as ChatCall).reverse()
     const participants=new Map<string,Speaker>()
-    const identities=this.host.store.db.prepare("SELECT json_extract(body,'$.speaker') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? UNION SELECT json_extract(body,'$.recipient') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=?").all(id,id)
-    for(const row of identities)if(row.speaker){const speaker=JSON.parse(String(row.speaker)) as Speaker;participants.set(speaker.id,speaker)}
+    // History preserves speakers, but does not make deleted Agents current contacts.
     const router=this.router(last?.triggerId??'');participants.set(router.id,router)
     for(const worker of workers)participants.set(worker.id,this.worker(worker.id))
     const displaySpeaker=(speaker:Speaker)=>({...speaker,label:speaker.kind==='worker'?workers.find(w=>w.id===speaker.id)?.label??speaker.label:speaker.id===router.id?router.label:this.host.config.execution.router?.label??speaker.label})

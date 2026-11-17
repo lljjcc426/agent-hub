@@ -887,3 +887,23 @@ it('resets all personal learning and methods, rotates context, and replays over 
  expect(()=>restored.chat.view(chat.id,'owner')).toThrow('cleared');expect(restored.skills.list(c.route.scopeId)).toEqual([])
  expect(restored.settings.current()).toEqual(settings)
 })
+
+it('removes deleted Workers from contacts after refresh and restart while preserving their messages and tasks',async()=>{
+ const f=fixture(),h=f.h,c=h.chat.create('owner'),sent=send(h,c.id)
+ const trigger=h.store.triggers.get(sent.runId)!,context={trigger,discussion:'local:chat:'+c.id}
+ const task=await h.manager.call({action:'assign',revision:0,requestId:'historical-worker',id:'research',text:'Previous task'},context)
+ const before=h.chat.view(c.id,'owner').messages
+ expect(before.some(m=>m.recipient?.id==='research')).toBe(true)
+ await h.manager.call({action:'destroy',revision:0,requestId:'remove-contact',id:'research',cancelRunning:true},context)
+ for(let i=0;i<2;i++){
+  const view=h.chat.view(c.id,'owner')
+  expect(view.participants.map(p=>p.id)).not.toContain('research')
+  expect(view.workers.map(w=>w.id)).not.toContain('research')
+  expect(view.messages).toEqual(before)
+  expect(h.store.tickets.get(task.ticketId)?.ended).toBeTruthy()
+ }
+ await h.close();hosts.splice(hosts.indexOf(h),1)
+ const restored=new Runtime(f.config,{model:f.model});hosts.push(restored)
+ expect(restored.chat.view(c.id,'owner').participants.map(p=>p.id)).not.toContain('research')
+ expect(restored.chat.view(c.id,'owner').messages).toEqual(before)
+})

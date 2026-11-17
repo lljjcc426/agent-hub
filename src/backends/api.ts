@@ -9,6 +9,7 @@ import {protocolTombstone} from '../history-cleanup.ts'
 import {readResponsesStream,readChatStream,readAnthropicStream} from './stream.ts'
 import {contextProjection,recall,recallSpec} from './context.ts'
 import {providerUsage} from '../model-usage.ts'
+import {ApiConnectionError,ApiOutputLimitError,apiResponseError} from './api-errors.ts'
 export {readResponsesStream} from './stream.ts'
 
 export interface ThreadStore {get<T>(kind:string,id:string):T|undefined;put(kind:string,id:string,value:unknown):void}
@@ -37,8 +38,8 @@ export class ApiModel implements Model {
   else if(credential)headers.authorization='Bearer '+credential
   let response:Response
   try{response=await fetch(this.endpoint(path),{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined,signal:AbortSignal.any([signal,AbortSignal.timeout(d.requestTimeoutMs)]),redirect:'error'})}
-  catch{signal.throwIfAborted();throw new TransientModelError('Backend '+this.id+' network request failed or timed out')}
-  if(!response.ok){await response.body?.cancel();throw Error('Backend '+this.id+' HTTP '+response.status)}
+  catch(error){signal.throwIfAborted();throw new ApiConnectionError(error instanceof Error&&(error.name==='TimeoutError'||(error.cause as any)?.code==='UND_ERR_CONNECT_TIMEOUT')?'connection_timeout':'connection_unreachable')}
+  if(!response.ok)throw await apiResponseError(response,[credential??'',...Object.values(headers)])
   const reader=response.body?.getReader();if(!reader)throw Error('Backend response is empty')
   if(response.headers.get('content-type')?.includes('text/event-stream'))return d.kind==='anthropic'?readAnthropicStream(reader,d.maxContextBytes,signal,onOutput,'anthropic',onUsage):d.kind==='openai-chat'?readChatStream(reader,d.maxContextBytes,signal,onOutput,'chat',onUsage):readResponsesStream(reader,d.maxContextBytes,signal,onOutput,onUsage)
   if(d.subscription&&body)throw Error('Subscription response must be an event stream')
@@ -91,16 +92,19 @@ export class ApiModel implements Model {
   const kind=this.definition.kind
   if(kind==='openai-chat'){
    const choice=response.choices?.[0],m=choice?.message
+   if(choice?.finish_reason==='length')throw new ApiOutputLimitError()
    if(!m||choice.finish_reason&& !['stop','tool_calls'].includes(choice.finish_reason)||m.refusal)throw Error('Backend did not complete a usable response')
    const calls=(m.tool_calls??[]).map((c:any)=>{if(c.type!=='function')throw Error('Unsupported provider tool type');return {id:c.id,name:c.function?.name,arguments:c.function?.arguments}})
    const text=typeof m.content==='string'?m.content:typeof m.content==='object'&&Array.isArray(m.content)?m.content.filter((x:any)=>x.type==='text').map((x:any)=>x.text).join(''):''
    return {calls,text,wire:[{role:'assistant',content:m.content??null,...(m.reasoning_content!==undefined?{reasoning_content:m.reasoning_content}:{}),...(calls.length?{tool_calls:m.tool_calls}:{})}]}
   }
   if(kind==='anthropic'){
+   if(response.stop_reason==='max_tokens')throw new ApiOutputLimitError()
    if(!['tool_use','end_turn'].includes(response.stop_reason)||!Array.isArray(response.content))throw Error('Backend did not complete a usable response')
    const calls=response.content.filter((x:any)=>x.type==='tool_use').map((c:any)=>({id:c.id,name:c.name,arguments:JSON.stringify(c.input)}))
    return {calls,text:response.content.filter((x:any)=>x.type==='text').map((x:any)=>x.text).join(''),wire:[{role:'assistant',content:response.content}]}
   }
+  if(response.status==='incomplete'&&response.incomplete_details?.reason==='max_output_tokens')throw new ApiOutputLimitError()
   if(response.status!=='completed'||!Array.isArray(response.output))throw Error('Backend response is incomplete or failed')
   const calls:Call[]=[],wire:any[]=[],texts:string[]=[]
   for(const item of response.output){

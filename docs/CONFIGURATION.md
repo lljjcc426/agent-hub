@@ -40,13 +40,15 @@ Platform app creation, permission review and client first-use trust remain real 
 
 ## Reuse or add an AI connection
 
-Open **Model services → New service**. Give the connection a name, choose the existing Codex login or an API provider, and check/save it. OpenAI exposes both Responses and Chat Completions; custom endpoints also support Anthropic Messages. Multiple services coexist. Adding one does not change Router or Worker assignments, existing software entries or existing conversations.
+Open **Model services → New service**. Give the connection a name, choose the existing Codex login or an API provider, and check/save it. OpenAI exposes both Responses and Chat Completions; custom endpoints also support Anthropic Messages. Multiple services coexist. Adding one does not change Router or Worker assignments, existing software entries or existing conversations. Connection checks allow 4,096 output tokens and 45 seconds per request, with a 60-second turn deadline. Errors distinguish authentication, permissions, model/endpoint availability, quota, rate limits, provider failures and network failures; provider messages and credentials are not exposed.
 
 An API check makes a small real request without work tools or workspace files. A native Codex check tests the installed CLI and sign-in; the in-entry task still verifies actual execution. Managed API keys are saved privately only after application. Provider errors do not echo the key.
 
+The model control below the Chat composer selects the Router connection and reasoning effort directly. Applying a selection updates Router settings; Workers retain their independent settings. Subsequent Chat turns follow the selected Router and rebuild compatible backend context when needed. Visible history, durable memories and prior task records remain intact. The Worker control opens team activity and links to team settings.
+
 ## Router and Workers
 
-**Execution** shows connected software → Router → queue → Workers. Choose the Router service/model independently. Set the Worker count from **1 to 10**, then choose each Worker's service/model. A blank model uses that service's default. Save applies to new conversations. Follow-ups stay with the original conversation's backend and model; configuration changes do not migrate history.
+**Execution** shows connected software → Router → queue → Workers. Choose the Router service/model independently. Set the Worker count from **1 to 10**, then choose each Worker's service/model. A blank model uses that service's default. Saved Router settings apply to subsequent Chat turns. Chat rebuilds compatible backend context while preserving its transcript and durable memory. Worker tasks retain their existing backend binding; new tasks use the saved Worker configuration.
 
 Workers reserve slots while managed background jobs are active. Excess new tasks queue. The prototype's additional lane remains available for one human follow-up to an existing conversation; it is not an eleventh configurable Worker. Reducing the pool lets active work finish and limits subsequent dispatch. New assignments use a rotating selection rather than model-based specialization.
 

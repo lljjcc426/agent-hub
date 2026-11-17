@@ -304,6 +304,7 @@ async function entryRun(label, operation, focus = false) {
   } finally {
     entryState.busy = ''
     render(focus)
+    if (label.startsWith('model-')) animateModelConfiguration('#entry-model-result')
     const next = document.getElementById(
       label.startsWith('model-')
         ? 'entry-model-result'

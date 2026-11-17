@@ -58,6 +58,7 @@ import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { BrowserPanel } from "./browser.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
+import {RouterModelControl} from './router-model.tsx';
 import {CopyButton} from './copy-button.tsx';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
@@ -177,11 +178,6 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
           ? L("This Chat entry is unavailable. Check its entry settings.", "当前 Chat 入口不可用，请检查会话入口设置。")
         : code === "request_not_admitted"
           ? L("The current entry rules did not accept this message.", "消息未被当前入口规则接收，请检查会话入口设置。")
-        : code === "backend_changed"
-          ? L(
-              "The backend configuration changed. Clear context in Settings to continue.",
-              "后端配置已变更，请在设置中清空上下文后继续。",
-            )
           : code === "message_conflict"
             ? L(
                 "This message changed. Please send it again.",
@@ -776,6 +772,7 @@ function App() {
       />
       <Chat
         arrivals={chatArrivals}
+        refreshReady={async()=>setReady(await api<Ready>("/readiness"))}
         key={id ?? "new"}
         {...{
           id,
@@ -798,6 +795,7 @@ function App() {
 }
 type ChatProps = {
   arrivals: React.RefObject<Arrivals>;
+  refreshReady: () => Promise<void>;
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
@@ -1494,24 +1492,13 @@ function Chat(p: ChatProps) {
                     />
                     <div className="composer-toolbar">
                       <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
-                      <a
-                        className="model-link"
-                        href="/configure#execution/configuration"
-                        title={L("Router configuration", "Router 配置")}
-                      >
-                        <span className="composer-agent-name">{currentRouter.label}</span>
-                        <span className="model-separator">·</span>
-                        <span className="model-name">
-                          {current?.model ||
-                            ready?.model ||
-                            L("Configure model", "配置模型")}
-                        </span>
-                        <SlidersHorizontal size={14} />
-                      </a>
+                      <RouterModelControl label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending||stopping} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
                       {workers.length ? (
                         <button
                           className="team-chip"
                           type="button"
+                          aria-expanded={panel === "activity"}
+                          aria-label={L("View Workers and team settings", "查看 Worker 和团队设置")}
                           onClick={() =>
                             void choosePanel(
                               panel === "activity" ? null : "activity",

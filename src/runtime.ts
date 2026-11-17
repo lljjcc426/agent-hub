@@ -1,3 +1,4 @@
+import {ApiUsage} from './api-usage.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
@@ -96,6 +97,7 @@ export class Runtime {
   readonly store: Store
   readonly engine: Engine
   readonly sources = new Map<string, Source>()
+  readonly apiUsage:import('./api-usage.ts').ApiUsage
   readonly model: Model
   readonly settings: Settings
   readonly approvals: Approvals
@@ -172,6 +174,7 @@ export class Runtime {
     }
     try { loadManagedConfig(config);validateBackendSelection(config);this.store = new Store(join(config.stateDir, 'state.sqlite'));try{recoverMarket(this.store,options.pluginActivation);loadMarketConfig(config,options.pluginActivation)}catch(error){this.store.close();throw error} }
     catch (error) { unlinkSync(this.lock); throw error }
+    this.apiUsage = new ApiUsage(this.store)
     this.activity = new ExecutionActivity(this.store)
     this.usage = new UsageLedger(this.store,join(this.config.stateDir,'watchdog','state.sqlite'))
     this.approvals = new Approvals(this.store)
@@ -180,8 +183,9 @@ export class Runtime {
         const previous=this.store.get<any>('settings','current')?.config as Config|undefined
         const settings=new Settings(this.store,config),model=options.model??new BackendRegistry(config,this.store)
         for(const source of config.sources){
-          const adapter=options.sources?.find(s=>s.config.id===source.id)??this.sourceRegistry.create(source)
+          const adapter:Source=options.sources?.find(s=>s.config.id===source.id)??this.sourceRegistry.create(source)
           if(adapter instanceof ProcessSource)adapter.attach(this.store,()=>this.config.sources.find(s=>s.id===source.id))
+          ;(adapter as Source).observeApi?.(sample=>{try{this.apiUsage.record(source.id,sample)}catch{try{this.store.put('api-usage-health',source.id,{status:'error',at:Date.now()})}catch{}}})
           this.sources.set(source.id,adapter)
         }
         activatePluginPackages(this.store,config,this.sourceRegistry.packages,previous)

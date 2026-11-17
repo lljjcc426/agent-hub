@@ -1,5 +1,6 @@
 import {deploymentMaintenance,DeploymentError} from './deployment-maintenance.ts'
 import {requestHostOrigin} from './http-deployment.ts'
+import {apiUsagePage} from './api-usage.ts'
 import {serveDelegation} from './delegation/server.ts'
 import {DelegationError} from './delegation/contract.ts'
 import {PluginMarket,MarketError} from './plugin-market.ts'
@@ -202,6 +203,8 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       send(res,405,{error:'Method not allowed'});return
     }
     if (!operator) { send(res, 401, { error: 'Operator access required',code:'token_required' }); return }
+    if(req.method==='GET'&&path==='/api-usage'){send(res,200,runtime.apiUsage.snapshot());return}
+    if(req.method==='GET'&&path==='/api-usage/view'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(apiUsagePage(runtime.apiUsage.snapshot()));return}
     if(path==='/deployment/maintenance'&&req.method==='POST'){send(res,200,await deploymentMaintenance(runtime,await body(req)));return}
     if(path==='/webhooks'&&req.method==='GET'){send(res,200,runtime.webhooks.snapshot());return}
     if(path==='/webhooks/detail'&&req.method==='GET'){send(res,200,runtime.webhooks.detail(new URL(req.url??'/',requestOrigin).searchParams.get('id')??''));return}

@@ -86,3 +86,5 @@
 .management-content .operator-workspace .memory-mount{min-width:0;max-width:100%}
 .management-content .operator-workspace .memory-settings{min-width:0;max-width:100%}
 .memory-file-tabs{min-width:0;max-width:100%}
+
+.management-content .operator-workspace .memory-settings .memory-list .memory-learned-heading{margin:20px 16px 4px;font-size:var(--roppo-font-body);color:var(--c-muted)}

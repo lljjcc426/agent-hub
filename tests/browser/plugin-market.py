@@ -117,6 +117,16 @@ with sync_playwright() as p:
 
         page.get_by_role('link',name='Tool connections',exact=True).click()
         expect(page.locator('.management-content')).to_be_visible();expect(page.get_by_role('navigation',name='Plugin sections')).to_be_visible()
+        expect(page.get_by_role('heading',name='WeCom',exact=True)).to_be_visible()
+        expect(page.get_by_role('heading',name='Feishu',exact=True)).to_be_visible()
+        for language in ('en','zh'):
+            heading=page.locator('.market-heading').bounding_box();content=page.locator('.integrations-page').bounding_box()
+            assert abs(heading['x']-content['x'])<1 and abs(heading['width']-content['width'])<1
+            page.get_by_role('button',name='Switch to Chinese' if language=='en' else '切换为英文',exact=True).click()
+            if language=='en':
+                expect(page.get_by_role('heading',name='企业微信',exact=True)).to_be_visible()
+                expect(page.get_by_role('heading',name='飞书',exact=True)).to_be_visible()
+        checks.append('Tool connections share marketplace content bounds and localize built-in adapter names')
         page.get_by_role('link',name='Marketplace',exact=True).click()
         page.get_by_role('button',name='Manage sources',exact=True).click();drawer=page.get_by_role('dialog')
         drawer.get_by_label('GitHub repository or directory',exact=True).fill('https://github.com/acme/missing')

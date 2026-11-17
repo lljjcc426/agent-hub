@@ -5,6 +5,8 @@ import {agentOptionsSchema} from './backend-config.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {mergeOptions} from './agent-options.ts'
 import {workerProfiles} from './worker-pool.ts'
+import {configuredWorkerBackends} from './worker-catalog.ts'
+import type {RouterContext} from './worker-manager.ts'
 import type {Run} from './store.ts'
 import type {ModelOutput} from './model.ts'
 import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
@@ -59,6 +61,14 @@ export class ChatSessions {
     const assignment=context.ticketId?this.host.store.get<Delegation>('worker-assignment',context.ticketId):undefined
     const triggerId=assignment?.parentTrigger??context.triggerId
     return !!triggerId&&!!this.host.store.get<ChatRun>('chat-run',triggerId)
+  }
+  personalManagement(context?:RouterContext){
+    const trigger=context?.trigger,run=trigger&&this.host.store.get<ChatRun>('chat-run',trigger.id)
+    const conversation=run&&this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!trigger||!conversation||conversation.sourceId!==trigger.source||conversation.actor!==trigger.actor.id||conversation.discussion!==context?.discussion)return false
+    if(!context.scoped)return !this.host.scopes.enabled()
+    const entry=this.host.scopes.binding(context.scoped.route.entryId)
+    return context.scoped.route.scopeId==='@chat:'+stableDigest(conversation.owner)&&entry.privateActor===JSON.stringify([conversation.sourceId,conversation.actor])&&entry.nativeId===(conversation.nativeId??'chat:'+conversation.id)
   }
   private recordCall(call:ExecutionCall){
     const assignment=call.ticketId?this.host.store.get<Delegation>('worker-assignment',call.ticketId):undefined
@@ -155,14 +165,13 @@ export class ChatSessions {
     const scopeId='@chat:'+stableDigest(c.owner),actor=JSON.stringify([c.sourceId,c.actor])
     const bound=h.scopes.bindings().find(b=>b.sourceId===c.sourceId&&b.nativeId===nativeId)
     if(bound&&bound.scopeId!==scopeId)return
-    const workers=workerProfiles(h.config),backend=h.config.execution.router?.backend??h.config.execution.roles.router??h.config.execution.backend
-    const backendIds=[...new Set([backend,...workers.map(w=>w.backend),...(h.config.execution.management?.backends??[])])]
+    const workers=workerProfiles(h.config),backendIds=Object.keys(configuredWorkerBackends(h.config))
     if(!h.store.get('management-scope',scopeId)){
       h.scopes.command({action:'scope.put',operationId:'chat-scope:'+stableDigest(c.owner),expectedRevision:0,scope:{id:scopeId,tenantId:scopeId,name:'Chat',managers:[actor],sourceIds:[c.sourceId],workerIds:workers.map(w=>w.id),backendIds}})
     }else{
-      const scope=h.scopes.scope(scopeId),added=backendIds.filter(id=>!scope.backendIds.includes(id))
+      const scope=h.scopes.scope(scopeId),added=backendIds.filter(id=>!scope.backendIds.includes(id)),workerIds=[...new Set([...scope.workerIds,...workers.map(w=>w.id)])]
       // This personal scope follows host-selected models; existing task grants and memory stay valid.
-      if(added.length)h.store.put('management-scope',scopeId,{...scope,backendIds:[...scope.backendIds,...added],revision:scope.revision+1})
+      if(added.length||workerIds.length!==scope.workerIds.length)h.store.put('management-scope',scopeId,{...scope,workerIds,backendIds:[...scope.backendIds,...added],revision:scope.revision+1})
     }
     if(bound)return
     const accountNamespace=h.scopes.bindings().find(b=>b.sourceId===c.sourceId)?.accountNamespace??'local'

@@ -106,6 +106,10 @@ The first code project advances the host database to schema 13. A matching backu
 
 The default Router assigns a cohesive task to one Worker for investigation, implementation, regression coverage, self-review and delivery. Workers choose their methods and may delegate bounded independent work when it has a concrete benefit; there is no one-Worker concurrency cap. Managed-goal readiness proposes independent host acceptance, and fixable acceptance failures return to the same task. Code projects allow local prerequisite merges and commits; remote publishing still follows the configured host policy. Runtime startup, live prompt updates and previews share the task-mode assembler.
 
+The personal built-in Chat discovers all model connections configured on this host. Adding a connection makes it available on the next message without clearing history or memory. `execution.management.enabled` and `maxWorkers` still apply. `execution.management.backends` continues to restrict external Routers and explicitly bound Chat scopes, together with each scope's `backendIds`; the personal Chat does not rewrite those settings.
+
+Within an authorized task, the Router can choose, create and configure a Worker without a separate staffing approval. `worker_manage list` provides connection names, models, supported options, tool names and per-Worker permissions. The tool schema exposes model, reasoning effort, prompt, provider parameters, limits, timeout, tools, tool connections and browser options. Provider support varies: native Codex has no host API step/token limits; Anthropic reasoning uses provider parameters. A Worker shared with another scope must be cloned to a new ID before its profile is changed. The clone is enabled by default and belongs to the requesting scope. Existing tasks retain their model sessions until explicitly migrated.
+
 ## Verify and grant access
 
 Saving shows **configured, awaiting verification**. Start verification, copy the whole test phrase into the selected software, then inspect four separate observations:

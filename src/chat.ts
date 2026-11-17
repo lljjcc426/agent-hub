@@ -7,7 +7,7 @@ import {mergeOptions} from './agent-options.ts'
 import {workerProfiles} from './worker-pool.ts'
 import type {Run} from './store.ts'
 import type {ModelOutput} from './model.ts'
-import type {ExecutionCall} from './execution-activity.ts'
+import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
 import type {MessageBatch} from './router-proactive.ts'
@@ -55,6 +55,11 @@ export class ChatSessions {
   }
   subscribe(id:string,owner:string,listener:()=>void){this.get(id,owner);const set=this.listeners.get(id)??new Set();set.add(listener);this.listeners.set(id,set);return()=>{set.delete(listener);if(!set.size)this.listeners.delete(id)}}
   private changed(id:string){if(this.notifications.has(id))return;this.notifications.add(id);queueMicrotask(()=>{this.notifications.delete(id);for(const listener of this.listeners.get(id)??[])listener()})}
+  hasContext(context:ExecutionContext){
+    const assignment=context.ticketId?this.host.store.get<Delegation>('worker-assignment',context.ticketId):undefined
+    const triggerId=assignment?.parentTrigger??context.triggerId
+    return !!triggerId&&!!this.host.store.get<ChatRun>('chat-run',triggerId)
+  }
   private recordCall(call:ExecutionCall){
     const assignment=call.ticketId?this.host.store.get<Delegation>('worker-assignment',call.ticketId):undefined
     const triggerId=assignment?.parentTrigger??call.triggerId,run=triggerId?this.host.store.get<ChatRun>('chat-run',triggerId):undefined

@@ -59,6 +59,9 @@ import { FilesPanel } from "./files.tsx";
 import { BrowserPanel } from "./browser.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
 import {RouterModelControl} from './router-model.tsx';
+
+import {ChatCompanion} from "./companion.tsx";
+import {companionStatus} from "./companion-state.ts";
 import {CopyButton} from './copy-button.tsx';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
@@ -68,6 +71,7 @@ import "../../src/ui/typography.css";
 import "./style.css";
 import "./rich-content.css";
 import "./navigation.css";
+import "./chat-layout.css";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
 type Conversation = Snapshot["conversation"];
@@ -222,7 +226,7 @@ function UserMessage() {
     hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime()),
-    own = calls.filter((c) => c.runId === id.replace(/^user:/, ""));
+    own = calls.filter((c) => c.runId === id.replace(/^user:/, "") && c.name !== "superagent_status");
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
@@ -373,9 +377,9 @@ function ToolCalls({
 }) {
   const { L } = useUI(),
     arrival = useArrival('tools:' + calls[0]!.runId, calls[0]!.startedAt),
-    [open, setOpen] = useState(true),
+    [open, setOpen] = useState(false),
     [now, setNow] = useState(Date.now()),
-    tools = calls.filter((c) => c.kind === "tool"),
+    tools = calls.filter((c) => c.kind === "tool" && c.name !== "superagent_status"),
     busy = tools.some((c) => c.state === "running");
   useEffect(() => {
     if (!busy) return;
@@ -862,6 +866,7 @@ function Chat(p: ChatProps) {
       return;
     }
     if (url) setPendingWebsite(url);
+    if(next&&!panel)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
     setResources((state) => next ? openResource(state, next) : { ...state, visible: false });
     if (!next) setPanelExpanded(false);
   };
@@ -919,8 +924,21 @@ function Chat(p: ChatProps) {
       attachments?:string[];
     } | null>(savedPending(id)),
     bodyRef = useRef<HTMLDivElement>(null),
+    threadRef = useRef<HTMLDivElement>(null),
+    panelOpener = useRef<HTMLElement|null>(null),
     teamButton = useRef<HTMLButtonElement>(null),
     menuButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const thread=threadRef.current, transcript=thread?.querySelector<HTMLElement>('.transcript');
+    if(!thread||!transcript)return;
+    const measure=()=>{
+      if(!thread.clientWidth)return;
+      thread.closest<HTMLElement>('.chat-main')?.style.setProperty('--chat-lane-width',thread.clientWidth+'px');
+      thread.style.setProperty('--chat-scrollbar-gutter',(transcript.offsetWidth-transcript.clientWidth)/2+'px');
+    };
+    const observer=new ResizeObserver(measure);observer.observe(thread);observer.observe(transcript);measure();
+    return ()=>observer.disconnect();
+  }, []);
   const closeNavigation = useCallback(() => {
     setMenu(false);
     // The main region must leave inert before its menu button can receive focus.
@@ -1254,7 +1272,7 @@ function Chat(p: ChatProps) {
           closeNavigation();
         } else if (panel) {
           void choosePanel(null);
-          teamButton.current?.focus();
+          (panelOpener.current?.isConnected?panelOpener.current:teamButton.current)?.focus();
         }
       }
     };
@@ -1333,7 +1351,7 @@ function Chat(p: ChatProps) {
             tabIndex={-1}
             inert={narrow && menu}
           >
-            <header className="chat-header">
+            <header className="chat-header" data-chat={!configuring||undefined}>
               <button
                 className="icon-button mobile-menu"
                 ref={menuButton}
@@ -1357,6 +1375,7 @@ function Chat(p: ChatProps) {
                     : display === "agents" ? selected?.label : L("Team chat", "团队群聊")}
                 </strong>
               </div>
+              {!configuring ? <ChatCompanion key={(id??"new")+":"+(readonly?selected.id:"group")} status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>void choosePanel("activity")}/> : null}
               <div className="header-actions">
                 {!configuring ? (
                   <button
@@ -1407,6 +1426,7 @@ function Chat(p: ChatProps) {
               hidden={configuring}
             >
               <ThreadPrimitive.Root
+                ref={threadRef}
                 className="thread"
                 inert={panelExpanded || (panelOverlay && !!panel)}
               >
@@ -1548,7 +1568,7 @@ function Chat(p: ChatProps) {
                   onOpen={(kind, url) => void choosePanel(kind, url)}
                   expanded={panelExpanded}
                   onExpand={() => setPanelExpanded(!panelExpanded)}
-                  onClose={() => { void choosePanel(null); teamButton.current?.focus(); }}
+                  onClose={() => { void choosePanel(null); (panelOpener.current?.isConnected?panelOpener.current:teamButton.current)?.focus(); }}
                   L={L}
                 >
                   {panel === "files" ? (

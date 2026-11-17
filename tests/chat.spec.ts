@@ -811,3 +811,31 @@ it('switches the same scoped Chat between real API adapters and retains its memo
  expect(h.chat.view(c.id,'owner').messages).toHaveLength(6)
  expect(h.store.get<any>('memory-fact',fact.id)).toMatchObject({content:'My project is Maple.',state:'active'})
 })
+
+it('streams model-authored task status through the current chat activity without changing run state',async()=>{
+ let request:ModelRequest|undefined, observed:any
+ const {h}=fixture(async r=>{
+  request=r
+  expect(r.tools?.some(t=>t.name==='superagent_status')).toBe(true)
+  const result=await r.onTool!('superagent_status',{phase:'reviewing',label:'正在审查输入组件'},'status-1')
+  expect(result.success).toBe(true)
+  observed=h.chat.view(c.id,'owner')
+  await expect(r.onTool!('superagent_status',{phase:'completed',label:'完成'},'invalid-status')).rejects.toThrow()
+  return {reply:'Checked the input component.'}
+ }),c=h.chat.create('owner')
+ send(h,c.id)
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(observed.run.state).toBe('running')
+ expect(observed.calls.find((call:any)=>call.kind==='router').status).toMatchObject({phase:'reviewing',label:'正在审查输入组件'})
+ const before=h.chat.view(c.id,'owner').calls.find(call=>call.kind==='router')!.status
+ expect((await request!.onTool!('superagent_status',{phase:'working',label:'迟到进度'},'late-status')).success).toBe(false)
+ expect(h.chat.view(c.id,'owner').calls.find(call=>call.kind==='router')!.status).toEqual(before)
+})
+
+it('keeps explicit Agent tool selection when offering the Chat status tool',async()=>{
+ const {h,calls}=fixture();h.config.execution.router!.tools=['worker_manage']
+ const c=h.chat.create('owner');send(h,c.id)
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(calls[0]!.tools?.some(t=>t.name==='superagent_status')).toBe(false)
+ expect(calls[0]!.instructions).not.toContain('use superagent_status')
+})

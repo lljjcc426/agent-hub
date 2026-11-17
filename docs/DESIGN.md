@@ -366,3 +366,9 @@ The connection editor keeps the neutral workspace palette and compact typography
 The Chat composer opens a native popover for the Router connection and reasoning effort. Applying a selection uses the revisioned settings API, refreshes the displayed model, and keeps the message draft. The popover is rendered outside the composer form, supports keyboard opening and Escape, and exposes a link to manage connections. Anthropic's provider-specific thinking controls stay in team configuration. The Worker button opens actual team activity and its settings link.
 
 Motion is limited to short form/result transitions, popover opening and a pending-request indicator. Reduced motion removes these animations. Model switches start compatible backend context for subsequent turns, retaining the Chat transcript and durable memory; no clear-context action is involved.
+
+## Chat status companion and reading column — 2026-11-17
+
+Chat retains its existing font sizes and gains a small Roppo in the header. Its model-written short status comes from the current execution call; host lifecycle, reconnect and selected participant determine the visible state. The fixed high-resolution body uses separate eyes, hands and props for continuous motion. Background tabs pause it and reduced-motion users receive static poses.
+
+Messages and the composer share an 800px reading column. Desktop avatars sit outside the text measure; narrow conversation lanes move them into the speaker row. Resource panels, feature navigation and scrollbar gutters preserve alignment. The composer retains its existing attachment, draft, IME and send/cancel behavior with tighter spacing and short focus/height/icon transitions. Tool groups initially collapse. See `ui/CHAT_COMPANION.md` for implementation and acceptance details.

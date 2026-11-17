@@ -1,4 +1,6 @@
 import {ApiUsage} from './api-usage.ts'
+
+import {chatStatusTool} from './chat-status.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
@@ -395,11 +397,20 @@ export class Runtime {
     const scopeId=manifest?.scopeId??(context.ticketId?this.scopes.ownership(context.ticketId)?.scopeId:undefined)??(context.triggerId?this.store.get<any>('router-route',context.triggerId)?.scopeId:undefined)
     if(scopeId)request={...request,contextBudget:scopeBudget(this.scopes.scope(scopeId).contextBytes)}
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:options})}
+    if(request.onTool&&(role==='router'||role==='worker')&&this.chat.hasContext(context)&&(!options.tools||options.tools.includes(chatStatusTool.name))){
+      const invoke=request.onTool
+      request={...request,tools:[...(request.tools??[]),chatStatusTool],onTool:async(name,args,callId)=>{
+        if(name!==chatStatusTool.name)return invoke(name,args,callId)
+        const ok=!request.signal?.aborted&&this.activity.status(activity,args)
+        return {success:ok,contentItems:[{type:'inputText',text:JSON.stringify({ok})}]}
+      }}
+    }
     request={...request,options,principal:request.principal??(trigger?{source:trigger.source,actor:trigger.actor.id}:undefined),instructions:this.model instanceof BackendRegistry?request.instructions:appendAgentPrompt(request.instructions,options.prompt),tools:options.tools?request.tools?.filter(t=>options.tools!.includes(t.name)):request.tools}
     if(request.onTool&&options.tools){const invoke=request.onTool;request.onTool=async(name,args,callId)=>{if(!options.tools!.includes(name))return {success:false,contentItems:[{type:'inputText',text:'Tool is disabled for this Agent'}]};return invoke(name,args,callId)}}
     const onActive=request.onActive
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt))}:{})})
     request=this.delegation.restrict(request)
+    if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     request.onConfiguration=value=>{this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}

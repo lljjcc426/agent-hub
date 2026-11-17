@@ -147,7 +147,7 @@ function controlIntegrations() {
   tools.append(cards); root.append(tools)
   const apps = el('section'); apps.append(el('h2', '', L('Application adapters', '应用适配器')))
   const grid = el('div', 'integration-grid')
-  const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Feishu', '飞书') }
+  const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Lark', 'Feishu/飞书') }
   for (const adapter of integrations.data.adapters) {
     const card = add(el('article', 'integration-card'), add(el('h3', 'integration-app-title'), opMark(adapter.kind), el('span', '', adapterNames[adapter.kind] || adapter.label || adapter.kind)))
     const sources = integrations.data.sources.filter(source => source.kind === adapter.kind)

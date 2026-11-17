@@ -262,9 +262,16 @@ export class ChatSessions {
   }
   history(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)!
+    const pending=this.pendingInputs(triggerId)
     return this.rows<Message>('chat-message','conversationId',run.conversationId)
-      .filter(m=>!m.recipient&&(!m.speaker||m.speaker.kind==='router'))
+      .filter(m=>!m.recipient&&(!m.speaker||m.speaker.kind==='router')&&!pending.has(m.runId))
       .sort((a,b)=>a.sequence-b.sequence).map(({role,text,status,attachments})=>({role,text,status,attachments}))
+  }
+  /** Queued messages are durable, but belong to their own serialized Router turn. */
+  pendingInputs(triggerId:string){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run)return new Set<string>()
+    return new Set(this.host.store.db.prepare("SELECT json_extract(r.body,'$.triggerId') AS id FROM records r JOIN jobs j ON json_extract(j.payload,'$.triggerId')=json_extract(r.body,'$.triggerId') WHERE r.kind='chat-run' AND json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state='pending' AND json_extract(j.payload,'$.messageId') IS NULL").all(run.conversationId).map(r=>String(r.id)).filter(id=>id!==triggerId))
   }
   reply(jobId:string,triggerId:string,text:string){
     const stream=this.streams.get(jobId);if(stream?.timer)clearTimeout(stream.timer);this.streams.delete(jobId)
@@ -296,8 +303,6 @@ export class ChatSessions {
       if(!text&&!attachments.length)throw new ChatError('message_empty','Add a message or file.',400)
       if(c.archived)throw new ChatError('conversation_archived','Restore this conversation before sending.')
       const ready=this.readiness();if(!ready.ready)throw new ChatError(ready.code,'The Router is not ready to receive a message.')
-      const active=this.view(id,owner).run
-      if(active&&['queued','running','cancel_requested'].includes(active.state))throw new ChatError('conversation_busy','Wait for the current run or stop it first.')
       const source=this.host.sources.get(c.sourceId)?.config
       if(!source?.enabled||source.kind!=='local'||!source.allowedActors.includes(c.actor))throw new ChatError('source_unavailable','This conversation source is no longer available.')
       this.bindEntry(c)
@@ -314,7 +319,7 @@ export class ChatSessions {
     })
   }
   private tasks(c:Conversation,run?:ChatRun){
-    return this.rows<Delegation>('worker-assignment','discussion',c.discussion).filter(d=>!run||d.parentTrigger===run.triggerId).map(d=>{
+    return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>d.discussion===c.discussion&&(!run||d.parentTrigger===run.triggerId)).map(d=>{
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':['starting','running','background','delivering','merging'].includes(r?.phase??'')?'running':r?.phase==='uncertain'||r?.phase==='human'||t?.attention||['blocked','failed','waiting'].includes(report?.state??'')?'waiting':report?.state==='ready'?'completed':'queued'
       return {id:d.ticketId,workerId:d.workerId,title:t?.title??'',state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
@@ -331,7 +336,8 @@ export class ChatSessions {
   }
   view(id:string,owner:string,before?:number,participant?:string){
     const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id),last=runs.at(-1)
-    const tasks=this.tasks(c,last)
+    const tasks=this.tasks(c),currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId)
+    const replying=this.host.store.db.prepare("SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId') WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running') ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid LIMIT 1").get(id)
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
     const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]
     const clarification=batch?.decision?.action==='clarify'?this.host.store.deliveries().find(d=>d.id==='router-clarify:'+batch.id):undefined
@@ -343,8 +349,8 @@ export class ChatSessions {
       else if(jobs.some(j=>j.state==='running')||batch?.state==='evaluating')state='running'
       else if(jobs.some(j=>j.state==='pending')||batch?.state==='pending')state='queued'
       else if(jobs.some(j=>j.state==='failed')||batch?.state==='failed')state='failed'
-      else if(tasks.some(t=>t.state==='running'||t.state==='queued'))state='running'
-      else if(tasks.some(t=>t.state==='waiting'))state='waiting'
+      else if(currentTasks.some(t=>t.state==='running'||t.state==='queued'))state='running'
+      else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
       else if(jobs.length&&jobs.every(j=>j.state==='done'))state='completed'
     }
@@ -367,7 +373,7 @@ export class ChatSessions {
       const files=screenshots.filter(a=>a.runId===message.runId&&(!participant||a.ticketId===message.ticketId))
       if(files.length){message.attachments=[...(message.attachments??[]),...files];for(const file of files)screenshots.splice(screenshots.indexOf(file),1)}
     }
-    return {...result,browsers:this.host.browser.conversation(owner,id)}
+    return {...result,reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){

@@ -246,7 +246,7 @@ it('delivers batch clarification once into chat, waits for input and recovers le
 })
 it.each(['accept','ignore','failure'])('projects the %s batch lifecycle without leaving chat queued forever',async action=>{
  const f=fixture(async r=>{if(!r.ephemeral)return {reply:'Router continued'};if(action==='failure')throw Error('Assessment unavailable');return batchDecision(action)}),c=f.h.chat.create('owner');enableChatBatch(f.h,c.id)
- send(f.h,c.id);expect(()=>send(f.h,c.id,'Too early')).toThrow('Wait')
+ send(f.h,c.id)
  await settle(f.h,()=>f.h.store.list<any>('router-batch').some(b=>b.state==='decided'||b.state==='failed'))
  await settle(f.h,()=>['completed','failed'].includes(f.h.chat.view(c.id,'owner').run?.state??''))
  expect(f.h.chat.view(c.id,'owner').run?.state).toBe(action==='failure'?'failed':'completed')
@@ -379,7 +379,8 @@ it('receives a browser message exactly once and rejects conflicting identity reu
   expect(()=>send(h,c.id,'Changed',id)).toThrow('different content')
   expect(h.chat.view(c.id,'owner').messages).toHaveLength(1)
   expect(h.store.jobs().filter(j=>j.kind==='router')).toHaveLength(1)
-  expect(()=>send(h,c.id,'Parallel')).toThrow('Wait')
+  expect(()=>send(h,c.id,'Parallel')).not.toThrow()
+  expect(h.chat.view(c.id,'owner').messages).toHaveLength(2)
 })
 it('keeps conversation owners isolated while following current Router options',async()=>{
   const {h,calls,config}=fixture(),a=h.chat.create('owner'),b=h.chat.create('other')

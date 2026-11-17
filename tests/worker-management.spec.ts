@@ -73,6 +73,42 @@ it('allows a shared Worker to be cloned and configured without modifying its oth
  expect(h.config.execution.workers![0]).toEqual(original);expect(h.scopes.scope('other')).toEqual({...external,id:'other'})
 })
 
+it('lets personal Chat configure existing shared Workers while external scopes still need a private clone',async()=>{
+ const {h,context}=fixture(),external=structuredClone(h.scopes.scope('external'))
+ const change={action:'configure',requestId:'shared-edit',revision:0,id:'shared',patch:{backend:'deepseek',effort:'minimal',prompt:'Own the complete task'}}
+ const result=await h.manager.call(change,context)
+ expect(await h.manager.call(change,context)).toEqual(result)
+ expect(result.worker).toMatchObject({id:'shared',backend:'deepseek',effort:'minimal',prompt:'Own the complete task'})
+ expect(h.config.execution.workers).toHaveLength(2)
+ expect(h.scopes.scope('external')).toEqual(external)
+ // The same signed-in actor through an explicitly scoped entry has no host-owner profile privilege.
+ const other=h.chat.create('owner')
+ h.scopes.command({action:'entry.bind',operationId:'external-chat',expectedRevision:0,scopeId:'external',sourceId:'local',accountNamespace:'local',nativeId:'chat:'+other.id,history:'group'})
+ const sent=h.chat.send(other.id,'owner',{clientMessageId:randomUUID(),text:'Change the shared Worker'}),trigger=h.store.triggers.get(sent.runId)!,discussion='local:chat:'+other.id
+ const restricted={trigger,discussion,scoped:h.scopes.context(trigger,discussion)}
+ expect(h.manager.list(restricted).workers[0]).toMatchObject({shared:true,canConfigure:false,canAssign:false})
+ await expect(h.manager.call({...change,requestId:'external-edit',revision:1,patch:{effort:'high'}},restricted)).rejects.toThrow('Shared Worker')
+ expect(h.config.execution.workers![0]!.effort).toBe('minimal')
+})
+
+it('uses the configured Worker limit above ten, independently of subagents, and preserves the pool when lowered',async()=>{
+ const {h,context,config}=fixture()
+ h.updateSettings(0,{execution:{...h.config.execution,management:{...h.config.execution.management!,maxWorkers:12}},work:{...h.config.work,maxAgents:1}})
+ for(let i=3;i<=12;i++)await h.manager.call({action:'create',requestId:'worker-'+i,revision:h.settings.current().revision,profile:{id:'worker-'+i,backend:'deepseek'}},context)
+ expect(h.config.concurrency).toBe(12)
+ expect(h.manager.list(context)).toMatchObject({canCreate:false,policy:{maxWorkers:12}})
+ await expect(h.manager.call({action:'create',requestId:'over-limit',revision:h.settings.current().revision,profile:{id:'overflow',backend:'deepseek'}},context)).rejects.toThrow('Worker limit reached')
+ h.updateSettings(h.settings.current().revision,{execution:{...h.config.execution,management:{...h.config.execution.management!,maxWorkers:6}}})
+ expect(h.config.execution.workers).toHaveLength(12)
+ expect(h.manager.list(context)).toMatchObject({canCreate:false,policy:{maxWorkers:6}})
+ expect(()=>h.updateSettings(h.settings.current().revision,{execution:{...h.config.execution,workers:[...h.config.execution.workers!,{id:'manual-extra',backend:'deepseek'}]}})).toThrow('Worker limit reached')
+ await h.close();hosts.splice(hosts.indexOf(h),1)
+ const restored=new Runtime(config,{model:{async run(){throw Error('No model needed')}}});hosts.push(restored)
+ expect(restored.config.execution.workers).toHaveLength(12)
+ expect(restored.config.execution.management!.maxWorkers).toBe(6)
+ expect(restored.config.work.maxAgents).toBe(1)
+})
+
 it('discovers newly added connections on the next message without replacing history or external scopes',async()=>{
  const {h,context,conversation}=fixture(),external=structuredClone(h.scopes.scope('external'))
  for(let i=0;i<300&&h.chat.view(conversation.id,'owner').run?.state!=='completed';i++){await h.tick();await new Promise(r=>setTimeout(r,2))}

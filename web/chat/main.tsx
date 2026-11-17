@@ -18,6 +18,7 @@ import {
   MessagePrimitive,
   ComposerPrimitive,
   ActionBarPrimitive,
+  useAui,
   useAuiState,
   useMessagePartText,
   type ThreadMessageLike,
@@ -205,6 +206,13 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
       </IconButton>
     </div>
   );
+}
+function SendMessage({sending}:{sending:boolean}){
+  const {L}=useUI(),aui=useAui();
+  const canSend=useAuiState(s=>!s.thread.isDisabled&&s.composer.canSend);
+  return <button type="button" className="send-button" disabled={!canSend} aria-label={L('Send message','发送消息')} onClick={()=>aui.composer.send()}>
+    {sending?<LoaderCircle size={18} className="spin"/>:<ArrowUp size={20}/>}
+  </button>;
 }
 function useArrival(id: string, createdAt: number) {
   const { arrivals } = useUI();
@@ -907,7 +915,6 @@ function Chat(p: ChatProps) {
     [error, setError] = useState(""),
     [connected, setConnected] = useState(true),
     [sending, setSending] = useState(false),
-    [stopping, setStopping] = useState(false),
     [menu, setMenu] = useState(false),
     [selectedAgent, setSelectedAgent] = useState("router"),
     [panelOverlay, setPanelOverlay] = useState(false),
@@ -975,6 +982,7 @@ function Chat(p: ChatProps) {
   const participantFilter = readonly ? selected.id : undefined;
   const ready = snapshot?.readiness ?? boot,
     run = snapshot?.run,
+    reply = snapshot?.reply,
     workers = snapshot?.workers ?? boot?.workers ?? [],
     running =
       !!run && ["queued", "running", "cancel_requested"].includes(run.state),
@@ -984,8 +992,7 @@ function Chat(p: ChatProps) {
       loading ||
       loadingAttachments ||
       attachmentBlocked ||
-      sending ||
-      running;
+      sending;
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
@@ -1099,11 +1106,11 @@ function Chat(p: ChatProps) {
     };
   }, [id, refresh, refreshList]);
   const runtime = useExternalStoreRuntime({
-    isRunning: !readonly && (running || sending || stopping),
+    isRunning: !readonly && (!!reply || sending),
     isLoading: loading,
     isSendDisabled: disabled,
     adapters:{attachments:attachmentAdapter},
-    activeRunId: run?.id,
+    activeRunId: reply?.runId,
     messages: (snapshot?.messages ?? []).filter(m => display === "group" || (readonly ? m.speaker?.id===selected.id || m.recipient?.id===selected.id : !m.recipient && (m.role==="user" || !m.speaker || m.speaker.id===selected.id))),
     convertMessage: (m): ThreadMessageLike => ({
       id: m.id,
@@ -1192,18 +1199,6 @@ function Chat(p: ChatProps) {
         }
       } finally {
         if (alive.current) setSending(false);
-      }
-    },
-    onCancel: async () => {
-      if (!id || !run) return;
-      setStopping(true);
-      try {
-        await api("/conversations/" + id + "/cancel", { runId: run.id });
-        await refresh();
-      } catch (e) {
-        fail(e);
-      } finally {
-        if (alive.current) setStopping(false);
       }
     },
     hasEarlier: snapshot?.hasMore ?? false,
@@ -1452,7 +1447,7 @@ function Chat(p: ChatProps) {
                     <ThreadPrimitive.Messages
                       components={{ UserMessage, AssistantMessage }}
                     />
-                    {(snapshot?.browsers??[]).filter(b=>b.runId===run?.id&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
+                    {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
                       <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):b.control==='worker'?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                       <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                     </div>)}
@@ -1509,10 +1504,16 @@ function Chat(p: ChatProps) {
                       aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
                       rows={2}
                       maxLength={100000}
+                      submitMode="none"
+                      onKeyDown={event=>{
+                        if(event.key!=="Enter"||event.shiftKey||event.nativeEvent.isComposing||event.keyCode===229)return;
+                        event.preventDefault();
+                        runtime.thread.composer.send();
+                      }}
                     />
                     <div className="composer-toolbar">
                       <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
-                      <RouterModelControl label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending||stopping} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
+                      <RouterModelControl label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
                       {workers.length ? (
                         <button
                           className="team-chip"
@@ -1532,30 +1533,7 @@ function Chat(p: ChatProps) {
                         </button>
                       ) : null}
                       <div className="send-actions">
-                        {running || stopping ? (
-                          <ComposerPrimitive.Cancel
-                            className="send-button"
-                            disabled={stopping}
-                            aria-label={L("Stop this run", "停止本次任务")}
-                          >
-                            {stopping ? (
-                              <LoaderCircle size={16} className="spin" />
-                            ) : (
-                              <Square size={15} fill="currentColor" />
-                            )}
-                          </ComposerPrimitive.Cancel>
-                        ) : (
-                          <ComposerPrimitive.Send
-                            className="send-button"
-                            aria-label={L("Send message", "发送消息")}
-                          >
-                            {sending ? (
-                              <LoaderCircle size={18} className="spin" />
-                            ) : (
-                              <ArrowUp size={20} />
-                            )}
-                          </ComposerPrimitive.Send>
-                        )}
+                        <SendMessage sending={sending}/>
                       </div>
                     </div>
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}

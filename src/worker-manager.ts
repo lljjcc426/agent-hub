@@ -49,7 +49,7 @@ export class WorkerManager {
    const shared=this.shared(w.id,context),connectionAllowed=policy.backends.includes(w.backend)
    return {...w,status:this.active(w.id).some(r=>allowed(r.ticketId))?'running':w.state??'idle',active:this.active(w.id).filter(r=>allowed(r.ticketId)).map(r=>r.ticketId),tasks:this.tasks(w.id).filter(t=>allowed(t.ticketId)).map(t=>t.ticketId),
     canConfigure:canManage&&(!shared||personal),canDestroy:canManage&&(!shared||personal),canAssign:policy.enabled&&connectionAllowed&&(!w.state||w.state==='enabled'),shared,
-    ...(shared&&!personal?{configurationNote:'Clone this Worker with a new id before configuring it; other scopes share the original.'}:{}),
+    ...(shared?{configurationNote:personal?'Profile changes apply to every scope sharing this Worker. Existing task sessions are retained.':'Clone this Worker with a new id before configuring it; other scopes share the original.'}:{}),
     ...(!connectionAllowed?{assignmentBlocker:'connection_not_allowed'}:{})}
   })
   return {revision:this.host.settings.current().revision,policy,workers,canCreate:canManage&&workerProfiles(this.host.config).length<policy.maxWorkers,
@@ -62,6 +62,7 @@ export class WorkerManager {
  validateSettings(patch:unknown){
   const next=(patch as any)?.execution?.workers
   if(Array.isArray(next))for(const w of next)if(w&&this.host.store.get('retired-worker',w.id)&&!workerProfiles(this.host.config).some(current=>current.id===w.id))throw Error('Retired Worker identity cannot be reused')
+  if(next&&next.length>workerProfiles(this.host.config).length&&next.length>((patch as any).execution.management?.maxWorkers??this.host.config.execution.management?.maxWorkers??10))throw Error('Worker limit reached; increase execution.management.maxWorkers before adding Workers')
   if(next)for(const w of workerProfiles(this.host.config))if(!next.some((n:any)=>n.id===w.id)&&this.tasks(w.id).length)throw Error('Worker '+w.id+' still owns tasks; retire or cancel before removing it')
  }
  private checkContext(a:Delegation|undefined,c?:RouterContext,mutate=false,allowHeld=false){

@@ -3,6 +3,7 @@ import {createPortal} from 'react-dom';
 import {Check,ChevronRight,LoaderCircle,SlidersHorizontal} from 'lucide-react';
 import type {Config} from '../../src/config.ts';
 import type {AgentOptions,BackendDefinition} from '../../src/backend-config.ts';
+import {mergeParameters} from '../../src/agent-options.ts';
 import './router-model.css';
 
 type Effort=NonNullable<AgentOptions['effort']>;
@@ -40,9 +41,16 @@ export function RouterModelControl({label,model,busy,L,onSaved}:Props){
   const router={...previous,backend};
   if(changed){delete router.model;delete router.parameters}
   if(supportsEffort&&effort)router.effort=effort;else delete router.effort;
+  if(!effort&&definition&&(definition.kind==='openai-chat'||definition.kind==='openai-responses')&&router.parameters){
+   router.parameters=structuredClone(router.parameters);
+   delete router.parameters.reasoning_effort;
+   const reasoning=router.parameters.reasoning as {effort?:string}|undefined;
+   if(reasoning){delete reasoning.effort;if(!Object.keys(reasoning).length)delete router.parameters.reasoning}
+   if(!Object.keys(router.parameters).length)delete router.parameters;
+  }
   // Match explicit provider reasoning settings when a generic override is selected.
   if(effort&&definition&&(definition.kind==='openai-chat'||definition.kind==='openai-responses')){
-   const parameters={...definition.parameters,...router.parameters};
+   const parameters=mergeParameters(mergeParameters(definition.parameters,definition.defaults?.parameters),router.parameters);
    if(definition.kind==='openai-chat'&&parameters.reasoning_effort!==undefined)router.parameters={...router.parameters,reasoning_effort:effort};
    if(definition.kind==='openai-responses'&&(parameters.reasoning as {effort?:string}|undefined)?.effort!==undefined)router.parameters={...router.parameters,reasoning:{...(parameters.reasoning as object),effort}};
   }

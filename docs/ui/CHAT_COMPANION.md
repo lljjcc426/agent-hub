@@ -14,7 +14,7 @@ Waiting, completion, cancellation, failure and connection status take priority o
 
 ## Motion assets
 
-The generated body layer and exact prompt live in `src/ui/assets/agents/roppo-body.webp` and `roppo-body.prompt.txt`. Separate layers provide breathing/blinking, thinking, typing, reviewing, waiting, completion, failure, stopped and disconnected poses. The fixed raster silhouette removes frame-to-frame shape drift. CSS handles continuous movement and pose transitions; no animation library or production GIF is required.
+The generated body layer and exact prompt live in `src/ui/assets/agents/roppo-body.webp` and `roppo-body.prompt.txt`. Separate layers provide breathing/blinking, thinking, typing, reviewing, waiting, completion, failure, stopped and disconnected poses. Thinking uses a head tilt and gaze shift, waiting raises the gaze and settles, and completion nods once. These three poses have no floating hand; hands only accompany the laptop and review sheet. The fixed raster silhouette removes frame-to-frame shape drift. CSS handles continuous movement and pose transitions; no animation library or production GIF is required.
 
 The companion pauses on document visibility changes and removes motion when `prefers-reduced-motion` is set. Controls remain usable with keyboard and touch. Closing the resource panel restores focus to the button that opened it.
 

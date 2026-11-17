@@ -244,7 +244,7 @@ function UserMessage() {
     hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime()),
-    own = calls.filter((c) => c.runId === id.replace(/^user:/, "") && c.name !== "superagent_status");
+    own = calls.filter((c) => c.runId === id.replace(/^user:/, "") && !["superagent_status","chat_react"].includes(c.name??''));
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
@@ -252,7 +252,7 @@ function UserMessage() {
         <MessageAttachments files={attachments??[]} L={L}/>
         {hasText?<div className="user-bubble" data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>:null}
         <Reactions id={id}/>
-        <div className="message-footer"><Timestamp at={createdAt}/><MessageActions id={id}/></div>
+        <div className="message-footer"><MessageActions id={id}/><Timestamp at={createdAt}/></div>
       </MessagePrimitive.Root>
       {own.some((c) => c.kind === "tool") ? (
         <div className="message-tool-activity">
@@ -398,7 +398,7 @@ function ToolCalls({
     arrival = useArrival('tools:' + calls[0]!.runId, calls[0]!.startedAt),
     [open, setOpen] = useState(false),
     [now, setNow] = useState(Date.now()),
-    tools = calls.filter((c) => c.kind === "tool" && c.name !== "superagent_status"),
+    tools = calls.filter((c) => c.kind === "tool" && !["superagent_status","chat_react"].includes(c.name??'')),
     busy = tools.some((c) => c.state === "running");
   useEffect(() => {
     if (!busy) return;
@@ -1016,6 +1016,7 @@ function Chat(p: ChatProps) {
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
+  const reactionOnly = run?.state==='completed' && snapshot?.messages.some(m=>m.runId===run.id && m.role==='user' && m.agentReactions?.length);
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.recipient)?.id ?? '' : '';
   const fail = (e: unknown) => {
     if (alive.current)
@@ -1137,7 +1138,7 @@ function Chat(p: ChatProps) {
       id: m.id,
       role: m.role,
       createdAt: new Date(m.createdAt),
-      metadata:{custom:{speaker:m.speaker,recipient:m.recipient,attachments:m.attachments,quote:m.quote,reactions:m.reactions}},
+      metadata:{custom:{speaker:m.speaker,recipient:m.recipient,attachments:m.attachments,quote:m.quote,reactions:m.reactions,agentReactions:m.agentReactions}},
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
         ? {
@@ -1519,8 +1520,8 @@ function Chat(p: ChatProps) {
                       <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                     </div>)}
                     {run && !readonly ? (
-                      <div className="run-activity" hidden={!!runMessageId && !workers.some(w=>w.tasks.length)} aria-live="polite">
-                        {!runMessageId ? <div className={"run-status " + run.state}>
+                      <div className="run-activity" hidden={(!!runMessageId || reactionOnly) && !workers.some(w=>w.tasks.length)} aria-live="polite">
+                        {!runMessageId && !reactionOnly ? <div className={"run-status " + run.state}>
                           <StatusIcon state={run.state} />
                           <span>{runLabel(run.state, L)}</span>
                         </div> : null}
@@ -1578,7 +1579,7 @@ function Chat(p: ChatProps) {
                     />
                     <div className="composer-toolbar">
                       <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
-                      <RouterModelControl label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
+                      <RouterModelControl visible={!configuring} label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
                       {workers.length ? (
                         <button
                           className="team-chip"

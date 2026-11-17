@@ -184,6 +184,7 @@ export class RouterProactive {
  noteTask(triggerId:string,ticketId:string){const run=this.runForTrigger(triggerId);if(run&&!run.taskIds.includes(ticketId)){this.host.store.put('router-schedule-run',run.id,{...run,taskIds:[...run.taskIds,ticketId]});if(run.state==='cancelled'&&!this.host.store.tickets.get(ticketId)?.ended)this.host.engine.stopTicket(ticketId,'Scheduled run already cancelled')}}
  notify(triggerId:string){return this.runForTrigger(triggerId)?.spec.notification!=='silent'}
  private collect(a:RouterAdmission,t:Trigger){
+  if(this.host.chat.isReactionInput(t.id))return false
   const c=this.host.scopes.context(t,a.discussion);if(!c)return false
   const settings=this.controls(c.route.scopeId);if(!settings.enabled)return false
   const now=this.now(),strength=a.mandate!.strength,key=stableDigest([c.route.scopeId,c.route.entryId,a.discussion,c.actor,strength,a.policyVersion,settings.revision])

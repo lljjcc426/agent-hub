@@ -58,7 +58,7 @@ it('checks quote ownership and exact selected content, while resolving old messa
  h.store.db.prepare("DELETE FROM records WHERE kind='chat-message' AND id=?").run(source.id)
  expect(h.chat.quoteForTrigger(sent.runId)).toMatchObject({text:'',unavailable:true})
 })
-it('persists idempotent reactions across streaming and restart, never enqueues work, and clears them with Chat reset',async()=>{
+it('persists idempotent reactions across streaming and restart, debounces feedback, and clears them with Chat reset',async()=>{
  const f=fixture(),c=f.h.chat.space('owner',true).conversation!,sent=f.h.chat.send(c.id,'owner',{text:'Hello',clientMessageId:randomUUID()})
  const messageId='user:'+sent.runId,before=f.h.store.db.prepare('SELECT count(*) AS n FROM jobs').get()!.n
  const input={messageId,emoji:'👩🏽‍💻',active:true}
@@ -94,4 +94,78 @@ it('matches rendered Markdown selection including code, links, lists, tables and
  expect(messageText('**Bold** and [link](https://example.com)\n\n- `A😀B`\n- second\n\n| A | B |\n| - | - |\n| 1 | 2 |')).toContain('Bold and link')
  for(const emoji of ['👍','❤️','👩🏽‍💻','🇨🇳','1️⃣'])expect(isReaction(emoji)).toBe(true)
  for(const value of ['hello','👍👍','', '✅ approved'])expect(isReaction(value)).toBe(false)
+})
+
+it('coalesces reaction changes, recovers pending feedback after restart, and lets Router acknowledge without a text bubble',async()=>{
+ const f=fixture(),c=f.h.chat.space('owner',true).conversation!
+ const sent=f.h.chat.send(c.id,'owner',{text:'Thank you!',clientMessageId:randomUUID(),locale:'en-US'});await settle(f.h)
+ const messageId=f.h.chat.view(c.id,'owner').messages.at(-1)!.id
+ const toggle=(emoji:string,active:boolean)=>f.h.chat.react(c.id,'owner',{messageId,emoji,active})
+ toggle('🎉',true);toggle('🎉',false)
+ expect(f.h.store.list('chat-pending-reactions')).toHaveLength(0)
+ toggle('❤️',true);toggle('❤️',true);toggle('👍',true)
+ const pending=f.h.store.list<any>('chat-pending-reactions')[0]
+ expect(pending.changes).toEqual([{messageId,before:[],after:['❤️','👍']}])
+ f.h.chat.flushReactions(pending.dueAt-1);expect(f.calls).toHaveLength(1)
+ await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
+ f.model.run=async r=>{
+  f.calls.push(r)
+  const input=JSON.parse(r.input)
+  if(input.kind==='chat_reaction'){
+   expect(input.replyLocale).toBe('en-US')
+   expect(input.chat.feedback[0]).toMatchObject({messageId,before:[],after:['❤️','👍'],message:{messageId,role:'assistant'}})
+   expect(r.tools?.some(t=>t.name==='chat_react')).toBe(true)
+   expect((await r.onTool!('chat_react',{messageId:'user:'+sent.runId,emoji:'😊'},'react-ack')).success).toBe(true)
+   return {threadId:randomUUID(),turnId:randomUUID(),text:JSON.stringify({reply:''})}
+  }
+  return {threadId:randomUUID(),turnId:randomUUID(),text:JSON.stringify({reply:'Welcome'})}
+ }
+ const h=new Runtime(f.config,{model:f.model});hosts.push(h)
+ h.store.put('settings','paused',true);h.chat.flushReactions(pending.dueAt+1)
+ expect(h.store.list('chat-pending-reactions')).toHaveLength(1)
+ h.store.put('settings','paused',false)
+ h.chat.flushReactions(pending.dueAt+1);await settle(h)
+ const view=h.chat.view(c.id,'owner')
+ expect(f.calls).toHaveLength(2);expect(view.messages).toHaveLength(2)
+ expect(view.messages[0]!.agentReactions).toMatchObject([{emoji:'😊',actor:{kind:'router',label:'Roppo'}}])
+ expect(view.run?.id).toBe(sent.runId);expect(view.run?.state).toBe('completed')
+ expect(h.store.list('chat-pending-reactions')).toHaveLength(0)
+ const feedback=h.store.list<any>('chat-run').find(run=>run.feedback)
+ expect(h.store.list<any>('router-journal').find(e=>e.triggerIds.includes(feedback.id))?.kind).toBe('feedback')
+ expect(h.store.list<any>('memory-evidence').some(e=>e.locator==='trigger:'+feedback.id)).toBe(false)
+ h.chat.flushReactions(Date.now()+10000);await settle(h);expect(f.calls).toHaveLength(2)
+ h.updateSettings(h.settings.current().revision,{execution:{...h.config.execution,router:{...h.config.execution.router,model:'new-model'}}})
+ h.chat.send(c.id,'owner',{text:'What did I react to?',clientMessageId:randomUUID()});await settle(h)
+ const rebuilt=JSON.parse(f.calls.at(-1)!.input)
+ expect(rebuilt.continuity.history.find((e:any)=>e.kind==='feedback').feedback[0]).toMatchObject({messageId,after:['❤️','👍']})
+ expect(rebuilt.chat.messages.find((m:any)=>m.messageId==='user:'+sent.runId).reactions.agents[0].emoji).toBe('😊')
+})
+it('keeps user and Router reactions independent and only lets the Router react inside its conversation',async()=>{
+ const {h}=fixture(),c=h.chat.space('owner',true).conversation!,other=h.chat.create('other')
+ const sent=h.chat.send(c.id,'owner',{text:'Good morning',clientMessageId:randomUUID()}),foreign=h.chat.send(other.id,'other',{text:'Other chat',clientMessageId:randomUUID()}),messageId='user:'+sent.runId
+ const first=h.chat.reactAsRouter(sent.runId,{messageId,emoji:'👋'})
+ expect(h.chat.reactAsRouter(sent.runId,{messageId,emoji:'👋'})).toEqual(first)
+ expect(()=>h.chat.reactAsRouter(sent.runId,{messageId:'user:'+foreign.runId,emoji:'👋'})).toThrow('no longer available')
+ expect(()=>h.chat.reactAsRouter(sent.runId,{messageId,emoji:'hello'})).toThrow('single emoji')
+ h.chat.react(c.id,'owner',{messageId,emoji:'👋',active:true});h.chat.react(c.id,'owner',{messageId,emoji:'👋',active:false})
+ expect(h.chat.view(c.id,'owner').messages[0]!.agentReactions).toEqual(first.agentReactions)
+ expect(h.store.list('chat-pending-reactions')).toHaveLength(0)
+ h.chat.reactAsRouter(sent.runId,{messageId,emoji:'👋',active:false})
+ expect(h.chat.view(c.id,'owner').messages[0]!.agentReactions).toEqual([])
+})
+it('waits for queued messages, bypasses task batching for reactions, and never revives cleared Chat',async()=>{
+ const {h,calls}=fixture(),c=h.chat.space('owner',true).conversation!,first=h.chat.send(c.id,'owner',{text:'First',clientMessageId:randomUUID()})
+ h.chat.react(c.id,'owner',{messageId:'user:'+first.runId,emoji:'👍',active:true})
+ h.chat.flushReactions(Date.now()+10000)
+ expect(h.store.list('chat-run')).toHaveLength(1)
+ await settle(h)
+ const scopeId=h.scopes.bindings().find(e=>e.nativeId==='chat:'+c.id)!.scopeId
+ h.store.put('router-proactive-settings',scopeId,{scopeId,enabled:true,revision:1,debounceMs:100,maxWaitMs:1000,cooldownMs:0})
+ h.chat.flushReactions(Date.now()+10000);await settle(h)
+ expect(calls).toHaveLength(2);expect(JSON.parse(calls[1]!.input).kind).toBe('chat_reaction')
+ expect(h.store.list('router-batch')).toHaveLength(0)
+ h.chat.react(c.id,'owner',{messageId:'user:'+first.runId,emoji:'❤️',active:true})
+ const before=h.store.list('chat-run').length
+ h.chat.reset('owner',randomUUID());h.chat.flushReactions(Date.now()+10000)
+ expect(h.store.list('chat-run').length).toBe(before)
 })

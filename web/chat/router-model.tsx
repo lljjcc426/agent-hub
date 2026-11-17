@@ -8,15 +8,17 @@ import './router-model.css';
 
 type Effort=NonNullable<AgentOptions['effort']>;
 type Configuration={current:{revision:number;config:Config};agentCapabilities?:Record<string,{efforts?:Effort[]}>};
-type Props={label:string;model?:string;busy:boolean;L:(en:string,zh:string)=>string;onSaved:()=>Promise<void>};
+type Props={label:string;model?:string;busy:boolean;visible:boolean;L:(en:string,zh:string)=>string;onSaved:()=>Promise<void>};
 async function request<T>(path:string,body?:unknown,signal?:AbortSignal):Promise<T>{
  const response=await fetch(path,{credentials:'same-origin',signal,...(body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{})});
  const data=await response.json();if(!response.ok)throw Error(data.code??'configuration_failed');return data;
 }
-export function RouterModelControl({label,model,busy,L,onSaved}:Props){
+export function RouterModelControl({label,model,busy,visible,L,onSaved}:Props){
  const trigger=useRef<HTMLButtonElement>(null),popover=useRef<HTMLDivElement>(null);
  const [open,setOpen]=useState(false),[config,setConfig]=useState<Configuration|null>(null),[backend,setBackend]=useState(''),[effort,setEffort]=useState<Effort|''>(''),[saving,setSaving]=useState(false),[error,setError]=useState('');
  const [position,setPosition]=useState({left:16,bottom:16});
+ const close=()=>popover.current?.hidePopover();
+ useEffect(()=>{if(!visible)close()},[visible]);
  const load=async(signal?:AbortSignal)=>{
   setError('');const data=await request<Configuration>('/configuration',undefined,signal);setConfig(data);
   setBackend(data.current.config.execution.router?.backend??data.current.config.execution.roles.router??data.current.config.execution.backend);
@@ -69,10 +71,10 @@ export function RouterModelControl({label,model,busy,L,onSaved}:Props){
     <fieldset disabled={saving||busy}>
      <label htmlFor="router-connection">{L('Model connection','模型连接')}</label>
      <select autoFocus id="router-connection" value={backend} onChange={e=>{setBackend(e.target.value);setEffort('')}}>{Object.entries(definitions).map(([id,d])=><option key={id} value={id}>{d.label??(id==='codex'?'Codex':id)}{'model' in d&&d.model?' · '+d.model:''}</option>)}</select>
-     {supportsEffort?<><label htmlFor="router-effort">{L('Reasoning effort','思考强度')}</label><select id="router-effort" value={effort} onChange={e=>setEffort(e.target.value as Effort|'')}><option value="">{L('Model default','模型默认')}</option>{[...new Set([...efforts,...(effort?[effort]:[])])].map(value=><option key={value} value={value}>{labels[value]??value}</option>)}</select></>:<a className="router-thinking-link" href="/configure#execution/configuration">{L('Configure model thinking','配置模型思考参数')}<ChevronRight size={14}/></a>}
+     {supportsEffort?<><label htmlFor="router-effort">{L('Reasoning effort','思考强度')}</label><select id="router-effort" value={effort} onChange={e=>setEffort(e.target.value as Effort|'')}><option value="">{L('Model default','模型默认')}</option>{[...new Set([...efforts,...(effort?[effort]:[])])].map(value=><option key={value} value={value}>{labels[value]??value}</option>)}</select></>:<a className="router-thinking-link" href="/configure#execution/configuration" onClick={close}>{L('Configure model thinking','配置模型思考参数')}<ChevronRight size={14}/></a>}
     </fieldset>
     {busy?<p className="router-model-notice">{L('Available when this run finishes.','本次任务结束后可切换。')}</p>:null}
-    <div className="router-model-actions"><a href="/configure#models">{L('Manage connections','管理连接')}<ChevronRight size={14}/></a><button disabled={saving||busy} className="router-model-save" type="submit">{saving?<LoaderCircle size={14} className="spin"/>:<Check size={14}/>} {saving?L('Saving…','正在保存…'):L('Apply','应用')}</button></div>
+    <div className="router-model-actions"><a href="/configure#models" onClick={close}>{L('Manage connections','管理连接')}<ChevronRight size={14}/></a><button disabled={saving||busy} className="router-model-save" type="submit">{saving?<LoaderCircle size={14} className="spin"/>:<Check size={14}/>} {saving?L('Saving…','正在保存…'):L('Apply','应用')}</button></div>
    </form>:null}
    {error?<div className="router-model-error" role="alert"><p>{error==='settings_conflict'?L('Settings changed. Reload before saving.','配置已更新，请重新读取后保存。'):L('Could not update the model. Please retry.','未能更新模型，请重试。')}</p><button type="button" onClick={()=>void load().catch(e=>setError(e.message))}>{L('Reload settings','重新读取配置')}</button></div>:null}
   </div>,document.body)}

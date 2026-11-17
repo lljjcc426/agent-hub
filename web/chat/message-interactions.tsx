@@ -1,12 +1,12 @@
 import {createContext,useContext,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {MoreHorizontal,Reply,Search,Smile,X} from 'lucide-react'
-import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts'
+import type {ChatQuote,ChatQuoteView,AgentReaction} from '../../src/chat-interactions.ts'
 import {CopyButton} from './copy-button.tsx'
 
 type L=(en:string,zh:string)=>string
 export type DraftQuote=ChatQuoteView&ChatQuote
-type Message={id:string;text:string;role:'user'|'assistant';speaker?:{id:string;label:string};quote?:ChatQuoteView;reactions?:string[];attachments?:{name:string}[]}
+type Message={id:string;text:string;role:'user'|'assistant';speaker?:{id:string;label:string};quote?:ChatQuoteView;reactions?:string[];agentReactions?:AgentReaction[];attachments?:{name:string}[]}
 const Context=createContext({L:((en:string)=>en) as L,messages:[] as Message[],reply:(_quote:DraftQuote)=>{},react:(_id:string,_emoji:string)=>{},locate:(_id:string)=>{}})
 export const useInteractions=()=>useContext(Context)
 const quick=[['👍','赞 认可 thumbs up'],['❤️','爱 喜欢 heart'],['😂','笑 laugh'],['🎉','庆祝 party'],['🤔','思考 thinking'],['👀','关注 eyes']]
@@ -52,14 +52,14 @@ export function MessageActions({id}:{id:string}){
     const node=popover.current;if(!node)return
     if(!panel){if(node.matches(':popover-open'))node.hidePopover();return}
     node.showPopover()
-    if(keyboard.current){node.querySelector<HTMLElement>('input,button')?.focus({preventScroll:true});keyboard.current=false}
+    if(keyboard.current){Array.from(node.querySelectorAll<HTMLElement>('input,button')).find(el=>el.getClientRects().length)?.focus({preventScroll:true});keyboard.current=false}
     const rect=anchor.current!.getBoundingClientRect(),box=node.getBoundingClientRect(),above=rect.top-box.height-8
     node.style.left=Math.max(10,Math.min(innerWidth-box.width-10,rect.left-8))+'px'
     node.style.top=Math.max(10,above>10?above:Math.min(innerHeight-box.height-10,rect.bottom+8))+'px'
     node.style.transformOrigin=above>10?'24px bottom':'24px top'
   },[panel,expanded,search])
   useEffect(()=>{const close=()=>setPanel(null);window.addEventListener('resize',close);return()=>window.removeEventListener('resize',close)},[])
-  const open=(kind:'emoji'|'more',event:React.MouseEvent<HTMLButtonElement>)=>{anchor.current=event.currentTarget;keyboard.current=true;setSearch('');setExpanded(false);setPanel(p=>p===kind?null:kind)}
+  const open=(kind:'emoji'|'more',event:React.MouseEvent<HTMLButtonElement>)=>{anchor.current=event.currentTarget;keyboard.current=event.detail===0;setSearch('');setExpanded(false);setPanel(p=>p===kind?null:kind)}
   const quote=()=>{setPanel(null);reply(toQuote(message))}
   const choose=(emoji:string)=>{setPanel(null);react(id,emoji);anchor.current?.focus({preventScroll:true})}
   const hits=search?emojis.filter(([emoji,keywords])=>(emoji+' '+keywords).toLowerCase().includes(search.toLowerCase())):emojis
@@ -73,8 +73,8 @@ export function MessageActions({id}:{id:string}){
         <div className="quick-reactions">{quick.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}<button type="button" aria-label={L('More emoji','更多表情')} aria-expanded={expanded} onClick={()=>setExpanded(v=>!v)}><Smile size={19}/></button></div>
         {expanded?<div className="emoji-search-panel"><label className="emoji-search"><Search size={15}/><input autoFocus value={search} onChange={e=>setSearch(e.target.value)} aria-label={L('Search emoji','搜索表情')} placeholder={L('Search emoji','搜索表情')}/></label><div className="emoji-grid">{hits.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}</div>{!hits.length?<span role="status">{L('No matching emoji','没有匹配的表情')}</span>:null}</div>:null}
       </>:shown==='more'?<>
-        <button type="button" onClick={quote}><Reply size={15}/>{L('Quote reply','引用回复')}</button>
-        <button type="button" onClick={()=>{setPanel('emoji');setExpanded(true)}}><Smile size={15}/>{L('React','表情回应')}</button>
+        <button type="button" className="mobile-only-action" onClick={quote}><Reply size={15}/>{L('Quote reply','引用回复')}</button>
+        <button type="button" className="mobile-only-action" onClick={()=>{keyboard.current=true;setPanel('emoji');setExpanded(true)}}><Smile size={15}/>{L('React','表情回应')}</button>
         <CopyButton value={message.text} L={L} label={L('Copy Markdown','复制 Markdown')} menu/>
       </>:null}
     </div>,document.body)}
@@ -82,13 +82,17 @@ export function MessageActions({id}:{id:string}){
 }
 
 export function Reactions({id}:{id:string}){
-  const {messages,react,L}=useInteractions(),reactions=messages.find(m=>m.id===id)?.reactions??[]
+  const {messages,react,L}=useInteractions(),message=messages.find(m=>m.id===id),own=message?.reactions??[],agents=message?.agentReactions??[]
+  const reactions=[...new Set([...own,...agents.map(r=>r.emoji)])]
   const [rendered,setRendered]=useState(reactions)
   useLayoutEffect(()=>{
     if(matchMedia('(prefers-reduced-motion: reduce)').matches){setRendered(reactions);return}
     setRendered(old=>[...new Set([...old,...reactions])]);const timer=setTimeout(()=>setRendered(reactions),280);return()=>clearTimeout(timer)
   },[reactions.join('')])
-  return <div className="reaction-reveal" data-open={!!reactions.length}><div><div className="message-reactions" aria-label={L('Reactions','表情回应')}>{rendered.map(emoji=><span className="reaction-slot" key={emoji} data-active={reactions.includes(emoji)} aria-hidden={!reactions.includes(emoji)}><button type="button" className="reaction-pill" aria-label={L('Remove '+emoji,'移除 '+emoji)} aria-pressed={reactions.includes(emoji)} tabIndex={reactions.includes(emoji)?0:-1} onClick={()=>react(id,emoji)}>{emoji}<span>1</span></button></span>)}</div></div></div>
+  return <div className="reaction-reveal" data-open={!!reactions.length}><div><div className="message-reactions" aria-label={L('Reactions','表情回应')}>{rendered.map(emoji=>{
+    const active=reactions.includes(emoji),selected=own.includes(emoji),authors=[...(selected?[L('You','你')]:[]),...agents.filter(r=>r.emoji===emoji).map(r=>r.actor.label)]
+    return <span className="reaction-slot" key={emoji} data-active={active} aria-hidden={!active}><button type="button" className="reaction-pill" title={authors.join(' · ')} aria-label={(selected?L('Remove ','移除 '):L('React with ','回应 '))+emoji+' · '+authors.join(' · ')} aria-pressed={selected} tabIndex={active?0:-1} onClick={()=>react(id,emoji)}>{emoji}<span>{authors.length||1}</span></button></span>
+  })}</div></div></div>
 }
 
 export function QuotePreview({quote,onClear,L}:{quote:DraftQuote|null;onClear:()=>void;L:L}){

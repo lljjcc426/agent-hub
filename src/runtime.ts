@@ -1,5 +1,6 @@
 import {ApiUsage} from './api-usage.ts'
 
+import {chatReactionSpec} from './chat-interactions.ts'
 import {chatStatusTool} from './chat-status.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
@@ -567,8 +568,8 @@ export class Runtime {
     if(this.config.execution.router?.mode==='host'){
       if(existing&&!this.routerIngress.get(trigger.id))return {disposition:'duplicate',triggerId:trigger.id,thread:trigger.threads[0]?.id,related:this.related(trigger)}
       const result=this.routerIngress.receive(trigger)
-      if(trigger.human&&result.disposition!=='duplicate')try{const c=this.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(c&&this.routerIngress.authority(trigger.id).strength==='explicit'){if(this.agentMemory.enabled(c))this.memory.captureExplicit(c);this.agentMemory.observe(c)}}catch{this.store.audit({type:'memory.input_deferred',triggerId:trigger.id})}
-      if(result.disposition!=='duplicate'&&!this.store.get('project-review-input',trigger.id)&&!this.workflows.isDecisionReply(trigger))relayRouterFollowups(this,trigger)
+      if(trigger.human&&!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate')try{const c=this.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(c&&this.routerIngress.authority(trigger.id).strength==='explicit'){if(this.agentMemory.enabled(c))this.memory.captureExplicit(c);this.agentMemory.observe(c)}}catch{this.store.audit({type:'memory.input_deferred',triggerId:trigger.id})}
+      if(!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate'&&!this.store.get('project-review-input',trigger.id)&&!this.workflows.isDecisionReply(trigger))relayRouterFollowups(this,trigger)
       return result
     }
     const disposition = this.engine.receive(trigger)
@@ -641,6 +642,7 @@ export class Runtime {
       await this.watchdog.advance()
       if(!this.paused){this.webhooks.dispatch();this.webhooks.reconcile();await this.goals.advance();this.goals.tick();this.webhooks.flush()}
       this.engine.evaluateDue()
+      if(!this.paused)this.chat.flushReactions()
       reconsiderRouterFollowups(this)
       for(const id of this.liveInputs.keys())void this.deliverLiveInputs(id)
       const interactive=(job:Job)=>job.kind==='followup'||job.kind==='router-followup'||(job.kind==='execute'&&!!this.store.tickets.get((job.payload as any).ticketId)?.inputs.some(i=>i.kind==='trigger'&&i.human&&this.store.tickets.get((job.payload as any).ticketId)!.undelivered.includes(i.id)))
@@ -771,9 +773,9 @@ export class Runtime {
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
     const scoped=reportMessage?.ticketId?this.scopes.contextForTask(trigger,discussion,reportMessage.ticketId):this.scopes.context(trigger,discussion),profile=scoped?this.scopes.scope(scoped.route.scopeId).router:undefined
     const chatBinding=this.chat.binding(triggerId)
-    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs])
-    const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:trigger.human?'user_message':'event',trigger,replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
-    if(scoped)this.memory.ingest(scoped)
+    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec])
+    const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
+    if(scoped&&!this.chat.isReactionInput(triggerId))this.memory.ingest(scoped)
     const controller=new AbortController(),key='router:'+discussion
     const authorizedMessage=(m:any)=>{
       const owner=this.taskAuthority(m.ticketId)
@@ -788,7 +790,7 @@ export class Runtime {
     const schema={type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false}
     const scopedTasks=scoped?this.store.list<any>('worker-assignment').flatMap(a=>{try{this.scopes.checkTask(a.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(a.ticketId)!,scoped.route.entryId,'result');const saved=this.store.get<{manifest:ContextManifest}>('task-context',a.ticketId);if(saved)this.memory.validate(saved.manifest);const raw=this.store.tickets.get(a.ticketId),task=raw&&taskView(this.store,raw);return task?[{ticketId:task.id,workerId:a.workerId,title:task.title,ended:task.ended,report:task.assignments.at(-1)?.report}]:[]}catch{return []}}).slice(-40):[]
     if(scoped&&!candidates&&!followups){
-      for(const t of [trigger,...(batchInputs??[])])if(t.human&&this.routerIngress.authority(t.id).strength==='explicit'){
+      for(const t of [trigger,...(batchInputs??[])])if(t.human&&!this.chat.isReactionInput(t.id)&&this.routerIngress.authority(t.id).strength==='explicit'){
         const c=this.scopes.context(t,discussion)
         if(c)try{if(this.agentMemory.enabled(c))this.memory.captureExplicit(c);this.agentMemory.observe(c)}catch(error){this.store.audit({type:'explicit-memory-held',triggerId:t.id,error:String(error)})}
       }
@@ -831,7 +833,7 @@ export class Runtime {
       const modelInput=continuity?.input??packet?.input??JSON.stringify({...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),...(chatBinding&&!threadId?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{})})
       const result=await this.runModel({role:'router',...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text,
-        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
+        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
         onTool:async(name,args)=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -851,6 +853,7 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
+            if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
               const result=await this.resources.read(args,{routerTriggerId:triggerId})
               return result?.kind==='image'?{success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}:{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}

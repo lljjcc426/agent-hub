@@ -7,7 +7,7 @@ import {stableDigest} from './sources.ts'
 
 const id=z.string().min(1).max(300)
 export const journalCommandSchema=z.object({action:z.enum(['read','record','supersede','checkpoint']),id:id.optional(),operationId:id.optional(),kind:z.enum(['requirement','decision','commitment']).optional(),text:z.string().min(1).max(16000).optional(),sourceIds:z.array(id).min(1).max(100).optional(),supersedes:id.optional(),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(20)}).strict()
-interface JournalItem {id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerIds:string[];kind:'user'|'router';text:string;at:number;contextId?:string;knowledge?:{documentId:string;revision:number}[]}
+interface JournalItem {id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerIds:string[];kind:'user'|'router'|'feedback';text:string;at:number;contextId?:string;knowledge?:{documentId:string;revision:number}[]}
 interface Commitment {id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerIds:string[];eventIds:string[];contextId?:string;kind:'requirement'|'decision'|'commitment';text:string;active:boolean;at:number;supersededBy?:string}
 export const journalSpecs:ToolSpec[]=[{type:'function',name:'router_journal',description:'Persistent requirements, decisions and commitments for this conversation. record must cite sourceIds returned by read, and cannot invent user authority. Explicit user text remains verbatim in every rebuilt context. supersede requires a new explicit human input and keeps history. checkpoint summarizes past Router replies only, never deletes original user requirements or effects. Preserve decisions and next steps before returning. read is paginated.',inputSchema:{type:'object',properties:{action:{type:'string',enum:journalCommandSchema.shape.action.options},id:{type:'string'},operationId:{type:'string'},kind:{type:'string',enum:['requirement','decision','commitment']},text:{type:'string'},sourceIds:{type:'array',items:{type:'string'}},supersedes:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},required:['action'],additionalProperties:false}}]
 
@@ -40,7 +40,7 @@ export class RouterContinuity {
    const route=this.host.scopes.context(t,t.source+':'+t.threads[0]!.id)
    if(!route||!this.belongs({...route.route,actor:route.actor},c))continue
    const key='journal:'+stableDigest([this.key(c),triggerId])
-   if(!this.host.store.get('router-journal',key))this.host.store.put('router-journal',key,{id:key,scopeId:c.route.scopeId,entryId:c.route.entryId,discussion:c.route.discussion,actor:c.actor,triggerIds:[triggerId],kind:'user',text:t.text,at:Date.now()} satisfies JournalItem)
+   if(!this.host.store.get('router-journal',key))this.host.store.put('router-journal',key,{id:key,scopeId:c.route.scopeId,entryId:c.route.entryId,discussion:c.route.discussion,actor:c.actor,triggerIds:[triggerId],kind:this.host.chat.isReactionInput(triggerId)?'feedback':'user',text:t.text,at:Date.now()} satisfies JournalItem)
   }
  }
  prepare(c:ScopeContext,packet:{input:string;manifest:ContextManifest},backendIdentity:string){
@@ -64,7 +64,7 @@ export class RouterContinuity {
   const key=this.key(c),events=this.events(c).filter(e=>!e.triggerIds.some(id=>pending.has(id))),requirements=this.commitments(c)
   const checkpoint=this.host.store.get<any>('router-checkpoint',key)
   const safeCheckpoint=checkpoint&&checkpoint.text&&Array.isArray(checkpoint.triggerIds)&&this.validInputs(checkpoint.triggerIds)&&this.validContext(checkpoint.contextId)&&checkpoint.eventIds.every((id:string)=>events.some(e=>e.id===id))?checkpoint:undefined
-  const history=events.filter(e=>e.kind==='user'||!safeCheckpoint?.eventIds.includes(e.id)).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds,...(kind==='user'?{quotedMessages:triggerIds.map(id=>this.host.chat.quoteForTrigger(id)).filter(Boolean)}:{})}))
+  const history=events.filter(e=>e.kind==='user'||!safeCheckpoint?.eventIds.includes(e.id)).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds,...(kind==='feedback'?{feedback:triggerIds.flatMap(id=>this.host.chat.feedbackForTrigger(id)??[])}:kind==='user'?{quotedMessages:triggerIds.map(id=>this.host.chat.quoteForTrigger(id)).filter(Boolean)}:{})}))
   const envelope={...JSON.parse(packet.input),continuity:{history,requirements,legacyUnavailable,...(safeCheckpoint?{checkpoint:{text:safeCheckpoint.text,eventIds:safeCheckpoint.eventIds}}:{}),notice:'History is sourced background. Latest user instructions and current authorization govern. Retain all active constraints; continue unresolved goals. legacyUnavailable counts pre-upgrade replies without verifiable provenance; do not claim complete recovery if nonzero.'}}
   const max=this.host.scopes.scope(c.route.scopeId).contextBytes
   const previous=this.host.store.get<any>('router-session',key)

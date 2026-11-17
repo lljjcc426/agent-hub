@@ -180,10 +180,10 @@ export class ApiModel implements Model {
      this.appendResults(t,accepted.calls,results);delete t.pending;persist();if(budgetError)throw budgetError;continue
     }
     persist();checkBudget(this.body(t,instructions,r),r.contextBudget,'api-wire','complete',r.onBudget);if(queue.length)continue
-    let value:any;try{value=JSON.parse(accepted.text)}catch{}
-    if(value===undefined||!validateOutput(value)){
+    let value:unknown,parseError:string|undefined;try{value=JSON.parse(accepted.text)}catch(error){parseError=(error as SyntaxError).message}
+    if(parseError||!validateOutput(value)){
      if(++repairs>2)throw Error('Backend final output failed the required JSON schema')
-     appendUser('Your final output must be a single valid JSON object matching the supplied schema. Correct its structure; do not repeat completed tools.');persist();continue
+     appendUser('Invalid final output: '+(parseError??ajv.errorsText(validateOutput.errors))+'. Return only a valid JSON object matching the supplied schema. Inside JSON strings, escape line breaks as \\n and quotes as \\". Correct the reply only; do not repeat completed tools.');persist();continue
     }
     turn.status='completed';persist();return {threadId:t.id,turnId:turn.id,text:JSON.stringify(value)}
    }

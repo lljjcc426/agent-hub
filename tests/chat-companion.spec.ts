@@ -53,4 +53,12 @@ describe('Chat companion reflects current execution',()=>{
   s.calls=[call({runId:'earlier',status:{phase:'reviewing',label:'正在复核修复',updatedAt:100}})];
   expect(companionStatus(s,L,options)).toMatchObject({phase:'reviewing',label:'正在复核修复'});
  });
+ it('keeps a background task needing input visible after a later question is answered',()=>{
+  const s=base();s.run!.state='completed';
+  s.workers=[{id:'a',tasks:[{id:'background',state:'waiting'}]}] as unknown as Snapshot['workers'];
+  expect(companionStatus(s,L,options).phase).toBe('waiting');
+  expect(companionStatus(s,L,{...options,participantId:'a'}).phase).toBe('waiting');
+  s.reply={id:'followup',runId:'current',state:'running'};
+  expect(companionStatus(s,L,options).phase).toBe('thinking');
+ });
 });

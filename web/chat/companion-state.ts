@@ -17,8 +17,9 @@ export function companionStatus(snapshot:Snapshot|null, L:Localize, options:{par
  if(participant&&!worker)return result('idle',L('Conversation history','历史协作记录'));
  const tasks=snapshot.workers.filter(w=>!participant||w.id===participant).flatMap(w=>w.tasks);
  const activeTasks=new Set(tasks.filter(t=>t.state==='running'||t.state==='queued').map(t=>t.id));
+ const waiting=tasks.some(t=>t.state==='waiting');
  const busy=snapshot.workers.filter(w=>(!participant||w.id===participant)&&w.tasks.some(t=>t.state==='running'));
- const active=activeTasks.size>0||!participant&&!!snapshot.reply;
+ const active=activeTasks.size>0||waiting||!participant&&!!snapshot.reply;
  const calls=snapshot.calls.filter(c=>(c.runId===run.id||!!c.ticketId&&activeTasks.has(c.ticketId)||!participant&&c.runId===snapshot.reply?.runId)&&(!participant||c.workerId===participant)&&c.name!=='superagent_status');
  if(participant&&!worker?.tasks.length&&!calls.length)return result('idle',L('Ready when you are','随时待命'));
  if(!active){
@@ -30,6 +31,7 @@ export function companionStatus(snapshot:Snapshot|null, L:Localize, options:{par
  }
  if(snapshot.browsers.some(b=>(b.runId===run.id||!!b.ticketId&&activeTasks.has(b.ticketId))&&!b.ended&&b.control==='paused'&&(!participant||b.workerId===participant)))
    return result('waiting',L('Waiting for your help','等你操作浏览器'));
+ if(waiting&&!activeTasks.size&&(participant||!snapshot.reply))return result('waiting',L('Waiting for your input','等你补充信息'));
  if(worker){
    if(worker.tasks.some(t=>t.state==='waiting')&&!worker.tasks.some(t=>t.state==='running'))return result('waiting',L('Waiting for your input','等你补充信息'));
    if(worker.tasks.length&&!worker.tasks.some(t=>t.state==='running'||t.state==='queued'))return result('idle',L('Ready when you are','随时待命'));

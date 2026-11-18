@@ -73,6 +73,18 @@ export class ToolConnections {
   }
   private async tools(owner:WorkOwner,id:string,signal?:AbortSignal):Promise<Tool[]>{
     const config=this.allowed(owner,id)
+    return this.listDeclared(id,config,()=>this.allowed(owner,id),signal)
+  }
+  async inspect(id:string){
+    const config=this.host.config.toolConnections[id]
+    const check=()=>{
+      if(this.closing||!config?.enabled||config!==this.host.config.toolConnections[id])throw Error('Connection unavailable')
+      if(config.transport.kind==='cli-mcp')verifyCliMcpGrant(config.transport,config.allowedTools)
+    }
+    check()
+    return this.listDeclared(id,config!,check,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(60000)]))
+  }
+  private async listDeclared(id:string,config:import('./connector-config.ts').ToolConnection,check:()=>void,signal?:AbortSignal):Promise<Tool[]>{
     if(config.transport.kind==='plugin'){
       const source=this.host.sources.get(config.transport.sourceId)
       if(!(source instanceof ProcessSource)||!this.host.config.sources.find(s=>s.id===source.config.id)?.enabled)throw Error('Plugin connection is unavailable')
@@ -80,7 +92,7 @@ export class ToolConnections {
     }
     const client=await abortable(this.connect(id),signal),result:Tool[]=[],seen=new Set<string>();let cursor:string|undefined
     do{
-      signal?.throwIfAborted();this.allowed(owner,id)
+      signal?.throwIfAborted();check()
       const page=await client.listTools(cursor?{cursor}:{},{timeout:config.timeoutMs,signal})
       result.push(...page.tools);cursor=page.nextCursor
       if(result.length>5000||seen.size>=100||cursor&&seen.has(cursor))throw Error('Tool catalog pagination did not finish')

@@ -176,3 +176,13 @@ for(const cli of ['codex','claude','gemini','opencode'] as const){
   save(false);await expect(call()).rejects.toThrow('disabled')
  })
 }
+
+it('reads the configured operator catalog without invoking a tool or widening the Worker grant',async()=>{
+  const {host,calls}=await fixture()
+  const tools=await host.toolConnections.inspect('docs')
+  expect(tools.map(t=>t.name)).toContain('echo')
+  expect(tools.map(t=>t.name)).not.toContain('hidden')
+  expect(tools.find(t=>t.name==='echo')?.inputSchema.properties).toHaveProperty('text')
+  expect(calls()).toEqual([])
+  await expect(host.toolConnections.inspect('missing')).rejects.toThrow('unavailable')
+})

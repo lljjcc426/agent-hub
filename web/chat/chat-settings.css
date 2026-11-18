@@ -14,7 +14,7 @@
 .configuration-outlet .chat-settings .reset-confirm{padding:16px;border:1px solid var(--c-line);border-radius:8px}
 .configuration-outlet .chat-settings .reset-confirm>div{display:flex;gap:8px;justify-content:flex-end}
 .agent-list{display:flex;flex-direction:column;gap:4px;padding:12px;overflow:auto}
-.agent-contact{display:flex;align-items:center;gap:10px;padding:12px;border-radius:8px;text-align:left;width:100%;font-size:13px;min-height:52px}
+.agent-contact{display:flex;flex-shrink:0;align-items:center;gap:10px;padding:12px;border-radius:8px;text-align:left;width:100%;font-size:13px;min-height:52px}
 .agent-contact:hover,.agent-contact[aria-pressed=true]{background:var(--c-hover)}
 .agent-contact>span:last-child{min-width:0;flex:1;overflow:hidden}
 .agent-contact .agent-name,.agent-contact small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

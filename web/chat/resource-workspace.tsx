@@ -1,3 +1,4 @@
+import { SidebarSeparator } from "./sidebar-separator.tsx";
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Folder, Globe, Users, Plus, X, Maximize2, Minimize2, Search, ArrowUpRight } from 'lucide-react';
 import { closeResource, openResource, resourceUrl, type ResourceState, type ResourceKind } from './resource-state.ts';
@@ -64,6 +65,7 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
       if (kind === 'browser' && pages?.canEdit) void pages.create();
     };
     return <aside id="session-panel" className={'session-panel resource-workspace'+(expanded?' expanded':'')} aria-label={L('Session panel','会话面板')}>
+      <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel", "会话面板")} />
     <header className="resource-tabbar">
       <div className="resource-tabs" role="tablist" ref={tabsRef} aria-label={L('Workspace tabs','工作标签页')}
         onKeyDown={event=>{

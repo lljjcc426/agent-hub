@@ -94,9 +94,11 @@ it('accepts consecutive HTTP messages while preserving authentication and conver
   expect((await fetch(path,{method:'POST',headers:{...headers,origin:'https://other.example'},body})).status).toBe(403)
   const other=f.h.chat.create('another-owner')
   expect((await fetch(server.url+'/api/chat/conversations/'+other.id+'/messages',{method:'POST',headers,body})).status).toBe(404)
-  expect((await fetch(path,{method:'POST',headers,body:JSON.stringify({...JSON.parse(body),timeZone:'Mars/Olympus'})})).status).toBe(400)
   expect((await fetch(path,{method:'POST',headers,body})).status).toBe(202)
-  expect((await fetch(path,{method:'POST',headers,body:JSON.stringify({text:'Second request',clientMessageId:randomUUID()})})).status).toBe(202)
+  const second=await fetch(path,{method:'POST',headers,body:JSON.stringify({text:'Second request',clientMessageId:randomUUID(),timeZone:'Mars/Olympus'})})
+  expect(second.status).toBe(202)
+  const {runId}=await second.json() as {runId:string}
+  expect(f.h.chat.clientContext(runId)?.clientTimeZone).toBeUndefined()
   expect(f.view().messages.filter(m=>m.role==='user')).toHaveLength(2)
  }finally{await server.closeRuntime();hosts.splice(hosts.indexOf(f.h),1);server.server.closeAllConnections();await new Promise<void>(resolve=>server.server.close(()=>resolve()))}
 })
@@ -147,4 +149,19 @@ it('projects background tasks using their current discussion instead of their or
  f.h.store.put('task-routing',task.ticketId,{discussion:'local:chat:'+other.id,parentTrigger:next.runId})
  expect(f.view().workers[0]!.tasks).toEqual([])
  expect(f.h.chat.view(other.id,'other-owner').workers[0]!.tasks).toMatchObject([{id:task.ticketId}])
+})
+
+it('uses the Chat zone for a new daily schedule and replays the same occurrence settings after edits',()=>{
+ const f=fixture(async()=>({reply:''}),true)
+ const sent=f.h.chat.send(f.c.id,'local-operator',{text:'Remind me every morning at nine.',clientMessageId:randomUUID(),locale:'en-GB',timeZone:'Pacific/Auckland'})
+ const trigger=f.h.store.triggers.get(sent.runId)!,context=f.h.scopes.context(trigger,f.h.routerIngress.get(trigger.id)!.discussion)!
+ const command={action:'schedule.put',operationId:'morning',expectedRevision:0,scopeId:context.route.scopeId,
+   schedule:{id:'morning',name:'Daily reminder',triggerId:trigger.id,prompt:'Good morning',mode:'standalone',timing:{kind:'daily',time:'09:00',startAt:'2099-01-01T00:00:00Z'}}}
+ const create=(input:unknown)=>f.h.proactive.command(input,context)
+ const saved=create(command)
+ expect(saved).toMatchObject({timing:{timezone:'Pacific/Auckland'}})
+ const change={...command,schedule:{...command.schedule,timing:{...command.schedule.timing,timezone:'Asia/Shanghai'}}}
+ expect(()=>create(change)).toThrow('operationId reused')
+ expect(create({...change,operationId:'change-zone',expectedRevision:1})).toMatchObject({timing:{timezone:'Asia/Shanghai'}})
+ expect(create(command)).toEqual(saved)
 })

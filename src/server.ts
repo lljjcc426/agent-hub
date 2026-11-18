@@ -64,7 +64,7 @@ import {WebhookError} from './webhook-protocol.ts'
 import {enabledView,viewCatalog,viewArtifactReference,viewVersion} from './workspace-view-package.ts'
 import {viewQuerySchema,workspaceViewData} from './workspace-view-data.ts'
 
-const chatTimeZone = z.string().min(1).max(100).refine(validTimeZone, 'Use an IANA time zone').optional()
+const chatTimeZone = z.string().max(100).transform(value => validTimeZone(value) ? value : undefined).optional()
 const approvalIdSchema = z.union([z.string().uuid(),z.string().regex(/^permission:[a-f0-9]{64}$/)])
 
 export async function serve(runtime: Runtime,options:{configurationPreview?:boolean;createRuntime?:(config:Config,activationId?:string,startupSourceIds?:readonly string[])=>Runtime|Promise<Runtime>;pluginGitHub?:PluginGitHub;clientHome?:string;clientName?:string}={}) {

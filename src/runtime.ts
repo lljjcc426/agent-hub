@@ -338,7 +338,7 @@ export class Runtime {
     for(const input of inputs)live.offered.add(input.id)
     const ids=inputs.map(i=>i.id)
     const envelope={kind:'source_inputs',ticketId,assignmentId:live.assignmentId,inputs:inputs.map(i=>i.kind==='trigger'?{...i,event:this.store.triggers.get(i.triggerId)}:i)}
-    const text=withTurnContext(JSON.stringify(envelope),this.turnEnvironment('worker',latestSourceTrigger(inputs)??ticket.origin.triggerId))
+    const text=this.modelInput(JSON.stringify(envelope),'worker',latestSourceTrigger(inputs)??ticket.origin.triggerId)
     const consume=()=>{
       const current=this.store.tickets.get(ticketId)
       if(attempt&&!currentWorkerAttempt(this,attempt))return
@@ -474,17 +474,17 @@ export class Runtime {
       instructions:request.instructions+'\nYour opening has been delivered. Now carry out the user request from the preceding turn and report the actual results. Do not repeat the opening.',
     })
   }
-  private turnEnvironment(role:NonNullable<ModelRequest['role']>, triggerId?:string, sourceId?:string) {
+  modelInput(input:string,role:NonNullable<ModelRequest['role']>,triggerId?:string,sourceId?:string) {
     const trigger=triggerId?this.store.triggers.get(triggerId):undefined
     const run=trigger?.id.startsWith('scheduled:')?this.store.get<ScheduledRun>('router-schedule-run',trigger.id.slice('scheduled:'.length)):undefined
     const schedule=run&&run.triggerId===trigger?.id?run:undefined
     const anchor=schedule?.spec.triggerId??triggerId
     const client=anchor?this.chat.clientContext(anchor):undefined
     const source=trigger?.source??sourceId
-    return turnContext(this.clock(),role,{
+    return withTurnContext(input,turnContext(this.clock(),role,{
       ...client,channel:client?'chat':source?this.sources.get(source)?.config.kind:undefined,
       eventAt:trigger?.at,schedule:schedule?{timeZone:schedule.spec.timing.timezone,dueAt:schedule.scheduledAt}:undefined,
-    })
+    }))
   }
   private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
@@ -545,7 +545,7 @@ export class Runtime {
       try{
         this.delegation.beforeActivation(request)
         const activation:ModelRequest={...request,
-          input:withTurnContext(request.input,this.turnEnvironment(role,turnTriggerId,context.sourceId)),
+          input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
           model:threadId?undefined:request.model??(role==='router'?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
           onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},

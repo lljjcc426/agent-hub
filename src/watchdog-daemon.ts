@@ -1,3 +1,4 @@
+import {turnContext} from './turn-context.ts'
 import {readFileSync,mkdirSync,openSync,writeFileSync,closeSync,unlinkSync} from 'node:fs'
 import {join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
@@ -69,7 +70,7 @@ export async function runWatchdog(configFile:string,once=false,options:WatchdogD
      const model=options.modelFactory?.(latest,store)??new BackendRegistry(latest,store)
      if(!current.backendIds.includes(current.backendId))throw Error('Watchdog model is outside authorized backends')
      const {inference,...evidenceTarget}=current
-     const input=JSON.stringify({kind:'watchdog_review',target:evidenceTarget,history})
+     const input=JSON.stringify({kind:'watchdog_review',target:evidenceTarget,history,runtimeContext:turnContext(Date.now(),'router',{channel:'watchdog'})})
      if(Buffer.byteLength(input)>current.contextBytes)throw Error('Watchdog evidence exceeds authorized context budget')
      const controller=new AbortController();judging.set(current.id,{fence:current.fence,controller})
      const call='watchdog:'+randomUUID(),signal=AbortSignal.any([stop.signal,controller.signal,AbortSignal.timeout(fresh.config.modelTimeoutMs)])

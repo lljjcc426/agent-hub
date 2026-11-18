@@ -82,17 +82,23 @@ export class RouterProactive {
   if(x.action==='list')return this.snapshot(x.scopeId,context)
   this.requireManager(x.scopeId,context)
   if(!x.operationId||x.expectedRevision===undefined)throw Error('Mutation requires operationId and expectedRevision')
-  const key=stableDigest([x.scopeId,context?.actor??'operator',context?.route.entryId??'operator',x.operationId]),fingerprint=stableDigest(x)
+  const key=stableDigest([x.scopeId,context?.actor??'operator',context?.route.entryId??'operator',x.operationId])
   return this.host.store.atomic(()=>{
    const old=this.host.store.get<any>('proactive-receipt',key)
+   if(x.action==='schedule.put'&&x.schedule&&(value as z.input<typeof proactiveCommandSchema>).schedule?.timing.timezone===undefined){
+    const saved=this.host.store.get<Schedule>('router-schedule',stableDigest([x.scopeId,x.schedule.id]))
+    // Replay uses the zone recorded for this operation, even after edits or a host move.
+    x.schedule.timing.timezone=old?.result?.timing?.timezone??saved?.timing.timezone
+      ??this.host.chat.clientContext(x.schedule.triggerId)?.clientTimeZone??Intl.DateTimeFormat().resolvedOptions().timeZone
+   }
+   const fingerprint=stableDigest(x)
    if(old){if(old.fingerprint!==fingerprint)throw Error('operationId reused with different content');return old.result}
-   const timing=(value as z.input<typeof proactiveCommandSchema>).schedule?.timing
-   const result=this.apply(x,context,!!timing&&timing.timezone===undefined)
+   const result=this.apply(x,context)
    this.host.store.put('proactive-receipt',key,{fingerprint,scopeId:x.scopeId,result});this.host.store.audit({type:'router.proactive.command',action:x.action,scopeId:x.scopeId,operationId:x.operationId});return result
   })
  }
  private revision(actual:number,expected:number|undefined){if(actual!==expected)throw Error('Revision conflict; refresh before retrying')}
- private apply(x:Command,context:ScopeContext|undefined,defaultTimeZone:boolean):unknown{
+ private apply(x:Command,context?:ScopeContext):unknown{
   const store=this.host.store
   if(x.action==='settings.put'){
    if(!x.settings)throw Error('settings required');const previous=this.controls(x.scopeId);this.revision(previous.revision,x.expectedRevision)
@@ -120,7 +126,6 @@ export class RouterProactive {
   if(x.action==='schedule.put'){
    if(!x.schedule)throw Error('schedule required')
    const spec=x.schedule,anchor=store.triggers.get(spec.triggerId)
-   if(defaultTimeZone)spec.timing.timezone=old?.timing.timezone??this.host.chat.clientContext(spec.triggerId)?.clientTimeZone??Intl.DateTimeFormat().resolvedOptions().timeZone
    if(!anchor||!anchor.human||this.runForTrigger(anchor.id))throw Error('Schedule needs an original human authorization')
    const a=this.host.routerIngress.get(anchor.id),c=a&&this.host.scopes.context(anchor,a.discussion)
    if(!c||c.route.scopeId!==x.scopeId||this.host.routerIngress.authority(anchor.id).strength!=='explicit'||!this.host.scopes.canManage(c))throw Error('Schedule anchor requires a current explicit scope manager')

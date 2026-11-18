@@ -27,15 +27,19 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
   const focusSelected = () => requestAnimationFrame(() => selectedTab()?.focus());
   const closeView = (id:string) => {onChange(closeResource(state,id));focusSelected();};
   const url=resourceUrl(query);
-  const shown=entries.filter(e=>!query || url || (e.label+' '+e.kind).toLowerCase().includes(query.toLowerCase()));
   function renderWorkspace(pages: BrowserPages | undefined, browserContent: ReactNode) {
     // Chromium owns page identity and selection. Only the surrounding resource is stored locally.
+    const tools = entries.map(entry => ({
+      ...entry, label: entry.kind==='browser' && pages?.canEdit ? L('New webpage','新建网页') : entry.label,
+      search: entry.label+' '+entry.kind,
+    }));
+    const shown = tools.filter(tool => !query || url || (tool.label+' '+tool.search).toLowerCase().includes(query.toLowerCase()));
     const tabs = state.tabs.flatMap(resource => {
       const {Icon,label} = meta(resource.kind);
       const isVisible = resource.id === state.active;
       const show = () => onChange({...openResource(state,resource.kind), active:resource.id});
       if (resource.kind !== 'browser' || !pages?.tabs.length) {
-        return [{id: resource.id, Icon, label, title: label, selected: isVisible, disabled: false,
+        return [{id: resource.id, Icon, label, selected: isVisible, disabled: false,
           closeLabel: L('Close ','关闭')+label+L(' view','视图'), closeDisabled: false, page: false,
           select: show, close: () => closeView(resource.id)}];
       }
@@ -43,11 +47,11 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
       const currentPage = pages.tabs.find(tab => tab.active) ?? pages.tabs[0]!;
       return pages.tabs.map(page => {
         const current = page.id === currentPage.id;
-        const title = page.url === 'about:blank' ? L('Blank page','空白页') : page.title || page.url;
+        const pageLabel = page.url === 'about:blank' ? L('Blank page','空白页') : page.title || page.url;
         return {
-          id: resource.id+'-'+pages.sessionId+'-'+page.id, Icon, label: title, title: title,
+          id: resource.id+'-'+pages.sessionId+'-'+page.id, Icon, label: pageLabel,
           page: true, selected: isVisible && current, disabled: !current && !pages.canEdit,
-          closeLabel: last ? L('Close browser view','关闭浏览器视图') : L('Close tab ','关闭标签页 ')+title,
+          closeLabel: last ? L('Close browser view','关闭浏览器视图') : L('Close tab ','关闭标签页 ')+pageLabel,
           closeDisabled: !last && !pages.canEdit,
           select: () => { if (!isVisible) show(); if (!current) void pages.select(page.id); },
           close: () => { if (last) closeView(resource.id); else void pages.close(page.id).then(focusSelected); },
@@ -74,10 +78,10 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
           if(event.key==='Delete'){event.preventDefault();const target=available[index];if(target&&!target.closeDisabled)target.close();return;}
           if(next!==undefined){event.preventDefault();const tab=available[next]!;tab.select();document.getElementById('resource-tab-'+tab.id)?.focus();}
         }}>
-        {tabs.map(({id,Icon,label,title,selected,disabled,closeLabel,closeDisabled,page,select,close})=>
+        {tabs.map(({id,Icon,label,selected,disabled,closeLabel,closeDisabled,page,select,close})=>
           <div className={'resource-tab'+(selected?' active':'')} key={id} data-webpage={page || undefined}>
             <button role="tab" id={'resource-tab-'+id} aria-selected={selected} aria-controls="resource-content"
-              ref={selected?revealSelected:undefined} tabIndex={selected?0:-1} onClick={select} title={title} disabled={disabled}>
+              ref={selected?revealSelected:undefined} tabIndex={selected?0:-1} onClick={select} title={label} disabled={disabled}>
               <Icon size={15}/><span>{label}</span>
             </button>
             <button className="resource-tab-close" tabIndex={selected?0:-1} aria-label={closeLabel}
@@ -98,7 +102,7 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
         </form>
         <div className="resource-start-scroll">
           <section className="resource-tools"><h2>{L('Tools','工具')}</h2><div className="resource-tool-grid">
-            {shown.map(({kind,Icon,label})=><button key={kind} onClick={()=>openTool(kind)}><Icon size={18}/><span>{kind==='browser' && pages?.canEdit ? L('New webpage','新建网页') : label}</span><ArrowUpRight size={14}/></button>)}
+            {shown.map(({kind,Icon,label})=><button key={kind} onClick={()=>openTool(kind)}><Icon size={18}/><span>{label}</span><ArrowUpRight size={14}/></button>)}
           </div>{!shown.length?<p className="resource-no-results">{L('No matching tools','没有匹配的工具')}</p>:null}</section>
           {state.recent.length&&!query?<section className="resource-recent"><h2>{L('Recent','最近')}</h2>
             {state.recent.map(r=>{const {Icon,label}=meta(r.kind);return <button key={r.kind} onClick={()=>onOpen(r.kind)}><span className="resource-recent-icon"><Icon size={18}/></span><span>{label}</span><time dateTime={new Date(r.at).toISOString()}>{new Intl.DateTimeFormat(L('en','zh-CN'),{hour:'2-digit',minute:'2-digit'}).format(r.at)}</time></button>;})}

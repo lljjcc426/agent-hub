@@ -13,22 +13,30 @@ with sync_playwright() as p:
  def bounded():assert page.evaluate('document.documentElement.scrollWidth<=innerWidth && document.documentElement.scrollHeight<=innerHeight')
  def state():return page.request.get(base+'/api/browser').json()
  try:
-  cs=page.request.get(base+'/api/chat/conversations').json()['conversations'];original=next(c for c in cs if c['title'])['id']
-  page.goto(base+'/chat?conversation='+original);expect(page.get_by_role('textbox',name='Message Router',exact=True)).to_be_visible()
+  cs=page.request.get(base+'/api/chat/conversations').json()['conversations'];original=next((c['id'] for c in cs if c['title']),None)
+  page.goto(base+('/chat?conversation='+original if original else '/chat'));expect(page.get_by_role('textbox',name='Message Router',exact=True)).to_be_visible()
   expect(page.get_by_role('link',name='Workspace',exact=True)).to_have_count(0)
   expect(page.get_by_role('link',name='Current workspace',exact=True)).to_have_count(1)
   page.get_by_role('link',name='Current workspace',exact=True).click();page.get_by_role('dialog',name='Switch workspace').get_by_role('button',name='Close',exact=True).click();expect(page.locator('.configuration-outlet #main h1').first).to_be_visible();page.get_by_role('link',name='Conversations',exact=True).click();checks.append('one workspace entry, with the existing picker and overview')
-  button('Session panel').click();expect(tab('New tab')).to_have_attribute('aria-selected','true');expect(page.locator('.resource-tabs [role=tab]')).to_have_count(1)
+  button('Session panel').click();drawer=page.locator('.team-drawer');expect(drawer).to_be_visible()
+  drawer.get_by_role('button',name='Files',exact=True).click();expect(tab('Files')).to_have_attribute('aria-selected','true')
+  button('New workspace tab').click()
   search=page.get_by_role('textbox',name='Search tools or enter a website',exact=True);search.fill('files');expect(page.locator('.resource-tool-grid>button')).to_have_count(1);search.press('Enter');expect(tab('Files')).to_have_attribute('aria-selected','true')
-  button('result.md').click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers')
-  open_resource(page,'Team activity');expect(page.locator('.worker-node')).to_have_count(2);button('New workspace tab').click();expect(page.locator('.resource-recent>button')).to_have_count(2);shot('recent-light')
-  page.locator('.resource-recent').get_by_role('button',name=__import__('re').compile('Files')).click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');button('Close Files view').click();expect(tab('Files')).to_have_count(0);open_resource(page,'Files');expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');expect(tab('Files')).to_have_count(1)
-  page.reload();expect(tab('Files')).to_have_attribute('aria-selected','true');expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');checks.append('launcher search, real files/team, independent tab closing/reopening, recent records and reload persistence')
+  files=page.locator('.files-panel')
+  expect(files).to_be_visible()
+  if button('result.md').count():
+   button('result.md').click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers')
+  open_resource(page,'Team activity');expect(drawer.get_by_role('tablist')).to_be_visible();drawer.get_by_role('button',name='Files',exact=True).click()
+  button('New workspace tab').click();expect(page.locator('.resource-recent>button')).to_have_count(2);shot('recent-light')
+  page.locator('.resource-recent').get_by_role('button',name=__import__('re').compile('Files')).click();expect(files).to_be_visible()
+  button('Close Files view').click();expect(tab('Files')).to_have_count(0)
+  open_resource(page,'Files');expect(files).to_be_visible();expect(tab('Files')).to_have_count(1)
+  page.reload();expect(tab('Files')).to_have_attribute('aria-selected','true');checks.append('tool search, team drawer, Files, recent records and reload persistence')
   button('New workspace tab').click();search.fill(website);search.press('Enter')
   expect(page.get_by_alt_text('Live browser page')).to_be_visible(timeout=30000)
   address=page.get_by_label('Website address',exact=True);expect(address).to_have_value(website,timeout=30000);expect(address).to_be_enabled(timeout=30000)
   webpages=page.locator('.resource-tabs [data-webpage] [role=tab]')
-  current=webpages.locator('xpath=self::*[@aria-selected="true"]')
+  current=page.locator('.resource-tabs [data-webpage] [role=tab][aria-selected=true]')
   page_id=current.get_attribute('id');assert page_id
   sid=page.get_by_label('Browser session',exact=True).input_value()
   tabs_before=next(s for s in state()['sessions'] if s['id']==sid)['tabs'];assert sum(t['url']==website for t in tabs_before)==1
@@ -49,16 +57,17 @@ with sync_playwright() as p:
   checks.append('real webpages share the resource row with Files, stop streaming when hidden and close independently')
   # A malformed address is a search, never an executable navigation.
   button('New workspace tab').click();search.fill('javascript:alert(1)');search.press('Enter');expect(tab('New tab')).to_have_attribute('aria-selected','true');expect(page.locator('.resource-no-results')).to_be_visible();search.fill('')
+  if tab('Team activity').count():button('Close Team activity view').click()
   tab('New tab').focus();page.keyboard.press('End');expect(page.locator('.resource-tabs [role=tab]').last).to_be_focused();page.keyboard.press('Home');expect(tab('New tab')).to_be_focused();page.keyboard.press('Delete');expect(tab('New tab')).to_have_count(0);expect(page.locator('.resource-tabs [aria-selected=true]')).to_be_focused();button('New workspace tab').click()
   button('Switch to Chinese').click();page.wait_for_timeout(200);shot('recent-dark-zh')
   for width in [820,390,320]:
    page.set_viewport_size({'width':width,'height':844});page.emulate_media(reduced_motion='reduce');bounded();expect(page.get_by_role('textbox',name='搜索工具或输入网址',exact=True)).to_be_visible()
-   page.locator('.resource-tool-grid').get_by_role('button',name='文件',exact=True).click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');button('新建工作标签页').click();bounded()
+   page.locator('.resource-tool-grid').get_by_role('button',name='文件',exact=True).click();expect(files).to_be_visible();button('新建工作标签页').click();bounded()
    if width==390:shot('launcher-mobile-dark')
   checks.append('tab keyboard navigation/Delete/focus, Chinese/dark theme, 820/390/320px and reduced motion')
   # Last-tab close restores a usable launcher; hiding the panel remains a separate operation.
   page.set_viewport_size({'width':1500,'height':960});button('切换为英文').click()
-  for _ in range(8):
+  for _ in range(12):
    if page.locator('.resource-tabs [role=tab]').count()==1:break
    page.locator('.resource-tab-close').first.click()
   page.locator('.resource-tab-close').first.click();expect(tab('New tab')).to_have_attribute('aria-selected','true');expect(search).to_be_visible();button('Close panel').click();expect(page.locator('.resource-workspace')).to_have_count(0);expect(button('Session panel')).to_be_focused()

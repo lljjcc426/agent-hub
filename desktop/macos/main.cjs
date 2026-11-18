@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, Menu, shell } = require('electron')
 
 const path = require('node:path')
 const { serveFeed } = require('./update/feed.cjs')
+const { desktopNotifications } = require('./notifications/desktop.cjs')
 
 async function startUpdater() {
   const sparkle = require(path.join(process.resourcesPath, 'roppo-sparkle.node'))
@@ -61,10 +62,11 @@ function windowOptions() {
   }
 }
 
-function openWorkspace() {
+function openWorkspace(target) {
   if (!ready) return
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore()
+    if (target && mainWindow.webContents.getURL() !== target) void mainWindow.loadURL(target).catch(() => {})
     mainWindow.show()
     mainWindow.focus()
     return
@@ -92,7 +94,7 @@ function openWorkspace() {
     }
   })
   // Navigation failures are reported by did-fail-load, including reloads.
-  void win.loadURL(workspace.href).catch(() => {})
+  void win.loadURL(target || workspace.href).catch(() => {})
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -101,8 +103,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('web-contents-created', (_event, contents) => {
     if (contents.getType() === 'window') setNavigation(contents)
   })
-  app.on('second-instance', openWorkspace)
-  app.on('activate', openWorkspace)
+  app.on('second-instance', () => openWorkspace())
+  app.on('activate', () => openWorkspace())
   app.on('window-all-closed', () => { /* On macOS the Dock can reopen the window. */ })
   app.whenReady().then(() => {
     const updater = startUpdater().catch(error => {
@@ -112,6 +114,7 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: app.name, submenu: [
         { role: 'about' },
+        desktopNotifications(workspace, openWorkspace),
         { label: '检查更新…', click: async () => {
           const sparkle = await updater
           if (sparkle) sparkle.check()

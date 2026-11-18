@@ -1,12 +1,13 @@
 {
   "name": "roppo-desktop",
   "productName": "Roppo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "The local Roppo workspace in a Mac window",
   "author": "Roppo",
   "main": "main.cjs",
   "scripts": {
+    "test": "node --test notifications/*.test.cjs update/*.test.cjs",
     "prepackage": "install-electron",
     "package": "electron-builder --mac dir --arm64",
     "release:local": "npm run package && python3 update/publish.py ../../.local/mac-desktop/mac-arm64/Roppo.app"
@@ -21,7 +22,10 @@
     "files": [
       "main.cjs",
       "package.json",
-      "update/feed.cjs"
+      "update/feed.cjs",
+      "notifications/activity.cjs",
+      "notifications/monitor.cjs",
+      "notifications/desktop.cjs"
     ],
     "directories": {
       "output": "../../.local/mac-desktop"

@@ -10,6 +10,7 @@ const right = (count: number) => (count > 0 ? '\x1b[' + count + 'C' : '')
 // A small live area below ordinary terminal scrollback. Readline owns editing and history.
 export class SessionDisplay {
   private frame?: Frame
+  private transcript = false
   private columns = 0
   private view?: Snapshot
   private seen = new Map<string, string>()
@@ -48,13 +49,22 @@ export class SessionDisplay {
       if (history.length) this.out.write(history.join('\n') + '\n')
       return
     }
+    if (!this.picker && !this.transcript && this.view && (history.length || this.view.run)) {
+      this.transcript = true
+      history = [...this.layout.header(this.view), ...history]
+    }
     const next = this.layout.composer(
       this.view,
       this.editor.line || '',
       this.editor.cursor || 0,
       this.continuation,
       this.out.rows || 24,
-      { menu: this.editor.menu, expanded: this.editor.expanded, picker: this.picker }
+      {
+        menu: this.editor.menu,
+        expanded: this.editor.expanded,
+        picker: this.picker,
+        home: !this.picker && !this.transcript
+      }
     )
     if (
       !history.length &&
@@ -74,7 +84,7 @@ export class SessionDisplay {
   update(view: Snapshot) {
     const layout = this.layout,
       first = !this.view,
-      history = first ? layout.header(view) : []
+      history = first && this.plain ? layout.header(view) : []
     const entries: { at: number; lines: string[] }[] = []
     // Record each finished activity once. Active tasks keep their place above the draft.
     for (const task of view.tasks) {

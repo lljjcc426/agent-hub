@@ -1,11 +1,10 @@
 import { basename } from 'node:path'
-import { homedir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import type { Menu } from './editor.ts'
-const version = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-  .version as string
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
+const version = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+  .version as string
 import { clean, type Snapshot } from './client.ts'
 
 const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -54,8 +53,16 @@ export function draftLines(text: string, cursor: number, cells: number) {
   return { lines, caret }
 }
 
-// The same Roppo silhouette as the workspace logo, sampled on a terminal braille grid.
-const mark = ['⢰⣿⣿⣿⣿⣆', '⢀⣤⡤⢀⣹⡿', '⢸⣿⡇⢿⣿⡅', '⠈⠛⠁ ⠛⠛']
+// Paired half-block rows keep the workspace R mark and wordmark aligned in terminal cells.
+const wordmark = [
+  ['▄██████▄ ', '        ', '        '],
+  ['▀▀▀▀▀▀███', '  ▄▄▄▄  ', '▄▄▄▄▄▄  '],
+  ['    ▄▄███', '▄██▀▀██▄', '██▀▀▀██▄'],
+  ['███▀▀█▀▀ ', '██    ██', '██    ██'],
+  ['███  ▀██▄', '▀██▄▄██▀', '██▄▄▄██▀'],
+  ['▀▀▀   ▀▀▀', '  ▀▀▀▀  ', '██▀▀▀▀  '],
+  ['         ', '        ', '██      ']
+] as const
 type Tone = 'title' | 'quiet' | 'accent' | 'success' | 'attention' | 'error' | 'rule' | 'selected'
 const codes: Record<Tone, string> = {
   title: '1',
@@ -64,8 +71,8 @@ const codes: Record<Tone, string> = {
   success: '32',
   attention: '33',
   error: '31',
-  rule: '2',
-  selected: '7'
+  rule: '90',
+  selected: '1;36'
 }
 const runLabels: Record<string, string> = {
   queued: 'Queued',
@@ -84,9 +91,9 @@ export class TerminalLayout {
     columns: number,
     readonly colors: boolean
   ) {
-    const pad = columns < 50 ? 1 : 3
-    this.margin = ' '.repeat(pad)
-    this.width = Math.max(8, Math.min(120, columns - pad * 2 - 1))
+    const pad = columns >= 74 ? 5 : columns >= 44 ? 2 : 1
+    this.width = Math.max(8, Math.min(94, columns - 2 * pad - 1))
+    this.margin = ' '.repeat(Math.max(0, Math.floor((columns - this.width) / 2)))
   }
   ink(text: string, tone: Tone) {
     return this.colors ? '\x1b[' + codes[tone] + 'm' + text + '\x1b[0m' : text
@@ -96,79 +103,80 @@ export class TerminalLayout {
       strong ? this.ink(strong, 'title') : this.ink(code!, 'accent')
     )
   }
+  private context(view: Snapshot) {
+    const { conversation, readiness } = view
+    const path = oneLine(conversation.project || 'Workspace')
+    const project = basename(path) || path
+    const model = oneLine(
+      conversation.model ||
+        conversation.backend ||
+        readiness.model ||
+        readiness.backend ||
+        readiness.routerLabel ||
+        'Router'
+    )
+    const workers = readiness.workers.filter(
+      (w) => !['paused', 'retiring'].includes(w.state)
+    ).length
+    const router = oneLine(readiness.routerLabel || '')
+    const team = [
+      ...new Set([router, model].filter(Boolean)),
+      workers + (workers === 1 ? ' worker' : ' workers')
+    ].join('  ·  ')
+    return { project, team }
+  }
+  private across(left: string, right: string, cells = this.width) {
+    const gap = cells - stringWidth(left) - stringWidth(right)
+    return gap >= 2 ? left + ' '.repeat(gap) + right : left
+  }
   header(view: Snapshot) {
-    const { conversation: c, readiness } = view
-    const path = oneLine(c.project ?? 'Workspace')
-    const project = path.startsWith(homedir() + '/') ? '~' + path.slice(homedir().length) : path
-    const roster = readiness.workers.filter((w) => !['paused', 'retiring'].includes(w.state))
-    const workers = roster.length
-    const model = oneLine(c.model || c.backend || readiness.model || readiness.backend || '')
-    const team = [model, workers + (workers === 1 ? ' worker' : ' workers')]
-      .filter(Boolean)
-      .join('  ·  ')
-    const title = this.ink('Roppo CLI', 'accent')
-    if (this.width < 38)
-      return [
-        '',
-        this.margin + title + this.ink('  v' + version, 'quiet'),
-        this.margin + fit(basename(project), this.width),
-        this.margin + this.ink(fit(team, this.width), 'quiet')
-      ]
-    const router = [oneLine(readiness.routerLabel || 'Router'), model].filter(Boolean).join(' · ')
-    const people = roster.map((w) => oneLine(w.label || w.id)).join(', ') || '0'
-    const pathHint = project.startsWith('~/') && project !== '~/' + basename(project) ? project : ''
-    const box = Math.min(
-        this.width,
-        72,
-        Math.max(
-          44,
-          13 +
-            Math.max(
-              stringWidth(basename(project)),
-              stringWidth(router) + 9,
-              stringWidth(people) + 9,
-              stringWidth(pathHint)
-            )
-        )
-      ),
-      inside = box - 4,
-      space = inside - 9
-    const rule = (s: string) => this.ink(s, 'rule')
-    const end = 'v' + version
-    const top =
-      rule('╭─ ') +
-      title +
-      rule(' ' + '─'.repeat(box - 17 - end.length) + ' ') +
-      this.ink(end, 'quiet') +
-      rule(' ─╮')
-    const labels = [
-      this.ink(fit(basename(project), space), 'title'),
-      this.ink('Router   ', 'quiet') + fit(router, space - 9),
-      this.ink('Workers  ', 'quiet') + fit(people, space - 9)
-    ]
-    if (pathHint) labels.push(this.ink(fit(pathHint, space), 'quiet'))
+    const { project, team } = this.context(view)
+    const brand = this.ink('Roppo', 'accent')
+    const name = fit(project, Math.max(1, this.width - 10))
+    const left = brand + this.ink('  /  ', 'rule') + name
     return [
       '',
-      this.margin + top,
-      ...mark.map((row, i) => {
-        const content = this.ink(row.padEnd(6), 'accent') + '   ' + (labels[i] ?? '')
-        return (
-          this.margin +
-          rule('│ ') +
-          content +
-          ' '.repeat(Math.max(0, inside - stringWidth(content))) +
-          rule(' │')
-        )
-      }),
-      this.margin + rule('╰' + '─'.repeat(box - 2) + '╯')
+      this.margin + this.across(left, this.ink('v' + version, 'quiet')),
+      this.margin + this.ink(fit(team, this.width), 'quiet')
     ]
+  }
+  private welcome(view: Snapshot, rows: number) {
+    const { project, team } = this.context(view)
+    const centered = (value: string) =>
+      this.margin +
+      ' '.repeat(Math.max(0, Math.floor((this.width - stringWidth(value)) / 2))) +
+      value
+    const wide = this.width >= 54 && rows >= 22
+    const lines: string[] = Array.from(
+      { length: Math.max(0, Math.min(7, Math.floor((rows - (wide ? 15 : 9)) / 3))) },
+      () => ''
+    )
+    if (wide) {
+      for (const [r, o, p] of wordmark)
+        lines.push(
+          centered(this.ink(r, 'accent') + ' ' + this.ink([o, p, p, o].join(' '), 'title'))
+        )
+    } else lines.push(centered(this.ink('Roppo CLI', 'title')))
+    lines.push(
+      '',
+      centered(this.ink(fit(project, this.width), 'title')),
+      centered(this.ink(fit(team, this.width), 'quiet'))
+    )
+    return lines
   }
   menuLines(menu: Menu, limit: number) {
     const count = menu.items.length
     const height = Math.max(1, Math.min(6, limit))
     const start = Math.max(0, Math.min(menu.selected - Math.floor(height / 2), count - height))
-    const position = count ? '  ' + (menu.selected + 1) + '/' + count : ''
-    const title = this.margin + this.ink(fit(oneLine(menu.title) + position, this.width), 'quiet')
+    const position = count ? menu.selected + 1 + ' / ' + count : ''
+    const title =
+      this.margin +
+      '  ' +
+      this.across(
+        this.ink(fit(oneLine(menu.title), this.width - 4), 'title'),
+        this.ink(position, 'quiet'),
+        this.width - 4
+      )
     if (!count)
       return [
         title,
@@ -191,8 +199,7 @@ export class TerminalLayout {
           ? ' '.repeat(labelWidth - stringWidth(label) + 2) +
             fit(oneLine(item.detail), this.width - labelWidth - 5)
           : ''
-        const marker = selected ? '› ' : '  '
-        const row = marker + label + detail
+        const marker = selected ? '▸ ' : '  '
         if (selected)
           return this.margin + this.ink(marker, 'accent') + this.ink(label, 'selected') + detail
         return this.margin + marker + label + this.ink(detail, 'quiet')
@@ -309,7 +316,13 @@ export class TerminalLayout {
     cursor: number,
     continuation: boolean,
     maxRows: number,
-    options: { menu?: Menu; expanded?: boolean; now?: number; picker?: boolean } = {}
+    options: {
+      menu?: Menu
+      expanded?: boolean
+      now?: number
+      picker?: boolean
+      home?: boolean
+    } = {}
   ) {
     const lines: string[] = []
     const { menu, expanded, now = Date.now() } = options
@@ -371,45 +384,83 @@ export class TerminalLayout {
         }
       }
     }
-    if (menu) lines.push('', ...this.menuLines(menu, maxRows - lines.length - 7))
+    if (options.home && view && maxRows >= 12) lines.push(...this.welcome(view, maxRows))
+    if (expanded && view && !busy && !menu && maxRows >= 15) {
+      const team = view.readiness.workers
+        .filter((w) => !['paused', 'retiring'].includes(w.state))
+        .map((w) => oneLine(w.label || w.id))
+      lines.push(
+        '',
+        this.margin +
+          this.ink('Project  ', 'quiet') +
+          fit(oneLine(view.conversation.project || 'Workspace'), this.width - 9),
+        this.margin + this.ink('Workers  ', 'quiet') + fit(team.join(' · ') || '0', this.width - 9)
+      )
+    }
     if (maxRows >= 10 || !menu) lines.push('')
-    const rule = this.margin + this.ink('─'.repeat(this.width), 'rule')
-    lines.push(rule)
+    const fieldWidth = Math.max(1, this.width - 7)
+    const rim = this.ink('─'.repeat(Math.max(0, this.width - 2)), 'rule')
+    lines.push(this.margin + this.ink('╭', 'rule') + rim + this.ink('╮', 'rule'))
     if (this.draft?.text !== text || this.draft.cursor !== cursor) {
-      this.draft = { text, cursor, value: draftLines(text, cursor, Math.max(4, this.width - 3)) }
+      this.draft = { text, cursor, value: draftLines(text, cursor, fieldWidth) }
     }
     const { lines: draft, caret } = this.draft.value
-    const limit = Math.max(1, Math.min(7, Math.floor(maxRows / 3), maxRows - lines.length - 3))
+    const limit = Math.max(
+      1,
+      Math.min(7, Math.floor(maxRows / 3), maxRows - lines.length - (menu ? 7 : 3))
+    )
     const start = Math.max(0, caret.row - limit + 1)
     const row = lines.length + caret.row - start
     for (const [i, line] of draft.slice(start, start + limit).entries()) {
-      const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '❯ ') : '  '
+      const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '› ') : '  '
       const hint = options.picker ? 'Search conversations…' : 'Message Roppo…'
+      const content =
+        line || (!text && !continuation ? ' ' + this.ink(fit(hint, fieldWidth - 1), 'quiet') : '')
+      const pad = Math.max(0, this.width - 6 - stringWidth(content))
       lines.push(
         this.margin +
+          this.ink('│', 'rule') +
+          ' ' +
           this.ink(marker, 'accent') +
-          (line || (!text && !continuation ? this.ink(fit(hint, this.width - 3), 'quiet') : ''))
+          content +
+          ' '.repeat(pad) +
+          ' ' +
+          this.ink('│', 'rule')
       )
     }
-    lines.push(rule)
+    lines.push(this.margin + this.ink('╰', 'rule') + rim + this.ink('╯', 'rule'))
+    if (menu) lines.push(...this.menuLines(menu, maxRows - lines.length - 2))
     const pending = view?.messages.some(
       (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId
     )
     const needsApproval = view?.approvals.some((a) => a.state === 'pending' && a.expiresAt > now)
-    const keys = menu
+    const actions = menu
       ? options.picker
-        ? '↑↓ select    Enter resume    Esc back'
-        : '↑↓ select    Tab complete    Enter choose    Esc close'
+        ? '↑↓ select    Enter resume'
+        : '↑↓ select    Enter choose'
       : pending
-        ? '/choose answer question    / commands'
+        ? '/choose answer question'
         : needsApproval
-          ? '/approvals review request    / commands'
+          ? '/approvals review request'
           : busy
-            ? (live ? 'Esc interrupt' : '/stop task') + '    Ctrl+O activity    / commands'
+            ? (live ? 'Esc interrupt' : '/stop task') + '    Ctrl+O activity'
             : this.width < 40
               ? '/help   @ files'
-              : '/ commands    @ files    Alt+Enter newline'
-    lines.push(this.margin + this.ink(fit(keys, this.width), 'quiet'))
-    return { lines, row, col: this.margin.length + 2 + caret.col }
+              : '/ commands    @ files'
+    const secondary = menu
+      ? options.picker
+        ? 'Esc back'
+        : 'Tab complete    Esc close'
+      : busy
+        ? ''
+        : this.width >= 72
+          ? 'Ctrl+O details    Alt+Enter newline'
+          : 'Alt+Enter newline'
+    lines.push(
+      this.margin +
+        '  ' +
+        this.ink(this.across(fit(actions, this.width - 4), secondary, this.width - 4), 'quiet')
+    )
+    return { lines, row, col: this.margin.length + 4 + caret.col }
   }
 }

@@ -377,6 +377,10 @@ export async function main(args: string[]): Promise<number> {
       )
       return 0
     }
+    const tty = !!(process.stdin.isTTY && process.stdout.isTTY)
+    const screen = tty && process.env.TERM !== 'dumb' && !o.print && !o.json
+    const clearScreen = '\x1b[2J\x1b[H'
+    if (screen && o.action !== 'logout') process.stdout.write(clearScreen)
     if (o.action === 'init') {
       const child = spawn(fileURLToPath(new URL('../../start.sh', import.meta.url)), ['setup'], {
         stdio: 'inherit'
@@ -386,7 +390,6 @@ export async function main(args: string[]): Promise<number> {
         child.on('exit', (code) => resolve(code ?? 1))
       })
     }
-    const tty = !!(process.stdin.isTTY && process.stdout.isTTY)
     const client = new TerminalClient(o.host)
     if (o.action === 'login') {
       await client.login()
@@ -411,7 +414,8 @@ export async function main(args: string[]): Promise<number> {
     }
     if (o.prompt.length > 100000 || (print && !o.prompt && !o.files.length))
       throw new CliError('Provide a prompt or file (up to 100,000 characters).', 'usage', 2)
-    if (!client.signedIn && !print) await client.login()
+    const needsLogin = !client.signedIn && !print
+    if (needsLogin) await client.login()
     const project = await client.project(o.cwd, o.trust)
     if (!project.registered) {
       if (print)
@@ -427,6 +431,7 @@ export async function main(args: string[]): Promise<number> {
         return 0
       await client.project(project.cwd, true)
     }
+    if (screen && (needsLogin || !project.registered)) process.stdout.write(clearScreen)
     const c = await selectConversation(client, o, project.cwd, tty && !print)
     if (!c) return 0
     return print ? await printRun(client, c, o) : await interactive(client, c, o)

@@ -1,5 +1,7 @@
 import {realpathSync} from 'node:fs'
 import {businessDecision,assertBusinessDecision,decisionActorMatches,type BusinessDecisionView} from './business-decisions.ts'
+import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
+import {allowNewTaskInputs} from './task-context.ts'
 import {isApiBackend} from './backend-config.ts'
 import {createHash, randomUUID} from 'node:crypto'
 import type {Runtime} from './runtime.ts'
@@ -12,6 +14,7 @@ import type {RouterContext} from './worker-manager.ts'
 import type {Run} from './store.ts'
 import type {ModelOutput,ModelRequest} from './model.ts'
 import {measureChatInput,type ChatInputSize} from './chat-input.ts'
+import {toolTrace} from './tool-trace.ts'
 import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
@@ -37,7 +40,7 @@ interface Conversation {
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
 interface Message {decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
-interface ChatRun {decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
+interface ChatRun {permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -54,8 +57,9 @@ function transcriptText(id:string,text:string){
 }
 export type ChatRunState='queued'|'running'|'waiting'|'completed'|'failed'|'cancel_requested'|'cancelled'
 /** Narrow operation metadata, never arbitrary tool arguments, prompts or results. */
-export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'action'|'target'>{
-  if(name!=='worker_manage'||!args||typeof args!=='object')return {}
+export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'action'|'target'|'trace'>{
+  if(name!=='worker_manage')return {trace:toolTrace(name,args)}
+  if(!args||typeof args!=='object')return {}
   const value=args as Record<string,unknown>
   return {...(typeof value.action==='string'&&['list','inspect','create','clone','configure','set_prompt','assign','send','pause','resume','cancel','retire','destroy','result','migrate'].includes(value.action)?{action:value.action}:{}),...(typeof value.id==='string'&&/^[a-z][a-z0-9_-]{0,63}$/.test(value.id)?{target:value.id}:{})}
 }
@@ -299,7 +303,42 @@ export class ChatSessions {
       this.host.store.put('settings',key,{...saved,conversationId:current.id,display:saved?.display??'group',nativeId:saved?.nativeId??'chat:'+current.id})
     }
     const cleanup=this.host.memory.cleanup.receipts().filter(r=>r.scopeId==='@chat:'+stableDigest(owner)).at(-1)??null
-    return {conversation:current,display:saved?.display??'group',cleanup}
+    return {conversation:current,display:saved?.display??'group',approvalMode:this.permissionSetting(owner).mode,cleanup}
+  }
+  private permissionSetting(owner:string){
+    const setting=this.host.store.get<{approvalMode?:ApprovalMode;permissionEpoch?:number}>('settings','chat-space:'+owner)
+    return {mode:setting?.approvalMode??'ask',epoch:setting?.permissionEpoch??0}
+  }
+  setApprovalMode(owner:string,approvalMode:ApprovalMode){
+    const key='chat-space:'+owner,setting=this.permissionSetting(owner)
+    if(setting.mode!==approvalMode)this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),approvalMode,permissionEpoch:setting.epoch+1})
+    return this.space(owner)
+  }
+  permissionActor(triggerId:string,ticketId?:string,agentId?:string):PermissionActor|undefined {
+    const dest=ticketId?this.workerDestination(ticketId,true):undefined
+    const run=ticketId?dest?.run:this.originRun(triggerId,true)
+    if(!run||run.cancelRequested||run.cancelled||run.feedback)return
+    const conversation=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!conversation||this.host.memory.cleanup.blocked('chat-conversation',conversation.id,conversation))return
+    const setting=this.permissionSetting(conversation.owner)
+    return {conversationId:conversation.id,runId:run.id,triggerId,ticketId,agentId,workerId:dest?.worker.id??this.router(triggerId).id,
+      mode:setting.mode==='full'&&setting.epoch===run.permissionEpoch?'full':'ask'}
+  }
+  private wakePermission(action:PermissionAction){
+    const {ticketId,triggerId,conversationId}=action.actor
+    if(ticketId){
+      const ticket=this.host.store.tickets.get(ticketId)
+      if(ticket&&!ticket.ended){
+        const previous=ticket.inputs.map(input=>input.id)
+        this.host.engine.note(ticketId,JSON.stringify({kind:'approval_decision',id:action.id,decision:action.phase,tool:action.tool}))
+        allowNewTaskInputs(this.host.store,ticketId,previous)
+      }
+    }else{
+      const c=this.host.store.get<Conversation>('chat-conversation',conversationId)!
+      const discussion=this.host.routerIngress.get(triggerId)?.discussion??c.discussion
+      this.host.store.enqueue('router:permission:'+action.id,'router',{triggerId,discussion,permissionId:action.id})
+    }
+    this.changed(conversationId)
   }
   display(owner:string,display:'group'|'agents'){
     this.space(owner);const key='chat-space:'+owner
@@ -355,9 +394,9 @@ export class ChatSessions {
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
     this.message(c,{id:'delegated:'+id,runId:run.id,role:'assistant',text:transcriptText('delegated:'+id,text),status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
   }
-  private workerDestination(ticketId:string){
+  private workerDestination(ticketId:string,includeSilent=false){
     const assignment=this.host.store.get<Delegation>('worker-assignment',ticketId),authority=this.host.taskAuthority(ticketId)
-    const triggerId=authority?.parentTrigger,run=triggerId&&this.originRun(triggerId)
+    const triggerId=authority?.parentTrigger,run=triggerId&&this.originRun(triggerId,includeSilent)
     if(!assignment||!run||run.cancelRequested||run.cancelled||!triggerId)return
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
     if(!c||this.host.memory.cleanup.blocked('chat-conversation',c.id,c))return
@@ -371,16 +410,40 @@ export class ChatSessions {
     return {c,run,worker:this.worker(assignment.workerId)}
   }
   approvalOrigin(ticketId:string){
-    const dest=this.workerDestination(ticketId)
+    const dest=this.workerDestination(ticketId,true)
     if(dest)return {conversationId:dest.c.id,runId:dest.run.id,workerId:dest.worker.id}
   }
   answerApproval(id:string,owner:string,requestId:string,value:unknown){
     this.get(id,owner)
+    const managed=this.host.permissions.get(requestId)
+    if(managed){
+      if(managed.actor.conversationId!==id)throw new ChatError('request_missing','Request not found.',404)
+      const actor=this.permissionActor(managed.actor.triggerId,managed.actor.ticketId,managed.actor.agentId)
+      if(!actor||actor.runId!==managed.actor.runId||actor.workerId!==managed.actor.workerId)throw new ChatError('request_closed','This request is no longer active.')
+      if(value!=='accept'&&value!=='decline')throw new ChatError('answer_invalid','Choose approve or decline.',400)
+      try{this.host.permissions.decide(requestId,value==='accept',a=>this.wakePermission(a))}
+      catch{throw new ChatError('request_closed','This decision has already been made.')}
+      return {accepted:true}
+    }
     const a=this.host.store.get<Approval>('approval',requestId)
     if(!a?.chat||a.chat.conversationId!==id)throw new ChatError('request_missing','Request not found.',404)
     const origin=this.approvalOrigin(a.ticketId)
-    if(origin?.conversationId!==id||origin.runId!==a.chat.runId||origin.workerId!==a.chat.workerId||a.status!=='pending'||Date.now()>=a.expiresAt)throw new ChatError('request_closed','This request is no longer active.')
-    try{this.host.approvals.answer(requestId,value)}catch{throw new ChatError('answer_invalid','The request could not accept this answer.',400)}
+    if(origin?.conversationId!==id||origin.runId!==a.chat.runId||origin.workerId!==a.chat.workerId||(!a.key&&a.status!=='pending')||Date.now()>=a.expiresAt)throw new ChatError('request_closed','This request is no longer active.')
+    try{this.host.store.atomic(()=>{
+      const wake=a.key&&a.status==='pending'
+      this.host.approvals.answer(requestId,value)
+      if(wake){
+        const ticket=this.host.store.tickets.get(a.ticketId)
+        if(ticket&&!ticket.ended){
+          const previous=ticket.inputs.map(input=>input.id)
+          const decision=a.native.method==='item/tool/requestUserInput'
+            ?{kind:'native_question_answer',method:a.native.method,request:a.native.params}
+            :{kind:'native_permission_decision',decision:value,method:a.native.method,request:a.native.params}
+          this.host.engine.note(ticket.id,JSON.stringify(decision))
+          allowNewTaskInputs(this.host.store,ticket.id,previous)
+        }
+      }
+    })}catch{throw new ChatError('answer_invalid','The request could not accept this answer.',400)}
     this.changed(id)
     return {accepted:true}
   }
@@ -409,7 +472,7 @@ export class ChatSessions {
       id=this.turnPlan(c.id,call.triggerId??run.id)
     }
     const previous=this.host.store.get<ChatPlan>('chat-plan',id)
-    this.host.store.put('chat-plan',id,{...plan,id,conversationId:c.id,activityId,workerId:call.workerId,ticketId:call.ticketId,runId:previous?.runId??call.runId} satisfies ChatPlan)
+    this.host.store.put('chat-plan',id,{...plan,id,createdAt:previous?.createdAt??call.startedAt,conversationId:c.id,activityId,workerId:call.workerId,ticketId:call.ticketId,runId:previous?.runId??call.runId} satisfies ChatPlan)
     this.changed(c.id)
     return true
   }
@@ -424,10 +487,11 @@ export class ChatSessions {
     const {run,c}=this.cardTarget(triggerId)
     const decision=decisionSchema.parse(value)
     if(new Set(decision.options.map(o=>o.label)).size!==decision.options.length)throw new ChatError('answer_invalid','Provide distinct choices.',400)
+    if(decision.defaultOption && !decision.options.some(o=>o.label===decision.defaultOption))throw new ChatError('answer_invalid','The default must match one of the choices.',400)
     const id='decision:'+stableDigest([run.id,decision])
     this.host.store.atomic(()=>this.message(c,{id,runId:run.id,role:'assistant',text:decision.question,status:'complete',decision:{...decision,planId:this.turnPlan(c.id,run.id)}}))
     this.changed(c.id)
-    return {messageId:id}
+    return {messageId:id,...(decision.defaultOption?{continueWith:decision.defaultOption}:{})}
   }
   answerDecision(id:string,owner:string,messageId:string,answer:string,locale?:string){
     return this.host.store.atomic(()=>{
@@ -450,26 +514,27 @@ export class ChatSessions {
   contextUsage(id:string,owner:string,selected?:string){
     this.get(id,owner)
     const {backend,model}=this.readiness()
-    const start="json_extract(c.body,'$.startedAt')"
-    const anchor=selected?this.host.store.db.prepare(`SELECT ${start} AS at,c.rowid AS seq FROM records c
-      WHERE c.kind='chat-call' AND c.id=? AND json_extract(c.body,'$.conversationId')=?`).get(selected,id):undefined
-    const rows=this.host.store.db.prepare(`SELECT c.id,${start} AS at FROM records c WHERE c.kind='chat-call'
-      AND json_extract(c.body,'$.conversationId')=? AND json_extract(c.body,'$.kind')='router'
-      AND (? IS NULL OR json_extract(c.body,'$.backend')=?) AND (? IS NULL OR json_extract(c.body,'$.model')=?)
-      ${selected?`AND (${start},c.rowid) <= (?,?)`:''}
-      AND (EXISTS (SELECT 1 FROM records b WHERE b.kind IN ('context-budget','chat-context-input') AND b.id=c.id)
-        OR EXISTS (SELECT 1 FROM records u,json_each(u.body,'$.steps') s WHERE u.kind='model-usage' AND u.id=c.id AND json_type(s.value,'$.inputTokens')='integer'))
-      ORDER BY ${start} DESC,c.rowid DESC LIMIT 2`).all(id,backend??null,backend??null,model??null,model??null,...(selected?[anchor?.at??null,anchor?.seq??null]:[]))
-    const activity=rows[0]?String(rows[0].id):undefined
-    if(selected&&activity!==selected)throw new ChatError('context_missing','Context record not found.',404)
+    const db=this.host.store.db
+    const row=selected
+      ? db.prepare("SELECT body FROM records WHERE kind='chat-call' AND id=?").get(selected)
+      : db.prepare(`SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.kind')='router'
+          AND json_extract(body,'$.runId')=(
+            SELECT id FROM records WHERE kind='chat-run' AND json_extract(body,'$.conversationId')=?
+              AND json_extract(body,'$.feedback') IS NULL ORDER BY rowid DESC LIMIT 1)
+          ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 1`).get(id)
+    const call=row?JSON.parse(String(row.body)) as ChatCall:undefined
+    const current=call?.conversationId===id && call.kind==='router' &&
+      (!backend||call.backend===backend) && (!model||call.model===model) ? call : undefined
+    if(selected&&!current)throw new ChatError('context_missing','Context record not found.',404)
+    const activity=current?.id
     const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
     const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
-    const steps=Object.entries(usage?.steps??{}).filter(([key,value])=>value.inputTokens!==undefined&&(!recorded||key.startsWith(recorded.attempt+':'))).map(([,value])=>value)
-    const step=steps.at(-1)
     const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
-    const budget=receipt&&(!recorded||(receipt.attempt??0)===recorded.attempt)?receipt:undefined
-    return {activity:activity??null,at:rows[0]?Number(rows[0].at):null,previous:rows[1]?String(rows[1].id):null,
-      composition:recorded?.size??null,modelInputs:steps.map(s=>s.inputTokens!),
+    const attempt=Object.keys(usage?.attempts??{}).map(Number).at(-1)??recorded?.attempt
+    const step=Object.entries(usage?.steps??{}).findLast(([key])=>attempt===undefined||key.startsWith(attempt+':'))?.[1]
+    const budget=receipt&&(attempt===undefined||(receipt.attempt??0)===attempt)?receipt:undefined
+    return {activity:activity??null,at:current?.startedAt??null,
+      composition:recorded?.attempt===attempt?recorded?.size??null:null,
       model:model??usage?.model??null,inputTokens:step?.inputTokens??null,capacity:step?.contextWindowTokens??null,
       budget:budget?{bytes:budget.bytes,reservedBytes:budget.reservedBytes,maxBytes:budget.maxBytes}:null}
   }
@@ -528,10 +593,18 @@ export class ChatSessions {
       if(review.state===state)return {state}
       if(review.state!=='pending')throw new ChatError('request_closed','This review has closed.')
       this.closeFileReview(message,state)
+      const {run,c}=this.cardTarget(message.runId)
+      this.host.store.enqueue('router:file-review:'+message.id,'router',{triggerId:run.triggerId,discussion:c.discussion,fileReviewId:message.id})
       this.changed(id)
       return {state}
     })
   }
+  fileReviewOutcome(triggerId:string,id:string){
+    const {run,c}=this.cardTarget(triggerId),message=this.sourceMessage(c,id)
+    if(message.runId!==run.id||!message.fileReview||!['approved','denied'].includes(message.fileReview.state))throw new ChatError('request_closed','File review is no longer available.')
+    return {messageId:id,name:message.text,state:message.fileReview.state}
+  }
+
   captureFiles(ticketId:string,cwd:string,paths:string[]){
     const dest=this.workerDestination(ticketId)
     return dest?this.deliveries.capture(dest.c.id,dest.run.id,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
@@ -549,11 +622,11 @@ export class ChatSessions {
     this.get(id,owner)
     return this.deliveries.read(id,fileId)
   }
-  private originRun(triggerId:string){
+  private originRun(triggerId:string,includeSilent=false){
     const direct=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(direct||!triggerId.startsWith('scheduled:'))return direct
     const scheduled=this.host.proactive.runForTrigger(triggerId)
-    if(scheduled&&scheduled.spec.notification!=='silent')return this.host.store.get<ChatRun>('chat-run',scheduled.spec.triggerId)
+    if(scheduled&&(includeSilent||scheduled.spec.notification!=='silent'))return this.host.store.get<ChatRun>('chat-run',scheduled.spec.triggerId)
   }
   private schedules(c:Conversation){
     const scopeId='@chat:'+stableDigest(c.owner)
@@ -637,7 +710,7 @@ export class ChatSessions {
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
-      const run:ChatRun={id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,createdAt:Date.now()}
+      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,createdAt:Date.now()}
       this.host.store.put('chat-run',run.id,run)
       this.uploads.bind(attachments.map(a=>a.id),run.id)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),...(attachments.length?{attachments}:{})})
@@ -744,10 +817,11 @@ export class ChatSessions {
       if(message.decision&&!message.decision.replyRunId&&closedRuns.has(message.runId))
         message.decision={...message.decision,closed:true}
     }
-    const requests=this.rows<Approval>('approval','chat.conversationId',id)
+    const requests=this.rows<Approval>('approval','chat.conversationId',id).filter(a=>!a.automatic)
+    const managedRequests=this.host.permissions.forChat(id).filter(a=>!a.automatic||a.phase==='uncertain'||a.receipt?.success===false)
     const pendingChoice=last&&this.host.store.db.prepare(`SELECT 1 FROM records WHERE kind='chat-message'
       AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')=?
-      AND ((json_type(body,'$.decision')='object' AND json_extract(body,'$.decision.replyRunId') IS NULL)
+      AND ((json_type(body,'$.decision')='object' AND json_extract(body,'$.decision.replyRunId') IS NULL AND json_extract(body,'$.decision.defaultOption') IS NULL)
         OR json_extract(body,'$.fileReview.state')='pending') LIMIT 1`).get(id,last.id)
     let state:ChatRunState='queued'
     if(last){
@@ -756,8 +830,8 @@ export class ChatSessions {
       else if(jobs.some(j=>j.state==='running')||batch?.state==='evaluating')state='running'
       else if(jobs.some(j=>j.state==='pending')||batch?.state==='pending')state='queued'
       else if(jobs.some(j=>j.state==='failed')||batch?.state==='failed')state='failed'
-      else if(pendingChoice||requests.some(a=>a.chat?.runId===last.id&&a.status==='pending'))state='waiting'
       else if(currentTasks.some(t=>t.state==='running'||t.state==='queued'))state='running'
+      else if(pendingChoice||managedRequests.some(a=>a.actor.runId===last.id&&a.phase==='pending')||requests.some(a=>a.chat?.runId===last.id&&a.status==='pending'))state='waiting'
       else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
       else if(jobs.length&&jobs.every(j=>j.state==='done'))state='completed'
@@ -767,7 +841,7 @@ export class ChatSessions {
       const reportDeliveries=state==='completed'?this.host.store.deliveries().filter(d=>d.channel.address.routerInbox&&currentTasks.some(t=>t.id===d.ticketId)):[]
       if(reportDeliveries.some(d=>['failed','uncertain','held'].includes(d.status)))state='failed'
       else if(reportDeliveries.some(d=>!['sent','dropped'].includes(d.status)))state='running'
-      else if(pending||goals.some(g=>['held','paused','needs_input'].includes(g.state)))state='waiting'
+      else if(state!=='running'&&(pending||goals.some(g=>['held','paused','needs_input'].includes(g.state))))state='waiting'
       else if(goals.some(g=>g.state==='cancelled'))state='cancelled'
       else if(currentTasks.some(t=>t.state==='waiting'&&this.host.store.tickets.get(t.id)?.assignments.at(-1)?.report?.state==='failed'))state='failed'
       else if(currentTasks.some(t=>t.state==='cancelled'))state='cancelled'
@@ -785,7 +859,7 @@ export class ChatSessions {
       const target=agent.id===router.id?null:agent.id,row=latestMessage.get(id,target,target,target)
       return {...displaySpeaker(agent),latestMessage:row?{text:transcriptText(String(row.id),String(row.text)).slice(0,280),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
-    const approvals=requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval)
+    const approvals=[...requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval),...managedRequests.filter(a=>!participant||participant===router.id||a.actor.workerId===participant).map(permissionCard)].sort((a,b)=>a.createdAt-b.createdAt)
     const plans=this.rows<RouterGoal>('router-goal','discussion',c.discussion).map(goalPlan).filter(p=>p.steps.length)
     const publicPlans=this.rows<ChatPlan>('chat-plan','conversationId',id).filter(p=>!participant||participant===router.id||p.workerId===participant).map(({conversationId,activityId,...p})=>({...p,live:calls.some(call=>call.id===activityId&&call.state==='running')}))
     const result={approvals,plans,publicPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
@@ -815,6 +889,7 @@ export class ChatSessions {
     if(this.tasks(c,run).some(t=>this.host.store.get<Run>('run',t.id)?.phase==='merging'))throw new ChatError('merge_in_progress','Reconcile the submitted merge before stopping.')
     this.host.store.atomic(()=>{
       this.host.store.put('chat-run',runId,{...run,cancelRequested:true})
+      for(const action of this.host.permissions.forChat(id))if(action.actor.runId===runId)this.host.permissions.cancel(action.id)
       for(const m of this.rows<Message>('chat-message','runId',runId))
         if(m.fileReview?.state==='pending')this.closeFileReview(m,'cancelled')
     })

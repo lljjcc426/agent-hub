@@ -34,15 +34,12 @@ import {
   PanelRight,
   Menu,
   X,
-  ChevronDown,
   ChevronRight,
   Check,
   LoaderCircle,
   Square,
-  Paperclip,
   AlertCircle,
   RefreshCw,
-  Wrench,
   Globe,
   Hand,
 } from "lucide-react";
@@ -50,9 +47,10 @@ import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,groupWorkflow} from './workflow-cards.tsx';
+import {ComposerActions} from './composer-actions.tsx';
 import {CommandInput, type ChatCommand} from './composer-commands.tsx';
 import {ContextCard} from './context-card.tsx';
-import {ToolCallCard} from '../ui/agent-team.tsx';
+import {ToolTrace} from './tool-trace.tsx';
 import '../ui/theme.css';
 import '../ui/components.css';
 import '../ui/agent-components.css';
@@ -163,7 +161,7 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
-const loadContext=(id:string,signal:AbortSignal,activity?:string)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context"+(activity?'?activity='+encodeURIComponent(activity):''),undefined,"GET",signal);
+const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
@@ -302,7 +300,7 @@ function AssistantMessage() {
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
     streaming = status?.type === "running";
-  if (streaming && !hasText) return null;
+  if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   const assignee=recipient?.kind==='worker'&&workers.find(w=>w.id===recipient.id);
   const task=assignee&&assignee.tasks.find(t=>t.id===ticketId);
   if(!workerView&&task&&assignee)return <><MessagePrimitive.Root className="message team-trace" data-arrival={arrival}>
@@ -364,115 +362,11 @@ function StatusIcon({ state }: { state: string }) {
     <span className="idle-dot" />
   );
 }
-function ToolCalls({
-  calls,
-  workers,
-}: {
-  calls: Snapshot["calls"];
-  workers: Worker[];
-}) {
-  const { L,lang,routerLabel,arrivals } = useUI(),
-    arrival = useArrival('tools:' + calls[0]!.runId, calls[0]!.startedAt),
-    [open, setOpen] = useState(false),
-    [now, setNow] = useState(Date.now()),
-    tools = calls,
-    busy = tools.some((c) => c.state === "running");
-  useEffect(() => {
-    if (!busy) return;
-    const timer = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(timer);
-  }, [busy]);
-  if (!tools.length) return null;
-  const names: Record<string, string> = {
-    list: L("Inspect team", "查看团队"),
-    assign: L("Delegate task", "分派任务"),
-    send: L("Continue task", "继续任务"),
-    result: L("Read result", "读取结果"),
-    inspect: L("Inspect task", "查看任务"),
-    create: L("Create worker", "创建 Worker"),
-    configure: L("Configure worker", "配置 Worker"),
-    set_prompt: L("Set instructions", "设置提示词"),
-    clone: L("Clone worker", "复制 Worker"),
-    retire: L("Retire worker", "停用 Worker"),
-    destroy: L("Remove worker", "移除 Worker"),
-    migrate: L("Migrate worker", "迁移 Worker"),
-    cancel: L("Cancel task", "取消任务"),
-    pause: L("Pause worker", "暂停 Worker"),
-    resume: L("Resume worker", "恢复 Worker"),
-    remove: L("Remove worker", "移除 Worker"),
-    stop: L("Stop task", "停止任务"),
-    superagent_read: L("Read resource", "读取资源"),
-    superagent_shell: L("Run command", "执行命令"),
-    superagent_job: L("Inspect background job", "查看后台任务"),
-    superagent_spawn: L("Delegate subtask", "分派子任务"),
-    superagent_progress: L("Update progress", "更新进展"),
-    superagent_tool: L("Call connected tool", "调用连接工具"),
-    superagent_tools: L("Inspect tools", "查看工具"),
-  };
-  Object.assign(names, {
-    workspace_browser: L("Workspace browser", "工作区浏览器"),
-    superagent_browser: L("Use browser", "\u64cd\u4f5c\u6d4f\u89c8\u5668"),
-    "browser:profiles": L(
-      "Read browser profiles",
-      "\u67e5\u770b\u6d4f\u89c8\u5668\u8d44\u6599",
-    ),
-    "browser:open": L("Open browser", "\u6253\u5f00\u6d4f\u89c8\u5668"),
-    "browser:navigate": L("Open website", "\u6253\u5f00\u7f51\u7ad9"),
-    "browser:snapshot": L("Read page", "\u8bfb\u53d6\u9875\u9762"),
-    "browser:click": L(
-      "Click page element",
-      "\u70b9\u51fb\u9875\u9762\u5143\u7d20",
-    ),
-    "browser:fill": L("Fill field", "\u586b\u5199\u5185\u5bb9"),
-    "browser:press": L("Press key", "\u6309\u952e\u64cd\u4f5c"),
-    "browser:scroll": L("Scroll page", "\u6eda\u52a8\u9875\u9762"),
-    "browser:login": L(
-      "Fill saved account",
-      "\u586b\u5165\u5df2\u4fdd\u5b58\u8d26\u53f7",
-    ),
-    "browser:request_takeover": L(
-      "Request takeover",
-      "\u8bf7\u6c42\u4eba\u5de5\u63a5\u7ba1",
-    ),
-    "browser:close": L("Close browser", "\u5173\u95ed\u6d4f\u89c8\u5668"),
-    "browser:new_tab": L("Open tab", "\u65b0\u5efa\u6807\u7b7e\u9875"),
-    "browser:select_tab": L("Switch tab", "\u5207\u6362\u6807\u7b7e\u9875"),
-    "browser:close_tab": L("Close tab", "\u5173\u95ed\u6807\u7b7e\u9875"),
-    "browser:back": L("Go back", "\u540e\u9000"),
-    "browser:forward": L("Go forward", "\u524d\u8fdb"),
-    "browser:reload": L("Reload page", "\u91cd\u65b0\u52a0\u8f7d"),
-  });
-  const states: Record<string, string> = {
-    running: L("Running", "运行中"),
-    completed: L("Complete", "已完成"),
-    failed: L("Failed", "失败"),
-    interrupted: L("Interrupted", "已中断"),
-  };
-  return (
-    <details
-      className="tool-activity"
-      data-arrival={arrival}
-      open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
-    >
-      <summary>
-        <Wrench size={15} />
-        <strong>{L("Tool calls", "工具调用")}</strong>
-        <span>{tools.length}</span>
-        <ChevronDown size={14} />
-      </summary>
-      <ToolCallCard L={L} showHeading={false} calls={tools.map(call=>{
-        const actor=workers.find(w=>w.id===call.workerId)?.label??call.workerId??routerLabel;
-        const target=workers.find(w=>w.id===call.target)?.label??call.target;
-        const name=names[call.action??call.name]??call.name;
-        return {id:call.id,arrival:call.startedAt>=arrivals.since,name:target?name+' · '+target:name,summary:actor+' · '+states[call.state],
-          status:({running:'working',completed:'done',failed:'error',interrupted:'paused'} as const)[call.state],
-          timestamp:new Intl.DateTimeFormat(lang,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(call.startedAt),
-          elapsed:(Math.max(0,(call.endedAt??now)-call.startedAt)/1000).toFixed(1)+'s',
-          details:[[L('Tool','工具'),call.name],[L('Status','状态'),states[call.state]!],...(call.action?[[L('Action','操作'),call.action] as [string,string]]:[]),...(target?[[L('Target','目标'),target] as [string,string]]:[])]};
-      })}/>
-    </details>
-  );
+function ToolCalls({calls,workers}:{calls:Snapshot['calls'];workers:Worker[]}){
+  const {L,lang,routerLabel}=useUI();
+  const arrival=useArrival('tools:'+calls[0]!.id,calls[0]!.startedAt);
+  return <ToolTrace calls={calls} L={L} locale={lang} arrival={arrival}
+    actor={id=>workers.find(w=>w.id===id)?.label??id??routerLabel}/>;
 }
 function Readiness({ ready }: { ready: Ready | null }) {
   const { L } = useUI();
@@ -528,6 +422,7 @@ function App() {
   );
   const [id, setId] = useState<string | null>(null),
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
+    [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>("ask"),
     [ready, setReady] = useState<Ready | null>(null);
   const [navExpanded, setNavExpanded] = useState(read("roppo.navigation.expanded") !== "false");
   useEffect(() => write("roppo.navigation.expanded", String(navExpanded)), [navExpanded]);
@@ -544,7 +439,7 @@ function App() {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && read("roppo.chat.reset") !== space.cleanup.id){clearChatDrafts();write("roppo.chat.reset",space.cleanup.id)}
     const linked=location.pathname==="/chat" && /^#conversation\/([a-f0-9-]{36})$/.exec(location.hash);
-    setId((linked && linked[1]) || space.conversation?.id || null);setDisplay(space.display);
+    setId((linked && linked[1]) || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
   }, []);
   useEffect(()=>{const change=()=>void refreshList();window.addEventListener('roppo:chat-space',change);return()=>window.removeEventListener('roppo:chat-space',change)},[refreshList]);
   const navigate = useCallback((next: string | null) => {
@@ -664,6 +559,7 @@ function App() {
           id,
           display,
           setDisplay,
+          approvalMode,
           ready,
           lang,
           L,
@@ -685,6 +581,7 @@ type ChatProps = {
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
+  approvalMode: ChatSpace["approvalMode"];
   setDisplay: (value:ChatSpace["display"])=>void;
   route: string;
   id: string | null;
@@ -697,7 +594,7 @@ type ChatProps = {
   refreshList: () => Promise<void>;
   setLang: (v: Language) => void;
 };
-const emptySidebarCards: { items: ChatCommand[]; revealing: boolean } = { items: [], revealing: false };
+const emptySidebarCards: { items: "context"[]; revealing: boolean } = { items: [], revealing: false };
 function Chat(p: ChatProps) {
   const {
     id,
@@ -1010,6 +907,7 @@ function Chat(p: ChatProps) {
   }, [id, refresh, refreshList]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
+  const composerAction=useRef<((action:ChatCommand)=>void)|null>(null);
   const commandAction=useRef<(()=>boolean)|null>(null);
   const runtime = useExternalStoreRuntime({
     isRunning: !readonly && (!!reply || sending),
@@ -1209,7 +1107,7 @@ function Chat(p: ChatProps) {
   }, [narrow, menu]);
   const current = snapshot?.conversation;
   const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setSidebarCards(emptySidebarCards)};
-  function revealCard(card: ChatCommand) {
+  function revealCard(card: "context") {
     if (!panel) {
       panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
       setTeamTab('activity');
@@ -1218,7 +1116,7 @@ function Chat(p: ChatProps) {
     setSidebarCards(state => ({items:[card, ...state.items.filter(item => item !== card)], revealing:true}));
     requestAnimationFrame(() => bodyRef.current?.querySelector('.team-tab-content')?.scrollTo({top:0, behavior:'instant'}));
   }
-  function dismissCard(card: ChatCommand) {
+  function dismissCard(card: "context") {
     const items = sidebarCards.items.filter(item => item !== card);
     const revealing = sidebarCards.revealing && items.length > 0;
     setSidebarCards({items, revealing});
@@ -1283,7 +1181,7 @@ function Chat(p: ChatProps) {
         arrivals:arrivals.current,
       }}
     >
-      <WorkflowProvider value={{L,blocks,readonly,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
+      <WorkflowProvider value={{L,blocks,readonly,actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
         reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state})}finally{await refresh()}},
@@ -1434,7 +1332,7 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <CommandInput visible={!configuring} L={L} onCommand={revealCard} consume={commandAction}
+                    <CommandInput visible={!configuring} L={L} onCommand={command=>composerAction.current?.(command)} consume={commandAction}
                       className="composer-input"
                       placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
                       aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
@@ -1451,8 +1349,10 @@ function Chat(p: ChatProps) {
                       }}
                     />
                     <div className="composer-toolbar">
-                      <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
-                      <button type="button" className="compose-resource" onClick={()=>void choosePanel("files")}><FileText size={16}/><span>{L("Files","文件")}</span></button>
+                      <ComposerActions actions={composerAction} L={L} mode={p.approvalMode} modelBusy={!!reply}
+                        uploadDisabled={sending||loadingAttachments||!ready?.ready}
+                        onContext={()=>revealCard("context")} onModeSaved={refreshList}
+                        onModelSaved={async()=>{await refreshList();if(id)await refresh()}}/>
                       <button type="button" className="compose-resource" onClick={()=>void choosePanel("browser")}><Globe size={16}/><span>{L("Browser","浏览器")}</span></button>
                       {workers.length ? (
                         <button
@@ -1494,7 +1394,7 @@ function Chat(p: ChatProps) {
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                   cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
-                      conversationId={id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
+                      conversationId={id} turnId={run?.id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
                   changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}

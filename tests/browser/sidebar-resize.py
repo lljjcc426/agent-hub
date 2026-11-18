@@ -27,6 +27,27 @@ with sync_playwright() as p:
         page.wait_for_function('(p) => Math.abs(document.querySelector(p[0]).getBoundingClientRect().width - p[1]) <= 1',
                                arg=[selector, expected], timeout=3500)
 
+    def expect_chat_fills_space():
+        page.wait_for_function("""() => {
+            const rect = s => document.querySelector(s).getBoundingClientRect()
+            const main = rect('#conversation'), rail = rect('#function-navigation')
+            return Math.abs(main.right - rect('.chat-shell').right) <= 1
+                && Math.abs(main.left - (innerWidth > 800 ? rail.right : 0)) <= 1
+        }""", timeout=3500)
+
+    def expect_writing_line():
+        box = page.locator('.composer-input')
+        box.fill('第一行\nSecond line')
+        result = box.evaluate("""input => {
+            const form = input.closest('form'), style = getComputedStyle(form)
+            const r = input.getBoundingClientRect(), f = form.getBoundingClientRect()
+            return Math.abs(r.left - f.left - parseFloat(style.paddingLeft) - form.clientLeft) < 1
+                && Math.abs(f.right - r.right - parseFloat(style.paddingRight) - form.clientLeft) < 1
+                && ['start','left'].includes(getComputedStyle(input).textAlign)
+        }""")
+        assert result, 'The writing line must span the composer content box'
+        box.fill('')
+
     def drag(selector, dx):
         handle = page.locator(selector + ' > [role=separator]')
         expect(handle).to_be_visible()
@@ -39,12 +60,19 @@ with sync_playwright() as p:
 
     nav, panel = '#function-navigation', '#session-panel'
     expect(page.locator('.member')).to_have_count(4)
+    expect_chat_fills_space()
+    expect_writing_line()
     expect(page.locator('.member a, .member button')).to_have_count(0)
     page.locator('.member').first.click()
     expect(page.locator('.worker-readonly')).to_be_visible()
     page.locator('.chat-destination').click()
     page.get_by_role('button', name='Collapse sidebar').click()
     expect_width(nav, 64)
+    expect_chat_fills_space()
+    expect_writing_line()
+    page.reload()
+    expect_width(nav, 64)
+    expect_chat_fills_space()
     nav_size = 224
     drag(nav, nav_size - 64)
     expect_width(nav, nav_size)
@@ -52,6 +80,8 @@ with sync_playwright() as p:
     nav_size += 16
     expect_width(nav, nav_size)
     page.get_by_role('button', name='Session panel', exact=True).click()
+    expect_chat_fills_space()
+    expect_writing_line()
     team_size = width(panel) + 75
     drag(panel, -75)
     expect_width(panel, team_size)
@@ -75,6 +105,14 @@ with sync_playwright() as p:
     page.locator('.member').first.click()
     expect(page.get_by_role('button', name='Open navigation')).to_have_attribute('aria-expanded', 'false')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert context.request.patch(base + '/api/chat/space', data={'display': 'group'}).ok
+    page.reload()
+    expect(page.locator('.composer-input')).to_be_visible()
+    expect_chat_fills_space()
+    expect_writing_line()
+    page.set_viewport_size({'width': 1728, 'height': 970})
+    expect_chat_fills_space()
+    expect_writing_line()
     assert not errors, errors
     browser.close()
     print('Passed: conversation rail, both resizable edges, keyboard, persistence, expanded and mobile layouts.')

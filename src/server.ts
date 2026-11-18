@@ -63,6 +63,8 @@ import {WebhookError} from './webhook-protocol.ts'
 import {enabledView,viewCatalog,viewArtifactReference,viewVersion} from './workspace-view-package.ts'
 import {viewQuerySchema,workspaceViewData} from './workspace-view-data.ts'
 
+const approvalIdSchema = z.union([z.string().uuid(),z.string().regex(/^permission:[a-f0-9]{64}$/)])
+
 export async function serve(runtime: Runtime,options:{configurationPreview?:boolean;createRuntime?:(config:Config,activationId?:string,startupSourceIds?:readonly string[])=>Runtime|Promise<Runtime>;pluginGitHub?:PluginGitHub;clientHome?:string;clientName?:string}={}) {
   const tokenPath = join(runtime.config.stateDir, 'access-token')
   const connectionFile=join(runtime.config.stateDir,'connection.json')
@@ -267,7 +269,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       const raw=await operatorBody(req)
       if(path==='/api/terminal/logout'){account.revokeTerminal(req);send(res,200,{ok:true});return}
       if(path==='/api/terminal/tasks'){
-        const input=z.object({conversation:z.string().uuid(),ticket:z.string().min(1).max(500),action:z.enum(['diff','stop','approvals','answer']),approval:z.string().uuid().optional(),answer:z.unknown().optional()}).strict().parse(raw)
+        const input=z.object({conversation:z.string().uuid(),ticket:z.string().min(1).max(500),action:z.enum(['diff','stop','approvals','answer']),approval:approvalIdSchema.optional(),answer:z.unknown().optional()}).strict().parse(raw)
         send(res,200,await terminalTask(runtime,owner,input));return
       }
       if(path==='/api/terminal/projects'||path==='/api/terminal/conversations'){
@@ -526,7 +528,10 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/chat/space'){
         if(req.method==='GET'){send(res,200,runtime.chat.space(owner));return}
         if(req.method==='POST'){send(res,200,runtime.chat.space(owner,true));return}
-        if(req.method==='PATCH'){const input=z.object({display:z.enum(['group','agents'])}).strict().parse(await body(req));send(res,200,runtime.chat.display(owner,input.display));return}
+        if(req.method==='PATCH'){
+          const input=z.union([z.object({display:z.enum(['group','agents'])}).strict(),z.object({approvalMode:z.enum(['ask','full'])}).strict()]).parse(await operatorBody(req))
+          send(res,200,'approvalMode' in input?runtime.chat.setApprovalMode(owner,input.approvalMode):runtime.chat.display(owner,input.display));return
+        }
       }
       if(path==='/api/chat/reset'&&req.method==='POST'){
         const input=z.object({operationId:z.string().uuid()}).strict().parse(await body(req))
@@ -580,14 +585,14 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           }
         }
         if(action==='approvals'&&req.method==='POST'){
-          const input=z.object({id:z.string().uuid(),value:z.union([z.enum(['accept','decline']),z.record(z.string(),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(10)}).strict())])}).strict().parse(await body(req))
+          const input=z.object({id:approvalIdSchema,value:z.union([z.enum(['accept','decline']),z.record(z.string(),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(10)}).strict())])}).strict().parse(await operatorBody(req))
           send(res,200,runtime.chat.answerApproval(id,owner,input.id,input.value));return
         }
         if(action==='decisions'&&req.method==='POST'){
           const input=z.union([
             z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional()}).strict(),
             z.object({action:z.enum(['answer','renew']),id:z.string().min(1).max(1000),version:z.string().regex(/^[a-f0-9]{64}$/),requestId:z.string().uuid(),text:z.string().trim().min(1).max(10000).optional()}).strict()
-          ]).parse(await body(req))
+          ]).parse(await operatorBody(req))
           if('action' in input){send(res,200,runtime.chat.decide(id,owner,input));return}
           send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale));return
         }
@@ -768,7 +773,10 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     }
     if(req.method==='POST'&&path==='/approval'){
       const input=z.object({id:z.string(),answer:z.unknown()}).strict().parse(await body(req))
-      runtime.approvals.answer(input.id,input.answer);send(res,200,{ok:true});return
+      const approval=runtime.store.get<import('./approvals.ts').Approval>('approval',input.id)
+      if(approval?.chat)runtime.chat.answerApproval(approval.chat.conversationId,account.status(req).user?.id??'local-operator',input.id,input.answer)
+      else runtime.approvals.answer(input.id,input.answer)
+      send(res,200,{ok:true});return
     }
     if(req.method==='POST'&&path==='/steer'){
       const input=z.object({id:z.string(),text:z.string().min(1).max(10000)}).strict().parse(await body(req))

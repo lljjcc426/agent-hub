@@ -1,7 +1,15 @@
 import {observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,type WorkerAttempt} from './async-worker-inbox.ts'
+import {execFile} from 'node:child_process'
+import {promisify} from 'node:util'
+import {isAbsolute,relative,sep} from 'node:path'
+import {realpathSync,statSync} from 'node:fs'
+import {hostPrivateFiles} from './private-files.ts'
+import {toolTrace} from './tool-trace.ts'
+import {actionFacts,workerRisk,type ToolResult} from './chat-permissions.ts'
+import {stableDigest} from './sources.ts'
 import {eventWaitSchema} from './webhook-continuations.ts'
 import type {TaskContinuation} from './task-context.ts'
-import {deliverDraft} from './delivery.ts'
+import {deliverDraft,prepareDraft} from './delivery.ts'
 import {randomBytes,createHash} from 'node:crypto'
 import {mkdirSync,writeFileSync} from 'node:fs'
 import {join} from 'node:path'
@@ -12,6 +20,8 @@ import type {WorkOwner} from './work.ts'
 import type {ToolSpec,ToolContent} from './model.ts'
 import {knowledgeCommandSchema,knowledgeSpecs} from './knowledge.ts'
 import {browserToolDefinition,browserToolSchema} from './browser-contract.ts'
+const git=promisify(execFile)
+const containsPath=(parent:string,path:string)=>{const r=relative(parent,path);return !r||r!=='..'&&!r.startsWith('..'+sep)&&!isAbsolute(r)}
 const json=(properties:Record<string,unknown>,required:string[])=>({type:'object',additionalProperties:false,properties,required})
 const text={type:'string'},integer={type:'integer',minimum:0}
 const isWorkflowPlan=(name:string|undefined,value:unknown)=>name==='superagent_workflow'&&!!value&&typeof value==='object'&&'action' in value&&value.action==='plan'
@@ -26,10 +36,10 @@ export const workerDefinitions=[
  {name:'superagent_tools',description:'List granted connections and tool names. Supply connection and tool to read one exact input schema before calling superagent_tool. Connections do not enable message listening or replies.',validator:z.object({connection:z.string().optional(),tool:z.string().optional()}).strict().refine(x=>!x.tool||!!x.connection,'Select a connection to inspect a tool'),schema:json({connection:text,tool:text},[])},
  {name:'superagent_tool',description:'Call a granted MCP tool using its exact schema. Reuse requestId only for the same operation. Uncertain results require reconciliation; never issue a new requestId just to repeat an uncertain write.',validator:z.object({connection:z.string(),tool:z.string(),arguments:z.record(z.string(),z.unknown()),requestId:z.string().min(1).max(200)}).strict(),schema:json({connection:text,tool:text,arguments:{type:'object',additionalProperties:true},requestId:text},['connection','tool','arguments','requestId'])},
  {name:'superagent_read',description:'Read a paginated task-scoped resource. Start with catalog. Retain returned cursor and nextOffset for text pages. Images return actual image content.',validator:readSchema,schema:json({resource:text,offset:integer,limit:{type:'integer',minimum:1,maximum:8000},pageSize:{type:'integer',minimum:1,maximum:50},cursor:text},['resource'])},
- {name:'superagent_shell',description:'Run a command in the task sandbox. The host owns the process, output and lifecycle. It becomes a background job after 5 seconds (60 in a subagent). Reuse requestId only to retry the same command.',validator:z.object({command:z.string().min(1).max(100000),requestId:z.string().min(1).max(200),yieldMs:z.number().int().min(0).max(60000).default(5000)}).strict(),schema:json({command:text,requestId:text,yieldMs:integer},['command','requestId'])},
+ {name:'superagent_shell',description:'Run a command in the task sandbox. The host owns the process, output and lifecycle. It becomes a background job after 5 seconds (60 in a subagent). Reuse requestId for the same command. For personal Chat, workspace commands run offline by default. Use access=network for network access, access=write for a shared source directory, and writePaths for specific existing external work directories. The host applies the Chat approval policy.',validator:z.object({access:z.enum(['workspace','write','network']).optional(),writePaths:z.array(z.string().min(1)).min(1).max(12).optional(),command:z.string().min(1).max(100000),requestId:z.string().min(1).max(200),yieldMs:z.number().int().min(0).max(60000).default(5000)}).strict(),schema:json({command:text,requestId:text,yieldMs:integer,access:{type:'string',enum:['workspace','write','network']},writePaths:{type:'array',items:text}},['command','requestId'])},
  {name:'superagent_job',description:'Read, wait for or cancel an owned job. Wait returns within five seconds for a root worker. Completion wakes the same worker automatically while it owns a slot.',validator:z.object({id:z.string(),action:z.enum(['read','wait','stop']),yieldMs:z.number().int().min(0).max(60000).default(5000),offset:z.number().int().min(0).default(0)}).strict(),schema:json({id:text,action:{type:'string',enum:['read','wait','stop']},yieldMs:integer,offset:integer},['id','action'])},
  {name:'superagent_spawn',description:'Delegate a bounded independent task when parallelism, expertise or an independent check adds concrete value. Keep dependent implementation and repair steps with the same owner. Include the objective, context, write scope, verification and required result; integrate the result yourself. The managed subagent inherits this task sandbox and mandate. It cannot publish, change configuration or access other tasks. Nested subagents retain these limits. Return the job ID immediately.',validator:z.object({prompt:z.string().min(1).max(50000),requestId:z.string().min(1).max(200)}).strict(),schema:json({prompt:text,requestId:text},['prompt','requestId'])},
- {name:'superagent_ack',description:'Acknowledge a reached human request once in its original thread before substantial work. Use its trigger ID or trigger/<id> resource reference. Never acknowledge bots or CI.',validator:z.object({triggerId:z.string(),text:z.string().min(1).max(500)}).strict(),schema:json({triggerId:text,text},['triggerId','text'])},
+ {name:'superagent_ack',description:'Acknowledge a reached human message once. Delegated Workers report through their Router. For an internal assignment, start work or use superagent_progress.',validator:z.object({triggerId:z.string(),text:z.string().min(1).max(500)}).strict(),schema:json({triggerId:text,text},['triggerId','text'])},
  {name:'superagent_progress',description:'Record an internal progress update without ending this turn or contacting people.',validator:z.object({summary:z.string().min(1).max(8000)}).strict(),schema:json({summary:text},['summary'])},
  {name:'superagent_publish',description:'Publish or update the task isolated Git branch as a draft PR, only when workerPublish is explicitly enabled by host policy. Never merge. Returns the bound PR and head SHA.',validator:z.object({title:z.string().min(1).max(200),body:z.string().max(50000)}).strict(),schema:json({title:text,body:text},['title','body'])},
  {name:'superagent_review',description:'Handle an inline review delivered to the task own PR. Fixed requires a successful managed verification job and a clean published head. Decline sends one concise inline explanation, then resolves the thread.',validator:z.object({triggerId:z.string(),action:z.enum(['fixed','decline']),reason:z.string().min(1).max(1000),evidenceJobId:z.string().optional()}).strict(),schema:json({triggerId:text,action:{type:'string',enum:['fixed','decline']},reason:text,evidenceJobId:text},['triggerId','action','reason'])},
@@ -38,17 +48,20 @@ export const workerDefinitions=[
 export const workerSpecs:ToolSpec[]=workerDefinitions.map(d=>({type:'function',name:d.name,description:d.description,inputSchema:d.schema}))
 export class WorkerTools {
  constructor(private host:Runtime){}
- async call(owner:WorkOwner,name:string,value:unknown,attempt?:WorkerAttempt):Promise<{contentItems:ToolContent[];success:boolean}>{
+ async call(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt):Promise<{contentItems:ToolContent[];success:boolean}>{
   const run=this.host.store.get<any>('run',owner.ticketId),ticket=this.host.store.tickets.get(owner.ticketId)
   const browser=name==='superagent_browser'?browserToolSchema.safeParse(value):undefined
-  return this.host.activity.tool(name,{ticketId:owner.ticketId,workerId:run?.workerId,agentId:owner.agentId,sourceId:ticket?.mandate.actor.source,triggerId:ticket?.origin.triggerId},()=>this.invoke(owner,name,value,attempt),undefined,browser?.success?{action:'browser:'+browser.data.action}:{})
+  return this.host.activity.tool(name,{ticketId:owner.ticketId,workerId:run?.workerId,agentId:owner.agentId,sourceId:ticket?.mandate.actor.source,triggerId:ticket?.origin.triggerId},()=>this.invoke(owner,name,value,expectedId,attempt),undefined,browser?.success?{action:'browser:'+browser.data.action}:{trace:toolTrace(name,value)})
  }
- private async invoke(owner:WorkOwner,name:string,value:unknown,attempt?:WorkerAttempt):Promise<{contentItems:ToolContent[];success:boolean}>{
+ private async invoke(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt):Promise<{contentItems:ToolContent[];success:boolean}>{
   const plan=isWorkflowPlan(name,value)
   const read=<T>(fn:()=>T):T=>plan?this.host.scopes.readOnly(()=>this.host.memory.readOnly(fn)):fn()
   read(()=>this.host.delegation.guardWorker(owner.ticketId,name))
-  if(attempt&&!read(()=>currentWorkerAttempt(this.host,attempt)))throw Error('Worker attempt has ended')
-  if(!read(()=>this.host.validWork(owner)))throw Error('Assignment capability has ended')
+  const checkAuthority=()=>read(()=>{
+   if(attempt&&!currentWorkerAttempt(this.host,attempt))throw Error('Worker attempt has ended')
+   if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
+  })
+  checkAuthority()
   const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
   const definition=workerDefinitions.find(d=>d.name===name);if(!definition)throw Error('Unknown worker tool')
@@ -61,8 +74,90 @@ export class WorkerTools {
   const continuation=this.host.store.get<TaskContinuation>('task-continuation',owner.ticketId)
   if(continuation&&name==='superagent_job'&&continuation.priorJobs.includes(args.id))throw Error('Prior job body is quarantined; use retained effect identities')
   if(continuation&&['superagent_ack','superagent_review','superagent_follow'].includes(name))throw Error('Rebuilt task requires Router review for prior channels and source history')
+  const authority=this.host.taskAuthority(owner.ticketId)
+  const trigger=authority?.parentTrigger??this.host.store.tickets.get(owner.ticketId)!.origin.triggerId
+  const actor=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)
+  if(!actor&&expectedId)throw Error('The task no longer owns its Chat permissions')
+  let risk=actor?workerRisk(name,args):undefined
+  let publication:{sha:string;branch:string}|undefined
+  let workflowRevision:string|undefined
+  let writePaths:string[]|undefined
+  if(name==='superagent_shell'){
+    if(args.writePaths){
+      if(!actor||owner.sandbox!=='workspace-write'||owner.agentId||this.host.delegation.forTicket(owner.ticketId))throw Error('Additional work directories require a local writable Chat assignment')
+      const reserved=[realpathSync(this.host.config.stateDir),...hostPrivateFiles()]
+      writePaths=(args.writePaths as string[]).map(path=>{
+        if(!isAbsolute(path))throw Error('Use an absolute work directory')
+        const real=realpathSync(path)
+        if(!statSync(real).isDirectory())throw Error('Choose the existing parent directory for this write')
+        if(reserved.some(p=>containsPath(real,p)||containsPath(p,real)))throw Error('Choose a work directory outside private host storage')
+        return real
+      })
+    }
+    if(actor){
+      const source=this.host.config.sources.find(s=>s.id===this.host.store.tickets.get(owner.ticketId)?.mandate.actor.source)
+      const shared=source?.workspace?.mode==='source'&&owner.sandbox==='workspace-write'
+      const network=args.access==='network'
+      if(network&&(!this.host.config.work.network||owner.network===false))throw Error('Network access is disabled for this task')
+      // Unreviewed scripts have no network and can only edit the isolated task workspace.
+      // A shared source is mounted read-only until this exact write is authorized.
+      const sharedWrite=shared&&(actor.mode==='full'||args.access==='write'||network)
+      owner={...owner,network:network,sandbox:shared&&!sharedWrite?'read-only':owner.sandbox}
+      if(network||sharedWrite||writePaths||/(?:^|[;&|()\s])(?:rm|rmdir|unlink|shred|git\s+(?:push|clean|reset\s+--hard))(?=\s|$)/.test(args.command)){
+        risk={command:args.command,cwd:owner.cwd,...(network?{access:'network'}:{}),...(writePaths?{target:writePaths.join('\n')}:{})}
+      }
+    }
+  }
+  if(actor&&name==='superagent_tool'){
+    const info=await this.host.toolConnections.permission(owner,args.connection,args.tool)
+    if(!info.readOnly)risk={...actionFacts(name,args),connection:args.connection,tool:args.tool,version:info.version}
+  }
+  if(actor&&name==='superagent_publish'){
+    const target=this.host.store.tickets.get(owner.ticketId)!.mandate.actor.source
+    if(owner.agentId||owner.sandbox!=='workspace-write'||!this.host.config.delivery.workerPublish)throw Error('Worker publication is not enabled for this root worker')
+    if(expectedId){
+      const saved=this.host.permissions.get(expectedId)
+      const sha=(await git('git',['rev-parse','HEAD'],{cwd:owner.cwd})).stdout.trim()
+      const branch=(await git('git',['branch','--show-current'],{cwd:owner.cwd})).stdout.trim()
+      const dirty=(await git('git',['status','--porcelain'],{cwd:owner.cwd})).stdout.trim()
+      if(dirty||saved?.facts.sha!==sha||saved.facts.branch!==branch){
+        this.host.permissions.cancel(expectedId)
+        throw Error('The approved Git workspace changed. Prepare a new draft for review.')
+      }
+      publication={sha,branch}
+    }else publication=await prepareDraft(this.host,owner.ticketId,target,args.title,owner.assignmentId)
+    const repository=this.host.sources.get(target)?.code
+    if(!repository)throw Error('The approved repository is no longer available')
+    risk={...actionFacts(name,args),target:repository.id,version:stableDigest([target,repository.id,repository.remotes]),...publication}
+  }
+  if(actor&&name==='superagent_workflow'&&args.action==='propose'){
+    const view=await this.host.workflows.request(owner,{action:'inspect',sourceId:args.sourceId,target:args.target})
+    if(!('revision' in view))throw Error('Workflow revision unavailable')
+    workflowRevision=String(view.revision)
+    risk={target:String(view.issue),account:String(view.account),change:args.stateId,version:workflowRevision}
+  }
+  const execute=(receiptId?:string)=>this.execute({checkAuthority,plan,attempt},owner,name,name==='superagent_shell'&&receiptId?{...args,requestId:receiptId}:args,continuation,writePaths,publication,workflowRevision)
+  if(expectedId&&(!actor||!risk))throw Error('The approved Worker action is no longer available')
+  if(!actor&&this.host.chat.hasContext({ticketId:owner.ticketId,triggerId:trigger})&&(workerRisk(name,args)||['superagent_shell','superagent_tool'].includes(name)))throw Error('The task no longer owns its Chat permissions')
+  if(actor&&risk){
+    if(owner.agentId)throw Error('Hand this operation back to the root Worker for its scoped permission and receipt')
+    if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
+    const current=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)
+    if(!current||current.runId!==actor.runId)throw Error('The task no longer owns its Chat permissions')
+    return this.host.permissions.run(current,name,args,risk,execute,expectedId)
+  }
+  return execute()
+ }
+ private async execute(fence:{checkAuthority:()=>void;plan:boolean;attempt?:WorkerAttempt},owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{
+  const {checkAuthority,plan,attempt}=fence
+  checkAuthority()
   let result:any
-  if(name==='superagent_workflow')result=await this.host.workflows.request(owner,args)
+  if(name==='superagent_workflow'){
+   result=await this.host.workflows.request(owner,args,workflowRevision)
+   if(workflowRevision&&result.state==='pending'&&result.view.revision===workflowRevision){
+     result=await this.host.workflows.decideForTask(owner,result.id)
+   }else if(workflowRevision&&result.state==='pending')throw Error('The workflow target changed before delivery')
+  }
   else if(name==='superagent_event')result=this.host.webhooks.continuations.command(owner,args)
   else if(name==='superagent_artifact_read')result=this.host.artifacts.open(owner,args.id)
   else if(name==='superagent_artifact')result=this.host.delegation.capture(owner.ticketId,args.path)
@@ -93,11 +188,11 @@ export class WorkerTools {
   else if(name==='superagent_tool')return this.host.toolConnections.call(owner,args)
   else if(name==='superagent_tools')result=await this.host.toolConnections.catalog(owner,args)
   else if(name==='superagent_read')result=await this.host.resources.read(args,owner)
-  else if(name==='superagent_shell')result=await this.host.work.shell(owner,args.command,args.requestId,args.yieldMs)
+  else if(name==='superagent_shell')result=await this.host.work.shell(owner,args.command,args.requestId,args.yieldMs,writePaths)
   else if(name==='superagent_spawn')result=await this.host.work.agent(owner,args.prompt,args.requestId)
   else if(name==='superagent_ack'){if(owner.agentId)throw Error('Subagents cannot contact people');const triggerId=args.triggerId.startsWith('trigger/')?args.triggerId.slice('trigger/'.length):args.triggerId;result=this.host.engine.reply({purpose:'acknowledgement',ticketId:owner.ticketId,triggerId,text:args.text})}
   else if(name==='superagent_progress'){if(owner.agentId){this.host.store.put('agent-progress',owner.agentId,{ticketId:owner.ticketId,agentId:owner.agentId,summary:args.summary,at:Date.now()})}else if(attempt)observeWorkerEvent(this.host,attempt,{kind:'progress',payload:JSON.stringify({producer:'progress_tool',summary:args.summary})},()=>{this.host.engine.report(owner.ticketId,{state:'progress',summary:args.summary})});else this.host.engine.report(owner.ticketId,{state:'progress',summary:args.summary});result={ok:true}}
-  else if(name==='superagent_publish'){if(owner.agentId||owner.sandbox!=='workspace-write'||!this.host.config.delivery.workerPublish)throw Error('Worker publication is not enabled for this root worker');const ticket=this.host.store.tickets.get(owner.ticketId)!;result=await deliverDraft(this.host,owner.ticketId,ticket.mandate.actor.source,args.title,args.body,owner.assignmentId)}
+  else if(name==='superagent_publish'){if(owner.agentId||owner.sandbox!=='workspace-write'||!this.host.config.delivery.workerPublish)throw Error('Worker publication is not enabled for this root worker');const ticket=this.host.store.tickets.get(owner.ticketId)!;result=await deliverDraft(this.host,owner.ticketId,ticket.mandate.actor.source,args.title,args.body,owner.assignmentId,publication)}
   else if(name==='superagent_review')result=await this.host.reviews.act(owner,args.triggerId,args.action,args.reason,args.evidenceJobId)
   else if(name==='superagent_job')result=args.action==='read'?this.host.work.read(owner,args.id,args.offset):args.action==='wait'?await this.host.work.wait(owner,args.id,args.yieldMs):await this.host.work.stop(owner,args.id)
   else{
@@ -108,7 +203,7 @@ export class WorkerTools {
    result={ok:true}
   }
   if(continuation&&result?.id&&continuation.priorJobs.includes(result.id))result={id:result.id,state:result.state,exitCode:result.exitCode,body:'quarantined',replayed:false}
-  if(!read(()=>this.host.validWork(owner)))throw Error('Assignment capability ended while the tool was running')
+  checkAuthority()
   if(!plan)await this.host.refreshWork(owner)
   if(name==='superagent_browser'&&args.action==='screenshot'&&result.screenshot.bytes<=8000000){
    const image=await this.host.resources.read({resource:result.screenshot.resource},owner)

@@ -1,14 +1,13 @@
 import { useEffect, useId, useRef, useState, type ComponentProps, type RefObject } from 'react'
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
-import { ChartNoAxesColumn, ChevronRight } from 'lucide-react'
+import { ChartNoAxesColumn, ChevronRight, Paperclip, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 
 type L = (en: string, zh: string) => string
-const commands = [
-  {
-    id: 'context',
-    title: (L: L) => L('Context usage', '上下文用量'),
-    Icon: ChartNoAxesColumn,
-  },
+export const commands = [
+  {id:'model',title:(L:L)=>L('Model connection','模型连接'),Icon:SlidersHorizontal},
+  {id:'attach',title:(L:L)=>L('Add files','添加文件'),Icon:Paperclip},
+  {id:'permissions',title:(L:L)=>L('Approval policy','审批策略'),Icon:ShieldCheck},
+  {id:'context',title:(L:L)=>L('Context usage','上下文用量'),Icon:ChartNoAxesColumn},
 ] as const
 export type ChatCommand = (typeof commands)[number]['id']
 
@@ -30,7 +29,7 @@ export function CommandInput({
   const [query, setQuery] = useState<string | null>(null),
     [index, setIndex] = useState(0)
   const matches =
-    query === null ? [] : commands.filter((c) => c.id.startsWith(query) || c.title(L).includes(query))
+    query === null ? [] : commands.filter((c) => c.id.startsWith(query) || c.title(L).toLowerCase().includes(query))
   const menu = visible && matches.length > 0
   function close() {
     setQuery(null)

@@ -116,7 +116,7 @@ export class WorkflowActions {
     }
     await this.decide({id:authorized().id,decision:['批准','approve'].includes(match[1]!.toLowerCase())?'approve':'decline'},{trigger,authorize:authorized})
   }
-  async request(owner:WorkOwner,value:unknown){
+  async request(owner:WorkOwner,value:unknown,reviewedRevision?:string){
     const input=workflowRequest.parse(value),ticketId=owner.ticketId
     // Keep read-only guards synchronous: never leave global observation depths set across provider I/O.
     const read=<T>(fn:()=>T):T=>input.action==='plan'?this.host.scopes.readOnly(()=>this.host.memory.readOnly(fn)):fn()
@@ -134,6 +134,7 @@ export class WorkflowActions {
     const view=transitionView.parse(await source.workflowState!(binding.target))
     read(()=>{if(!this.host.validWork(owner)||stableDigest(binding)!==stableDigest(this.target(ticketId,input.sourceId,input.target).binding))throw Error('Task changed while reading status')})
     if(input.action==='inspect')return view
+    if(reviewedRevision!==undefined&&view.revision!==reviewedRevision)throw Error('The reviewed workflow state changed')
     const next=view.states.find(s=>s.id===input.stateId)
     if(!next||next.id===view.current.id)throw Error('Choose a different workflow state for this issue')
     const planDigest=actionDigest(ticketId,binding,view,next)
@@ -147,7 +148,7 @@ export class WorkflowActions {
       this.host.routerIngress.authority(originTriggerId)
       const notificationTriggerId=this.host.webhooks.notificationAnchor(originTriggerId)?.id??originTriggerId
       const item=this.save({id,ticketId,originTriggerId,notificationTriggerId,...binding,view,next,...(input.planDigest!==undefined?{planDigest}:{}),state:'pending',at:this.now()})
-      this.notice(item)
+      if(reviewedRevision===undefined)this.notice(item)
       return item
     })
   }
@@ -164,13 +165,20 @@ export class WorkflowActions {
       return updated
     })
   }
-  async decide(value:unknown,context?:{trigger?:Trigger;operatorId?:string;authorize:()=>unknown}){
+  async decideForTask(owner:WorkOwner,id:string){
+    const verify=()=>{
+      if(!this.host.validWork(owner)||this.host.store.get<WorkflowAction>('workflow-action',id)?.ticketId!==owner.ticketId)throw Error('Workflow task authority ended')
+    }
+    verify()
+    return this.decide({id,decision:'approve'},{taskOwner:owner,authorize:verify})
+  }
+  async decide(value:unknown,context?:{trigger?:Trigger;operatorId?:string;taskOwner?:WorkOwner;authorize:()=>unknown}){
     const authorize=context?.authorize
     authorize?.()
     const {id,decision}=decisionRequest.parse(value)
     const get=()=>this.host.store.get<WorkflowAction>('workflow-action',id)!
     let item=get()
-    if(!item?.view?.current||!item.target||(!context?.trigger&&!this.operatorVisible(item)))throw Error('Unknown workflow action')
+    if(!item?.view?.current||!item.target||(!context?.trigger&&!context?.taskOwner&&!this.operatorVisible(item)))throw Error('Unknown workflow action')
     if(item.state==='pending'&&decision!=='reconcile'){
       item={...item,decision:{kind:decision,at:this.now(),...(context?.trigger?{via:'conversation',actorId:context.trigger.actor.id,triggerId:context.trigger.id}:{via:'operator',actorId:context?.operatorId??'local-operator'})}}
     }

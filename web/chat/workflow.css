@@ -18,19 +18,6 @@
 .rp-native-closed, .workflow-error { font-size: 13px; color: var(--rp-muted); }
 .command-input { position: relative; min-width: 0; }
 .command-input > textarea { display: block; width: 100%; }
-.slash-surface {
-  position: absolute; z-index: 6; inset-inline-start: 0; bottom: calc(100% + 14px);
-  width: min(360px,100%); padding: 5px; border-radius: 15px; border: 1px solid var(--rp-line);
-  background: var(--rp-panel); box-shadow: 0 8px 32px rgb(0 0 0 / .12);
-  max-height: min(48dvh,440px); overflow-y: auto; overscroll-behavior: contain;
-  animation: rp-panel-in .24s cubic-bezier(.2,.8,.2,1) both;
-}
-@container chat-thread (max-width: 680px) {
-  .slash-surface { width: min(320px, 100%); }
-}
-.slash-surface[role=listbox] button { display: flex; gap: 8px; align-items: center; border: 0; border-radius: 10px; width: 100%; background: transparent; color: var(--rp-ink); padding: 9px 10px; cursor: pointer; }
-.slash-surface[role=listbox] button[aria-selected=true] { background: var(--rp-soft); }
-.slash-surface[role=listbox] button span { margin-inline-start: auto; color: var(--rp-muted); font-size: 12px; }
 .team-card-stack.roppo-ui { display: grid; gap: 12px; min-width: 0; margin-top: 16px; background: transparent; font: inherit; }
 .team-card-stack > .rp-inspector-card { animation: team-content-in .22s var(--team-ease); }
 .usage-section + .usage-section { border-top: 1px solid var(--rp-line); margin-top: 12px; padding-top: 12px; }
@@ -55,26 +42,10 @@
 .workflow-card .workflow-draft pre { box-sizing:border-box; margin:5px 0; max-height:14rem; width:100%; overflow:auto; padding:9px 11px; white-space:pre-wrap; overflow-wrap:anywhere; border:0; background:var(--rp-soft); border-radius:8px; font:inherit; line-height:1.6; }
 @media (pointer:coarse) { .workflow-draft summary { min-height:40px; } }
 @media (prefers-reduced-motion: reduce) {
-  .slash-surface, .team-card-stack > .rp-inspector-card { animation: none; }
+  .team-card-stack > .rp-inspector-card { animation: none; }
   .function-groups > .rp-selection-indicator { transition: none; }
 }
 
-.composer-plus { flex: none; }
-.composer-action-popover {
-  position: fixed; inset: auto; margin: 0; width: min(253px, calc(100vw - 20px)); padding: 5px;
-  border: 1px solid var(--rp-line); border-radius: 15px; background: var(--rp-panel);
-  color: var(--rp-ink); box-shadow: 0 8px 32px rgb(0 0 0 / .12); max-height: 55dvh; overflow: auto;
-}
-.composer-action-popover:popover-open { animation: rp-panel-in .18s cubic-bezier(.2,.8,.2,1) both; }
-.composer-action-popover button {
-  display: flex; align-items: center; width: 100%; gap: 9px; min-height: 34px; padding: 6px 9px;
-  background: transparent; color: inherit; border: 0; border-radius: 9px; font: inherit; font-size: 13px; cursor: pointer;
-}
-.composer-action-popover button span { flex: 1; text-align: start; }
-.composer-action-popover small { color:var(--rp-muted); font-size:11px; }
-.composer-action-popover button:is(:hover,:focus-visible) { background:var(--rp-soft); outline:0; }
-.composer-action-popover [role=alert] { padding:5px 9px; font-size:12px; }
-@media (prefers-reduced-motion: reduce) { .composer-action-popover:popover-open { animation:none; } }
 .workflow-block .trace-inline {
   min-width:0; color:var(--c-muted); font:inherit; font-size:13px;
 }

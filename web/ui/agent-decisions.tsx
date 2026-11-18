@@ -4,6 +4,9 @@ import { Button, ChoiceGroup, IconButton, TextField } from './controls.tsx'
 import { Disclosure } from './overlays.tsx'
 import { SwitchView, switchView } from './transitions.tsx'
 
+type Localize = (en: string, zh: string) => string
+const chinese: Localize = (_en, zh) => zh
+
 export interface ContextPart {
   id: string
   label: string
@@ -14,16 +17,20 @@ const count = (n: number) =>
   new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 export function ContextWindow({
   capacity,
+  unit = 'tokens',
+  L = chinese,
   parts,
   onCompact,
   canCompact,
   onRemoveFile,
 }: {
-  capacity: number
+  capacity: number | null
+  unit?: string
+  L?: Localize
   parts: ContextPart[]
-  onCompact: () => void
-  canCompact: boolean
-  onRemoveFile: (id: string) => void
+  onCompact?: () => void
+  canCompact?: boolean
+  onRemoveFile?: (id: string) => void
 }) {
   const [active, setActive] = useState<string | null>(null)
   const total = parts.reduce((s, p) => s + p.tokens, 0),
@@ -31,7 +38,7 @@ export function ContextWindow({
   let idx = 0,
     limit = parts[0]?.tokens ?? 0
   const fields = Array.from({ length: cellCount }, (_, i) => {
-    const token = ((i + 0.5) * capacity) / cellCount
+    const token = ((i + 0.5) * (capacity ?? 0)) / cellCount
     while (token > limit && idx < parts.length - 1) limit += parts[++idx]!.tokens
     const part = token <= total ? parts[idx] : undefined
     return (
@@ -47,11 +54,19 @@ export function ContextWindow({
   return (
     <div className="rp-context">
       <div className="rp-capacity">
-        <strong>{count(total)}</strong>
-        <span>/ {count(capacity)} tokens</span>
-        <b>{Math.round((total * 100) / capacity)}%</b>
+        <strong title={total.toLocaleString()}>{total.toLocaleString()}</strong>
+        <span>
+          {capacity ? '/ ' + capacity.toLocaleString() + ' ' : ''}
+          {unit}
+        </span>
+        {capacity && <b>{Math.round((total * 100) / capacity)}%</b>}
       </div>
-      <div className="rp-cells" role="img" aria-label={'已用 ' + total + '，共 ' + capacity + ' tokens'}>
+      <div
+        className="rp-cells"
+        hidden={!capacity}
+        role="img"
+        aria-label={total + ' / ' + capacity + ' ' + unit}
+      >
         {fields}
       </div>
       <div className="rp-context-legend" onMouseLeave={() => setActive(null)}>
@@ -60,7 +75,7 @@ export function ContextWindow({
             <button
               type="button"
               aria-pressed={active === part.id}
-              aria-label={'突出显示' + part.label}
+              aria-label={L('Highlight ', '突出显示') + part.label}
               onMouseEnter={() => setActive(part.id)}
               onFocus={() => setActive(part.id)}
               onBlur={() => setActive(null)}
@@ -77,9 +92,11 @@ export function ContextWindow({
                     <FileText size={13} />
                     <span>{f.name}</span>
                     <small>{count(f.tokens)}</small>
-                    <IconButton label={'移除' + f.name} onClick={() => onRemoveFile(f.id)}>
-                      <X size={13} />
-                    </IconButton>
+                    {onRemoveFile && (
+                      <IconButton label={L('Remove ', '移除') + f.name} onClick={() => onRemoveFile(f.id)}>
+                        <X size={13} />
+                      </IconButton>
+                    )}
                   </div>
                 ))}
               </Disclosure>
@@ -87,12 +104,16 @@ export function ContextWindow({
           </div>
         ))}
       </div>
-      <div className="rp-card-foot">
-        <small>剩余 {count(Math.max(0, capacity - total))} tokens</small>
-        <Button onClick={onCompact} disabled={!canCompact}>
-          {canCompact ? '压缩对话' : '已压缩'}
-        </Button>
-      </div>
+      {onCompact && capacity && (
+        <div className="rp-card-foot">
+          <small>
+            {L('Remaining', '剩余')} {count(Math.max(0, capacity - total))} {unit}
+          </small>
+          <Button onClick={onCompact} disabled={!canCompact}>
+            {canCompact ? '压缩对话' : '已压缩'}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -201,7 +222,7 @@ export function MemoryPanel({
   )
 }
 
-export type Approval = 'pending' | 'approved' | 'denied'
+export type Approval = 'pending' | 'approved' | 'denied' | 'expired' | 'resolved'
 export function ApprovalCard({
   title,
   risk,
@@ -209,13 +230,17 @@ export function ApprovalCard({
   state,
   onDecision,
   onReset,
+  L = chinese,
+  disabled = false,
 }: {
   title: string
   risk: string
   details: { label: string; value: string }[]
   state: Approval
   onDecision: (decision: 'approved' | 'denied') => void
-  onReset: () => void
+  onReset?: () => void
+  L?: Localize
+  disabled?: boolean
 }) {
   const root = useRef<HTMLDivElement>(null)
   function decide(result: 'approved' | 'denied') {
@@ -223,7 +248,7 @@ export function ApprovalCard({
     onDecision(result)
   }
   function key(e: KeyboardEvent) {
-    if (state !== 'pending') return
+    if (disabled || state !== 'pending') return
     if (e.key === 'Escape') {
       e.preventDefault()
       decide('denied')
@@ -233,13 +258,23 @@ export function ApprovalCard({
     }
   }
   const pending = state === 'pending'
+  const facts = (
+    <dl className="rp-fact-list">
+      {details.map((d) => (
+        <div key={d.label}>
+          <dt>{d.label}</dt>
+          <dd>{d.value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
   return (
     <div
       className="rp-approval"
       role="group"
       ref={root}
       tabIndex={0}
-      aria-label="授权请求"
+      aria-label={L('Authorization request', '授权请求')}
       onKeyDown={key}
       data-resolved={!pending}
     >
@@ -257,30 +292,34 @@ export function ApprovalCard({
         {pending ? (
           <small>{risk}</small>
         ) : (
-          <span role="status">{state === 'approved' ? '已批准' : '已拒绝'}</span>
+          <span role="status">
+            {state === 'approved'
+              ? L('Approved', '已批准')
+              : state === 'denied'
+                ? L('Denied', '已拒绝')
+                : state === 'expired'
+                  ? L('Expired', '已过期')
+                  : L('Resolved', '已处理')}
+          </span>
         )}
       </div>
       <div className="rp-fold" data-expanded={pending} inert={!pending}>
         <div>
-          <dl className="rp-fact-list">
-            {details.map((d) => (
-              <div key={d.label}>
-                <dt>{d.label}</dt>
-                <dd>{d.value}</dd>
-              </div>
-            ))}
-          </dl>
+          {facts}
           <div className="rp-card-foot">
-            <Button onClick={() => decide('denied')}>
-              拒绝 <kbd>Esc</kbd>
+            <Button disabled={disabled} onClick={() => decide('denied')}>
+              {L('Deny', '拒绝')} <kbd>Esc</kbd>
             </Button>
-            <Button tone="primary" onClick={() => decide('approved')}>
-              批准 <kbd>⌘ ↵</kbd>
+            <Button disabled={disabled} tone="primary" onClick={() => decide('approved')}>
+              {L('Allow once', '允许一次')} <kbd>⌘ ↵</kbd>
             </Button>
           </div>
         </div>
       </div>
-      {!pending && (
+      {!pending && !onReset && details.length > 0 && (
+        <Disclosure title={L('Request details', '请求详情')}>{facts}</Disclosure>
+      )}
+      {!pending && onReset && (
         <Button tone="quiet" onClick={onReset}>
           重新查看
         </Button>
@@ -301,12 +340,20 @@ export function DecisionCard({
   onAnswer,
   answer,
   onReset,
+  L = chinese,
+  disabled = false,
+  allowCustom = true,
+  secret = false,
 }: {
   question: string
   options: DecisionOption[]
   onAnswer: (value: string) => void
   answer: string | null
-  onReset: () => void
+  onReset?: () => void
+  L?: Localize
+  disabled?: boolean
+  allowCustom?: boolean
+  secret?: boolean
 }) {
   const [later, setLater] = useState(false),
     [custom, setCustom] = useState(false),
@@ -318,10 +365,11 @@ export function DecisionCard({
     root.current?.focus({ preventScroll: true })
     setCustom(false)
     setText('')
-    onAnswer(value)
+    if (!disabled) onAnswer(value)
   }
   function key(e: KeyboardEvent<HTMLDivElement>) {
     if (
+      disabled ||
       !expanded ||
       e.ctrlKey ||
       e.metaKey ||
@@ -353,19 +401,21 @@ export function DecisionCard({
       onKeyDown={key}
     >
       <div className="rp-card-kicker">
-        <span>待你决定</span>
-        <button
-          type="button"
-          className="rp-text-control"
-          onClick={() => {
-            if (answer) {
-              onReset()
-              setLater(false)
-            } else setLater(!later)
-          }}
-        >
-          {answer ? '重新选择' : later ? '展开问题' : '稍后'}
-        </button>
+        <span>{answer ? L('Decision', '决策') : L('Your decision', '待你决定')}</span>
+        {(!answer || onReset) && (
+          <button
+            type="button"
+            className="rp-text-control"
+            onClick={() => {
+              if (answer) {
+                onReset?.()
+                setLater(false)
+              } else setLater(!later)
+            }}
+          >
+            {answer ? L('Change', '重新选择') : later ? L('Expand', '展开问题') : L('Later', '稍后')}
+          </button>
+        )}
       </div>
       <strong id={titleId}>{question}</strong>
       {answer && (
@@ -378,38 +428,53 @@ export function DecisionCard({
         <div>
           <div className="rp-decision-options">
             {options.map((o, i) => (
-              <button type="button" key={o.id} className="rp-decision-option" onClick={() => choose(o.label)}>
+              <button
+                disabled={disabled}
+                type="button"
+                key={o.id}
+                className="rp-decision-option"
+                onClick={() => choose(o.label)}
+              >
                 <kbd>{i + 1}</kbd>
                 <span>
                   <strong>{o.label}</strong>
-                  <small>{o.detail}</small>
+                  {o.detail && <small>{o.detail}</small>}
                 </span>
-                {o.recommended && <em>推荐</em>}
+                {o.recommended && <em>{L('Recommended', '推荐')}</em>}
               </button>
             ))}
-            {custom ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  if (text.trim()) choose(text.trim())
-                }}
-              >
-                <TextField
-                  autoFocus
-                  label="自定义答复"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
-                <IconButton type="submit" label="提交答复" disabled={!text.trim()}>
-                  <CornerDownLeft size={16} />
-                </IconButton>
-              </form>
-            ) : (
-              <Button tone="quiet" onClick={() => setCustom(true)}>
-                <Pencil size={13} />
-                自己填写
-              </Button>
-            )}
+            {allowCustom &&
+              (custom || !options.length ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (text.trim()) choose(text.trim())
+                  }}
+                >
+                  <TextField
+                    autoFocus={custom}
+                    type={secret ? 'password' : 'text'}
+                    autoComplete="off"
+                    maxLength={8000}
+                    disabled={disabled}
+                    label={L('Custom answer', '自定义答复')}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                  <IconButton
+                    type="submit"
+                    label={L('Submit answer', '提交答复')}
+                    disabled={disabled || !text.trim()}
+                  >
+                    <CornerDownLeft size={16} />
+                  </IconButton>
+                </form>
+              ) : (
+                <Button disabled={disabled} tone="quiet" onClick={() => setCustom(true)}>
+                  <Pencil size={13} />
+                  {L('Write my own', '自己填写')}
+                </Button>
+              ))}
           </div>
         </div>
       </div>

@@ -48,6 +48,15 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamDrawer,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
+import {WorkflowProvider,WorkflowCards,RouterDecision,groupWorkflow} from './workflow-cards.tsx';
+import {CommandInput} from './composer-commands.tsx';
+import {ToolCallCard} from '../ui/agent-team.tsx';
+import {SwitchView,switchView} from '../ui/transitions.tsx';
+import '../ui/theme.css';
+import '../ui/components.css';
+import '../ui/agent-components.css';
+import '../ui/transitions.css';
+import './workflow.css';
 import { ResourceWorkspace } from "./resource-workspace.tsx";
 import { initialResources, openResource, resourceKey, type ResourceKind } from "./resource-state.ts";
 import { FeatureNavigation } from "./navigation.tsx";
@@ -148,10 +157,10 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
+const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
-  calls: [] as Snapshot["calls"],
   workers: [] as Worker[],
   routerLabel: 'Router',
   openFile: (_file:ChatDelivery)=>{},
@@ -222,10 +231,10 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     </div>
   );
 }
-function SendMessage({sending}:{sending:boolean}){
+function SendMessage({sending,consume}:{sending:boolean;consume:()=>boolean}){
   const {L}=useUI(),aui=useAui();
   const canSend=useAuiState(s=>!s.thread.isDisabled&&s.composer.canSend);
-  return <button type="button" className="send-button" disabled={!canSend} aria-label={L('Send message','发送消息')} onClick={()=>aui.composer.send()}>
+  return <button type="button" className="send-button" disabled={!canSend} aria-label={L('Send message','发送消息')} onClick={()=>{if(!consume())aui.composer.send()}}>
     {sending?<LoaderCircle size={18} className="spin"/>:<ArrowUp size={20}/>}
   </button>;
 }
@@ -243,13 +252,12 @@ function runLabel(state: string, L: (en: string, zh: string) => string) {
   return ({queued:L('Waiting for Router','等待 Router'),running:L('Working','处理中'),waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
-  const { calls, workers, L } = useUI(),
+  const { L } = useUI(),
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
     hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
-    arrival = useArrival(id, createdAt.getTime()),
-    own = calls.filter((c) => c.runId === id.replace(/^user:/, "") && !["superagent_status","chat_react"].includes(c.name??''));
+    arrival = useArrival(id, createdAt.getTime());
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
@@ -259,11 +267,7 @@ function UserMessage() {
         <Reactions id={id}/>
         <div className="message-footer"><MessageActions id={id}/><Timestamp at={createdAt}/></div>
       </MessagePrimitive.Root>
-      {own.some((c) => c.kind === "tool") ? (
-        <div className="message-tool-activity">
-          <ToolCalls calls={own} workers={workers} />
-        </div>
-      ) : null}
+      <WorkflowCards anchor={id}/>
     </>
   );
 }
@@ -278,6 +282,7 @@ function Markdown(){
 function AssistantMessage() {
   const { L, run, runMessageId, routerLabel, openFile,openWorker,workerView,workers } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
+    decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     ticketId=useAuiState(s=>s.message.metadata.custom?.ticketId) as string|undefined,
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
@@ -293,13 +298,13 @@ function AssistantMessage() {
   if (streaming && !hasText) return null;
   const assignee=recipient?.kind==='worker'&&workers.find(w=>w.id===recipient.id);
   const task=assignee&&assignee.tasks.find(t=>t.id===ticketId);
-  if(!workerView&&task&&assignee)return <MessagePrimitive.Root className="message team-trace" data-arrival={arrival}>
+  if(!workerView&&task&&assignee)return <><MessagePrimitive.Root className="message team-trace" data-arrival={arrival}>
     <button onClick={()=>openWorker(assignee.id)} title={L('View collaboration','查看协作记录')}><AgentAvatar id={assignee.id} kind="worker" size={22}/>
       <strong>{assignee.label}</strong><span>{task.title}</span><ChevronRight size={14}/></button>
     <Timestamp at={createdAt}/>
-  </MessagePrimitive.Root>;
+  </MessagePrimitive.Root><WorkflowCards anchor={id}/></>;
   return (
-    <MessagePrimitive.Root
+    <><MessagePrimitive.Root
       className="message assistant-message"
       data-arrival={arrival}
       data-streaming={streaming ? "true" : undefined}
@@ -318,7 +323,7 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        {deliveries?.length?deliveries.map(f=><DeliveryCard key={f.id} L={L} file={f} open={openFile}/>):<div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>}
+        {decision?<RouterDecision id={id} decision={decision}/>:deliveries?.length?deliveries.map(f=><DeliveryCard key={f.id} L={L} file={f} open={openFile}/>):<div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>}
         <MessageAttachments files={attachments??[]} L={L}/>
         <Reactions id={id}/>
         <div className="message-footer">
@@ -326,7 +331,7 @@ function AssistantMessage() {
         <MessageActions id={id}/>
         </div>
       </div>
-    </MessagePrimitive.Root>
+    </MessagePrimitive.Root><WorkflowCards anchor={id}/></>
   );
 }
 function StatusIcon({ state }: { state: string }) {
@@ -349,11 +354,11 @@ function ToolCalls({
   calls: Snapshot["calls"];
   workers: Worker[];
 }) {
-  const { L } = useUI(),
+  const { L,lang,routerLabel,arrivals } = useUI(),
     arrival = useArrival('tools:' + calls[0]!.runId, calls[0]!.startedAt),
     [open, setOpen] = useState(false),
     [now, setNow] = useState(Date.now()),
-    tools = calls.filter((c) => c.kind === "tool" && !["superagent_status","chat_react"].includes(c.name??'')),
+    tools = calls,
     busy = tools.some((c) => c.state === "running");
   useEffect(() => {
     if (!busy) return;
@@ -439,51 +444,18 @@ function ToolCalls({
         <span>{tools.length}</span>
         <ChevronDown size={14} />
       </summary>
-      <div className="tool-calls">
-        {tools.map(call => <ToolCall key={call.id} call={call} workers={workers} names={names} states={states} now={now} />)}
-      </div>
+      <ToolCallCard L={L} showHeading={false} calls={tools.map(call=>{
+        const actor=workers.find(w=>w.id===call.workerId)?.label??call.workerId??routerLabel;
+        const target=workers.find(w=>w.id===call.target)?.label??call.target;
+        const name=names[call.action??call.name]??call.name;
+        return {id:call.id,arrival:call.startedAt>=arrivals.since,name:target?name+' · '+target:name,summary:actor+' · '+states[call.state],
+          status:({running:'working',completed:'done',failed:'error',interrupted:'paused'} as const)[call.state],
+          timestamp:new Intl.DateTimeFormat(lang,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(call.startedAt),
+          elapsed:(Math.max(0,(call.endedAt??now)-call.startedAt)/1000).toFixed(1)+'s',
+          details:[[L('Tool','工具'),call.name],[L('Status','状态'),states[call.state]!],...(call.action?[[L('Action','操作'),call.action] as [string,string]]:[]),...(target?[[L('Target','目标'),target] as [string,string]]:[])]};
+      })}/>
     </details>
   );
-}
-function ToolCall({call, workers, names, states, now}: {call: Snapshot['calls'][number];workers: Worker[];names: Record<string,string>;states: Record<string,string>;now: number}) {
-  const { L, routerLabel } = useUI(), arrival = useArrival('call:' + call.id, call.startedAt);
-  const actor =
-      workers.find((w) => w.id === call.workerId)?.label ??
-      (call.workerId || routerLabel),
-    target =
-      workers.find((w) => w.id === call.target)?.label ?? call.target,
-    title = names[call.action ?? call.name] ?? call.name,
-    elapsed = Math.max(0, (call.endedAt ?? now) - call.startedAt);
-  return (
-    <details
-      className="tool-call"
-      data-arrival={arrival}
-      data-state={call.state}
-    >
-      <summary>
-        <span className="tool-state" key={call.state}><StatusIcon state={call.state}/></span>
-        <span className="tool-call-title">
-          <strong>
-            {title}
-            {target ? " · " + target : ""}
-          </strong>
-          <span>{actor}</span>
-        </span>
-        <Timestamp at={call.startedAt} />
-        <span className="tool-call-time">
-          {(elapsed / 1000).toFixed(1)}s
-        </span>
-        <ChevronDown size={13} />
-      </summary>
-      <dl>
-        <dt>{L("Tool", "工具")}</dt>
-        <dd>{call.name}</dd>
-        <dt>{L("Status", "状态")}</dt>
-        <dd>{states[call.state]}</dd>
-      </dl>
-    </details>
-  );
-
 }
 function Readiness({ ready }: { ready: Ready | null }) {
   const { L } = useUI();
@@ -562,13 +534,14 @@ function App() {
     const url = new URL("/chat", location.origin);
 
     history.pushState(null, "", url);
-    setRoute(url.pathname + url.search + url.hash);
+    switchView("page",()=>setRoute(url.pathname + url.search + url.hash));
   }, []);
   useEffect(() => {
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
-      setRoute(location.pathname + location.search + location.hash);
+      const next=location.pathname+location.search+location.hash;
+      switchView("page",()=>setRoute(next));
     };
     const click = (event: MouseEvent) => {
       if (
@@ -997,13 +970,16 @@ function Chat(p: ChatProps) {
       window.removeEventListener("online", online);
     };
   }, [id, refresh, refreshList]);
+  const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
+  const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
+  const commandAction=useRef<(()=>boolean)|null>(null);
   const runtime = useExternalStoreRuntime({
     isRunning: !readonly && (!!reply || sending),
     isLoading: loading,
     isSendDisabled: disabled,
     adapters:{attachments:attachmentAdapter},
     activeRunId: reply?.runId,
-    messages: (snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id)),
+    messages: visibleMessages,
     convertMessage: (m): ThreadMessageLike => ({
       id: m.id,
       role: m.role,
@@ -1013,7 +989,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
-        ticketId: m.ticketId, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
+        ticketId: m.ticketId, decision:m.decision, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1237,7 +1213,6 @@ function Chat(p: ChatProps) {
       value={{
         lang,
         L,
-        calls: snapshot?.calls ?? [],
         workers,
         routerLabel:currentRouter.label,
         openFile:setFile,openWorker:readAgent,workerView:readonly,
@@ -1246,7 +1221,10 @@ function Chat(p: ChatProps) {
         arrivals:arrivals.current,
       }}
     >
-      <AssistantRuntimeProvider runtime={runtime}>
+      <WorkflowProvider value={{L,blocks,readonly,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
+        decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
+        authorize:async(request,value)=>{try{await api('/conversations/'+id+'/approvals',{id:request,value})}finally{await refresh()}}
+      }}><AssistantRuntimeProvider runtime={runtime}>
         <InteractionProvider L={L} messages={snapshot?.messages??[]} reply={quoteMessage} react={reactMessage} locate={messageId=>void locateMessage(messageId)}>
         <div
           className={
@@ -1357,6 +1335,7 @@ function Chat(p: ChatProps) {
                 </button>
               </div>
             </header>
+            <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
             <Configuration
@@ -1400,6 +1379,7 @@ function Chat(p: ChatProps) {
                     <ThreadPrimitive.Messages
                       components={{ UserMessage, AssistantMessage }}
                     />
+                    <WorkflowCards anchor="pending"/>
                     {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
                       <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                       <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
@@ -1429,7 +1409,7 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <ComposerPrimitive.Input
+                    <CommandInput conversationId={id} visible={!configuring} L={L} load={loadContext} consume={commandAction}
                       className="composer-input"
                       placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
                       aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
@@ -1463,7 +1443,7 @@ function Chat(p: ChatProps) {
                         </button>
                       ) : null}
                       <div className="send-actions">
-                        <SendMessage sending={sending}/>
+                        <SendMessage sending={sending} consume={()=>commandAction.current?.()??false}/>
                       </div>
                     </div>
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
@@ -1489,11 +1469,12 @@ function Chat(p: ChatProps) {
                 </ResourceWorkspace>
               ) : null}
             </div>
+            </div></SwitchView>
           </main>
         </div>
         {file?<FileViewer key={file.id} file={file} L={L} close={()=>setFile(null)}/>:null}
         </InteractionProvider>
-      </AssistantRuntimeProvider>
+      </AssistantRuntimeProvider></WorkflowProvider>
     </Context.Provider>
   );
 }

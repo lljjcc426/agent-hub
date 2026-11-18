@@ -15,7 +15,7 @@ import {backupState,verifyBackup} from './backup.ts'
 
 // Persistent formats owned by this host. Unknown plugin kinds require an explicit migration adapter.
 export const migrationKinds=new Set(`skill-version skill-lifecycle trigger disposition thread ticket decision run clock settings settings-history settings-backends
-browser-profile browser-session browser-receipt chat-call chat-conversation chat-message chat-revision chat-run
+browser-profile browser-session browser-receipt chat-call chat-conversation chat-message chat-plan chat-revision chat-run
 router-cancelled router-candidate router-candidate-job router-followup router-followup-notice router-followup-stop-attempt router-followup-stopped router-handback
 approval asset backend-binding backend-thread capabilities entry-client-event entry-client-install entry-client-receipt entry-invite entry-label entry-plan entry-verification
 execution-call model-usage health member-preview merge-attempt merge-grant onboarding onboarding-deployment pr-delivery progress prompt-preview prompt-use resource-page retired-worker review-action review-rounds

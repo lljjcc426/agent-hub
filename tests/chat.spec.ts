@@ -24,6 +24,68 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+
+it('keeps a public plan through a decision, queues exactly one quoted answer and reads only the last model step',async()=>{
+  const {h}=fixture(async r=>{
+    const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'
+    const stage=first?'running':'completed'
+    await r.onTool!('superagent_plan',{title:'Guide',steps:[{id:'draft',title:'Write the guide',state:stage}]},'plan')
+    if(first)await r.onTool!('chat_request_decision',{question:'Which language?',options:[{label:'English'},{label:'Chinese'}]},'ask')
+    r.onUsage?.({id:'earlier',inputTokens:600,outputTokens:40})
+    r.onUsage?.({id:'latest',inputTokens:123,outputTokens:12,contextWindowTokens:2048})
+    r.onBudget?.({basis:'native-protocol',phase:'turn',bytes:700,maxBytes:2000,reservedBytes:100,status:'within_budget'})
+    return {reply:first?'':'Guide ready.'}
+  }),c=h.chat.create('owner'),other=h.chat.create('another-owner')
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+  const first=send(h,c.id,'Prepare the guide')
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='waiting')
+  const m=h.chat.view(c.id,'owner').messages.find(m=>m.decision)!
+  expect(h.chat.view(c.id,'owner').publicPlans[0]?.steps[0]?.state).toBe('running')
+  expect(()=>h.chat.answerDecision(other.id,'another-owner',m.id,'English')).toThrow('no longer available')
+  const reply=h.chat.answerDecision(c.id,'owner',m.id,'English','en')
+  expect(h.chat.answerDecision(c.id,'owner',m.id,'English')).toEqual({...reply,duplicate:true})
+  expect(()=>h.chat.answerDecision(c.id,'owner',m.id,'Chinese')).toThrow('already has an answer')
+  await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='Guide ready.'))
+  const view=h.chat.view(c.id,'owner')
+  expect(view.publicPlans).toHaveLength(1)
+  expect(view.publicPlans[0]).toMatchObject({runId:first.runId,steps:[{state:'completed'}]})
+  expect(view.messages.filter(m=>m.role==='user')).toHaveLength(2)
+  expect(view.messages.find(m=>m.text==='English')?.quote?.messageId).toBe(m.id)
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:123,capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
+  expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
+  h.config.execution.router!.model='other-model'
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+})
+
+it('resumes only the requesting Worker when its Chat owner answers a native approval and a private question',async()=>{
+  const decisions:unknown[]=[]
+  const {h}=fixture(async r=>{
+    if(r.role==='worker'){
+      decisions.push(await r.onHumanRequest!({id:'a',method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:'/project'}}))
+      decisions.push(await r.onHumanRequest!({id:'b',method:'item/tool/requestUserInput',params:{questions:[{id:'word',question:'Check word?',isSecret:true}]}}))
+      return report
+    }
+    if(JSON.parse(r.input).kind==='user_message')await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:'native',id:'research',text:'Check the report'},'assign')
+    return {reply:'Received.'}
+  }),c=h.chat.create('owner'),other=h.chat.create('other')
+  send(h,c.id)
+  const requests=()=>h.chat.view(c.id,'owner').approvals
+  await settle(h,()=>requests().length===1)
+  const a=requests()[0]!
+  expect(a).toMatchObject({state:'pending',facts:{command:'pwd',cwd:'/project'},workerId:'research'})
+  expect(h.chat.view(c.id,'owner',undefined,'review').approvals).toEqual([])
+  expect(()=>h.chat.answerApproval(other.id,'other',a.id,'accept')).toThrow('not found')
+  h.chat.answerApproval(c.id,'owner',a.id,'accept')
+  expect(()=>h.chat.answerApproval(c.id,'owner',a.id,'accept')).toThrow('no longer active')
+  await settle(h,()=>requests().length===2)
+  const question=requests()[1]!
+  expect(()=>h.chat.answerApproval(c.id,'owner',question.id,{})).toThrow('could not accept')
+  h.chat.answerApproval(c.id,'owner',question.id,{word:{answers:['private-answer']}})
+  await settle(h,()=>h.chat.view(c.id,'owner').tasks.some(t=>t.state==='completed'))
+  expect(decisions).toEqual([{decision:'accept'},{answers:{word:{answers:['private-answer']}}}])
+  expect(requests().map(a=>a.state)).toEqual(['approved','answered'])
+  expect(JSON.stringify(h.store.get('approval',question.id))).not.toContain('private-answer')
+})
 async function settle(h:Runtime,done:()=>boolean){for(let i=0;i<500;i++){await h.tick();await new Promise(r=>setTimeout(r,2));if(done())return}throw Error('Chat did not settle')}
 function waitForAbort(r:ModelRequest){return new Promise<void>((resolve)=>{if(r.signal?.aborted)return resolve();r.signal?.addEventListener('abort',()=>resolve(),{once:true})})}
 function enableChatBatch(h:Runtime,id:string,settings:Record<string,number>={}){

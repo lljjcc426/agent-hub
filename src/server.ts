@@ -382,9 +382,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|approvals|decisions))?$/)
       if(match){
         const id=match[1]!,action=match[2]
+        if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner));return}
+        if(action==='approvals'&&req.method==='POST'){
+          const input=z.object({id:z.string().uuid(),value:z.union([z.enum(['accept','decline']),z.record(z.string(),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(10)}).strict())])}).strict().parse(await body(req))
+          send(res,200,runtime.chat.answerApproval(id,owner,input.id,input.value));return
+        }
+        if(action==='decisions'&&req.method==='POST'){
+          const input=z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional()}).strict().parse(await body(req))
+          send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale));return
+        }
         if(action==='schedules'&&req.method==='PATCH'){
           const input=z.object({id:z.string().min(1).max(300),active:z.boolean(),operationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(await body(req))
           send(res,200,runtime.chat.changeSchedule(id,owner,input));return

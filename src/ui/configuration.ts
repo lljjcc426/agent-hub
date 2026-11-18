@@ -13,7 +13,7 @@ export const configurationPage: string = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark"><title>Workspace · Roppo</title>
 <script>${asset('theme-init.js')}</script>
-<link rel="icon" href="${roppoMark}"><style>:root{--roppo-mark:url('${roppoMark}')}\n${asset('typography.css')}\n${asset('configuration.css')}\n${asset('operator-workspace.css')}\n${asset('workspace-settings.css')}\n${asset('affect-ui.css')}\n${asset('flow-motion.css')}\n${asset('execution-page.css')}\n${asset('team-studio.css')}\n${asset('theme.css')}\n${asset('workspace-motion.css')}\n${asset('workflow-story.css')}\n${asset('integrations.css')}\n${asset('tab-motion.css')}</style></head>
+<link rel="icon" href="${roppoMark}"><style>:root{--roppo-mark:url('${roppoMark}')}\n${asset('typography.css')}\n${asset('page-motion.css')}\n${asset('configuration.css')}\n${asset('operator-workspace.css')}\n${asset('workspace-settings.css')}\n${asset('affect-ui.css')}\n${asset('flow-motion.css')}\n${asset('execution-page.css')}\n${asset('team-studio.css')}\n${asset('theme.css')}\n${asset('workspace-motion.css')}\n${asset('workflow-story.css')}\n${asset('integrations.css')}\n${asset('tab-motion.css')}</style></head>
 <body><div id="app"></div><div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
 <noscript>Enable JavaScript to configure AgentHub. 请启用 JavaScript 以配置 AgentHub。</noscript>
 <script>(() => { 'use strict';\nconst configurationHost=null;\nconst executionAssets=${JSON.stringify(entryBrandAssets)};\n${client}\n})();</script></body></html>`

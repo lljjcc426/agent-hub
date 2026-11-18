@@ -52,7 +52,7 @@ function consumeEntryFragment() {
 consumeEntryFragment()
 window.addEventListener('hashchange', () => {
   if (consumeEntryFragment()) void startEntrySession()
-  else applyWorkspaceLocation()
+  else if (typeof configurationHost === 'undefined' || !configurationHost) applyWorkspaceLocation()
 })
 const entryNames = () => ({
   local: L('Local assistant', '本机助手'),

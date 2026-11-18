@@ -58,11 +58,13 @@
     nodes.forEach((node, index) => {
       if (!visible(node)) return
       const ongoing = currentPanels([node])[0]
-      play(node, [ongoing || previous[index] || { opacity: .55, transform: `translateX(${direction * 8}px)` },
-        { opacity: 1, transform: 'none' }], 180)
+      play(node, [ongoing || previous[index] || { opacity: 0, transform: 'translateY(7px)' },
+        { opacity: 1, transform: 'none' }], 280)
     })
   }
   function routeView() {
+    const stage = document.querySelector('.workspace-page-stage')
+    if (stage?.dataset.route) return stage.dataset.route
     const hash = location.hash.slice(1)
     const family = hash.split('/')[0] || 'tasks'
     return location.pathname === '/chat' ? 'chat' : location.pathname + '#' + family + (family === 'plugin' ? '/' + hash.split('/')[1] : '')
@@ -113,10 +115,10 @@
     const panelNodes = changedPanels.flatMap(change => change.panels)
     for (const change of changedPanels)
       enterPanels(change.panels.filter(node => !panelNodes.some(other => other !== node && other.contains(node))), change.direction, change.previous)
-    if (routeChanged) {
+    if (routeChanged && (!document.querySelector('.workspace-page-stage') || !document.startViewTransition)) {
       const shell = document.querySelector('.chat-main')
       const content = shell ? [...shell.children].filter(n => !n.matches('header') && visible(n)) : [document.querySelector('.operator-body')].filter(visible)
-      for (const node of content) play(node, [{ opacity: .55, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], 200)
+      for (const node of content) play(node, [{ opacity: 0, transform: 'translateY(13px)' }, { opacity: 1, transform: 'none' }], 350)
     }
     for (const [node, animation] of animations) if (!node.isConnected) { animation.cancel(); animations.delete(node) }
     for (const node of observed) if (!nextObserved.has(node)) { resize?.unobserve(node); observed.delete(node) }
@@ -130,7 +132,7 @@
   const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null
   const observer = new MutationObserver(schedule)
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true,
-    attributeFilter: ['aria-selected', 'aria-current', 'aria-pressed', 'hidden', 'data-motion-key'] })
+    attributeFilter: ['aria-selected', 'aria-current', 'aria-pressed', 'hidden', 'data-route', 'data-motion-key'] })
   document.addEventListener('click', capture, true)
   document.addEventListener('keydown', capture, true)
   document.addEventListener('visibilitychange', visibility)

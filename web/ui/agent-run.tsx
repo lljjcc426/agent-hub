@@ -21,6 +21,7 @@ export interface PlanStep {
   id: string
   title: string
   tool: string
+  state?: 'pending' | 'running' | 'completed' | 'blocked'
 }
 export type RunPhase = 'ready' | 'running' | 'paused' | 'done'
 function stepState(index: number, current: number, phase: RunPhase) {
@@ -32,24 +33,28 @@ function stepState(index: number, current: number, phase: RunPhase) {
 export function AgentPlan({
   title,
   steps,
-  current,
-  phase,
+  current = 0,
+  phase = 'ready',
+  live = true,
+  L = (_en, zh) => zh,
   onChange,
   onRun,
   createStep,
 }: {
   title: string
   steps: PlanStep[]
-  current: number
-  phase: RunPhase
-  onChange: (steps: PlanStep[]) => void
-  onRun: () => void
-  createStep: () => PlanStep
+  current?: number
+  phase?: RunPhase
+  live?: boolean
+  L?: (en: string, zh: string) => string
+  onChange?: (steps: PlanStep[]) => void
+  onRun?: () => void
+  createStep?: () => PlanStep
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [dragged, setDragged] = useState<string | null>(null)
-  const canEdit = phase === 'ready' || phase === 'done'
+  const canEdit = !!onChange && (phase === 'ready' || phase === 'done')
   const list = useOrderedListMotion(steps)
   useEffect(() => {
     if (!canEdit) setEditing(null)
@@ -59,24 +64,30 @@ export function AgentPlan({
     setEditing(step.id)
   }
   function finish(id: string) {
-    if (draft.trim()) onChange(steps.map((s) => (s.id === id ? { ...s, title: draft.trim() } : s)))
+    if (draft.trim()) onChange?.(steps.map((s) => (s.id === id ? { ...s, title: draft.trim() } : s)))
     setEditing(null)
   }
   function move(from: number, to: number) {
     if (from < 0 || to < 0 || to >= steps.length || from === to) return
     const next = steps.slice()
     next.splice(to, 0, next.splice(from, 1)[0]!)
-    onChange(next)
+    onChange?.(next)
   }
   return (
     <div className="rp-plan">
       <div className="rp-card-kicker">
         <span>{title}</span>
-        <span>{steps.length} 个步骤</span>
+        <span>
+          {steps.length} {L('steps', '个步骤')}
+        </span>
       </div>
       <ol ref={list}>
         {steps.map((step, i) => {
-          const state = stepState(i, current, phase)
+          const state = step.state
+            ? ({ pending: 'waiting', running: 'current', completed: 'done', blocked: 'blocked' } as const)[
+                step.state
+              ]
+            : stepState(i, current, phase)
           return (
             <li
               key={step.id}
@@ -99,7 +110,7 @@ export function AgentPlan({
               <span className="rp-step-index">
                 {state === 'done' ? (
                   <Check size={14} />
-                ) : state === 'current' && phase === 'running' ? (
+                ) : state === 'current' && live && (step.state === 'running' || phase === 'running') ? (
                   <LoaderCircle className="rp-spin" size={15} />
                 ) : (
                   i + 1
@@ -132,7 +143,7 @@ export function AgentPlan({
               ) : (
                 <span className="rp-step-name">
                   <strong>{step.title}</strong>
-                  <small>{step.tool}</small>
+                  {step.tool && <small>{step.tool}</small>}
                 </span>
               )}
               {canEdit && editing !== step.id && (
@@ -142,7 +153,7 @@ export function AgentPlan({
                   </IconButton>
                   <IconButton
                     label={'删除' + step.title}
-                    onClick={() => onChange(steps.filter((s) => s.id !== step.id))}
+                    onClick={() => onChange?.(steps.filter((s) => s.id !== step.id))}
                   >
                     <X size={13} />
                   </IconButton>
@@ -174,31 +185,35 @@ export function AgentPlan({
           )
         })}
       </ol>
-      <footer className="rp-card-foot">
-        {canEdit && (
-          <Button
-            tone="quiet"
-            onClick={() => {
-              const step = createStep()
-              onChange([...steps, step])
-              begin(step)
-            }}
-          >
-            <Plus size={14} />
-            添加步骤
-          </Button>
-        )}
-        <Button tone="primary" disabled={!canEdit || !steps.length || !!editing} onClick={onRun}>
-          <Play size={13} />
-          {phase === 'done'
-            ? '重新运行'
-            : phase === 'running'
-              ? '执行中'
-              : phase === 'paused'
-                ? '已暂停'
-                : '运行计划'}
-        </Button>
-      </footer>
+      {(onRun || createStep) && (
+        <footer className="rp-card-foot">
+          {canEdit && createStep && (
+            <Button
+              tone="quiet"
+              onClick={() => {
+                const step = createStep()
+                onChange?.([...steps, step])
+                begin(step)
+              }}
+            >
+              <Plus size={14} />
+              添加步骤
+            </Button>
+          )}
+          {onRun && (
+            <Button tone="primary" disabled={!canEdit || !steps.length || !!editing} onClick={onRun}>
+              <Play size={13} />
+              {phase === 'done'
+                ? '重新运行'
+                : phase === 'running'
+                  ? '执行中'
+                  : phase === 'paused'
+                    ? '已暂停'
+                    : '运行计划'}
+            </Button>
+          )}
+        </footer>
+      )}
     </div>
   )
 }

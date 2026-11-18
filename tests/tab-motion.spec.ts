@@ -54,7 +54,7 @@ function fixture(kind='workspace'){
 it('animates committed tab changes, with immediate final geometry and no replay on polling',()=>{
  const f=fixture();expect(f.calls).toHaveLength(0)
  f.select(1)
- expect(f.calls.map(c=>c.options.duration)).toEqual([220,180])
+ expect(f.calls.map(c=>c.options.duration)).toEqual([220,280])
  expect(f.calls[0].keyframes[0].transform).toBe('translate(-100px,0px) scale(1,1)')
  expect(f.group().querySelector(':scope')!.style.left).toBe('100px')
  f.flush();f.select(1);expect(f.calls).toHaveLength(2)

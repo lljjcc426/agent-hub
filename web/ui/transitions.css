@@ -1,3 +1,5 @@
+@import '../../src/ui/page-motion.css';
+
 /* Registered paint tokens let every inherited surface follow one theme transition. */
 @property --rp-bg { syntax: "<color>"; inherits: true; initial-value: white; }
 @property --rp-panel { syntax: "<color>"; inherits: true; initial-value: white; }
@@ -37,15 +39,6 @@
 .rp-choice-tick, .rp-check-glyph { transition: background .2s, border-color .2s; }
 .rp-check[data-appearance="switch"] .rp-check-glyph::before { transition: transform .28s var(--rp-settle), background .2s; }
 
-:root:active-view-transition-type(rp-switch-page, rp-switch-panel, rp-switch-filter) { view-transition-name: none; }
-::view-transition-group(.rp-page), ::view-transition-group(.rp-panel) { animation-duration: .34s; animation-timing-function: cubic-bezier(.22,.85,.24,1); }
-::view-transition-old(.rp-page), ::view-transition-old(.rp-panel) { animation: rp-content-out .16s ease-in both; }
-::view-transition-new(.rp-page) { animation: rp-page-in .35s cubic-bezier(.2,.8,.2,1) both; }
-::view-transition-new(.rp-panel) { animation: rp-panel-in .28s cubic-bezier(.2,.8,.2,1) both; }
-:root:active-view-transition-type(rp-switch-page, rp-switch-panel, rp-switch-filter)::view-transition { pointer-events: none; }
-@keyframes rp-content-out { to { opacity: 0; transform: translateY(-4px); } }
-@keyframes rp-page-in { from { opacity: 0; transform: translateY(13px); } }
-@keyframes rp-panel-in { from { opacity: 0; transform: translateY(7px); } }
 
 .rp-dialog, .rp-popover {
   --rp-layer-start: translateY(12px) scale(.975);

@@ -15,6 +15,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import {SelectionIndicator} from '../ui/transitions.tsx';
 import mark from "../../src/ui/assets/roppo-mark.png";
 
 type Props = {
@@ -137,6 +138,7 @@ export function FeatureNavigation({
         </span>
       </a>
       <nav className="function-groups" aria-label={L("Functions", "功能")}>
+        <SelectionIndicator selector=".function-link[aria-current=page]" selection={configuring?hash:"chat"}/>
         {groups.map((group, index) => (
           <div className="function-group" key={index}>
             {group.map(({ href, label, Icon, current }) => (

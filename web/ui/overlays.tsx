@@ -75,10 +75,10 @@ export function Dialog({
   )
 }
 
-export function Disclosure({ title, children }: { title: ReactNode; children: ReactNode }) {
+export function Disclosure({ title, children, arrival }: { title: ReactNode; children: ReactNode; arrival?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <details className="rp-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details className="rp-disclosure" data-arrival={arrival||undefined} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
         {title}
         <ChevronDown size={16} />

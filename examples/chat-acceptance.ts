@@ -35,6 +35,10 @@ const model={async run(r:ModelRequest){
       return reply('Research is reviewing the guide.')
     }
     if(text==='Keep going')return reply('Still here.')
+    if(text==='Show me examples of the Chat cards.'){
+      await r.onTool!('chat_preview_cards',{cards:['approval','decision','plan','tools']},'preview')
+      return {threadId,turnId,text:JSON.stringify({reply:''})}
+    }
     await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'running'},{id:'review',title:'Delegate review',state:'pending'}]},'start')
     await r.onTool!('worker_manage',{action:'list'},'list')
     await r.onTool!('chat_request_decision',{question:'Which language?',options:[{label:'English'},{label:'Chinese'}]},'decision')

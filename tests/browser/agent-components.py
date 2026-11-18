@@ -97,6 +97,27 @@ def check_page(page, base):
     choose(page.get_by_role("group", name="Agent 组件分类"), "上下文与决策")
     expect(page.locator(".agent-example:visible")).to_have_count(4)
     context = card("context-window")
+    def context_colors():
+        return context.evaluate("""el => Object.fromEntries([...el.querySelectorAll('.rp-context-legend i')].map(swatch => {
+          const id = swatch.dataset.category;
+          const cell = el.querySelector('.rp-cells [data-category="'+id+'"]');
+          return [id, [getComputedStyle(swatch).backgroundColor, cell && getComputedStyle(cell).backgroundColor]];
+        }))""")
+    light = context_colors()
+    assert set(light) == {'system','tools','attachments','conversation','memory'}
+    assert len({swatch for swatch, cell in light.values()}) == 5
+    for swatch, cell in light.values():
+        assert swatch == cell
+        rgb = [int(x) for x in swatch[4:-1].split(',')]
+        assert max(rgb)-min(rgb) >= 40
+    page.get_by_role("button",name="切换为深色").click()
+    # Grid cells animate their fill. Wait for the theme transition to reach the new swatch.
+    page.wait_for_function("""() => [...document.querySelectorAll('[data-example="context-window"] .rp-context-legend i')]
+      .every(s => getComputedStyle(s).backgroundColor === getComputedStyle(document.querySelector(
+        '[data-example="context-window"] .rp-cells [data-category="'+s.dataset.category+'"]')).backgroundColor)""")
+    dark = context_colors()
+    assert all(dark[key][0] != light[key][0] and dark[key][0] == dark[key][1] for key in light)
+    page.get_by_role("button",name="切换为浅色").click()
     filled = context.locator('.rp-cells i:not([data-band="free"])')
     count = filled.count()
     context.get_by_role("button", name="突出显示系统提示").focus()

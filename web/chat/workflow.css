@@ -46,6 +46,17 @@
 .usage-model, .usage-note { font-size: 12px; line-height: 1.5; color: var(--rp-muted); }
 .usage-model dd { min-width: 0; margin: 0; text-align: end; overflow-wrap: anywhere; }
 .usage-note { margin: 6px 0 0; }
+.usage-history, .usage-history > span, .usage-breakdown-heading, .usage-steps li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.usage-history { margin-bottom: 12px; }
+.usage-history > span, .usage-steps { font-size: 12px; font-variant-numeric: tabular-nums; }
+.usage-history time, .usage-breakdown-heading span { color: var(--rp-muted); font-size: 12px; font-weight: 400; }
+.usage-steps { list-style: none; padding: 0; margin: 4px 0; }
+.usage-steps li { padding-block: 3px; }
+.usage-steps b { font-weight: 500; }
+.usage-section .rp-context-file span { min-width: 0; overflow-wrap: anywhere; }
+.card-preview h4 { margin: 0; font-size: 13px; color: var(--rp-muted); }
 @media (prefers-reduced-motion: reduce) {
   .slash-surface, .team-card-stack > .rp-inspector-card { animation: none; }
   .function-groups > .rp-selection-indicator { transition: none; }

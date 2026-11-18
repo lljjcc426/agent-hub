@@ -10,6 +10,7 @@ import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
+import {measureChatInput} from '../src/chat-input.ts'
 import {createServer,type Server} from 'node:http'
 import {chatUploadLimits} from '../src/chat-attachments.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
@@ -25,7 +26,7 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>){
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
 
-it('keeps a public plan through a decision, queues exactly one quoted answer and reads only the last model step',async()=>{
+it('keeps a public plan through a decision and browses the Router inputs from the same conversation and model',async()=>{
   const {h}=fixture(async r=>{
     const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'
     const stage=first?'running':'completed'
@@ -51,10 +52,56 @@ it('keeps a public plan through a decision, queues exactly one quoted answer and
   expect(view.publicPlans[0]).toMatchObject({runId:first.runId,steps:[{state:'completed'}]})
   expect(view.messages.filter(m=>m.role==='user')).toHaveLength(2)
   expect(view.messages.find(m=>m.text==='English')?.quote?.messageId).toBe(m.id)
-  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:123,capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
+  const latest=h.chat.contextUsage(c.id,'owner')
+  expect(latest).toMatchObject({inputTokens:123,modelInputs:[600,123],capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
+  expect(latest.composition!.system).toBeGreaterThan(0)
+  expect(latest.composition!.tools).toBeGreaterThan(0)
+  const prior=h.chat.contextUsage(c.id,'owner',latest.previous!)
+  expect(prior).toMatchObject({activity:latest.previous,previous:null,modelInputs:[600,123]})
+  expect(()=>h.chat.contextUsage(other.id,'another-owner',prior.activity!)).toThrow('not found')
+  h.store.db.prepare("DELETE FROM records WHERE kind='chat-context-input' AND id=?").run(prior.activity)
+  expect(h.chat.contextUsage(c.id,'owner',prior.activity!)).toMatchObject({composition:null,inputTokens:123})
   expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
   h.config.execution.router!.model='other-model'
+  expect(()=>h.chat.contextUsage(c.id,'owner',latest.activity!)).toThrow('not found')
   expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+})
+
+it('accounts for Router input in UTF-8 bytes and counts each included file reference, including on a retry',()=>{
+  const file={id:'asset/upload-1',name:'会“议”.md'}, memory={facts:[{text:'Use "brief" notes.'}]}
+  const input=JSON.stringify({trigger:{text:'好😀',meta:{attachments:[file]}},messages:[{meta:{attachments:[file]}}],memory})
+  const base={instructions:'系统😀',schema:{type:'object'},tools:[]}
+  for(const embedded of [false,true]){
+    const body=embedded?JSON.stringify({retry:1,previousInput:input}):input
+    const encoded=(data:object)=>{const raw=JSON.stringify(data);return Buffer.byteLength(embedded?JSON.stringify(raw).slice(1,-1):raw)}
+    const sizes=measureChatInput({...base,input:body})
+    expect(sizes).toMatchObject({tools:0,system:Buffer.byteLength(base.instructions)+Buffer.byteLength(JSON.stringify(base.schema)),memory:encoded(memory),
+      attachments:encoded(file)*2,files:[{id:'upload-1',name:file.name,bytes:encoded(file)*2}]})
+    expect(sizes.conversation+sizes.attachments+sizes.memory).toBe(Buffer.byteLength(body))
+    expect(JSON.stringify(sizes)).not.toContain('brief')
+  }
+  expect(measureChatInput({...base,input:'你好'})).toMatchObject({conversation:6,memory:0,attachments:0,files:[]})
+})
+
+it('publishes requested examples once and keeps example decisions outside real approvals and replies',async()=>{
+  const {h}=fixture(async r=>{
+    expect(r.tools?.some(t=>t.name==='chat_preview_cards')).toBe(true)
+    for(const cards of [['decision','approval'],['approval','decision']]){
+      const result=await r.onTool!('chat_preview_cards',{cards},randomUUID())
+      expect(result.success).toBe(true)
+    }
+    return {reply:''}
+  })
+  const c=h.chat.create('owner')
+  send(h,c.id,'Show me the approval and choice cards.')
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+  const view=h.chat.view(c.id,'owner')
+  const previews=view.messages.filter(m=>m.previewCards)
+  expect(previews).toHaveLength(1)
+  expect(previews[0]!.previewCards).toEqual(['decision','approval'])
+  expect(view.approvals).toEqual([])
+  expect(()=>h.chat.answerDecision(c.id,'owner',previews[0]!.id,'Allow')).toThrow('Decision not found')
+  expect(view.messages.filter(m=>m.role==='user')).toHaveLength(1)
 })
 
 it('resumes only the requesting Worker when its Chat owner answers a native approval and a private question',async()=>{
@@ -217,11 +264,14 @@ it('admits built-in Chat when other entries already use scoped Routers without b
 })
 
 it('keeps automatically bound Chat memory private to its signed-in owner',async()=>{
- const {h}=fixture(),existing=h.chat.create('existing-owner');enableChatBatch(h,existing.id)
+ const {h,calls}=fixture(),existing=h.chat.create('existing-owner');enableChatBatch(h,existing.id)
  const first=h.chat.space('owner',true).conversation!,second=h.chat.space('another-owner',true).conversation!
  const sent=send(h,first.id,'Remember my reporting preference'),trigger=h.store.triggers.get(sent.runId)!,context=h.scopes.context(trigger,'local:chat:'+first.id)!,source=h.memory.ingest(context)
  h.memory.command(context,{action:'remember',operationId:'private-chat-memory',expectedRevision:0,subject:'Reporting preference',content:'Result before evidence',sourceIds:[source.id],visibility:'private',candidate:false},true)
  await settle(h,()=>h.chat.view(first.id,'owner').run?.state==='completed')
+ const memory=JSON.parse(calls.find(r=>r.activity?.triggerId===sent.runId&&r.role==='router')!.input).memory
+ expect(JSON.stringify(memory)).toContain('Result before evidence')
+ expect(h.chat.contextUsage(first.id,'owner').composition?.memory).toBe(Buffer.byteLength(JSON.stringify(memory)))
  const other=h.chat.send(second.id,'another-owner',{clientMessageId:randomUUID(),text:'What do you remember?'})
  await settle(h,()=>h.chat.view(second.id,'another-owner').run?.state==='completed')
  const otherContext=h.scopes.context(h.store.triggers.get(other.runId)!,'local:chat:'+second.id)!

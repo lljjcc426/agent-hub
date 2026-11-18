@@ -8,7 +8,8 @@ import {workerProfiles} from './worker-pool.ts'
 import {configuredWorkerBackends} from './worker-catalog.ts'
 import type {RouterContext} from './worker-manager.ts'
 import type {Run} from './store.ts'
-import type {ModelOutput} from './model.ts'
+import type {ModelOutput,ModelRequest} from './model.ts'
+import {measureChatInput,type ChatInputSize} from './chat-input.ts'
 import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
@@ -17,7 +18,7 @@ import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attachments.ts'
 import {ChatDeliveries,routerFileInput,type ChatDelivery} from './chat-deliveries.ts'
-import {decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecision,type ChatPlan} from './chat-workflow.ts'
+import {cardPreviewSchema,decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecision,type ChatPlan,type PreviewCard} from './chat-workflow.ts'
 import type {Approval} from './approvals.ts'
 import type {UsageRecord} from './usage-ledger.ts'
 import type {BudgetReceipt} from './context-budget.ts'
@@ -31,7 +32,7 @@ interface Conversation {
   nativeId?:string
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
-interface Message {decision?:ChatDecision;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {decision?:ChatDecision;previewCards?:PreviewCard[];id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
 interface ChatRun {id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
@@ -405,11 +406,24 @@ export class ChatSessions {
     this.changed(c.id)
     return true
   }
-  requestDecision(triggerId:string,value:unknown){
+  private cardTarget(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(!run||run.cancelRequested||run.cancelled||run.feedback)throw new ChatError('decision_unavailable','A current Chat request is required.')
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
     this.get(c.id,c.owner);this.host.routerIngress.authority(triggerId,c.discussion)
+    return {run,c}
+  }
+  previewCards(triggerId:string,value:unknown){
+    const {run,c}=this.cardTarget(triggerId)
+    const cards=[...new Set(cardPreviewSchema.parse(value).cards)]
+    const id='card-preview:'+stableDigest([run.id,[...cards].sort()])
+    const text=run.locale?.startsWith('zh')?'卡片示例':'Card preview'
+    this.host.store.atomic(()=>this.message(c,{id,runId:run.id,role:'assistant',text,status:'complete',previewCards:cards}))
+    this.changed(c.id)
+    return {messageId:id,cards,mode:'preview'}
+  }
+  requestDecision(triggerId:string,value:unknown){
+    const {run,c}=this.cardTarget(triggerId)
     const decision=decisionSchema.parse(value)
     if(new Set(decision.options.map(o=>o.label)).size!==decision.options.length)throw new ChatError('answer_invalid','Provide distinct choices.',400)
     const id='decision:'+stableDigest([run.id,decision])
@@ -431,20 +445,34 @@ export class ChatSessions {
       return this.send(id,owner,{clientMessageId:randomUUID(),text:answer,locale,quote:{messageId}})
     })
   }
-  contextUsage(id:string,owner:string){
+  recordContextInput(activity:string,attempt:number,prepared:ModelRequest){
+    const call=this.host.store.get<ChatCall>('chat-call',activity)
+    if(call)this.host.store.put('chat-context-input',activity,{conversationId:call.conversationId,runId:call.runId,attempt,size:measureChatInput(prepared)})
+  }
+  contextUsage(id:string,owner:string,selected?:string){
     this.get(id,owner)
     const {backend,model}=this.readiness()
-    const row=this.host.store.db.prepare(`SELECT c.id FROM records c WHERE c.kind='chat-call'
+    const start="json_extract(c.body,'$.startedAt')"
+    const anchor=selected?this.host.store.db.prepare(`SELECT ${start} AS at,c.rowid AS seq FROM records c
+      WHERE c.kind='chat-call' AND c.id=? AND json_extract(c.body,'$.conversationId')=?`).get(selected,id):undefined
+    const rows=this.host.store.db.prepare(`SELECT c.id,${start} AS at FROM records c WHERE c.kind='chat-call'
       AND json_extract(c.body,'$.conversationId')=? AND json_extract(c.body,'$.kind')='router'
       AND (? IS NULL OR json_extract(c.body,'$.backend')=?) AND (? IS NULL OR json_extract(c.body,'$.model')=?)
-      AND (EXISTS (SELECT 1 FROM records b WHERE b.kind='context-budget' AND b.id=c.id)
+      ${selected?`AND (${start},c.rowid) <= (?,?)`:''}
+      AND (EXISTS (SELECT 1 FROM records b WHERE b.kind IN ('context-budget','chat-context-input') AND b.id=c.id)
         OR EXISTS (SELECT 1 FROM records u,json_each(u.body,'$.steps') s WHERE u.kind='model-usage' AND u.id=c.id AND json_type(s.value,'$.inputTokens')='integer'))
-      ORDER BY json_extract(c.body,'$.startedAt') DESC,c.rowid DESC LIMIT 1`).get(id,backend??null,backend??null,model??null,model??null)
-    const activity=row?String(row.id):undefined
+      ORDER BY ${start} DESC,c.rowid DESC LIMIT 2`).all(id,backend??null,backend??null,model??null,model??null,...(selected?[anchor?.at??null,anchor?.seq??null]:[]))
+    const activity=rows[0]?String(rows[0].id):undefined
+    if(selected&&activity!==selected)throw new ChatError('context_missing','Context record not found.',404)
+    const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
     const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
-    const step=usage?Object.values(usage.steps).findLast(step=>step.inputTokens!==undefined):undefined
-    const budget=activity?this.host.store.get<BudgetReceipt>('context-budget',activity):undefined
-    return {model:model??usage?.model??null,inputTokens:step?.inputTokens??null,capacity:step?.contextWindowTokens??null,
+    const steps=Object.entries(usage?.steps??{}).filter(([key,value])=>value.inputTokens!==undefined&&(!recorded||key.startsWith(recorded.attempt+':'))).map(([,value])=>value)
+    const step=steps.at(-1)
+    const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
+    const budget=receipt&&(!recorded||(receipt.attempt??0)===recorded.attempt)?receipt:undefined
+    return {activity:activity??null,at:rows[0]?Number(rows[0].at):null,previous:rows[1]?String(rows[1].id):null,
+      composition:recorded?.size??null,modelInputs:steps.map(s=>s.inputTokens!),
+      model:model??usage?.model??null,inputTokens:step?.inputTokens??null,capacity:step?.contextWindowTokens??null,
       budget:budget?{bytes:budget.bytes,reservedBytes:budget.reservedBytes,maxBytes:budget.maxBytes}:null}
   }
   deliveredWorker(message:{id:string;ticketId?:string;text:string}){

@@ -471,8 +471,8 @@ export function AgentGallery() {
         parts={[
           { id: 'system', label: '系统提示', tokens: 4200 },
           { id: 'tools', label: '工具定义', tokens: 8300 },
-          { id: 'files', label: '附件', tokens: files.reduce((a, f) => a + f.tokens, 0), files },
-          { id: 'history', label: '对话', tokens: compacted ? 7200 : 21600 },
+          { id: 'attachments', label: '附件', tokens: files.reduce((a, f) => a + f.tokens, 0), files },
+          { id: 'conversation', label: '对话', tokens: compacted ? 7200 : 21600 },
           { id: 'memory', label: '记忆', tokens: 1800 },
         ]}
         canCompact={!compacted}

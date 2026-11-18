@@ -124,6 +124,11 @@
 :is(.rp-cells,.rp-context-legend) [data-band="2"] { background:color-mix(in srgb,var(--rp-ink) 53%,var(--rp-bg)); }
 :is(.rp-cells,.rp-context-legend) [data-band="3"] { background:color-mix(in srgb,var(--rp-ink) 35%,var(--rp-bg)); }
 :is(.rp-cells,.rp-context-legend) [data-band="4"] { background:color-mix(in srgb,var(--rp-ink) 23%,var(--rp-bg)); }
+.rp-context [data-category="system"] { background-color:light-dark(#3d6eac,#85b5ef); }
+.rp-context [data-category="tools"] { background-color:light-dark(#187e6b,#6cc3af); }
+.rp-context [data-category="attachments"] { background-color:light-dark(#ab681e,#e9b264); }
+.rp-context [data-category="conversation"] { background-color:light-dark(#8165a5,#bfa5dd); }
+.rp-context [data-category="memory"] { background-color:light-dark(#b34f6b,#ed92a8); }
 .rp-context-legend > div > button,.rp-context-file { display:flex; align-items:center; gap:7px; width:100%; padding:4px 5px; border:0; border-radius:5px; background:transparent; font-size:12px; text-align:start; }
 .rp-context-legend button { cursor:pointer; }
 .rp-context-legend button[aria-pressed="true"] { background:var(--rp-soft); }

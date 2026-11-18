@@ -48,7 +48,7 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,RouterDecision,groupWorkflow} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,RouterDecision,CardPreview,groupWorkflow} from './workflow-cards.tsx';
 import {CommandInput, type ChatCommand} from './composer-commands.tsx';
 import {ContextCard} from './context-card.tsx';
 import {ToolCallCard} from '../ui/agent-team.tsx';
@@ -158,7 +158,7 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
-const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
+const loadContext=(id:string,signal:AbortSignal,activity?:string)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context"+(activity?'?activity='+encodeURIComponent(activity):''),undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
@@ -284,6 +284,7 @@ function AssistantMessage() {
   const { L, run, runMessageId, routerLabel, openFile,openWorker,workerView,workers } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
+    previewCards=useAuiState(s=>s.message.metadata.custom?.previewCards) as Snapshot["messages"][number]["previewCards"],
     ticketId=useAuiState(s=>s.message.metadata.custom?.ticketId) as string|undefined,
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
@@ -324,7 +325,7 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        {decision?<RouterDecision id={id} decision={decision}/>:deliveries?.length?deliveries.map(f=><DeliveryCard key={f.id} L={L} file={f} open={openFile}/>):<div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>}
+        {previewCards?<CardPreview cards={previewCards}/>:decision?<RouterDecision id={id} decision={decision}/>:deliveries?.length?deliveries.map(f=><DeliveryCard key={f.id} L={L} file={f} open={openFile}/>):<div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>}
         <MessageAttachments files={attachments??[]} L={L}/>
         <Reactions id={id}/>
         <div className="message-footer">
@@ -999,7 +1000,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
-        ticketId: m.ticketId, decision:m.decision, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
+        ticketId: m.ticketId, decision:m.decision, previewCards:m.previewCards, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1182,7 +1183,11 @@ function Chat(p: ChatProps) {
   const current = snapshot?.conversation;
   const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setSidebarCards(emptySidebarCards)};
   function revealCard(card: ChatCommand) {
-    if (!panel) panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
+    if (!panel) {
+      panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
+      setTeamTab('activity');
+      setResources(state => openResource(state, 'activity'));
+    }
     setSidebarCards(state => ({items:[card, ...state.items.filter(item => item !== card)], revealing:true}));
     requestAnimationFrame(() => bodyRef.current?.querySelector('.team-tab-content')?.scrollTo({top:0, behavior:'instant'}));
   }
@@ -1191,7 +1196,7 @@ function Chat(p: ChatProps) {
     const revealing = sidebarCards.revealing && items.length > 0;
     setSidebarCards({items, revealing});
     requestAnimationFrame(() => {
-      const target = panelOverlay && (resource || revealing)
+      const target = panelOverlay
         ? bodyRef.current?.querySelector<HTMLElement>('#session-panel [role=tab][aria-selected=true]:not([tabindex="-1"])')
         : threadRef.current?.querySelector<HTMLElement>('.composer-input');
       target?.focus({preventScroll:true});
@@ -1489,7 +1494,7 @@ function Chat(p: ChatProps) {
                   }}
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                   cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
-                    card === 'context' && <ContextCard key={JSON.stringify([card, current?.backend, current?.model])}
+                    card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
                       conversationId={id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}

@@ -1,8 +1,9 @@
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
 import type { ChatSessions } from '../../src/chat.ts'
-import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
+import type { ChatDecision, PreviewCard, PublicPlan } from '../../src/chat-workflow.ts'
 import { AgentPlan } from '../ui/agent-run.tsx'
 import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
+import { ToolCallCard } from '../ui/agent-team.tsx'
 
 type Snapshot = ReturnType<ChatSessions['view']>
 type Request = Snapshot['approvals'][number]
@@ -16,6 +17,7 @@ type Plan = {
 type Block = { plans: Plan[]; calls: Snapshot['calls']; approvals: Request[] }
 const internalTools = new Set([
   'chat_request_decision',
+  'chat_preview_cards',
   'superagent_plan',
   'superagent_status',
   'chat_react',
@@ -108,6 +110,33 @@ function useSubmit(L: Localize) {
     ) : null,
   }
 }
+export function CardPreview({ cards }: { cards: PreviewCard[] }) {
+  const { L } = useContext(Flow)!
+  const [approval, setApproval] = useState<'pending'|'approved'|'denied'>('pending')
+  const [answer, setAnswer] = useState<string|null>(null)
+  const filename = 'notes.md'
+  return (
+    <section className="roppo-ui workflow-block card-preview" aria-label={L('Card preview', '卡片示例')}>
+      <h4>{L('Interactive preview', '交互示例')}</h4>
+      {cards.map(card => {
+        switch (card) {
+          case 'approval': return <ApprovalCard key={card} L={L} title={L('Read a file', '读取文件')}
+            risk={L('Preview', '示例')} state={approval} onDecision={setApproval} onReset={() => setApproval('pending')}
+            details={[{label:L('File', '文件'),value:filename}]} />
+          case 'decision': return <DecisionCard key={card} L={L} question={L('How should the notes be arranged?', '你希望如何整理笔记？')}
+            options={[{id:'list', label:L('List', '列表'),detail:''},{id:'table',label:L('Table', '表格'),detail:''}]}
+            answer={answer} onAnswer={setAnswer} onReset={() => setAnswer(null)} />
+          case 'plan': return <AgentPlan key={card} L={L} title={L('Organize the notes', '整理笔记')} live={false}
+            steps={[{id:'read',title:L('Read the notes', '阅读笔记'),tool:'',state:'completed'},
+              {id:'group',title:L('Group by topic', '按主题整理'),tool:'',state:'pending'}]} />
+          case 'tools': return <ToolCallCard key={card} L={L} calls={[{id:'example',name:'router_read',
+            summary:filename,status:'done',elapsed:'',details:[[L('File', '文件'),filename],[L('Result','结果'),L('Example note','示例笔记')]]}]} />
+        }
+      })}
+    </section>
+  )
+}
+
 export function RouterDecision({ id, decision }: { id: string; decision: ChatDecision }) {
   const { L, decide, readonly } = useContext(Flow)!
   const { busy, submit, error } = useSubmit(L)

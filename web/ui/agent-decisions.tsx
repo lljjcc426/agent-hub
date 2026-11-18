@@ -19,6 +19,8 @@ export function ContextWindow({
   capacity,
   label,
   unit = 'tokens',
+  view = 'window',
+  legend = true,
   L = chinese,
   parts,
   onCompact,
@@ -28,6 +30,8 @@ export function ContextWindow({
   capacity: number | null
   label?: string
   unit?: string
+  view?: 'window' | 'composition'
+  legend?: boolean
   L?: Localize
   parts: ContextPart[]
   onCompact?: () => void
@@ -37,6 +41,7 @@ export function ContextWindow({
   const [active, setActive] = useState<string | null>(null)
   const total = parts.reduce((s, p) => s + p.tokens, 0),
     cellCount = 100
+  const scale = view === 'composition' ? total : capacity
   const locale = L('en', 'zh-CN')
   const percent = capacity != null && capacity > 0
     ? new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 }).format(total / capacity)
@@ -44,7 +49,7 @@ export function ContextWindow({
   let idx = 0,
     limit = parts[0]?.tokens ?? 0
   const fields = Array.from({ length: cellCount }, (_, i) => {
-    const token = ((i + 0.5) * (capacity ?? 0)) / cellCount
+    const token = ((i + 0.5) * (scale ?? 0)) / cellCount
     while (token > limit && idx < parts.length - 1) limit += parts[++idx]!.tokens
     const part = token <= total ? parts[idx] : undefined
     return (
@@ -52,6 +57,7 @@ export function ContextWindow({
         aria-hidden="true"
         key={i}
         data-band={part ? idx % 5 : 'free'}
+        data-category={part?.id}
         data-dim={!!active && part?.id !== active}
         style={{ transitionDelay: (i % 12) * 8 + 'ms' }}
       />
@@ -59,48 +65,46 @@ export function ContextWindow({
   })
   return (
     <div className="rp-context">
-      <div className="rp-capacity">
+      {view !== 'composition' && <div className="rp-capacity">
         <strong title={total.toLocaleString(locale)}>{total.toLocaleString(locale)}</strong>
         <span>
           {capacity ? '/ ' + capacity.toLocaleString(locale) + ' ' : ''}
           {unit}
         </span>
         {percent !== null && <b>{percent}</b>}
-      </div>
-      {capacity != null && capacity > 0 && <div
+      </div>}
+      {scale != null && scale > 0 && <div
         className="rp-cells"
-        role="meter"
+        role={view === 'composition' ? 'img' : 'meter'}
         aria-label={label ?? L('Context usage', '上下文用量')}
-        aria-valuemin={0}
-        aria-valuemax={capacity}
-        aria-valuenow={Math.min(total, capacity)}
-        aria-valuetext={percent ?? undefined}
+        {...(view === 'window' ? {'aria-valuemin':0, 'aria-valuemax':scale, 'aria-valuenow':Math.min(total,scale), 'aria-valuetext':percent ?? undefined} : {})}
       >
         {fields}
       </div>}
-      <div className="rp-context-legend" onMouseLeave={() => setActive(null)}>
+      {legend && <div className="rp-context-legend" onMouseLeave={() => setActive(null)}>
         {parts.map((part, i) => (
           <div key={part.id}>
             <button
               type="button"
               aria-pressed={active === part.id}
               aria-label={L('Highlight ', '突出显示') + part.label}
+              aria-description={part.tokens.toLocaleString(locale) + ' ' + unit}
               onMouseEnter={() => setActive(part.id)}
               onFocus={() => setActive(part.id)}
               onBlur={() => setActive(null)}
               onClick={() => setActive(part.id)}
             >
-              <i data-band={i % 5} />
+              <i data-band={i % 5} data-category={part.id} />
               <span>{part.label}</span>
-              <b>{count(part.tokens)}</b>
+              <b title={part.tokens.toLocaleString(locale) + ' ' + unit}>{count(part.tokens)}</b>
             </button>
             {part.files && part.files.length > 0 && (
-              <Disclosure title={'附件 · ' + part.files.length}>
+              <Disclosure title={L('Files', '附件') + ' · ' + part.files.length}>
                 {part.files.map((f) => (
                   <div className="rp-context-file" key={f.id}>
                     <FileText size={13} />
                     <span>{f.name}</span>
-                    <small>{count(f.tokens)}</small>
+                    <small title={f.tokens.toLocaleString(locale) + ' ' + unit}>{count(f.tokens)}</small>
                     {onRemoveFile && (
                       <IconButton label={L('Remove ', '移除') + f.name} onClick={() => onRemoveFile(f.id)}>
                         <X size={13} />
@@ -112,7 +116,7 @@ export function ContextWindow({
             )}
           </div>
         ))}
-      </div>
+      </div>}
       {onCompact && capacity && (
         <div className="rp-card-foot">
           <small>
@@ -330,7 +334,7 @@ export function ApprovalCard({
       )}
       {!pending && onReset && (
         <Button tone="quiet" onClick={onReset}>
-          重新查看
+          {L('Try again', '重新查看')}
         </Button>
       )}
     </div>

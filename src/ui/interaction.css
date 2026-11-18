@@ -1,0 +1,55 @@
+/* Shared by Studio, account pages and the built-in board. Keyboard focus is
+   indicated inside controls so tight form layouts never clip an outer ring. */
+@layer roppo-interaction {
+  :focus,
+  :is(.rp-input,.rp-select,.settings-find,.search-field,.emoji-search):focus-within,
+  :is(.rp-choice,.rp-check,.decision-mode-options) input:focus-visible + span {
+    outline: none !important;
+  }
+  :where(button,a,summary,select,[role="button"],[role="tab"],[tabindex="0"]):focus-visible,
+  input:is([type="checkbox"],[type="radio"]):focus-visible,
+  :is(.rp-choice,.rp-check,.decision-mode-options) input:focus-visible + span {
+    box-shadow: inset 0 -2px currentColor !important;
+  }
+  :where(input,textarea):focus-visible {
+    caret-color: currentColor;
+    border-color: color-mix(in srgb, currentColor 38%, transparent);
+  }
+  :where(.rp-input,.rp-select,.settings-find,.search-field,.emoji-search):focus-within {
+    border-color: color-mix(in srgb, currentColor 32%, transparent) !important;
+  }
+  @media (forced-colors:active) {
+    :focus-visible, :is(.rp-choice,.rp-check,.decision-mode-options) input:focus-visible + span {
+      outline: 1px dotted Highlight !important;
+      outline-offset: -2px !important;
+    }
+  }
+}
+
+/* The native open state owns focus, keyboard behavior and the toggle event.
+   Overlay menus have out-of-flow children and need to stay unclipped. */
+@media (prefers-reduced-motion:no-preference) {
+  .rp-disclosure-field:not(.rp-disclosure,.trace-inline,.trace-step)::details-content {
+    opacity:0;
+    transition:opacity 170ms ease-out, content-visibility 210ms allow-discrete;
+  }
+  .rp-disclosure-field[open]:not(.rp-disclosure,.trace-inline,.trace-step)::details-content { opacity:1; }
+  @supports (interpolate-size:allow-keywords) {
+    .rp-disclosure-field:not(.rp-disclosure,.trace-inline,.trace-step,.browser-logins,.memory-menu)::details-content {
+      display:flow-root;
+      interpolate-size:allow-keywords;
+      block-size:0;
+      overflow:clip;
+      transition:block-size 210ms cubic-bezier(.22,.72,.2,1), opacity 160ms ease-out, content-visibility 210ms allow-discrete;
+    }
+    .rp-disclosure-field[open]:not(.rp-disclosure,.trace-inline,.trace-step,.browser-logins,.memory-menu)::details-content { block-size:auto; }
+  }
+  @supports not selector(details::details-content) {
+    .rp-disclosure-field[open] > :not(summary) { animation:rp-disclosure-arrive 170ms ease-out; }
+    @keyframes rp-disclosure-arrive { from {opacity:0} to {opacity:1} }
+  }
+}
+@media (prefers-reduced-motion:reduce) {
+  .rp-disclosure-field::details-content { transition:none !important; animation:none !important; }
+  .rp-disclosure-field:not([open])::details-content { content-visibility:hidden !important; }
+}

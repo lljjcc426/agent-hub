@@ -1,3 +1,4 @@
+import {interactionStyles} from '../ui/interaction-styles.ts'
 import { randomBytes } from 'node:crypto'
 import { AccountError } from '../personal-account.ts'
 
@@ -36,7 +37,7 @@ export class TerminalPairing {
 }
 
 export const pairingPage = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Roppo CLI</title>
-<style>body{font:16px system-ui;max-width:30rem;margin:15vh auto;padding:24px;color:#222}code{font-size:1.3rem}button,a{font:inherit;padding:10px 16px}button{background:#222;color:white;border:0;border-radius:7px}p{line-height:1.5}</style>
+<style>body{font:16px system-ui;max-width:30rem;margin:15vh auto;padding:24px;color:#222}code{font-size:1.3rem}button,a{font:inherit;padding:10px 16px}button{background:#222;color:white;border:0;border-radius:7px}p{line-height:1.5}${interactionStyles}</style>
 <h1>Connect Roppo CLI</h1><p>Match this code with the one in your terminal.</p><p><code></code></p><button>Connect terminal</button><a href="/auth" target="_blank" rel="noopener">Sign in</a><p role="status"></p>
 <script>const id=location.hash.slice(1),button=document.querySelector('button'),status=document.querySelector('[role=status]');
 document.querySelector('code').textContent=id.slice(-8).toUpperCase();button.disabled=!/^[a-f0-9]{32}$/.test(id);

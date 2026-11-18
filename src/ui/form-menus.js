@@ -66,18 +66,37 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
 `
   document.head.append(style)
 
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
   let current = null
+  let leavingMenu = null
   let sequence = 0
   function field(target) {
     return target instanceof HTMLSelectElement && target.matches('.rp-select-field:enabled') &&
       !target.multiple && target.size <= 1 ? target : null
   }
-  function close() {
+  function close(animate = true) {
     if (!current) return
-    const { select, menu, observer } = current
+    const { select, menu, observer, opening, folded } = current
     current = null
     observer.disconnect()
-    menu.remove()
+    menu.inert = true
+    menu.setAttribute('aria-hidden', 'true')
+    menu.style.pointerEvents = 'none'
+    if (animate && !reducedMotion.matches && menu.isConnected) {
+      const style = getComputedStyle(menu)
+      const visible = {opacity:style.opacity, transform:style.transform}
+      opening?.cancel()
+      leavingMenu = menu
+      const exit = menu.animate([visible,folded], {duration:110,easing:'ease-out',fill:'forwards'})
+      const remove = () => {
+        menu.remove()
+        if (leavingMenu === menu) leavingMenu = null
+      }
+      void exit.finished.then(remove, remove)
+    } else {
+      opening?.cancel()
+      menu.remove()
+    }
     select.removeAttribute('aria-controls')
     select.removeAttribute('aria-activedescendant')
     select.setAttribute('aria-expanded', 'false')
@@ -101,7 +120,9 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
     select.dispatchEvent(new Event('change', {bubbles:true}))
   }
   function open(select) {
-    close()
+    close(false)
+    leavingMenu?.remove()
+    leavingMenu = null
     select.focus({preventScroll:true})
     const menu = document.createElement('div')
     menu.className = 'rp-field-menu'
@@ -160,6 +181,7 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
     const above = rect.top - 10
     const flip = below < Math.min(248, menu.scrollHeight) && above > below
     Object.assign(menu.style, {
+      transformOrigin: flip ? 'bottom center' : 'top center',
       width: width + 'px', left: Math.max(8, Math.min(rect.left, innerWidth - width - 8)) + 'px',
       maxHeight: Math.max(24, Math.min(320, flip ? above : below)) + 'px',
       top: flip ? 'auto' : (rect.bottom + 4) + 'px',
@@ -171,7 +193,10 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
     observer.observe(document.body, {childList:true,subtree:true})
     observer.observe(select, {childList:true, subtree:true, characterData:true, attributes:true,
       attributeFilter:['disabled','hidden','multiple','size','selected','label','value']})
-    current = {select, menu, rows, observer, prefix:'', typedAt:0, active:null}
+    const folded = {opacity:0, transform:'translateY('+(flip ? 4 : -4)+'px) scale(.98)'}
+    const opening = reducedMotion.matches ? null : menu.animate([folded,{opacity:1,transform:'none'}],
+      {duration:170,easing:'cubic-bezier(.22,.72,.2,1)'})
+    current = {select, menu, rows, observer, opening, folded, prefix:'', typedAt:0, active:null}
     select.setAttribute('aria-controls', menu.id)
     select.setAttribute('aria-expanded', 'true')
     highlight(selected || rows[0])

@@ -1,3 +1,4 @@
+import {applyPersonalReset} from '../src/personal-memory-reset.ts'
 import {afterEach,expect,it} from 'vitest'
 import {mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -45,16 +46,24 @@ it('imports active memories idempotently and keeps edits revisioned',async()=>{
 })
 it('uses adaptive learning from the first conversation and respects an early opt-out',async()=>{
  const f=fixture(),initial=(owner:string)=>memoryWorkspace(f.h,owner).initialLearning
- expect(initial('alice')).toEqual({enabled:true,editable:true,revision:0})
+ expect(initial('alice')).toEqual({enabled:true,editable:true,available:true,revision:0})
  await changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:false,revision:0})
  await expect(changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:true,revision:0})).rejects.toThrow('revision')
  expect(initial('alice').enabled).toBe(false)
  const a=f.chat('alice'),b=f.chat('bob')
  expect(f.h.agentMemory.learning(a.c).mode).toBe('explicit_only')
  expect(f.h.agentMemory.learning(b.c).mode).toBe('adaptive')
+ const observed=f.h.agentMemory.observations().map(record=>record.triggerId)
+ expect(observed).toContain(b.c.trigger.id);expect(observed).not.toContain(a.c.trigger.id)
  await expect(changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:true,revision:1})).rejects.toThrow('revision')
  await changeMemoryWorkspace(f.h,'alice',{entryId:a.entryId,action:'learning',enabled:true,revision:1})
  expect(f.h.agentMemory.learning(a.c).mode).toBe('adaptive')
+})
+it('replays a pre-adaptive reset using the default at the time of the reset',()=>{
+ const f=fixture(),a=f.chat('alice'),scopeId=a.c.route.scopeId
+ applyPersonalReset(f.h.store,{id:'legacy-reset',scopeId,at:1,roots:[],records:[],tickets:[],triggers:[],sessions:[],files:[],
+  personalReset:{settingsKey:'chat-space:alice',scopeId,entries:[],spaces:[],factIds:[]}})
+ expect(f.h.agentMemory.learning(a.c).mode).toBe('explicit_only')
 })
 it('preserves an existing auto learning policy across pause/resume and rejects stale changes',async()=>{
  const f=fixture(),a=f.chat('alice');f.h.agentMemory.manage(a.c,{action:'configure',expectedRevision:0,policy:{writeMode:'auto',maxCallsPerDay:7}})

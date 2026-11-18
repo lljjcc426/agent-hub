@@ -196,7 +196,7 @@ it('rebuilds a missing provider session on the next durable goal attempt without
  await until(f.h,()=>f.h.store.list('router-result').length===1)
  f.advance(61000);await until(f.h,()=>f.h.store.list<RouterGoal>('router-goal')[0]?.failures===1)
  f.advance(61000);await until(f.h,()=>f.h.store.deliveries().some(d=>d.text==='Recovered'))
- const last=f.calls.at(-1)!
+ const last=f.calls.filter(call=>JSON.parse(call.input).kind==='event').at(-1)!
  expect(last.threadId).toBeUndefined();expect(JSON.parse(last.input).continuity.history.some((e:any)=>e.text==='持续处理这项任务，保留原始要求')).toBe(true)
 })
 it('a wake cannot mutate unrelated tasks, forge a new goal or write knowledge',async()=>{

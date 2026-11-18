@@ -144,8 +144,20 @@ const model: Model = {
   },
 };
 const createRuntime = (c: Config) => new Runtime(c, { model });
-const runtime = createRuntime(config),
-  host = await serve(runtime, { createRuntime, clientHome: join(root, 'client-home') });
+const runtime = createRuntime(config);
+// The local preview uses the same private Chat memory path as a configured workspace.
+// A preview with older tickets requires the normal ownership migration.
+if (!runtime.scopes.enabled() && !runtime.store.tickets.list().length && !runtime.store.get('scope-migration', 'current')) {
+  runtime.scopes.command({
+    action: 'scope.put', operationId: 'studio-preview-workspace', expectedRevision: 0,
+    scope: {
+      id: 'studio-preview', tenantId: 'studio-preview', name: 'Roppo Studio',
+      managers: [JSON.stringify(['local', 'operator'])], sourceIds: ['local'],
+      workerIds: (config.execution.workers ?? []).map(worker => worker.id), backendIds: ['studio'],
+    },
+  });
+}
+const host = await serve(runtime, { createRuntime, clientHome: join(root, 'client-home') });
 runtime.start();
 const token = readFileSync(host.tokenPath, 'utf8').trim();
 async function signin(setup = false) {

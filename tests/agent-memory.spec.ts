@@ -21,6 +21,8 @@ function fixture(output?:(input:any,request:ModelRequest)=>unknown|Promise<unkno
  for(const name of ['g1','g2'])h.scopes.command({action:'entry.bind',operationId:name,expectedRevision:0,scopeId:'team',sourceId:'local',accountNamespace:'account',nativeId:name,history:'group'})
  const send=(text='Setup',thread='session',actor='alice',group='g1')=>{const result=h.receive('local',actor,{id:'input-'+(++seq),scope:group,thread,text,addressed:true}) as any;return context(result.triggerId)}
  const context=(id:string)=>{const trigger=h.store.triggers.get(id)!;return h.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id)!}
+ // Bootstrap a manager context without queuing the synthetic setup message for extraction.
+ h.store.put('memory-policy','team',{revision:0,value:{writeMode:'explicit_only'}})
  const initial=send()
  const configure=(value:any={})=>{const c=context(initial.trigger.id);return h.agentMemory.manage(c,{action:'configure',expectedRevision:h.agentMemory.policyRevision(c),policy:{...h.agentMemory.policy(c),delayMs:0,minIntervalMs:0,...value}})}
  const learn=async()=>{h.agentMemory.tick();await h.agentMemory.drain()}

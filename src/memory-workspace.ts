@@ -53,6 +53,7 @@ function initialChatLearning(host: Runtime, owner: string) {
  return {
   enabled: privateScope && policy.enabled && scope?.memoryEnabled !== false && policy.writeMode !== 'explicit_only',
   editable: !scope && policy.enabled,
+  available: host.scopes.enabled() && privateScope && scope?.memoryEnabled !== false,
   revision: privateScope ? stored?.revision ?? 0 : 0,
  }
 }

@@ -23,7 +23,7 @@ import './memory.css';
 
 type FileTab = 'MEMORY.md' | 'USER.md' | PersonaFile;
 const files: FileTab[] = ['MEMORY.md', 'USER.md', 'SOUL.md', 'IDENTITY.md', 'AGENTS.md'];
-type InitialLearning = { enabled: boolean; editable: boolean; revision: number };
+type InitialLearning = { enabled: boolean; editable: boolean; available: boolean; revision: number };
 type MemoryWorkspace = { contexts: Entry[]; initialLearning: InitialLearning };
 export function MemorySettings({ L }: { L: Labels }) {
   const [file, setFile] = useState<FileTab>('MEMORY.md'),
@@ -309,7 +309,10 @@ export function MemorySettings({ L }: { L: Labels }) {
             </span>
             <span className="learn-name">
               {L('Learn from conversations', '从对话中学习')}
-              {entries && !hasContext && !canChangeLearning && (
+              {entries && !hasContext && initialLearning && !initialLearning.available && (
+                <small>{L('Conversation memory is not enabled in this workspace', '此工作区尚未启用对话记忆')}</small>
+              )}
+              {entries && !hasContext && initialLearning?.available && !canChangeLearning && (
                 <small>{L('Start a conversation to change this setting', '开始对话后可更改')}</small>
               )}
             </span>

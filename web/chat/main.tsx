@@ -569,10 +569,16 @@ function App() {
     setRoute(url.pathname + url.search + url.hash);
   }, []);
   useEffect(() => {
+    const isLibrary = (hash: string) => hash === '#integrations' || /^#integrations\/library(?:\/|$)/.test(hash);
+    let previousHash = location.hash;
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
-      switchView("page",()=>setRoute(location.pathname + location.search + location.hash));
+      const next = location.pathname + location.search + location.hash;
+      // Filtering and opening library items update the same page, including its live search input.
+      if (isLibrary(previousHash) && isLibrary(location.hash)) setRoute(next);
+      else switchView("page", () => setRoute(next));
+      previousHash = location.hash;
     };
     const click = (event: MouseEvent) => {
       if (

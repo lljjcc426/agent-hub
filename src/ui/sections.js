@@ -141,7 +141,7 @@ function settingsGroupName(key) {
     backends: L('Model connections', '模型连接'),
     execution: L('Execution', '执行配置'), models: L('Role models', '角色模型'),
     model: L('Default model', '默认模型'), effort: L('Reasoning effort', '推理强度'),
-    concurrency: L('Worker count', 'Worker 数量'), acceptMode: L('Intake mode', '接收模式'),
+    concurrency: L('Worker count', 'Worker 数量'), acceptMode: L('Automatic follow-up', '自动跟进'),
     rules: L('Find tasks in messages', '从消息中发现任务'), prompts: L('Prompts', '提示词'), sources: L('Connections', '软件接入'),
     watchdog: L('Stall detection', '停滞监测'), work: L('Runtime limits', '运行与隔离'),
     delivery: L('Publishing and merging', '发布与合并')

@@ -761,7 +761,7 @@ function Chat(p: ChatProps) {
   const hash = route.split("#")[1] ?? "tasks";
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
-  const marketTools=hash==='integrations'||hash==='integrations/tools';
+  const marketTools=hash==='integrations/tools';
   const views=useWorkspaceViews();
   const pluginId=configuring&&hash.startsWith('plugin/')?hash.slice(7):null;
   const currentView=views.find(view=>view.id===pluginId);

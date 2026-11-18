@@ -12,7 +12,17 @@ const icons={mcp:Cable,skill:BookOpen,plugin:Package,app:Plug,tool:Wrench}
 const labels={all:['All','全部'],mcp:['MCP servers','MCP 服务'],skill:['Skills','Skills'],plugin:['Plugins','插件'],app:['App connections','应用连接'],tool:['Tools','工具']} as const
 const states:Record<CapabilityStatus,[string,string]>={builtin:['Built in','内置'],configured:['Configured','已配置'],cli:['CLI profile','CLI 配置'],connected:['Reported by server','服务已响应'],disabled:['Disabled','未启用'],conditional:['Task dependent','按任务启用'],unavailable:['Unavailable','暂不可用'],candidate:['Candidate','候选'],installed:['Installed','已安装'],declared:['Declared by plugin','插件声明'],cached:['Last seen','上次读取']}
 const base='/configure#integrations/library'
-const sectionLinks=[['market','Marketplace','市场'],['installed','Installed','已安装'],['updates','Updates','更新'],['tools','Tool connections','工具连接'],['library','Capability library','能力库']] as const
+const sourceOf=(item:Capability)=>item.sourceGroup??item.source
+function matchesSearch(item:Capability,term:string){
+  return !term||[item.name,sourceOf(item),item.source,...(item.facts??[]),...(item.tools??[]).map(t=>t.name)].some(value=>value.toLocaleLowerCase().includes(term))
+}
+function sourceOrder(a:string,b:string){
+  if(a===b)return 0
+  if(a==='Roppo')return -1
+  if(b==='Roppo')return 1
+  return a.localeCompare(b)
+}
+const sectionLinks=[['library','Capability library','能力库'],['market','Marketplace','市场'],['installed','Installed','已安装'],['updates','Updates','更新'],['tools','Tool connections','工具连接']] as const
 export function MarketNavigation({tab,language,updates=0}:{tab:string;language:Language;updates?:number}){
   return <nav className="market-tabs" aria-label={language==='en'?'Plugin sections':'插件页面'}>{sectionLinks.map(([id,en,zh])=><a key={id} href={'/configure#integrations/'+id} aria-current={tab===id?'page':undefined}>{language==='en'?en:zh}{id==='updates'&&updates>0?<span>{updates}</span>:null}</a>)}</nav>
 }
@@ -31,10 +41,11 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
   const [, , segment,deepId]=route.split('/')
   const filter:Filter=capabilityKinds.includes(segment as CapabilityKind)?segment as CapabilityKind:'all'
   const id=segment==='item'?deepId:undefined
+  const [source,setSource]=useState('')
   const [query,setQuery]=useState(''),[data,setData]=useState<CapabilitySnapshot>(),[failed,setFailed]=useState(false),[refresh,setRefresh]=useState(0)
   const [detail,setDetail]=useState<Detail>(),[detailError,setDetailError]=useState(false),[inspect,setInspect]=useState(''),[copied,setCopied]=useState(false)
   const [menuFilter,setMenuFilter]=useState<Filter>(filter),[toolLimit,setToolLimit]=useState(30)
-  const activeFilter=id?menuFilter:filter,search=useRef<HTMLInputElement>(null),heading=useRef<HTMLHeadingElement>(null),list=useRef<HTMLElement>(null)
+  const search=useRef<HTMLInputElement>(null),heading=useRef<HTMLHeadingElement>(null),list=useRef<HTMLElement>(null)
   const [listReady,setListReady]=useState(0)
   useEffect(()=>{
     const ctrl=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined
@@ -54,9 +65,32 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
   },[])
   useEffect(()=>{if(!id)setMenuFilter(filter)},[id,filter])
   const all=data?.items??[],term=query.trim().toLocaleLowerCase()
-  const matches=useMemo(()=>(data?.items??[]).filter(r=>!term||[r.name,r.source,...(r.facts??[]),...(r.tools??[]).map(t=>t.name)].some(s=>s.toLocaleLowerCase().includes(term))).sort((a,b)=>Number(b.source==='Roppo')-Number(a.source==='Roppo')||a.name.localeCompare(b.name)),[data,term])
-  const visible=matches.filter(r=>activeFilter==='all'||r.kind===activeFilter)
-  const selected=id?all.find(r=>r.id===id):capabilityKinds.flatMap(k=>visible.find(v=>v.kind===k)??[])[0]
+  const linked=id?all.find(item=>item.id===id):undefined
+  const activeFilter=id?menuFilter:filter
+  useEffect(()=>{
+    if(!linked||location.hash!=='#integrations/library/item/'+linked.id)return
+    if(source&&sourceOf(linked)!==source)setSource(sourceOf(linked))
+    if(menuFilter!=='all'&&menuFilter!==linked.kind)setMenuFilter(linked.kind)
+    if(!matchesSearch(linked,term))setQuery('')
+  },[linked,source,menuFilter,term])
+  const sources=useMemo(()=>Array.from(new Set(data?.items.map(sourceOf))).sort(sourceOrder),[data])
+  const activeSource=sources.includes(source)?source:''
+  const inSource=activeSource?all.filter(item=>sourceOf(item)===activeSource):all
+  const groups=useMemo(()=>{
+    const result=new Map<string,Capability[]>()
+    for(const item of data?.items??[]){
+      const origin=sourceOf(item)
+      if((activeSource&&origin!==activeSource)||(activeFilter!=='all'&&item.kind!==activeFilter))continue
+      if(!matchesSearch(item,term))continue
+      const group=result.get(origin)
+      if(group)group.push(item)
+      else result.set(origin,[item])
+    }
+    for(const items of result.values())items.sort((a,b)=>capabilityKinds.indexOf(a.kind)-capabilityKinds.indexOf(b.kind)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id))
+    return [...result].sort(([a],[b])=>sourceOrder(a,b))
+  },[data,activeSource,activeFilter,term])
+  useEffect(()=>{if(list.current)list.current.scrollTop=0},[activeSource,activeFilter,term])
+  const selected=id?linked:groups[0]?.[1][0]
   const selectedId=selected?.id
   useEffect(()=>{
     setDetail(undefined);setDetailError(false);setCopied(false);setToolLimit(30)
@@ -78,20 +112,31 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
       <div className="cap-actions"><label className="market-search"><Search size={16}/><input ref={search} aria-label={L('Search capabilities or tool names','搜索能力或工具名')} placeholder={L('Search capabilities or tool names','搜索能力或工具名')} value={query} onChange={e=>changeQuery(e.target.value)}/>{query?<button aria-label={L('Clear search','清空搜索')} onClick={()=>changeQuery('')}><X size={14}/></button>:<kbd>/</kbd>}</label>
       <button aria-label={L('Refresh library','刷新能力库')} title={L('Refresh library','刷新能力库')} onClick={()=>setRefresh(v=>v+1)}><RefreshCw size={16}/></button></div></header>
     <MarketNavigation tab="library" language={language}/>
-    <nav className="cap-filters" aria-label={L('Capability types','能力类型')}>{(['all',...capabilityKinds] as const).map(k=><button key={k} aria-pressed={k===activeFilter} onClick={()=>filterTo(k)}>{labels[k][i]} <span>{k==='all'?all.length:all.filter(r=>r.kind===k).length}</span></button>)}</nav>
+    <div className="cap-toolbar"><nav className="cap-filters" aria-label={L('Capability types','能力类型')}>{(['all',...capabilityKinds] as const).map(k=><button key={k} aria-pressed={k===activeFilter} onClick={()=>filterTo(k)}>{labels[k][i]} <span>{k==='all'?inSource.length:inSource.filter(r=>r.kind===k).length}</span></button>)}</nav>
+      <select aria-label={L('Filter by source','按来源筛选')} value={activeSource} onChange={e=>{setSource(e.target.value);if(id)filterTo(activeFilter)}}>
+        <option value="">{L('All sources','全部来源')}</option>
+        {sources.map(name=><option key={name} value={name}>{name}</option>)}
+      </select>
+    </div>
     {failed?<div role="alert" className="cap-notice">{L('Could not load the library.','未能读取能力库。')} <button onClick={()=>setRefresh(v=>v+1)}>{L('Retry','重试')}</button></div>:null}
     {data?.warnings.length?<div className="cap-notice" role="status">{L('Some sources could not be fully read','部分来源未能完整读取')} · {data.warnings.join('、')}</div>:null}
     {data?.refreshing?<div className="cap-notice" role="status"><LoaderCircle className="spin" size={14}/>{L('Reading CLI catalogs…','正在读取 CLI 目录…')}</div>:null}
     <div className={'cap-workspace'+(id?' is-reading':'')}>
       <nav className="cap-list" ref={list} aria-label={L('Workspace capabilities','工作区能力列表')}>
-        {capabilityKinds.map(k=>{const group=visible.filter(r=>r.kind===k);return group.length?<section key={k}><h3>{labels[k][i]} <span>{group.length}</span></h3>{group.map(v=><button key={v.id} aria-current={v.id===selectedId?'true':undefined} onClick={()=>select(v)}><Icon item={v} size={18}/><span><strong>{v.name}</strong><small>{v.source}</small></span><ChevronRight className="cap-arrow" size={14}/></button>)}</section>:null})}
-        {!visible.length?<p className="cap-placeholder">{data?L('No matching capabilities','没有匹配的能力'):L('Loading…','正在加载…')}</p>:null}
+        {groups.map(([origin,items])=><section key={origin} aria-label={origin}>
+          <h3>{origin}<span>{items.length}</span></h3>
+          {items.map(item=><button key={item.id} aria-current={item.id===selectedId?'true':undefined} onClick={()=>select(item)}>
+            <Icon item={item} size={18}/><span><strong>{item.name}</strong><small>{labels[item.kind][i]}{item.source!==origin?' · '+item.source:''}</small></span><ChevronRight className="cap-arrow" size={14}/>
+          </button>)}
+        </section>)}
+        {!groups.length?<p className="cap-placeholder">{data?L('No matching capabilities','没有匹配的能力'):L('Loading…','正在加载…')}</p>:null}
       </nav>
       <article className="cap-detail" aria-label={L('Capability details','能力详情')} key={selectedId??id}>
         <button className="cap-back" onClick={()=>{filterTo(activeFilter);requestAnimationFrame(()=>list.current?.querySelector<HTMLButtonElement>('[aria-current]')?.focus())}}><ArrowLeft size={16}/>{L('Back to list','返回列表')}</button>
         {shown?<><div className="cap-detail-head"><Icon item={shown} size={27}/><div><p>{labels[shown.kind][i]}</p><h2 ref={heading} tabIndex={-1}>{shown.name}</h2></div><button aria-label={L('Copy link','复制条目链接')} title={copied?L('Copied','已复制'):L('Copy link','复制条目链接')} onClick={()=>void copy()}>{copied?<Check size={17}/>:<Link2 size={17}/>}</button></div>
           {shown.description?<p className="cap-intro">{shown.description}</p>:null}
-          <dl className="cap-facts"><div><dt>{L('Source','来源')}</dt><dd>{shown.source}</dd></div>
+          <dl className="cap-facts"><div><dt>{L('Source','来源')}</dt><dd>{sourceOf(shown)}</dd></div>
+            {sourceOf(shown)!==shown.source?<div><dt>{L('Registered in','登记位置')}</dt><dd>{shown.source}</dd></div>:null}
             <div><dt>{L('Status','状态')}</dt><dd><span className={'cap-status state-'+shown.status}>{states[shown.status][i]}</span></dd></div>
             {shown.roles?<div><dt>{L('Roles','适用角色')}</dt><dd>{shown.roles.join(' · ')||L('No role assigned','未分配角色')}</dd></div>:null}
             {shown.version?<div><dt>{L('Version','版本')}</dt><dd>{shown.version}</dd></div>:null}

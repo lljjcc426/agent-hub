@@ -48,7 +48,7 @@
 
 动效只表达实际状态：抽屉展开、按钮切换、真实下载进度、步骤完成。未知下载总量时使用不定进度。支持 reduced motion、键盘、移动端全屏详情和黑白主题。
 
-建议路由为 `#integrations/market`、`#integrations/installed`、`#integrations/updates`、`#integrations/tools`。旧 `#integrations` 保持工具连接语义，导航入口指向 market。
+建议路由为 `#integrations/market`、`#integrations/installed`、`#integrations/updates`、`#integrations/tools`。导航入口默认打开能力库 `#integrations/library`，旧 `#integrations` 也打开能力库。
 
 ## GitHub 目录与发行包
 

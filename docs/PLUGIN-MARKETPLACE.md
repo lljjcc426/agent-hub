@@ -1,6 +1,6 @@
 # Plugin marketplace
 
-Roppo's **Tools and apps → Marketplace** manages GitHub-distributed workspace views and application connectors. It shares the conversation application's navigation, account, language and white/dark themes. Existing tool configuration remains under **Tool connections**; `/configure#integrations` still opens that surface.
+Roppo's **Tools and apps → Marketplace** manages GitHub-distributed workspace views and application connectors. It shares the conversation application's navigation, account, language and white/dark themes. Opening **Tools and apps** or `/configure#integrations` shows the **Capability library**, grouped by source with Roppo first. Open **Tool connections** at `/configure#integrations/tools` to manage connections.
 
 ## Install and update
 

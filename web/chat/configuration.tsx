@@ -11,7 +11,7 @@ let memoryElement: HTMLDivElement | undefined;
 let browserElement: HTMLDivElement | undefined;
 let chatElement: HTMLDivElement | undefined;
 const active = () =>
-  location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
+  location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!/^#integrations(?:\/|$)/.test(location.hash)||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
   location.pathname === "/configure/" ||
   location.pathname === "/");
 async function prepare() {

@@ -126,12 +126,8 @@ function teamGraph() {
   const route = executionDraft(), connections = controlConnections(), workers = teamWorkers()
   const graph = el('section', 'team-map')
   graph.setAttribute('aria-label', L('Router and Worker configuration', 'Router 与 Worker 配置关系'))
-  const source = add(el('div', 'team-origin'), icon('conversations'), el('span', '', L('You & your team', '你与团队')),
-    opButton(L('Conversation entries', '会话入口'), () => opNavigate('catalog'), 'text-button'))
   const model = route.routerModel || connections.find(item => item.id === route.router)?.model
   const router = teamNode('router', S.draft.execution.router?.label || 'Router', 'Router', model)
-  const line = el('div', 'team-route-label', L('Delegates work · receives results', '分派任务 · 接收结果'))
-  line.setAttribute('aria-hidden', 'true')
   const list = el('div', 'team-worker-list')
   for (const [index, worker] of workers.entries()) {
     const status = worker.state === 'paused' ? L('Intake: paused', '接单设置：暂停') : worker.state === 'retiring' ? L('Retire after existing work', '完成已有任务后退出') : ''
@@ -142,7 +138,7 @@ function teamGraph() {
   addWorker.dataset.addWorker = ''
   addWorker.disabled = workers.length >= teamWorkerLimit()
   const capacity = el('span', 'team-capacity', workers.length + ' / ' + teamWorkerLimit()); capacity.id = 'team-capacity'
-  graph.append(source, el('div', 'team-trunk'), router, line,
+  graph.append(add(el('div', 'team-pool-heading'), el('h2','','Router'), opButton(L('Conversation entries', '会话入口'), () => opNavigate('catalog'), 'text-button')), router,
     add(el('div', 'team-pool-heading'), el('h2', '', L('Workers', '执行者')), capacity, addWorker),
     ...(teamFeatures().management ? [teamPoolLimit()] : []), list)
   const remote=el('div','team-remote-list')

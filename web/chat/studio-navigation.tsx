@@ -26,12 +26,13 @@ import {
 import { Brand, ChoiceGroup, IconButton, NavLink, SelectionIndicator, SwitchView } from '../ui';
 import { AgentAvatar } from './agent-avatar.tsx';
 import { SidebarSeparator } from './sidebar-separator.tsx';
+import { workspaceGroups } from './workspace-settings.tsx';
 import { spaceRequest } from './chat-settings.tsx';
 
 type L = (en: string, zh: string) => string;
 type Agent = { id: string; label: string; kind: 'worker' | 'router' };
 type Entry = { key: string; name: string; icon: LucideIcon; match?: (path: string) => boolean };
-function sections(L: L, views: { id: string; label: string }[]) {
+function sections(L: L, views: { id: string; label: string }[], query: string) {
   const row = (key: string, name: string, icon: LucideIcon, match?: Entry['match']): Entry => ({
     key,
     name,
@@ -68,11 +69,12 @@ function sections(L: L, views: { id: string; label: string }[]) {
         ),
         row('deployments', L('Deployments', '部署'), Layers),
         row(
-          'advanced/host',
+          'workspace',
           L('Workspace settings', '工作区设置'),
           Server,
-          (h) => h.startsWith('advanced') && h !== 'advanced/memory',
+          (h) => h === 'workspace' || (h.startsWith('advanced') && h !== 'advanced/memory'),
         ),
+        ...(query ? workspaceGroups(L).flatMap(group => group.items.map(item => row('advanced/' + item.route, item.name, item.Icon))) : []),
         ...views.map((v) => row('plugin/' + v.id, v.label, LayoutGrid)),
         row('usage', L('User guide', '使用指引'), BookOpen),
       ],
@@ -114,6 +116,10 @@ export function StudioRail({
   useEffect(() => {
     setSearch('');
   }, [configuring]);
+  const query = search.trim().toLowerCase();
+  const groups = configuring ? sections(L, views, query)
+    .map(group => ({...group, rows: group.rows.filter(item => item.name.toLowerCase().includes(query))}))
+    .filter(group => group.rows.length) : [];
   const router = participants.find((p) => p.kind === 'router');
   function choose(id: string) {
     select(id);
@@ -162,15 +168,7 @@ export function StudioRail({
                 />
               </label>
               <nav className="studio-settings-links" aria-label={L('Settings', '设置')}>
-                {sections(L, views)
-                  .map((group) => ({
-                    ...group,
-                    rows: group.rows.filter((r) =>
-                      r.name.toLowerCase().includes(search.trim().toLowerCase()),
-                    ),
-                  }))
-                  .filter((g) => g.rows.length)
-                  .map((group) => (
+                {groups.map((group) => (
                     <section key={group.name}>
                       <h3>{group.name}</h3>
                       <div className="nav-track">
@@ -193,10 +191,7 @@ export function StudioRail({
                       </div>
                     </section>
                   ))}
-                {search &&
-                  !sections(L, views).some((g) =>
-                    g.rows.some((r) => r.name.toLowerCase().includes(search.trim().toLowerCase())),
-                  ) && <p role="status">{L('No matches', '没有匹配的设置')}</p>}
+                {query && !groups.length && <p role="status">{L('No matches', '没有匹配的设置')}</p>}
               </nav>
             </>
           ) : (

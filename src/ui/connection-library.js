@@ -52,21 +52,23 @@ function connectionLibrary() {
   }
   const search = el('input'); search.id = 'model-connection-search'; search.type = 'search'; search.placeholder = L('Search name, account or address', '搜索名称、账号或地址'); search.value = connectionLibraryState.search; search.setAttribute('aria-label', search.placeholder)
   page.append(add(el('div', 'connection-toolbar'), tabs, add(el('label', 'connection-search'), icon('search'), search)))
-  const headings = add(el('div', 'connection-columns'), ...[L('Connection', '连接'), L('Latest test', '最近测试'), L('Used by', '使用情况'), L('Actions', '操作')].map(t => el('span', '', t))); headings.setAttribute('aria-hidden', 'true'); page.append(headings)
-  const list = el('ul', 'model-service-list'), footer = el('div', 'connection-list-footer')
+  const list = el('ul', 'model-service-list')
+  list.setAttribute('aria-label', L('Saved connections', '已保存的连接'))
   const draw = () => {
     const query = connectionLibraryState.search.toLowerCase(), filtered = services.filter(s => (connectionLibraryState.filter === 'all' || s.connectionType === connectionLibraryState.filter) && [s.label, s.endpoint, connectionStudio.accounts.find(a => a.id === s.definition?.subscription?.account)?.email].join(' ').toLowerCase().includes(query))
     list.replaceChildren(...filtered.map(service => {
       const status = connectionCheckStatus(service), uses = connectionUses(service.id)
       const test = opButton(L('Test connection', '测试连接'), () => { connectionLibraryState.selected = service.id; render() }, 'text-button')
       const manage = opButton(L('Manage ', '管理 ') + service.label, () => { connectionLibraryState.selected = service.id; render() }, 'icon-button', 'advanced'); manage.dataset.connection = service.id
-      return add(el('li', 'model-service-row'), connectionIdentity(service, true), add(el('div', 'connection-latest'), connectionStatusLabel(service), status.result ? el('time', 'model-service-meta', new Date(status.result.at).toLocaleString(lang === 'zh-CN' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })) : document.createTextNode('')),
-        el('span', 'connection-usage', uses.length ? L(uses.length + ' uses', uses.length + ' 处使用') : L('Unused', '未使用')), add(el('div', 'actions'), test, manage))
+      const latest = add(el('div', 'connection-latest'), connectionStatusLabel(service))
+      if (status.result) latest.append(el('time', 'model-service-meta', new Date(status.result.at).toLocaleString(lang, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})))
+      return add(el('li', 'model-service-row'), connectionIdentity(service, true),
+        add(el('div','library-state'), latest, el('span', 'connection-usage', uses.length ? L(uses.length + ' uses', uses.length + ' 处使用') : L('Unused', '未使用'))),
+        add(el('div', 'actions'), test, manage))
     }))
     if (!filtered.length) list.append(add(el('li', 'connection-empty'), el('h3', '', L('No matching connections', '没有匹配的连接')), opButton(L('Clear search', '清除搜索'), () => { connectionLibraryState.search = ''; connectionLibraryState.filter = 'all'; render() }, 'button')))
-    footer.replaceChildren(el('span', '', L(filtered.length + ' connections', filtered.length + ' 个连接')))
   }
-  search.oninput = () => { connectionLibraryState.search = search.value; draw() }; draw(); page.append(list, footer)
+  search.oninput = () => { connectionLibraryState.search = search.value; draw() }; draw(); page.append(list)
   const selected = services.find(s => s.id === connectionLibraryState.selected)
   if (selected) page.append(connectionDetails(selected))
   return [page]

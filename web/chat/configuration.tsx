@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {createPortal} from "react-dom";
 import {BrowserPanel} from './browser.tsx';
 import {ChatSettings} from './chat-settings.tsx';
@@ -11,7 +11,7 @@ let memoryElement: HTMLDivElement | undefined;
 let browserElement: HTMLDivElement | undefined;
 let chatElement: HTMLDivElement | undefined;
 const active = () =>
-  location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
+  !['#general', '#team', '#workspace', ''].includes(location.hash) && location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
   location.pathname === "/configure/" ||
   location.pathname === "/");
 async function prepare() {
@@ -47,6 +47,10 @@ export function Configuration({
     [browserTarget,setBrowserTarget]=useState<HTMLDivElement|null>(null),
     [chatTarget, setChatTarget] = useState<HTMLDivElement|null>(null),
     [memoryTarget, setMemoryTarget] = useState<HTMLDivElement|null>(null);
+  const viewport = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (visible) viewport.current?.scrollTo(0, 0);
+  }, [route, visible]);
   const pickerHandled = useRef(0);
   const latest = useRef({ visible, language });
   latest.current = { visible, language };
@@ -87,6 +91,7 @@ export function Configuration({
   }, [language]);
   return (
     <section
+      ref={viewport}
       className="configuration-outlet"
       hidden={!visible}
       aria-label={language === "en" ? "Workspace content" : "工作区内容"}

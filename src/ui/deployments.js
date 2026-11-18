@@ -172,10 +172,9 @@ function renderDeployments(){
  if(deploymentState.error)result.push(el('p','alert warning',L('Status could not be refreshed. ','状态未能刷新。')+deploymentState.error))
  if(!data)return [...result,el('p','hint',L('Reading instance status…','正在读取实例状态…'))]
  result.push(add(el('section','deployment-card'),el('h2','',L('This instance','本实例')),
-  el('p','',L('Host version: ','宿主版本：')+(S.health?.version||'—')),
-  el('p','hint',data.enabled?L('Team delegation is enabled.','已开启团队委派。'):L('Team delegation is disabled. Existing local work is unaffected.','尚未开启团队委派，本地任务可继续使用。')),
-  data.identity?el('p','deployment-identity',L('Instance identity: ','实例身份：')+data.identity.id):null,
-  data.enabled?el('p','hint',L('Signed local connections · one remote hop · independent child team coordination','本机签名连接 · 最多一跳远端委派 · 子团队独立统筹')):null))
+  rows(datum(L('Host version','主机版本'), S.health?.version || '—'),
+       datum(L('Team delegation','跨团队委派'), data.enabled ? L('Enabled','已开启') : L('Off','未开启')),
+       ...(data.identity ? [datum(L('Instance identity','实例身份'),data.identity.id,true)] : []))))
  if(data.recoveryRequired){
   const check=el('input');check.type='checkbox'
   const label=add(el('label','deployment-field'),check,el('span','',L('The original instance is stopped and I have reviewed external effects. Old connections will be revoked.','原实例已停止，且我已核对外部执行结果；旧连接将全部撤销。')))
@@ -187,7 +186,7 @@ function renderDeployments(){
   return result
  }
  if(!data.enabled){
-  result.push(el('p','hint',L('Enable delegation in the deployment configuration, with a dedicated delegated-work source, then restart using the same private state. The deployment guide describes this setup.','请按部署指南启用委派和专用工作来源，再沿用原私有状态启动实例。')))
+  result.push(detail(L('How to enable delegation','如何开启跨团队委派'),el('p','',L('Enable delegation in the deployment configuration, with a dedicated delegated-work source, then restart using the same private state. The deployment guide describes this setup.','请按部署指南启用委派和专用工作来源，再沿用原私有状态启动实例。'))))
   if(!data.outbound.length&&!data.inbound.length&&!data.goals?.length)return result
  }
  if(data.enabled)result.push(add(el('div','deployment-grid'),deploymentConnect(data),deploymentExport(data)))

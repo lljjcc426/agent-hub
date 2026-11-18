@@ -256,8 +256,27 @@ function opCatalogue(){
   const tabs=el('div','tabs');tabs.setAttribute('role','group');tabs.setAttribute('aria-label',L('Software category','软件分类'))
   for(const [id,label]of groups){const b=opButton('',()=>{operator.filter=id;render()},'tab');b.setAttribute('aria-pressed',String(operator.filter===id));b.replaceChildren(el('span','',label),el('span','',entries.filter(e=>matches(e,id)).length));tabs.append(b)}
   const input=el('input');input.type='search';input.id='operator-search';input.value=operator.search;input.placeholder=L('Search software…','搜索软件…');input.setAttribute('aria-label',L('Search software','搜索软件'))
-  const grid=el('div','integration-grid');grid.id='operator-catalogue'
-  const cards=()=>{const visible=entries.filter(e=>matches(e,operator.filter)&&(entryName(e)+' '+e.id).toLowerCase().includes(operator.search.toLowerCase()));grid.replaceChildren(...(visible.length?visible.map(e=>{const card=opButton('',()=>controlNewConnection(e.id),'integration-card');card.replaceChildren(add(el('div','integration-card-header'),opMark(e.id,'large'),el('h3','',entryName(e)),opPill(e)),el('p','',entryDescription(e.id)),add(el('div','integration-card-bottom'),el('span','',e.usage?.location||(e.category==='client'?L('Personal host connection','宿主个人连接'):L('Connect to your team','接入团队会话'))),icon('arrow')));return card}):[el('p','no-results',L('No matching software. Try another name.','没有找到匹配的软件，请换个名称搜索。'))]))}
+  const grid = el('div', 'catalogue-groups')
+  grid.id = 'operator-catalogue'
+  const cards = () => {
+    const query = operator.search.trim().toLowerCase()
+    const visible = entries.filter(entry => matches(entry, operator.filter) && (entryName(entry) + ' ' + entry.id).toLowerCase().includes(query))
+    grid.replaceChildren()
+    if (!visible.length) grid.append(opEmpty(L('No matching software', '没有匹配的软件')))
+    for (const [category,title] of groups.slice(2)) {
+      const members = visible.filter(entry => matches(entry, category))
+      if (!members.length) continue
+      const list = el('div','catalogue-list')
+      for (const entry of members) {
+        const row = opButton('', () => controlNewConnection(entry.id), 'catalogue-row')
+        row.append(opMark(entry.id), el('span','catalogue-name',entryName(entry)))
+        if (entry.status !== 'not-configured') row.append(opPill(entry))
+        row.append(icon('forward'))
+        list.append(row)
+      }
+      grid.append(add(el('section'), el('h2','',title), list))
+    }
+  }
   input.oninput=()=>{operator.search=input.value;cards()};cards()
   return [opButton(L('Software connections','软件接入'),()=>opNavigate('catalog'),'back-link','arrow'),
     opHeading(L('New connection','新建接入'),null),
@@ -318,8 +337,8 @@ function opUsage() {
     [L('Send a request', '交代任务'), L('Describe the work and the result you need.', '说明要做的事和你希望得到的结果。')],
     [L('Continue in the same conversation', '在原会话跟进'), L('Add context and collect the result in the original conversation.', '在原会话补充信息并接收结果。')]
   ]
-  const list = add(el('ol', 'usage-steps'), ...steps.map(([title, text]) =>
-    add(el('li'), el('h2', '', title), el('p', 'hint', text))))
+  const guides = add(el('section', 'guide-topics'), el('h2','',L('Chat and tasks','对话与任务')),
+    ...steps.map(([title,text])=>detail(title, el('p','',text))))
   const connections = panel(L('Connected entries', '已接入的入口'),
     ...configured.map(entry => detail(entryName(entry), add(el('div', 'stack'),
       entry.usage?.location ? el('strong', '', entryText(entry.usage.location)) : null,
@@ -332,7 +351,7 @@ function opUsage() {
       opButton(L('Open shared instructions', '打开共享使用说明'), () => chooseEntryRole('user'), 'button'),
       configured.length ? opButton(L('Prepare usage instructions', '生成使用说明'),
         () => shareEntries(configured.map(entry => entry.id)), 'button primary') : null),
-    add(el('div', 'settings-with-aside guide-layout'), list, connections),
+    add(el('div', 'guide-layout'), guides, connections),
     entryLink(L('Feishu API statistics', '飞书接口统计'), '/api-usage/view', 'button'),
     entryState.share ? entryShareResult() : null
   ]

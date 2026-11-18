@@ -219,3 +219,17 @@
 @media (max-width: 380px) {
   .operator-workspace .prompt-rules-tab { font-size: var(--roppo-font-control); padding-inline: 2px; word-break: keep-all; }
 }
+
+.operator-workspace .catalogue-groups { display: grid; gap: 24px; }
+.operator-workspace .catalogue-groups h2 { margin: 0 0 10px; font-size: 17px; }
+.operator-workspace .catalogue-list {
+  border: 1px solid var(--line); border-radius: 13px; padding: 0;
+}
+.operator-workspace .catalogue-list .catalogue-row {
+  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 54px; padding: 8px 16px;
+  border: 0; background: transparent; text-align: start; color: var(--ink); font: inherit;
+}
+.operator-workspace .catalogue-list .catalogue-row + .catalogue-row { border-top: 1px solid var(--line); }
+.operator-workspace .catalogue-list .catalogue-row:hover { background: var(--soft); }
+.operator-workspace .catalogue-row .catalogue-name { flex: 1; font-weight: 550; }
+.operator-workspace .catalogue-row > svg { color: var(--muted); }

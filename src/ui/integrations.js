@@ -186,14 +186,14 @@ function integrationDeployment() {
 }
 function controlIntegrations() {
   const root = el('section', 'integrations-page')
-  root.append(el('h1', '', L('Tools and apps', '工具与应用')))
+  if (typeof configurationHost === 'undefined' || !configurationHost) root.append(el('h1', '', L('Tools and apps', '工具与应用')))
   if (integrations.error) root.append(el('p', 'alert error', integrations.error))
   if (!integrations.data) {
     root.append(el('p', 'team-help', L('Integration inventory is unavailable on this host.', '此宿主尚未提供接入清单。')))
     return [root]
   }
   const tools = el('section'), cards = el('div', 'integration-grid')
-  tools.append(el('h2', '', L('Worker tool connections', 'Worker 工具连接')), el('p', 'team-help', L('Configured connections. Grant access per Worker in Agent team → Tools.', '以下为已配置连接。请在 Agent 团队 → 工具中逐个授权 Worker。')))
+  tools.append(el('h2', '', L('Worker tool connections', 'Worker 工具连接')))
   for (const item of integrations.data.tools) {
     const eligible = teamWorkers().filter(worker => !item.workers || item.workers.includes(worker.id))
     const workers = eligible.filter(worker => (worker.toolConnections ?? S.draft.backends?.[worker.backend]?.defaults?.toolConnections ?? []).includes(item.id))
@@ -201,9 +201,9 @@ function controlIntegrations() {
       el('p', 'integration-tool-names', item.allowedTools.join(' · ')), el('p', 'team-help', L('Granted in draft: ', '当前草稿授权：') + (workers.map(w => w.label || w.id).join(', ') || L('None', '无'))),
       opButton(L('Set Worker access', '设置 Worker 授权'), () => { teamStudio.selected = eligible[0]?.id || 'router'; teamStudio.tab = 'tools'; opNavigate('execution', '', { view: 'configuration' }) }, 'button')))
   }
-  if (!integrations.data.tools.length) cards.append(el('p', 'team-help', L('No tool connections configured.', '尚未配置工具连接。')))
+  if (!integrations.data.tools.length) cards.append(opEmpty(L('No tool connections configured', '尚未配置工具连接')))
   tools.append(cards); root.append(tools)
-  const apps = el('section'); apps.append(el('h2', '', L('Application adapters', '应用适配器')))
+  const apps = el('section'); apps.append(el('h2', '', L('Apps', '应用连接')))
   const grid = el('div', 'integration-grid')
   const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Lark', 'Feishu/飞书') }
   for (const adapter of integrations.data.adapters) {

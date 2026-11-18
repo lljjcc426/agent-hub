@@ -80,6 +80,8 @@ import "./team-view.css";
 
 import "./sidebar-resize.css";
 import "./studio.css";
+import "./settings-design.css";
+import { WorkspaceSettings, workspaceGroups } from "./workspace-settings.tsx";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
 type Conversation = Snapshot["conversation"];
@@ -763,6 +765,8 @@ function Chat(p: ChatProps) {
   const hash = route.split("#")[1] || "general";
   const general = configuring && hash === "general";
   const teamSettings = configuring && hash === "team";
+  const workspaceIndex = configuring && hash === "workspace";
+  const workspacePage = workspaceGroups(L).flatMap(group => group.items).find(item => hash === "advanced/" + item.route);
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
   const marketTools=hash==='integrations'||hash==='integrations/tools';
@@ -777,7 +781,9 @@ function Chat(p: ChatProps) {
     "tasks/history": L("Activity", "运行记录"),
     attention: L("Activity", "运行记录"),
     "advanced/memory": L("Memory","记忆"),
-    "advanced/host": L("Workspace settings","工作区设置"),
+    workspace: L("Workspace settings","工作区设置"),
+    "models/new": L("New model connection", "新建模型连接"),
+    "connections/new": L("New entry", "新建接入"),
     automations: L("Event automations", "事件自动化"),
     execution: L("Agent team", "Agent 团队"),
     deployments: L("Deployments", "部署"),
@@ -789,7 +795,7 @@ function Chat(p: ChatProps) {
     usage: L("Usage guide", "使用指引"),
   };
   const pageTitle =
-    currentView?.label[lang] ??
+    currentView?.label[lang] ?? workspacePage?.name ??
     pageNames[hash] ??
     pageNames[hash.split("/")[0]!] ??
     L("Workspace", "工作区");
@@ -1280,6 +1286,7 @@ function Chat(p: ChatProps) {
           ) : null}
           <SwitchView scope="page"><main
             className="chat-main"
+            data-settings-view={configuring ? hash : undefined}
             id="conversation"
             tabIndex={-1}
             inert={narrow && menu}
@@ -1296,7 +1303,7 @@ function Chat(p: ChatProps) {
                 <Menu size={20} />
               </button>
               <div className="studio-breadcrumb">
-                {configuring?<><span>{L("Settings","设置")}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></>:
+                {configuring?<><span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong></>:
                   <strong>{readonly ? selected.label : L("Workspace chat","工作区对话")}</strong>}
               </div>
               {!configuring && (snapshot?.messages.length || running) ? <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/> : null}
@@ -1316,12 +1323,13 @@ function Chat(p: ChatProps) {
                 ) : null}
               </div>
             </header>
+            {workspaceIndex && <WorkspaceSettings L={L}/>}
             {teamSettings?<TeamSettings L={L} members={participants.map(member=>({...member,model:member.kind==='router'?ready?.model:workers.find(w=>w.id===member.id)?.model}))}/>:null}
             {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}/>:null}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
             <Configuration
-              visible={configuring&&!general&&!teamSettings&&!automationRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!general&&!workspaceIndex&&!teamSettings&&!automationRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}

@@ -1,5 +1,5 @@
 """Real host UI acceptance. GitHub transport and connector are explicitly isolated fixtures."""
-import json, re, sys
+import json, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -8,32 +8,38 @@ checks=[];errors=[]
 with sync_playwright() as p:
     browser=p.chromium.launch(headless=True)
     context=browser.new_context(viewport={'width':1440,'height':1000})
+    context.add_init_script("if(window===window.top&&!localStorage.getItem('agenthub.configuration.language'))localStorage.setItem('agenthub.configuration.language','en')")
     name,value=info['cookie'].split('=',1);context.add_cookies([{'name':name,'value':value,'url':info['base']}])
     page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+    def preference(label):
+        route=page.url
+        page.goto(info['base']+'/configure#general')
+        page.get_by_role('radio',name=label,exact=True).check()
+        page.goto(route)
     try:
         page.goto(info['url']);page.wait_for_load_state('networkidle')
-        expect(page.get_by_role('heading',name='Plugins & tools',exact=True)).to_be_visible()
+        expect(page.get_by_role('heading',name='Tools & MCP',exact=True)).to_be_visible()
         page.screenshot(path=str(out/'market-light.png'))
-        page.get_by_role('button',name='Switch to dark mode',exact=True).click();page.wait_for_timeout(220)
+        preference('Dark');page.wait_for_timeout(220)
         page.screenshot(path=str(out/'market-dark.png'))
         search=page.get_by_role('textbox',name='Search marketplace');search.fill('NO_SUCH_PLUGIN')
         expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible();expect(search).to_be_focused();search.fill('')
-        types=page.get_by_role('navigation',name='Content type',exact=True)
-        types.get_by_role('button',name=re.compile(r'^Plugins \d+$')).click()
+        types=page.get_by_role('combobox',name='Content type',exact=True)
+        types.select_option('plugin')
         expect(page.locator('.market-card')).to_have_count(2)
-        types.get_by_role('button',name=re.compile(r'^App connections \d+$')).click()
+        types.select_option('app')
         expect(page.get_by_role('heading',name='Agent board',exact=True)).to_have_count(0)
         expect(page.get_by_role('heading',name='Test connector',exact=True)).to_be_visible()
         search.fill('Agent board');expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible()
-        types.get_by_role('button',name=re.compile(r'^All \d+$')).click()
+        types.select_option('all')
         expect(page.locator('.market-card')).to_have_count(2);expect(search).to_have_value('Agent board');search.fill('')
-        types.get_by_role('button',name='Skills 0',exact=True).click()
+        types.select_option('skill')
         expect(page.get_by_role('heading',name='No skill catalog entries',exact=True)).to_be_visible()
         expect(page.get_by_role('link',name='Manage team skills',exact=True)).to_have_attribute('href','/configure#prompts/templates')
-        types.get_by_role('button',name='MCP 0',exact=True).click()
+        types.select_option('mcp')
         expect(page.get_by_role('heading',name='No MCP catalog entries',exact=True)).to_be_visible()
         expect(page.get_by_role('link',name='Manage MCP connections',exact=True)).to_have_attribute('href','/configure#integrations/tools')
-        types.get_by_role('button',name=re.compile(r'^All \d+$')).click()
+        types.select_option('all')
         checks.append('shared shell, themes, combined search/category filters, and skill/MCP empty states with management links')
 
         card=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Agent board',exact=True)).filter(has=page.get_by_role('button',name='Install',exact=True))
@@ -126,7 +132,7 @@ with sync_playwright() as p:
                 return heading && content && heading.width > 0 &&
                     Math.abs(heading.x - content.x) < 1 && Math.abs(heading.width - content.width) < 1;
             }""", timeout=5000)
-            page.get_by_role('button',name='Switch to Chinese' if language=='en' else '切换为英文',exact=True).click()
+            preference('简体中文' if language=='en' else 'English')
             if language=='en':
                 expect(page.get_by_role('heading',name='企业微信',exact=True)).to_be_visible()
                 expect(page.get_by_role('heading',name='Feishu/飞书',exact=True)).to_be_visible()
@@ -139,11 +145,11 @@ with sync_playwright() as p:
         expect(drawer.locator('.market-source').filter(has_text='acme/missing').get_by_role('button',name='Refresh',exact=True)).to_be_enabled()
         page.screenshot(path=str(out/'source-error-dark.png'))
         drawer.get_by_role('button',name='Close / 关闭').click()
-        checks.append('legacy tool settings retained, source management and recoverable GitHub failure')
+        checks.append('tool inventory and market headings aligned, source management and recoverable GitHub failure')
 
-        page.get_by_role('button',name='Switch to Chinese',exact=True).click()
+        preference('简体中文')
         page.emulate_media(reduced_motion='reduce');page.set_viewport_size({'width':390,'height':844})
-        expect(page.get_by_role('heading',name='插件与工具',exact=True)).to_be_visible()
+        expect(page.get_by_role('heading',name='工具与 MCP',exact=True)).to_be_visible()
         assert page.locator('html').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.screenshot(path=str(out/'market-mobile-dark.png'))
         page.get_by_role('button',name='管理来源',exact=True).click();drawer=page.get_by_role('dialog')
@@ -151,7 +157,7 @@ with sync_playwright() as p:
         assert drawer.evaluate('(e)=>getComputedStyle(e).animationName')=='none'
         page.screenshot(path=str(out/'source-mobile-dark.png'))
         drawer.get_by_role('button',name='Close / 关闭').press('Escape')
-        page.get_by_role('button',name='切换为浅色模式',exact=True).click()
+        preference('浅色')
         page.screenshot(path=str(out/'market-mobile-light.png'))
         checks.append('390px Chinese white/dark, no horizontal overflow and reduced-motion drawer')
         assert not errors,errors

@@ -365,11 +365,11 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     <aside
       className={'browser-panel'+(settingsOnly?' browser-settings':'')} aria-label={L("Browser", "浏览器")} id="browser-panel">
       {settingsOnly && <div className="browser-select">
-        <h2>{L('Browsers','浏览器')}</h2>
+        <h2>{L('Saved browsers','已保存的浏览器')}</h2>
         <Button label={L('New browser','新建浏览器')} onClick={newProfile} disabled={busy}><Plus size={17}/></Button>
         <Button label={L('Saved accounts','已保存账号')} onClick={accounts} disabled={!data?.profiles.length}><KeyRound size={17}/></Button>
       </div>}
-      {settingsOnly?<div className="browser-profile-list">{data?.profiles.map(p=><button key={p.id} onClick={()=>{setProfileId(p.id);setProfileName(p.name);setGrants(p.allowedWorkers);setDialog('profile')}}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
+      {settingsOnly?<div className="browser-profile-list">{data?.profiles.length===0 && <div className="settings-empty"><Globe size={24}/><span>{L('No browsers yet','还没有浏览器')}</span></div>}{data?.profiles.map(p=><button key={p.id} onClick={()=>{setProfileId(p.id);setProfileName(p.name);setGrants(p.allowedWorkers);setDialog('profile')}}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
       {error && !dialog && (
         <div className="browser-error" role="alert">
           <span>

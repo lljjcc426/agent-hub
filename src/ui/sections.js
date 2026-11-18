@@ -226,11 +226,19 @@ function renderWorkspaceSettings() {
   ]
   const maintenance = page === 'json' || page === 'revisions'
   const select = view => opNavigate('advanced', '', { view })
-  const views = { browser: () => configurationHost ? [configurationHost.browser()] : [], chat: () => typeof configurationHost !== 'undefined' && configurationHost ? [configurationHost.chat()] : [], host: renderHostStatus, intake: renderPolicy, runtime: renderWork,
+  const views = { browser: () => typeof configurationHost !== 'undefined' && configurationHost ? [configurationHost.browser()] : [], chat: () => typeof configurationHost !== 'undefined' && configurationHost ? [configurationHost.chat()] : [], host: renderHostStatus, intake: renderPolicy, runtime: renderWork,
     delivery: renderDelivery, json: renderSettingsJson, revisions: renderRevisions, memory: () => {
       if(typeof configurationHost !== 'undefined' && configurationHost)return [configurationHost.memory()]
       const link=el('a','text-button',L('Manage memory','管理记忆'));link.href='/configure#advanced/memory';return [link]
     } }
+  if (typeof configurationHost !== 'undefined' && configurationHost) {
+    if (page === 'memory') return views.memory()
+    const names = {host: L('Host status', '主机状态'), chat: L('Chat preferences', '对话设置'),
+      runtime: L('Run limits and isolation', '运行限制与隔离'), json: L('Configuration editor', '配置编辑器'),
+      revisions: L('Version history', '版本记录')}
+    const title = names[page] || tabs.find(([key]) => key === page)?.[1]
+    return [opHeading(title, null), add(el('div', 'workspace-settings settings-stack'), ...views[page]())]
+  }
   return [opHeading(L('Settings', '设置'), null),
     workspaceTabs(L('Settings sections', '设置分区'), tabs.map(([key, title]) => [
       title, key === page || key === 'json' && maintenance, () => select(key)
@@ -396,7 +404,7 @@ function renderHostStatus() {
   const setup = S.status?.setup
   const version = opButton('r' + S.base.revision,
     () => opNavigate('advanced', '', { view: 'revisions' }), 'text-button')
-  const host = panel(L('Host status', '宿主状态'),
+  const host = panel(L('Connection status', '连接状态'),
     rows(
       datum(L('Connection', '连接'), S.health?.ok ? L('Reachable', '可达') : L('Unavailable', '不可达')),
       datum(L('Task intake', '任务接收'), S.status ? S.status.paused ? L('Paused', '已暂停') : L('Open', '已开启') : notReported()),

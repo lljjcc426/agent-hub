@@ -185,7 +185,7 @@ async function connectionLoadAccountModels() {
 }
 function connectionCreatePage() {
   const page = el('section', 'connection-studio')
-  page.append(opButton(L('Model connections', '模型连接'), () => opNavigate('models'), 'back-link', 'arrow'), opHeading(L('New connection', '新建连接'), null), connectionKindTabs())
+  page.append(opButton(L('Model connections', '模型连接'), () => opNavigate('models'), 'back-link', 'arrow'), opHeading(L('New model connection', '新建模型连接'), null), connectionKindTabs())
   if (connectionStudio.error) page.append(el('p', 'alert warning', connectionStudio.error))
   const editor = el('div', 'connection-editor')
   editor.append(connectionStudio.kind === 'api' ? connectionApiForm() : connectionStudio.kind === 'cli' ? connectionNativeCli() : connectionNativeSubscription())

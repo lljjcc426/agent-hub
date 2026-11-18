@@ -260,6 +260,27 @@ function controlPrompts() {
 function controlNewConnection(id) {
   opNavigate('detail', id, { creating: true, source: '' })
 }
+function recentDeliveryReceipts() {
+  const body=el('div','connection-form')
+  const disclosure=detail(L('Recent delivery receipts','最近投递回执'),body)
+  disclosure.addEventListener('toggle',async()=>{
+    if(!disclosure.open)return
+    body.replaceChildren(el('p','',L('Loading…','正在读取…')))
+    try{
+      const response=await fetch('/api/connectors')
+      if(!response.ok)throw Error()
+      const data=await response.json()
+      const items=data.instances.flatMap(source=>source.deliveryEvidence.receipts.map(receipt=>({...receipt,label:source.label})))
+      items.sort((a,b)=>b.acceptedAt-a.acceptedAt)
+      body.replaceChildren(...(items.length?items.map(item=>rows(
+        datum(item.label,L('Accepted by the service','服务端已接收')),
+        datum(L('Message ID','消息编号'),item.remoteMessageId),
+        datum(L('Accepted at','接收时间'),new Date(item.acceptedAt).toLocaleString(lang))
+      )):[el('p','',L('No receipts yet','暂无投递回执'))]))
+    }catch{body.replaceChildren(el('p','',L('Could not load receipts','未能读取投递回执')))}
+  })
+  return disclosure
+}
 function controlConnectionsPage() {
   const configured = entryState.data.entries.filter(entry => entry.status !== 'not-configured')
   const result = [opHeading(L('Conversation entries', '会话入口'), null,
@@ -297,7 +318,7 @@ function controlConnectionsPage() {
       opButton(L('Manage', '管理'), () => opNavigate('detail', 'source', { source: source.id }), 'button')
     ] })
   }
-  if (!connections.length) return [...result, opEmpty(L('No connections. Use New connection to add one.', '尚无接入。点击「新建接入」开始。'))]
+  if (!connections.length) return [...result,recentDeliveryReceipts(), opEmpty(L('No connections. Use New connection to add one.', '尚无接入。点击「新建接入」开始。'))]
   const search = el('input')
   search.type = 'search'
   search.id = 'connection-search'
@@ -319,7 +340,7 @@ function controlConnectionsPage() {
   }
   search.oninput = states.onchange = draw
   draw()
-  return [...result, add(el('div', 'workspace-search'), search, states), list,
+  return [...result, add(el('div', 'workspace-search'), search, states), list,recentDeliveryReceipts(),
     entryState.share ? entryShareResult() : null]
 }
 function connectionScope(entry, source) {

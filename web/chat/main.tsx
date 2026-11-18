@@ -1,3 +1,4 @@
+import {WorkerQuestion} from './worker-question-preview.tsx';
 import '../../src/ui/tab-motion.js';
 import '../../src/ui/tab-motion.css';
 import {
@@ -1402,6 +1403,7 @@ function Chat(p: ChatProps) {
                     <ThreadPrimitive.Messages
                       components={{ UserMessage, AssistantMessage }}
                     />
+                    {!readonly && id && snapshot?.decisions.map(item=><WorkerQuestion key={item.id+item.version} item={item} L={L} send={body=>api('/conversations/'+id+'/decisions',body)} refresh={()=>refreshCurrent.current()}/> )}
                     <WorkflowCards anchor="pending"/>
                     {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
                       <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>

@@ -5,6 +5,7 @@ import type { ToolSpec } from './model.ts'
 import type { Runtime } from './runtime.ts'
 import { evidenceBytes, workbookObservation } from './goal-artifacts.ts'
 import { chatUploadLimits } from './chat-attachments.ts'
+import { pendingNoticeSchema, pendingNoticeProperty } from './chat-pending-notice.ts'
 import { ChatError } from './chat-errors.ts'
 
 export interface ChatDelivery {
@@ -44,6 +45,7 @@ const textFiles = new Set([
   '.html',
 ])
 
+
 export const routerFileInput = z
   .object({
     name: z
@@ -55,6 +57,7 @@ export const routerFileInput = z
       .refine((n) => textFiles.has(extname(n).toLowerCase()), 'Choose a text file format'),
     content: z.string().max(128 * 1024),
     requireApproval: z.boolean().optional(),
+    pendingNotice: pendingNoticeSchema,
   })
   .strict()
 export const routerFileTool: ToolSpec = {
@@ -65,7 +68,7 @@ export const routerFileTool: ToolSpec = {
   inputSchema: {
     type: 'object',
     additionalProperties: false,
-    properties: { name: { type: 'string' }, content: { type: 'string' }, requireApproval: { type: 'boolean' } },
+    properties: { name: { type: 'string' }, content: { type: 'string' }, requireApproval: { type: 'boolean' }, pendingNotice:pendingNoticeProperty },
     required: ['name', 'content'],
   },
 }

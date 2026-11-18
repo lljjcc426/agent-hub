@@ -1,6 +1,7 @@
 """Run against a fresh examples/chat-acceptance.ts workflow host."""
 import json
 import sys
+from urllib.parse import unquote
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
@@ -57,6 +58,22 @@ with sync_playwright() as pw:
     expect(file).to_be_visible(timeout=20000)
     assert empty_height < one_height < tray.bounding_box()['height']
     expect(trigger).to_have_accessible_name('Pending requests · 2')
+    transcript = page.locator('.transcript')
+    expect(transcript.locator('.rp-decision, .rp-approval')).to_have_count(0)
+    answer_link = transcript.get_by_role('link', name='answer', exact=True)
+    review_link = transcript.get_by_role('link', name='review', exact=True)
+    expect(answer_link.locator('..')).to_have_text('Before I draft the guide, please answer the language question.')
+    expect(review_link.locator('..')).to_have_text('The release notes are ready for your review before delivery.')
+    expect(answer_link).to_have_css('text-decoration-line', 'underline')
+    expect(answer_link).to_have_css('color', 'rgb(21, 93, 193)')
+    for link, card in [(answer_link, choice), (review_link, file)]:
+        link.click()
+        target = card.locator('xpath=ancestor::li[1]')
+        expect(target).to_be_focused()
+        expect(target).to_have_attribute('data-pending-id', unquote(page.url.split('/pending/')[-1]))
+    review_url = page.url
+    page.reload()
+    expect(file.locator('xpath=ancestor::li[1]')).to_be_focused()
     page.screenshot(path=str(out / 'pending-desktop.png'))
     composer_left=page.locator('.composer').bounding_box()['x']
     panel_button.click()
@@ -79,9 +96,9 @@ with sync_playwright() as pw:
     activity.locator('summary').click()
     expect(activity).to_contain_text('Choose language')
     page.screenshot(path=str(out/'session-panel-split.png'))
-    transcript=page.locator('.transcript').bounding_box()
+    transcript_box=page.locator('.transcript').bounding_box()
     mascot=page.locator('.chat-companion').bounding_box()
-    assert transcript['y'] >= mascot['y'] + mascot['height']
+    assert transcript_box['y'] >= mascot['y'] + mascot['height']
     assert tray.bounding_box()['x']+tray.bounding_box()['width']<=panel.bounding_box()['x']+1
     panel_button.click()
     tray.get_by_role('button', name='Hide pending requests').click()
@@ -99,7 +116,7 @@ with sync_playwright() as pw:
     expect(tray).to_have_count(0)
     marked=page.locator('.transcript [data-located]')
     expect(marked).to_have_count(1)
-    expect(marked).to_contain_text('Which language?')
+    expect(marked).to_contain_text('answer the language question')
     expect(marked).to_be_focused()
     panel_button.click()
     expect(marked).to_have_count(0,timeout=5000)
@@ -130,6 +147,8 @@ with sync_playwright() as pw:
     assert downloaded.value.path().read_bytes() == source
     other.keyboard.press('Escape')
     expect(tile).to_be_focused()
+    other.goto(review_url)
+    expect(other_tray.get_by_text('This item is no longer pending.')).to_be_visible()
     other.close()
     choice.get_by_role('button',name='English',exact=False).click()
     approval=tray.locator('.rp-approval').filter(has_text='Inspect the working directory')
@@ -152,7 +171,7 @@ with sync_playwright() as pw:
     native.get_by_role('button',name='Table',exact=False).click()
     expect(tray.get_by_role('status')).to_have_text('You’re all caught up.')
     page.locator('.worker-readonly button').click()
-    expect(page.locator('.transcript').get_by_role('group',name='Which language?').get_by_role('status')).to_have_text('English')
+    expect(transcript.locator('.pending-notice').filter(has_text='Which language?')).to_contain_text('English')
     expect(page.locator('.transcript').get_by_text('Verified layout: Table',exact=True).first).to_be_visible(timeout=20000)
     page.keyboard.press('Escape')
     expect(tray).to_have_count(0)

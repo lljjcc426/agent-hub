@@ -1,3 +1,6 @@
+import {ChevronDown} from 'lucide-react'
+import {pendingHref} from './pending-links.ts'
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
 import type { ChatSessions, FileReview } from '../../src/chat.ts'
 import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
@@ -80,6 +83,8 @@ export function groupWorkflow(
 }
 
 type FlowProps = {
+  conversation:string
+  pendingIds:ReadonlySet<string>
   L: Localize
   blocks: Map<string, Block>
   readonly: boolean
@@ -94,6 +99,38 @@ type FlowProps = {
 }
 const Flow = createContext<FlowProps | null>(null)
 export const WorkflowProvider = Flow.Provider
+
+// The host binds each link to its item. The model supplies plain text, never a destination.
+export function PendingNotice({id,kind,notice,subject,status}:{
+  id:string;kind:'approval'|'answer'|'review';notice?:string;subject?:string;status?:string
+}) {
+  const {L,conversation,pendingIds}=useContext(Flow)!
+  const label=kind==='approval'?L('approval','审批'):kind==='review'?L('review','审阅'):L('answer','回答')
+  const words=kind==='approval'?/审批|批准|\bapproval\b|\bapprove\b/i:kind==='review'?/审阅|审批|\breview\b/i:/回答|选择|答复|\banswer\b|\bchoose\b/i
+  const text=notice?.trim()||subject||''
+  if(!pendingIds.has(id))return <p className="pending-notice resolved" data-workflow-id={id}>{subject||label} · {status||L('Closed','已结束')}</p>
+  const word=words.exec(text)
+  const link=<a className="pending-action-link" href={pendingHref(conversation,id)}>{word?.[0]||label}</a>
+  return <p className="pending-notice" data-workflow-id={id}>{word
+    ? <>{text.slice(0,word.index)}{link}{text.slice(word.index+word[0].length)}</>
+    : <>{text}{text?' ':''}{link}</>}</p>
+}
+
+function approvalOutcome(a:Request,L:Localize) {
+  if(a.state==='denied')return L('Denied','已拒绝')
+  if(a.state==='expired')return L('Expired','已过期')
+  if(a.state==='answered')return ['answerText' in a && a.answerText,L('Answered','已回答')].filter(Boolean).join(' · ')
+  if('executionState' in a){
+    switch(a.executionState){
+      case 'failed': return L('Approved · execution failed','已批准 · 执行失败')
+      case 'uncertain': return L('Outcome unconfirmed','执行结果待核对')
+      case 'complete': return L('Approved · completed','已批准 · 执行成功')
+      case 'executing': return L('Approved · running','已批准 · 执行中')
+      case 'cancelled': return L('Cancelled','已取消')
+    }
+  }
+  return a.state==='approved'?L('Approved','已批准'):undefined
+}
 
 function useSubmit(L: Localize) {
   const lock = useRef(false),
@@ -125,7 +162,7 @@ function useSubmit(L: Localize) {
     ) : null,
   }
 }
-export function FileReviewCard({ id, name, review }: { id: string; name: string; review: FileReview }) {
+function FileReviewCard({ id, name, review }: { id: string; name: string; review: FileReview }) {
   const { L, readonly, readDraft, reviewFile } = useContext(Flow)!
   const { busy, submit, error } = useSubmit(L)
   return (
@@ -138,7 +175,7 @@ export function FileReviewCard({ id, name, review }: { id: string; name: string;
   )
 }
 
-export function RouterDecision({ id, decision }: { id: string; decision: ChatDecision }) {
+function RouterDecision({ id, decision }: { id: string; decision: ChatDecision }) {
   const { L, decide, readonly } = useContext(Flow)!
   const { busy, submit, error } = useSubmit(L)
   if (decision.closed) return <div className="rp-native-closed" role="status">{decision.question} · {L('Cancelled', '已取消')}</div>
@@ -243,26 +280,34 @@ function NativeCard({ request: a }: { request: Request }) {
     'item/fileChange/requestApproval': L('Change files', '修改文件'),
     'item/permissions/requestApproval': L('Grant permissions', '授予权限'),
   }
+  const facts = Object.entries(a.facts)
+  const detailed = (value: string) => value.length > 180 || value.includes('\n')
   return (
     <>
       <ApprovalCard
         L={L}
         title={titles[a.method] ?? L('Authorization request', '授权请求')}
         risk={actor(a.workerId)}
-        statusLabel={'executionState' in a && typeof a.executionState==='string' ? ({uncertain:L('Outcome unconfirmed','结果待核对'),failed:L('Execution failed','执行失败'),cancelled:L('Cancelled','已取消')} as Record<string,string>)[a.executionState] : undefined}
+        statusLabel={approvalOutcome(a,L)}
         state={a.state === 'answered' ? 'resolved' : a.state}
-        details={Object.entries(a.facts).map(([key, value]) => ({ label: labels[key] ?? key, value }))}
+        details={facts.filter(([, value]) => !detailed(value)).map(([key, value]) => ({ label: labels[key] ?? key, value }))}
         disabled={disabled}
         onDecision={(value) =>
           void submit(() => authorize(a.id, value === 'approved' ? 'accept' : 'decline'))
         }
-      />
+      >
+        {facts.filter(([, value]) => detailed(value)).map(([key,value]) =>
+          <DisclosureRoot className="workflow-draft pending-fact" key={key}>
+            <DisclosureSummary>{labels[key] ?? key}<ChevronDown size={13} aria-hidden="true"/></DisclosureSummary>
+            <pre tabIndex={0}>{value}</pre>
+          </DisclosureRoot>)}
+      </ApprovalCard>
       {error}
     </>
   )
 }
 export function WorkflowCards({ anchor }: { anchor: string }) {
-  const { L, blocks, tools, readonly, answerWorker, refresh } = useContext(Flow)!,
+  const { L, blocks, tools } = useContext(Flow)!,
     b = blocks.get(anchor)
   if (!b) return null
   const states = {
@@ -285,8 +330,15 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
       continue
     }
     flush()
-    if(item.kind==='question')rows.push(<div key={item.question.id} data-workflow-id={anchor==='pending'?undefined:item.question.id}><WorkerQuestion key={item.question.version} item={item.question} L={L} readonly={readonly} send={answerWorker} refresh={refresh}/></div>)
-    else if(item.kind==='approval')rows.push(<div key={item.approval.id} data-workflow-id={anchor==='pending'?undefined:item.approval.id}><NativeCard request={item.approval}/></div>)
+    if(item.kind==='question'){
+      const q=item.question
+      rows.push(<PendingNotice key={q.id} id={q.id} kind="answer" subject={q.question} status={q.answer?.text}/>)
+    }else if(item.kind==='approval'){
+      const a=item.approval, question=a.method==='item/tool/requestUserInput'
+      const subject = question ? a.questions.map(q=>q.question).join(' · ')
+        : a.notice || a.facts.reason?.slice(0,360) || a.facts.target?.slice(0,120) || (a.facts.command ? L('Run command','运行命令') : undefined)
+      rows.push(<PendingNotice key={a.id} id={a.id} kind={question?'answer':'approval'} notice={a.notice} subject={subject} status={approvalOutcome(a,L)}/>)
+    }
     else {
       const p=item.plan
       rows.push(<div className="workflow-plan" key={p.id}>
@@ -300,11 +352,11 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
 
 
 // The tray belongs to the conversation owner even when the transcript shows a read-only Worker.
-export function PendingTray({cards,loading,close,locate}:{cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void}){
+export function PendingTray({cards,loading,selectedId,close,locate}:{selectedId?:string;cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void}){
   const flow=useContext(Flow)!
   return <Flow.Provider value={{...flow,readonly:false}}>
-    <PendingRequests L={flow.L} loading={loading} close={close}
-      items={cards.map(card => ({id:card.kind+':'+card.id, locate:()=>locate(card), content:
+    <PendingRequests L={flow.L} loading={loading} selectedId={selectedId} close={close}
+      items={cards.map(card => ({id:card.id, locate:()=>locate(card), content:
         card.kind==='choice'?<RouterDecision id={card.id} decision={card.decision}/>:
         card.kind==='file'?<FileReviewCard id={card.id} name={card.name} review={card.review}/>:
         card.kind==='approval'?<NativeCard request={card.request}/>:

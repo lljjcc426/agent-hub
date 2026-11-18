@@ -64,8 +64,8 @@ export function RouterModelControl({anchor:trigger,shown,onClose,busy,L,onSaved}
  };
  const labels:Record<string,string>={none:L('Off','关闭'),minimal:L('Minimal','最少'),low:L('Low','低'),medium:L('Medium','中'),high:L('High','高'),xhigh:L('Extra high','最高')};
  return <>
-  {createPortal(<div ref={popover} id="router-model-picker" className="router-model-picker" popover="auto" role="dialog" aria-label={L('Router model','Router 模型')} onToggle={e=>{const shown=e.newState==='open';setOpen(shown);if(!shown){setConfig(null);onClose()}}} style={position}>
-   <div className="router-model-heading"><strong>{L('Router model','Router 模型')}</strong></div>
+  {createPortal(<div ref={popover} id="router-model-picker" className="router-model-picker" popover="auto" role="dialog" aria-label={L('Chat model','对话模型')} onToggle={e=>{const shown=e.newState==='open';setOpen(shown);if(!shown){setConfig(null);onClose()}}} style={position}>
+   <div className="router-model-heading"><strong>{L('Chat model','对话模型')}</strong></div>
    {!config&&!error?<div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…','正在读取连接…')}</div>:null}
    {config?<form onSubmit={e=>{e.preventDefault();e.stopPropagation();void save()}}>
     <fieldset disabled={saving||busy}>

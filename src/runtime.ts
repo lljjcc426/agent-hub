@@ -5,7 +5,7 @@ import {workspaceBrowserSpec} from './browser-contract.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
-import {chatStatusTool} from './chat-status.ts'
+import {chatStatusTool,openingForAction,openingStatusSchema,openingStatusTool} from './chat-status.ts'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
@@ -443,7 +443,7 @@ export class Runtime {
     catch(error){if(this.closing)throw new ReplanningInterrupted('Host stopped during read-only replanning');throw error}
     finally{this.controllers.delete(key)}
   }
-  private async runModel(request:ModelRequest):Promise<ModelResult>{
+  private async runModel(request:ModelRequest,introduction?:{locale:'zh-CN'|'en';publish:(sentence:string)=>void}):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
     const project=()=>context.ticketId?this.goals.forTask(context.ticketId):context.triggerId?this.goals.forInput(context.triggerId):undefined
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
@@ -458,9 +458,26 @@ export class Runtime {
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:options})}
     if(request.onTool&&(role==='router'||role==='worker')&&this.chat.hasContext(context)){
       const invoke=request.onTool
-      request={...request,tools:[...(request.tools??[]),chatStatusTool,publicPlanTool],onTool:async(name,args,callId)=>{
-        if(name!==chatStatusTool.name&&name!==publicPlanTool.name)return invoke(name,args,callId)
+      let firstTool=true
+      const statusTool=introduction?openingStatusTool:chatStatusTool
+      request={...request,tools:[...(request.tools??[]),statusTool,publicPlanTool],onTool:async(name,args,callId)=>{
+        const first=firstTool
+        firstTool=false
+        if(name!==chatStatusTool.name&&name!==publicPlanTool.name){
+          if(first&&introduction&&!request.signal?.aborted){
+            const opening=openingForAction(name,args,introduction.locale)
+            if(opening)introduction.publish(opening)
+          }
+          return invoke(name,args,callId)
+        }
+        let opening:string|undefined
+        if(introduction&&name===chatStatusTool.name){
+          const {opening:sentence,...status}=openingStatusSchema.parse(args)
+          opening=sentence
+          args=status
+        }
         const ok=!request.signal?.aborted&&(name===publicPlanTool.name?this.chat.publishPlan(activity,args):this.activity.status(activity,args))
+        if(ok&&first&&opening)introduction?.publish(opening)
         return {success:ok,contentItems:[{type:'inputText',text:JSON.stringify({ok})}]}
       }}
     }
@@ -469,7 +486,10 @@ export class Runtime {
     const onActive=request.onActive
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt,options.persona))}:{})})
     request=this.delegation.restrict(request)
-    if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
+    if(request.tools?.some(tool=>tool.name===chatStatusTool.name)){
+      const opening=introduction?' Chat has already acknowledged the message. Before the first action or delegation for a substantial task, call superagent_status with an opening: one sentence in the reply language describing your concrete first step. For a simple question, answer directly.':''
+      request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'+opening}
+    }
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     let usingOpenCode=false
@@ -865,7 +885,7 @@ export class Runtime {
     const scoped=reportMessage?.ticketId?this.scopes.contextForTask(trigger,discussion,reportMessage.ticketId):this.scopes.context(trigger,discussion),profile=scoped?this.scopes.scope(scoped.route.scopeId).router:undefined
     const chatBinding=this.chat.binding(triggerId)
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
-      ? this.store.get<{conversationId:string}>('chat-run', triggerId) : undefined
+      ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
     const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...(chatBinding?[routerFileTool,decisionTool,publicPlanTool]:[])])
@@ -1016,7 +1036,10 @@ export class Runtime {
           catch(error){controller.abort(error);return}
           this.chat.output(job.id,triggerId,event,validateReplyContext)
         }}:{}),
-        onThread:id=>this.store.put('router-session',sessionKey,{...previous,backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})})
+        onThread:id=>this.store.put('router-session',sessionKey,{...previous,backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})},browserRun?.openingLocale&&!permissionId&&!fileReviewId?{locale:browserRun.openingLocale,publish:sentence=>{
+          validateReplyContext()
+          this.chat.introduce(triggerId,sentence)
+        }}:undefined)
       controller.signal.throwIfAborted();candidates?.check()
       const quiet=followups?!followups.replied:!!candidates&&this.routerIngress.get(triggerId)?.state!=='accepted'
       if(candidates&&!quiet)for(const id of candidates.batch.triggerIds)authorityInputs.add(id)

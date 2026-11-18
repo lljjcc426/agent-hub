@@ -1,3 +1,5 @@
+import { configureLanguage } from '../src/terminal/language.ts'
+import { SessionDisplay } from '../src/terminal/session-display.ts'
 import { describe, expect, it } from 'vitest'
 import { stripVTControlCharacters } from 'node:util'
 import stringWidth from 'string-width'
@@ -40,7 +42,7 @@ describe('interactive terminal layout', () => {
     expect(stripVTControlCharacters(result.join('\n'))).toContain('结论')
     expect(result.join('\n')).not.toContain('**')
   })
-  it('keeps the home prompt in place when suggestions open and fits its cursor and borders', () => {
+  it('anchors the prompt to the same bottom row with suggestions above it', () => {
     const view = {
       conversation: { project: '/tmp/示例' },
       readiness: { workers: [], routerLabel: 'Router' },
@@ -60,15 +62,16 @@ describe('interactive terminal layout', () => {
       [24, 14],
       [43, 21],
       [80, 24],
-      [132, 30]
+      [132, 30],
+      [246, 72]
     ] as const) {
       const layout = new TerminalLayout(columns, true)
-      const empty = layout.composer(view, '', 0, false, rows, { home: true })
-      const open = layout.composer(view, '/', 1, false, rows, { home: true, menu })
-      expect(open.row).toBe(empty.row)
+      const empty = layout.composer(view, '', 0, false, rows, {})
+      const open = layout.composer(view, '/', 1, false, rows, { menu })
+      expect(open.lines.length - open.row).toBe(empty.lines.length - empty.row)
       expect(open.col).toBe(empty.col + 1)
       expect(open.lines.length).toBeLessThanOrEqual(rows)
-      expect(open.lines.findIndex((line) => line.includes('Commands'))).toBeGreaterThan(open.row)
+      expect(open.lines.findIndex((line) => line.includes('Commands'))).toBeLessThan(open.row)
       for (const line of [...open.lines, ...layout.header(view)])
         expect(stringWidth(line)).toBeLessThan(columns)
       const borders = open.lines.filter(
@@ -78,4 +81,71 @@ describe('interactive terminal layout', () => {
       expect(new Set(borders.map((line) => stringWidth(line))).size).toBe(1)
     }
   })
+})
+
+it('positions the first message near the left edge and keeps the input at the bottom editing row', () => {
+  let output = ''
+  const out = {
+    columns: 246,
+    rows: 72,
+    write: (value: string) => {
+      output += value
+    }
+  } as NodeJS.WriteStream
+  const display = new SessionDisplay(out, { line: '', cursor: 0 }, false)
+  const snapshot = {
+    conversation: {},
+    readiness: { workers: [] },
+    workers: [],
+    calls: [],
+    approvals: [],
+    tasks: [],
+    messages: [{ id: 'm', createdAt: 1, role: 'user', text: '你好' }],
+    run: { id: 'r', state: 'queued', createdAt: 1 }
+  } as unknown as Snapshot
+  display.update(snapshot)
+  const plain = stripVTControlCharacters(output)
+  expect(plain).toContain('   ❯ 你好')
+  expect(plain).toContain('Waiting for Router')
+  expect(output).toContain('\x1b[70;1H')
+  expect(output.endsWith('\x1b[70;8H')).toBe(true)
+})
+
+it('uses the active actor, public status and tool trace, ignoring finished and unrelated calls', () => {
+  configureLanguage('zh')
+  try {
+    const layout = new TerminalLayout(246, false)
+    const view = {
+      run: { id: 'r', state: 'running' },
+      workers: [{ id: 'w', label: '审阅员' }],
+      tasks: [],
+      calls: [
+        {
+          id: 'router',
+          kind: 'router',
+          runId: 'r',
+          state: 'running',
+          name: 'router',
+          status: { label: '正在核对需求', updatedAt: 10 }
+        },
+        { id: 'other', kind: 'tool', runId: 'unrelated', state: 'running', name: 'stale' },
+        { id: 'finished', kind: 'tool', runId: 'r', state: 'completed', name: 'done' }
+      ]
+    } as unknown as Snapshot
+    expect(layout.workStatus(view)).toBe('Router · 正在核对需求')
+    view.calls.push({
+      id: 't',
+      state: 'running',
+      kind: 'tool',
+      name: 'superagent_read',
+      workerId: 'w',
+      runId: 'r',
+      trace: { kind: 'read', label: 'notes.md' },
+      startedAt: 1,
+      conversationId: 'chat'
+    })
+    expect(layout.workStatus(view)).toBe('Worker 审阅员 · 正在读文件 · notes.md')
+  } finally {
+    configureLanguage('en')
+  }
 })

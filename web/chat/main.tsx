@@ -43,7 +43,7 @@ import {
   Hand,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
-import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
+import {DeliveryCard,FileViewer,TeamOverview,teamName,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerActions} from './composer-actions.tsx';
@@ -165,10 +165,9 @@ const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
   workers: [] as Worker[],
-  routerLabel: 'Router',
+  routerLabel: 'Roppo',
   openFile: (_file:ChatDelivery)=>{},
-  openWorker: (_id:string)=>{},
-  workerView:false,
+  openAgent: (_id:string)=>{},
   run: null as Snapshot['run'],
   runMessageId: '',
   arrivals: {since: Infinity, seen: new Set<string>()},
@@ -252,7 +251,7 @@ function Timestamp({ at }: { at: Date | number }) {
   return <time className="message-time" dateTime={date.toISOString()} title={new Intl.DateTimeFormat(lang, {dateStyle:'medium', timeStyle:'medium'}).format(date)}>{new Intl.DateTimeFormat(lang, {hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)}</time>;
 }
 function runLabel(state: string, L: (en: string, zh: string) => string) {
-  return ({queued:L('Waiting for Router','等待 Router'),running:L('Working','处理中'),waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
+  return ({waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
   const { L } = useUI(),
@@ -285,11 +284,10 @@ function Markdown(){
   return <Suspense fallback={<PlainText/>}><RichMarkdown L={L} files={files}/></Suspense>
 }
 function AssistantMessage() {
-  const { L, run, runMessageId, routerLabel, openFile,openWorker,workerView,workers } = useUI(),
+  const { L, run, runMessageId, routerLabel, openFile,openAgent } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
-    ticketId=useAuiState(s=>s.message.metadata.custom?.ticketId) as string|undefined,
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
     createdAt = useAuiState((s) => s.message.createdAt),
@@ -300,15 +298,9 @@ function AssistantMessage() {
     hasText = useAuiState((s) =>
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
-    streaming = status?.type === "running";
+    streaming = status?.type === "running",
+    footerStatus = run && runMessageId === id ? runLabel(run.state,L) : undefined;
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
-  const assignee=recipient?.kind==='worker'&&workers.find(w=>w.id===recipient.id);
-  const task=assignee&&assignee.tasks.find(t=>t.id===ticketId);
-  if(!workerView&&task&&assignee)return <><MessagePrimitive.Root className="message team-trace" data-arrival={arrival}>
-    <button onClick={()=>openWorker(assignee.id)} title={L('View collaboration','查看协作记录')}><AgentAvatar id={assignee.id} kind="worker" size={22}/>
-      <strong>{assignee.label}</strong><span>{task.title}</span><ChevronRight size={14}/></button>
-    <Timestamp at={createdAt}/>
-  </MessagePrimitive.Root><WorkflowCards anchor={id}/></>;
   let body: ReactNode;
   if (deliveries?.length) {
     body = deliveries.map(file => <DeliveryCard key={file.id} L={L} file={file} open={openFile}/>);
@@ -327,9 +319,7 @@ function AssistantMessage() {
     >
       <div className="assistant-identity">
         <AgentAvatar id={speaker?.id} kind={speaker?.kind} size={32} />
-        <strong>{speaker?.label ?? routerLabel}</strong>
-        {speaker && speaker.label !== (speaker.kind === "worker" ? "Worker" : "Router") ? <span className="agent-role">{speaker.kind === "worker" ? "Worker" : "Router"}</span> : null}
-        {recipient ? <span className="message-recipient">→ {recipient.label}</span> : null}
+        <strong>{speaker?.kind==='worker'?speaker.label:teamName(speaker?.label??routerLabel)}</strong>
         <Timestamp at={createdAt}/>
         {streaming ? (
           <span className="output-state">
@@ -339,11 +329,13 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        {body}
+        {recipient ? <div className="addressed-message">
+          <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
+        </div> : body}
         <MessageAttachments files={attachments??[]} L={L}/>
         <Reactions id={id}/>
         <div className="message-footer">
-          {run && runMessageId === id ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{runLabel(run.state, L)}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
+          {run && footerStatus ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
         <MessageActions id={id}/>
         </div>
       </div>
@@ -351,9 +343,7 @@ function AssistantMessage() {
   );
 }
 function StatusIcon({ state }: { state: string }) {
-  return state === "running" || state === "queued" ? (
-    <LoaderCircle className={state === "running" ? "spin" : ""} size={17} />
-  ) : state === "completed" ? (
+  return state === "completed" ? (
     <Check className="success" size={17} />
   ) : ["waiting", "failed", "interrupted"].includes(state) ? (
     <AlertCircle size={17} />
@@ -374,8 +364,8 @@ function Readiness({ ready }: { ready: Ready | null }) {
   if (!ready || ready.ready) return null;
   const messages: Record<string, string> = {
     host_router_required: L(
-      "Enable a host Router to start chatting here.",
-      "启用托管 Router 后即可在这里对话。",
+      "Enable the workspace assistant to start chatting.",
+      "启用工作区助手后即可对话。",
     ),
     host_paused: L("The host is paused.", "运行已暂停。"),
     local_source_required: L(
@@ -383,12 +373,12 @@ function Readiness({ ready }: { ready: Ready | null }) {
       "请添加本地会话入口。",
     ),
     model_credentials_missing: L(
-      "Connect your Router model.",
-      "请连接 Router 模型。",
+      "Connect a model to start chatting.",
+      "请连接对话模型。",
     ),
     model_unavailable: L(
-      "Your Router model is unavailable.",
-      "Router 模型暂不可用。",
+      "Your chat model is unavailable.",
+      "对话模型暂不可用。",
     ),
     preview_restricted: L(
       "This preview cannot run tasks.",
@@ -400,7 +390,7 @@ function Readiness({ ready }: { ready: Ready | null }) {
       <AlertCircle size={18} />
       <span>
         {messages[ready.code] ??
-          L("Configure your Router to begin.", "配置 Router 后开始。")}
+          L("Set up your assistant to begin.", "请先配置助手。")}
       </span>
       <a
         href={
@@ -409,7 +399,7 @@ function Readiness({ ready }: { ready: Ready | null }) {
             : ready.configurationUrl
         }
       >
-        {L("Configure Router", "配置 Router")}
+        {L("Configure assistant", "配置助手")}
         <ChevronRight size={15} />
       </a>
     </div>
@@ -763,7 +753,7 @@ function Chat(p: ChatProps) {
     return () => observer.disconnect();
   }, []);
 
-  const participants = snapshot?.participants ?? [{id:"router",label:boot?.routerLabel??"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))];
+  const participants = (snapshot?.participants ?? [{id:"router",label:boot?.routerLabel??"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))]).map(p=>p.kind==="router"?{...p,label:teamName(p.label)}:p);
   const uploadConversation=useRef<Promise<string>|null>(null),uploadConversationId=useRef(id),[loadingAttachments,setLoadingAttachments]=useState(!!id),[attachmentBlocked,setAttachmentBlocked]=useState(false);
   const ensureConversation=useCallback(()=>{
     if(id)return Promise.resolve(id);
@@ -796,7 +786,8 @@ function Chat(p: ChatProps) {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
   const reactionOnly = run?.state==='completed' && snapshot?.messages.some(m=>m.runId===run.id && m.role==='user' && m.agentReactions?.length);
-  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.recipient)?.id ?? '' : '';
+  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
+  const standaloneStatus = run && !readonly && !runMessageId && !reactionOnly ? runLabel(run.state,L) : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -1008,6 +999,7 @@ function Chat(p: ChatProps) {
           quote:sentQuote,
           clientMessageId: pending.current.id,
           locale: navigator.language || lang,
+          openingLocale: lang,
         });
         accepted=true;
         if(JSON.stringify(quoteReference(quoteCurrent.current)??null)===JSON.stringify(sentQuote??null))saveQuote(null);
@@ -1195,7 +1187,7 @@ function Chat(p: ChatProps) {
         L,
         workers,
         routerLabel:currentRouter.label,
-        openFile:setFile,openWorker:readAgent,workerView:readonly,
+        openFile:setFile,openAgent:readAgent,
         run: run ?? null,
         runMessageId,
         arrivals:arrivals.current,
@@ -1327,8 +1319,8 @@ function Chat(p: ChatProps) {
                       <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                       <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                     </div>)}
-                    {run&&!readonly&&!runMessageId&&!reactionOnly?<div className="run-activity" aria-live="polite">
-                      <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{runLabel(run.state,L)}</span></div>
+                    {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
+                      <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                     </div>:null}
                   </div>
                 </ThreadPrimitive.Viewport>
@@ -1349,7 +1341,7 @@ function Chat(p: ChatProps) {
                     </div>
                   ) : null}
                   <Readiness ready={ready} />
-                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
+                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                     <CommandInput visible={!configuring} L={L} onCommand={command=>composerAction.current?.(command)} consume={commandAction}

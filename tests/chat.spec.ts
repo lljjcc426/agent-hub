@@ -27,6 +27,57 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
 
+it('acknowledges an accepted desktop message once before work and adds only the first public introduction',async()=>{
+  const steps:string[][]=[]
+  const {h}=fixture(async r=>{
+    const messages=()=>h.chat.view(c.id,'owner').messages.map(m=>m.text)
+    steps.push(messages())
+    const status=async(opening:string)=>r.onTool!('superagent_status',{phase:'working',label:'检查摘要',opening},randomUUID())
+    await status('我先检查摘要的截断逻辑。')
+    steps.push(messages())
+    await status('不应追加第二句。')
+    return {reply:'已检查摘要。'}
+  })
+  const c=h.chat.create('owner'),input={text:'帮我检查摘要',clientMessageId:randomUUID(),openingLocale:'zh-CN' as const}
+  const run=h.chat.send(c.id,'owner',input)
+  expect(h.chat.send(c.id,'owner',input)).toEqual({...run,duplicate:true})
+  expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text,'收到。'])
+  expect(h.chat.history(run.runId).map(m=>m.text)).toEqual([input.text])
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+  const opening='收到。 我先检查摘要的截断逻辑。'
+  expect(steps).toEqual([[input.text,'收到。'],[input.text,opening]])
+  expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text,opening,'已检查摘要。'])
+  expect(h.chat.history(run.runId).map(m=>m.text)).toEqual([input.text,'已检查摘要。'])
+})
+
+it('uses the actual first operation as the introduction if the model goes directly to work',async()=>{
+  const {h}=fixture(async r=>{
+    await r.onTool!('worker_manage',{action:'list'},'list')
+    await r.onTool!('superagent_status',{phase:'working',label:'Checking the team',opening:'Should not replace the introduction.'},'late')
+    return {reply:'Research and Review.'}
+  })
+  const c=h.chat.create('owner')
+  h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'Who is on the team?',openingLocale:'en'})
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+  expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual(['Who is on the team?','Got it. I’ll check who’s on the team.','Research and Review.'])
+})
+
+it('keeps the original receipt when an opening arrives after work, and gives rejected sends none',async()=>{
+  const {h}=fixture(async r=>{
+    await r.onTool!('superagent_status',{phase:'working',label:'Checking files'},'first')
+    await r.onTool!('superagent_status',{phase:'reviewing',label:'Reviewing',opening:'Too late.'},'next')
+    return {reply:'Done.'}
+  })
+  const c=h.chat.create('owner'),input={text:'Review the files',openingLocale:'en' as const,clientMessageId:randomUUID()}
+  h.pause(true)
+  expect(()=>h.chat.send(c.id,'owner',input)).toThrow()
+  expect(h.chat.view(c.id,'owner').messages).toHaveLength(0)
+  h.pause(false)
+  h.chat.send(c.id,'owner',input)
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+  expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text,'Got it.','Done.'])
+})
+
 it('keeps the plan through a decision and shows only the current Router input for this conversation and model',async()=>{
   const {h}=fixture(async r=>{
     const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'

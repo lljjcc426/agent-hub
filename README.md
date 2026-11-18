@@ -102,7 +102,7 @@ Prefer Docker? With Docker and Compose running:
 
 This builds the Linux runtime with Chromium and Bubblewrap, creates a persistent data volume, and prints a local setup link. [Docker setup and upgrades](docs/DOCKER.md) · [Reopen an existing installation](docs/OPERATIONS.md#start-the-right-instance)
 
-From this checkout, run `npm link` to install the terminal command. Use `roppo login`, then start `roppo` in a project. [Roppo CLI guide](docs/TERMINAL.md)
+From this checkout, run `npm link` to install the terminal command. Use `roppo login`, then run `roppo` to continue your personal Chat or `roppo --cwd .` to work in a project. [Roppo CLI guide](docs/TERMINAL.md)
 
 ## Bring your own models
 

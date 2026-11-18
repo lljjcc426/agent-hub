@@ -1,3 +1,4 @@
+import { ui } from './language.ts'
 import { terminalProfileDirectory } from './profile.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -42,7 +43,12 @@ export function localOrigin(input: string) {
     u.search ||
     u.hash
   )
-    throw new CliError('Choose a local HTTP host, for example http://127.0.0.1:4390.')
+    throw new CliError(
+      ui(
+        'Choose a local HTTP host, for example http://127.0.0.1:4390.',
+        '请输入本机 HTTP 地址，例如 http://127.0.0.1:4390。'
+      )
+    )
   return u.origin
 }
 function privateWrite(path: string, value: unknown) {
@@ -62,7 +68,12 @@ function discoverHost() {
   const path =
     process.env.ROPPO_CONNECTION_FILE ?? join(homedir(), '.agent-hub', 'state', 'connection.json')
   if (!existsSync(path))
-    throw new CliError('No local host found. Run roppo init or set ROPPO_HOST.')
+    throw new CliError(
+      ui(
+        'No local host found. Run roppo init or set ROPPO_HOST.',
+        '未找到本机实例，请运行 roppo init 或设置 ROPPO_HOST。'
+      )
+    )
   return JSON.parse(readFileSync(path, 'utf8')).url as string
 }
 export class TerminalClient {
@@ -90,7 +101,10 @@ export class TerminalClient {
     const headers: Record<string, string> = {}
     if (!native) {
       if (!this.token)
-        throw new CliError('Sign in with roppo login on this host.', 'login_required')
+        throw new CliError(
+          ui('Sign in with roppo login on this host.', '请先运行 roppo login 连接此实例。'),
+          'login_required'
+        )
       headers.authorization = 'Roppo-CLI ' + this.token
       headers.origin = this.base
     }
@@ -109,7 +123,10 @@ export class TerminalClient {
       })
     } catch {
       throw new CliError(
-        'Cannot reach Roppo at ' + this.base + '. Check the local host.',
+        ui(
+          'Cannot reach Roppo at ' + this.base + '. Check the local host.',
+          '无法连接 ' + this.base + '，请检查本机实例。'
+        ),
         'host_unavailable'
       )
     }
@@ -117,7 +134,7 @@ export class TerminalClient {
     if (!response.ok)
       throw new CliError(
         response.status === 401
-          ? 'Sign in with roppo login on this host.'
+          ? ui('Sign in with roppo login on this host.', '请先运行 roppo login 连接此实例。')
           : (result.error ?? result.code ?? response.statusText),
         result.code
       )
@@ -143,10 +160,18 @@ export class TerminalClient {
           redirect: 'error'
         })
         if (response.status === 401) {
-          failed('Sign-in expired. Reconnect with roppo login.')
+          failed(
+            ui(
+              'Sign-in expired. Reconnect with roppo login.',
+              '登录已过期，请运行 roppo login 重新连接。'
+            )
+          )
           return
         }
-        if (!response.ok || !response.body) throw Error('The host event stream is unavailable.')
+        if (!response.ok || !response.body)
+          throw Error(
+            ui('The host event stream is unavailable.', '暂时无法接收本机实例的活动更新。')
+          )
         const decoder = new TextDecoder()
         let buffer = ''
         for await (const chunk of response.body) {
@@ -156,7 +181,12 @@ export class TerminalClient {
             const frame = buffer.slice(0, end)
             buffer = buffer.slice(end + 2)
             if (frame.includes('event: reset')) {
-              failed('This conversation was reset. Exit and start a new session.')
+              failed(
+                ui(
+                  'This conversation was reset. Exit and start a new session.',
+                  '当前对话已重置，请退出后重新打开 roppo。'
+                )
+              )
               return
             }
             if (!frame.includes('event: change')) continue
@@ -181,7 +211,10 @@ export class TerminalClient {
     )
     const url = this.base + '/terminal/pair#' + pair.id
     process.stderr.write(
-      '\nRoppo CLI  ·  Connect your account\n\nConnect code ' +
+      ui(
+        '\nRoppo CLI  ·  Connect your account\n\nConnect code ',
+        '\nRoppo CLI  ·  连接你的账号\n\n配对码 '
+      ) +
         pair.id.slice(-8).toUpperCase() +
         '  ' +
         url +
@@ -190,8 +223,14 @@ export class TerminalClient {
     const browser = await openLocalBrowser(url)
     process.stderr.write(
       (browser.opened
-        ? 'In your browser, match the code and choose Connect terminal.'
-        : 'Open the link above, match the code and choose Connect terminal.') + '\n'
+        ? ui(
+            'In your browser, match the code and choose Connect terminal.',
+            '请在浏览器中核对配对码，再选择连接终端。'
+          )
+        : ui(
+            'Open the link above, match the code and choose Connect terminal.',
+            '请打开上方链接，核对配对码后选择连接终端。'
+          )) + '\n'
     )
     for (;;) {
       const { token } = await this.request<{ token?: string }>('/api/terminal/pair/claim', pair, {
@@ -232,16 +271,26 @@ export class TerminalClient {
       { signal }
     )
   }
+  older(id: string, before: number, signal: AbortSignal) {
+    return this.request<Snapshot>(
+      '/api/chat/conversations/' + id + '?before=' + before,
+      undefined,
+      { signal }
+    )
+  }
   link(id: string) {
     return this.base + '/chat#conversation/' + id
   }
   async send(id: string, text: string, files: string[], locale: string) {
     const unique = [...new Set(files)]
-    if (unique.length > 10) throw new CliError('Attach up to 10 files.')
+    if (unique.length > 10)
+      throw new CliError(ui('Attach up to 10 files.', '最多可添加 10 个附件。'))
     for (const file of unique) {
       const stat = statSync(file)
       if (!stat.isFile() || stat.size > 25 * 1024 * 1024)
-        throw new CliError('Choose a regular file under 25 MiB: ' + file)
+        throw new CliError(
+          ui('Choose a regular file under 25 MiB: ', '请选择不超过 25 MiB 的普通文件：') + file
+        )
     }
     const attachments: string[] = [],
       base = '/api/chat/conversations/' + id

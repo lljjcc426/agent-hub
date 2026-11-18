@@ -1,32 +1,85 @@
+import { ui } from './language.ts'
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { openLocalBrowser } from '../personal-launch.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalClient, CliError, type Snapshot } from './client.ts'
 
-export const commands = [
-  { name: '/tasks', usage: '', description: 'Inspect Worker tasks' },
-  { name: '/diff', usage: 'TICKET', description: 'Review changes for a task' },
-  { name: '/approvals', usage: 'TICKET', description: 'Inspect pending requests and their scope' },
-  { name: '/plan', usage: '', description: 'Read the current execution plan' },
-  { name: '/choose', usage: 'OPTION', description: 'Answer an open Router question' },
-  { name: '/tools', usage: '[filter]', description: 'Find tools, skills and MCP servers' },
-  { name: '/open', usage: '', description: 'Open this conversation in the web workspace' },
-  { name: '/stop', usage: '[TICKET]', description: 'Stop the current run or a Worker task' },
-  { name: '/approve', usage: 'TICKET ID', description: 'Approve a pending request' },
-  { name: '/decline', usage: 'TICKET ID', description: 'Decline a pending request' },
-  { name: '/answer', usage: 'TICKET ID JSON', description: 'Answer a structured request' },
-  { name: '/help', usage: '', description: 'Show commands and keyboard shortcuts' },
-  { name: '/exit', usage: '', description: 'Leave the session running' }
-] as const
+export const commands = () =>
+  [
+    { name: '/tasks', usage: '', description: ui('Inspect Worker tasks', '查看 Worker 任务') },
+    {
+      name: '/diff',
+      usage: 'TICKET',
+      description: ui('Review changes for a task', '查看任务的文件改动')
+    },
+    {
+      name: '/approvals',
+      usage: 'TICKET',
+      description: ui('Inspect pending requests and their scope', '查看待审批请求及范围')
+    },
+    {
+      name: '/plan',
+      usage: '',
+      description: ui('Read the current execution plan', '查看当前执行计划')
+    },
+    {
+      name: '/choose',
+      usage: 'OPTION',
+      description: ui('Answer an open Router question', '回答 Router 的提问')
+    },
+    {
+      name: '/tools',
+      usage: '[filter]',
+      description: ui('Find tools, skills and MCP servers', '查找工具、技能和 MCP 服务')
+    },
+    {
+      name: '/open',
+      usage: '',
+      description: ui('Open this conversation in the web workspace', '在网页中打开这段对话')
+    },
+    {
+      name: '/stop',
+      usage: '[TICKET]',
+      description: ui('Stop the current run or a Worker task', '停止本轮运行或 Worker 任务')
+    },
+    {
+      name: '/approve',
+      usage: 'TICKET ID',
+      description: ui('Approve a pending request', '批准待处理请求')
+    },
+    {
+      name: '/decline',
+      usage: 'TICKET ID',
+      description: ui('Decline a pending request', '拒绝待处理请求')
+    },
+    {
+      name: '/answer',
+      usage: 'TICKET ID JSON',
+      description: ui('Answer a structured request', '回答结构化请求')
+    },
+    {
+      name: '/help',
+      usage: '',
+      description: ui('Show commands and keyboard shortcuts', '查看命令和快捷键')
+    },
+    {
+      name: '/exit',
+      usage: '',
+      description: ui('Leave the session running', '退出终端，后台继续运行')
+    }
+  ] as const
 
-export const commandHelp =
-  commands
+const commandHelp = () =>
+  commands()
     .map(
       ({ name, usage, description }) => (name + (usage ? ' ' + usage : '')).padEnd(27) + description
     )
     .join('\n') +
-  '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt.'
+  ui(
+    '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt.',
+    '\n\n/ 查看命令，@ 选择文件。Alt+Enter 换行，PgUp/PgDn 翻阅历史。输入框为空时按 Ctrl+D 退出。'
+  )
 
 export function mentionedFiles(text: string, cwd: string) {
   const files = new Set<string>()
@@ -54,7 +107,7 @@ export async function command(client: TerminalClient, id: string, input: string)
   const [name, ...args] = input.trim().split(/\s+/),
     ticket = args[0],
     approval = args[1]
-  if (name === '/help') return commandHelp
+  if (name === '/help') return commandHelp()
   if (name === '/plan') {
     const { publicPlans, run } = await client.view(id)
     const plans = publicPlans.filter((p) => p.runId === run?.id)
@@ -67,7 +120,7 @@ export async function command(client: TerminalClient, id: string, input: string)
             '\n' +
             p.steps.map((step) => '  ' + marks[step.state] + ' ' + step.title).join('\n')
         )
-        .join('\n\n') || 'No plan published for this turn.'
+        .join('\n\n') || ui('No plan published for this turn.', '本轮还没有执行计划。')
     )
   }
   if (name === '/choose') {
@@ -85,12 +138,17 @@ export async function command(client: TerminalClient, id: string, input: string)
                 )
                 .join('\n')
           )
-          .join('\n\n') || 'No open questions.'
+          .join('\n\n') || ui('No open questions.', '没有待回答的问题。')
       )
     const question = open.find((m) => m.id === ticket)
     const choice = question?.decision?.options[Number(approval) - 1]
     if (!question || !choice)
-      throw new CliError('This choice is no longer available. Open /choose again.')
+      throw new CliError(
+        ui(
+          'This choice is no longer available. Open /choose again.',
+          '该选项已失效，请重新打开 /choose。'
+        )
+      )
     await client.request('/api/chat/conversations/' + id + '/decisions', {
       messageId: question.id,
       answer: choice.label,
@@ -107,7 +165,7 @@ export async function command(client: TerminalClient, id: string, input: string)
     const library = await client.request<CapabilitySnapshot>('/api/capability-library')
     if (ticket === '--inspect' && approval) {
       const item = library.items.find((item) => encodeURIComponent(item.id) === approval)
-      if (!item) return 'Capability no longer available.'
+      if (!item) return ui('Capability no longer available.', '该能力已不可用。')
       const source = item.sourceGroup ?? item.source
       return [
         item.name,
@@ -143,9 +201,14 @@ export async function command(client: TerminalClient, id: string, input: string)
         ...names.map((n) => n + '\n  ' + groups.get(n)!.join('\n  ')),
         ...library.warnings,
         ...(library.refreshing
-          ? ['Sources are refreshing. Run /tools again for the updated list.']
+          ? [
+              ui(
+                'Sources are refreshing. Run /tools again for the updated list.',
+                '来源正在刷新，稍后可用 /tools 查看最新列表。'
+              )
+            ]
           : [])
-      ].join('\n') || 'No matching capabilities.'
+      ].join('\n') || ui('No matching capabilities.', '没有匹配的能力。')
     )
   }
   if (name === '/tasks') {
@@ -153,19 +216,19 @@ export async function command(client: TerminalClient, id: string, input: string)
     return (
       view.tasks
         .map((t) => [t.id, t.workerId, t.state, t.title, t.question].filter(Boolean).join('  '))
-        .join('\n') || 'No Worker tasks.'
+        .join('\n') || ui('No Worker tasks.', '目前没有 Worker 任务。')
     )
   }
   if (name === '/stop' && !ticket) {
     const { run } = await client.view(id)
     if (!run || !['running', 'queued', 'waiting', 'cancel_requested'].includes(run.state))
-      return 'No active run.'
+      return ui('No active run.', '当前没有运行中的任务。')
     await client.request('/api/chat/conversations/' + id + '/cancel', { runId: run.id })
-    return 'Stopped ' + run.id
+    return ui('Stopped ', '已停止 ') + run.id
   }
   if (!['/stop', '/approvals', '/approve', '/decline', '/answer', '/diff'].includes(name!))
-    throw new CliError('Unknown command. Type /help.')
-  if (!ticket) throw new CliError('Select a ticket from /tasks.')
+    throw new CliError(ui('Unknown command. Type /help.', '未知命令，输入 /help 查看帮助。'))
+  if (!ticket) throw new CliError(ui('Select a ticket from /tasks.', '请从 /tasks 选择任务。'))
   const action =
     name === '/stop'
       ? 'stop'
@@ -175,7 +238,9 @@ export async function command(client: TerminalClient, id: string, input: string)
           ? 'approvals'
           : 'answer'
   if (action === 'answer' && !approval)
-    throw new CliError('Choose a request ID from /approvals TICKET.')
+    throw new CliError(
+      ui('Choose a request ID from /approvals TICKET.', '请从 /approvals TICKET 中选择请求 ID。')
+    )
   const answer =
     name === '/answer'
       ? JSON.parse(args.slice(2).join(' '))
@@ -195,19 +260,23 @@ export async function command(client: TerminalClient, id: string, input: string)
       [
         result.diff,
         ...(result.untracked ?? []).map((f) => '? ' + f),
-        result.truncated ? '[truncated]' : ''
+        result.truncated ? ui('[truncated]', '[已截断]') : ''
       ]
         .filter(Boolean)
-        .join('\n') || 'No changes.'
+        .join('\n') || ui('No changes.', '没有文件改动。')
     )
   if (action === 'approvals')
-    return result.pending?.length ? JSON.stringify(result.pending, null, 2) : 'No pending requests.'
-  return action === 'stop' ? 'Stopped ' + ticket : 'Answered ' + approval
+    return result.pending?.length
+      ? JSON.stringify(result.pending, null, 2)
+      : ui('No pending requests.', '没有待处理请求。')
+  return action === 'stop'
+    ? ui('Stopped ', '已停止 ') + ticket
+    : ui('Answered ', '已答复 ') + approval
 }
 
 export function runResult(view: Snapshot, runId: string, status: string) {
   const messages = view.messages.filter(
-    (m) => m.runId === runId && m.role === 'assistant' && !m.recipient && m.status !== 'streaming'
+    (m) => m.runId === runId && m.role === 'assistant' && !m.opening && !m.recipient && m.status !== 'streaming'
   )
   const router = messages.filter((m) => m.speaker?.kind !== 'worker').at(-1)
   const deliveries = view.deliveries

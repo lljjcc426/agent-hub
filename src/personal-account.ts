@@ -115,6 +115,7 @@ export class PersonalAccount {
     const path = new URL(request.url ?? '/', 'http://localhost').pathname
     const credential = /^Roppo-CLI ([a-zA-Z0-9_-]{43})$/.exec(request.headers.authorization ?? '')
     if (credential && (/^\/api\/terminal\/(projects|conversations|tasks|logout)$/.test(path) ||
+      (path === '/api/chat/space' && ['GET','POST'].includes(request.method ?? '')) ||
       path === '/api/capability-library' || path === '/api/chat/readiness' ||
       /^\/api\/chat\/conversations(?:\/[a-f0-9-]{36}(?:\/(?:messages|events|cancel|decisions|(?:attachments|deliveries)\/[a-f0-9-]{36}))?)?$/.test(path))) return 'terminal:' + credential[1]
     const prefix = this.cookieName + '='

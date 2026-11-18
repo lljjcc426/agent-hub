@@ -193,9 +193,21 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect((await fetch(host.url + '/settings', { headers: auth })).status).toBe(401)
     const forged = cookie.split('=')[0] + '=terminal:' + credential
     expect((await fetch(host.url + '/settings', { headers: { cookie: forged } })).status).toBe(401)
+    const space = await post('/api/chat/space', {}, { cookie })
+    expect(space.status).toBe(200)
+    const sharedId = (await space.json()).conversation.id
+    const opened = await Promise.all([post('/api/chat/space', {}, auth), post('/api/chat/space', {}, auth)])
+    for (const response of opened) expect((await response.json()).conversation.id).toBe(sharedId)
+    const patch = await fetch(host.url + '/api/chat/space', {
+      method: 'PATCH',
+      headers: { ...auth, origin: host.url, 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalMode: 'full' })
+    })
+    expect(patch.status).toBe(401)
     const first = await cli(['-p', 'delegate', '--json', '--file', 'notes.txt'], 'piped context')
     expect(first.code, first.stderr + first.stdout).toBe(0)
     const run = JSON.parse(first.stdout)
+    expect(run.conversationId).not.toBe(sharedId)
     expect(run).toMatchObject({
       status: 'completed',
       text: 'Reviewed the Worker result',

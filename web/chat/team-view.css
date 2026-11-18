@@ -43,11 +43,12 @@
 .conversation-body .composer .send-button {width:34px;height:34px;background:var(--team-action);color:var(--team-on-action)}
 .conversation-body .composer .send-button:disabled {background:var(--team-fill);color:var(--team-muted)}
 .conversation-body .worker-readonly {background:var(--team-surface);border-color:var(--team-line)}
-.team-trace {display:flex;align-items:center;gap:8px;margin-block:12px;min-width:0}
-.team-trace button {display:flex;align-items:center;gap:8px;min-width:0;padding:4px 5px;border-radius:7px;font-size:12px;text-align:start;color:var(--team-muted)}
-.team-trace button:hover,.team-row:is(button):hover,.team-drawer-foot button:hover {background:var(--team-fill)}
-.team-trace button>span {padding-left:9px;border-left:1px solid var(--team-line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.team-trace strong {white-space:nowrap}
+.chat-mention {color:var(--team-ink);font-weight:600;overflow-wrap:anywhere;text-align:start}
+.chat-mention:hover,.chat-mention:focus-visible {text-decoration:underline;text-underline-offset:3px}
+.addressed-message:has(> [data-message-body] > div:first-child > p:first-child) > [data-message-body],
+.addressed-message > [data-message-body] > div:first-child:has(> p:first-child) {display:contents}
+.addressed-message > [data-message-body] > div:first-child > p:first-child {display:inline}
+.team-row:is(button):hover,.team-drawer-foot button:hover {background:var(--team-fill)}
 .team-file {display:flex;align-items:center;gap:14px;width:min(100%,360px);border:1px solid var(--team-line);border-radius:13px;text-align:start;padding:12px;background:var(--team-surface);color:var(--team-ink);transition:transform .2s var(--team-ease),border-color .18s}
 .team-file+.team-file {margin-top:7px}
 .team-file:hover {border-color:var(--team-muted);transform:translateY(-1px)}
@@ -119,7 +120,7 @@
 .file-stamp>img {width:100%;height:100%;object-fit:cover}
 .file-page {display:block;position:absolute;inset:7px 7px -8px 10px;padding:5px;background:var(--team-surface);color:var(--team-ink);box-shadow:0 1px 3px #00000020;border-radius:2px;white-space:pre-wrap;overflow:hidden;font:4.3px/1.6 ui-monospace,monospace;overflow-wrap:anywhere;transform:rotate(-3deg)}
 .file-page>b {display:block;font-size:6px;margin-bottom:3px;letter-spacing:.07em}
-@container chat-thread (max-width:550px) {.file-stamp {width:48px;height:56px}.team-file {gap:10px}.team-trace {gap:3px}.team-trace time {flex:none}}
+@container chat-thread (max-width:550px) {.file-stamp {width:48px;height:56px}.team-file {gap:10px}}
 
 .team-profile-name {display:flex;gap:5px;align-items:center;min-width:0}
 .team-profile-name .icon-button {width:26px;height:26px;color:var(--team-muted)}

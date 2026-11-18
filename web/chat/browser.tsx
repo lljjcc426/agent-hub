@@ -44,6 +44,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   return data;
 }
 const messages: Record<string, [string, string]> = {
+  browser_workspace_offline: ["Connecting to workspace Chromium…","正在连接工作区 Chromium…"],
   browser_profile_in_use: ["This browser is open in another conversation. Create another browser, or close it there first.","此浏览器正在另一会话中使用。请创建另一个浏览器，或先在原会话中关闭。"],
   browser_control_busy: [
     "Another window controls this browser.",
@@ -150,7 +151,11 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
     loading.current = true;
     try {
       const next = await request<State>("?client=" + client + (conversationId ? "&conversation=" + conversationId : ""));
-      if (active.current) setData(next);
+      if (active.current) {
+        setData(next);
+        if (next.sessions.some(s=>s.workspace))
+          setError(previous=>["browser_workspace_offline","browser_missing"].includes(previous) ? "" : previous);
+      }
     } catch (e) {
       fail(e);
     } finally {

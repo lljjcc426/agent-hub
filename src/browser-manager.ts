@@ -610,9 +610,19 @@ export class BrowserManager {
     const live = this.sessions.get(binding.id);
     if (live?.ready && !live.closing) return Promise.resolve(live);
     const opening = this.create(user, true, undefined, undefined, "about:blank", binding)
+      .catch(error => {
+        if (error instanceof BrowserError && ["browser_command_failed","browser_uncertain","browser_unavailable"].includes(error.code))
+          throw new BrowserError("browser_workspace_offline", "The workspace Chromium is reconnecting.", 503);
+        throw error;
+      })
       .finally(() => this.opening.delete(binding.id));
     this.opening.set(binding.id, opening);
     return opening;
+  }
+  async restoreWorkspace(user: string, sessionId?: string) {
+    if (!this.workspaceEnabled(user)) return;
+    const binding = this.host.store.get<WorkspaceBinding>("browser-workspace",user);
+    if (binding && (!sessionId || binding.id === sessionId)) await this.workspaceSession(user);
   }
   private pauseWorkspace(s: Session) {
     if (!s.cdpPort) return;
@@ -755,6 +765,7 @@ export class BrowserManager {
     return this.view(s, client);
   }
   async subscribe(user: string, id: string) {
+    await this.restoreWorkspace(user, id);
     const s = this.session(id, user);
     s.watchers++;
     try {
@@ -797,6 +808,7 @@ export class BrowserManager {
     return !!this.session(id, user).streaming;
   }
   async inspect(user: string, id: string, client?: string) {
+    await this.restoreWorkspace(user, id);
     const s = this.session(id, user);
     return this.enqueue(s, async () => {
       await this.capture(s, s.controller.signal);

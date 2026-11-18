@@ -39,7 +39,10 @@ export async function browserRequest(
   }
   if (path === "/api/browser" && req.method === "GET") {
     const conversationId=url.searchParams.has('conversation')?z.string().uuid().parse(url.searchParams.get('conversation')):undefined
-    if(conversationId)host.chat.view(conversationId,user)
+    if(conversationId) {
+      host.chat.view(conversationId,user);
+      await manager.restoreWorkspace(user);
+    }
     send(manager.list(user, clientId, conversationId));
     return;
   }

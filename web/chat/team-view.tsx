@@ -1,3 +1,4 @@
+import { SidebarSeparator } from "./sidebar-separator.tsx";
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import {
   ArrowDownToLine,
@@ -247,6 +248,7 @@ export function TeamDrawer({
   }
   return (
     <aside id="session-panel" className="session-panel team-drawer" aria-label={L('Team panel', '团队面板')}>
+      <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel", "会话面板")} />
       <div className="team-drawer-head">
         <div className="team-profile">
           <span className="team-portrait">

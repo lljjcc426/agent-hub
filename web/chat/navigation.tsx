@@ -15,6 +15,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { SidebarSeparator } from "./sidebar-separator.tsx";
 import mark from "../../src/ui/assets/roppo-mark.png";
 
 type Props = {
@@ -22,7 +23,7 @@ type Props = {
   configuring: boolean;
   hash: string;
   expanded: boolean;
-  onExpanded: () => void;
+  onExpandedChange: (expanded: boolean) => void;
   mobile: boolean;
   menuOpen: boolean;
   closeMenu: () => void;
@@ -36,7 +37,7 @@ export function FeatureNavigation({
   configuring,
   hash,
   expanded,
-  onExpanded,
+  onExpandedChange,
   mobile,
   menuOpen,
   closeMenu,
@@ -180,7 +181,7 @@ export function FeatureNavigation({
         </a>
         <button
           className="function-link navigation-collapse"
-          onClick={onExpanded}
+          onClick={() => onExpandedChange(!expanded)}
           aria-expanded={expanded}
           aria-controls="function-navigation"
           aria-label={collapse}
@@ -218,6 +219,7 @@ export function FeatureNavigation({
           </span>
         </a>
       </footer>
+      <SidebarSeparator pane="navigation" controls="function-navigation" label={L("Workspace navigation", "工作区导航")} expandNavigation={() => onExpandedChange(true)} />
     </aside>
   );
 }

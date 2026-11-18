@@ -27,7 +27,6 @@ import {
   ArrowUp,
   ArrowDown,
   Users,
-  SlidersHorizontal,
   Sun,
   Moon,
   PanelRight,
@@ -77,6 +76,8 @@ import "./navigation.css";
 import "./chat-layout.css";
 import "./message-interactions.css";
 import "./team-view.css";
+import { SidebarSeparator } from "./sidebar-separator.tsx";
+import "./sidebar-resize.css";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
 type Conversation = Snapshot["conversation"];
@@ -843,12 +844,7 @@ function Chat(p: ChatProps) {
     if (!node) return;
     const observer = new ResizeObserver(([entry]) => {
       if (entry && entry.contentRect.width > 0)
-        setPanelOverlay(
-          innerWidth <= 800 ||
-            entry.contentRect.width -
-              Math.max(360, Math.min(innerWidth * 0.43, 600)) <
-              360,
-        );
+        setPanelOverlay(innerWidth <= 800 || entry.contentRect.width < 720);
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -1268,7 +1264,7 @@ function Chat(p: ChatProps) {
             configuring={configuring}
             hash={hash}
             expanded={navExpanded}
-            onExpanded={() => setNavExpanded(!navExpanded)}
+            onExpandedChange={setNavExpanded}
             mobile={narrow}
             menuOpen={menu}
             closeMenu={closeNavigation}
@@ -1281,10 +1277,11 @@ function Chat(p: ChatProps) {
             <div className="agent-list">{participants.map(agent=>{
               const latest=agent.latestMessage,prefix=latest?.role==='user'?L('You: ','你：'):latest?.speaker&&latest.speaker!==agent.label?latest.speaker+': ':'';
               const preview=latest?prefix+latest.text.replace(/\s+/g,' ').trim():L('No messages yet','暂无消息');
-              return <div key={agent.id} className="agent-contact-row"><button className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{selectAgent(agent.id);if(narrow)closeNavigation()}}>
+              return <button key={agent.id} className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{selectAgent(agent.id);if(narrow)closeNavigation()}}>
                 <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name"><span className="agent-label">{agent.label}</span><span className="agent-role">{agent.kind === "worker" ? "Worker" : "Router"}</span></span><small title={preview}>{preview}</small></span>
-              </button><a className="agent-manage" href={"/configure#execution/configuration/"+encodeURIComponent(agent.kind==='router'?'router':agent.id)} aria-label={L('Manage ','管理 ')+agent.label} title={L('Manage ','管理 ')+agent.label}><SlidersHorizontal size={15}/></a></div>
+              </button>
             })}</div>
+            <SidebarSeparator pane="agents" controls="agent-list" label={L("Agents", "Agents 列表")} />
           </aside> : null}
           {menu ? (
             <button

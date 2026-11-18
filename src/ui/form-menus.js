@@ -107,7 +107,13 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
     current.active = row
     row.dataset.active = ''
     current.select.setAttribute('aria-activedescendant', row.id)
-    if (scroll) row.scrollIntoView({block:'nearest'})
+    if (scroll) {
+      // Keep scrolling inside the picker. Moving the page would dismiss it.
+      const bounds = current.menu.getBoundingClientRect()
+      const option = row.getBoundingClientRect()
+      if (option.top < bounds.top) current.menu.scrollTop += option.top - bounds.top
+      else if (option.bottom > bounds.bottom) current.menu.scrollTop += option.bottom - bounds.bottom
+    }
   }
   function choose(row) {
     if (!current || !row || row.getAttribute('aria-disabled') === 'true') return

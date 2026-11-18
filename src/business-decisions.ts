@@ -17,7 +17,7 @@ export interface BusinessDecisionView {
  target:{label:string;version:string;amount:DecisionTerms['amount'];recipient:DecisionTerms['recipient']};
  answer:{text:string;at:number}|null
 }
-interface DecisionRecord extends BusinessDecisionView {schema:1;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
+interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
 const fail=(code:string)=>new ChatError(code,code,code==='decision_identity'?403:409)
 function readDecision(host:Runtime,id:string):DecisionRecord|undefined {
  const d=host.store.get<DecisionRecord>('business-decision',id),time=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0&&v<=8.64e15
@@ -47,12 +47,12 @@ export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:Decisi
  if(host.store.get('business-decision',id))return
  const asker=decisionAsker(host,ticket);if(!asker)return
  const createdAt=Date.now(),version=basis(host,ticket,currentTerms),summary=ticket.assignments.at(-1)?.report?.summary??''
- const record:DecisionRecord={schema:1,id,ticketId:ticket.id,question:ticket.attention.question,summary,version,basis:version,actor:asker.actor,terms:currentTerms,createdAt,expiresAt:createdAt+(currentTerms?.validForSeconds??86400)*1000,status:'pending',reason:null,target:{label:currentTerms?.target.label??ticket.title,version:currentTerms?.target.version??version,amount:currentTerms?.amount??null,recipient:currentTerms?.recipient??null},answer:null,admissionSeq:Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
+ const record:DecisionRecord={schema:1,originTriggerId:asker.id,id,ticketId:ticket.id,question:ticket.attention.question,summary,version,basis:version,actor:asker.actor,terms:currentTerms,createdAt,expiresAt:createdAt+(currentTerms?.validForSeconds??86400)*1000,status:'pending',reason:null,target:{label:currentTerms?.target.label??ticket.title,version:currentTerms?.target.version??version,amount:currentTerms?.amount??null,recipient:currentTerms?.recipient??null},answer:null,admissionSeq:Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
  host.store.put('business-decision',id,record)
 }
 export function businessDecision(host:Runtime,id:string,now=Date.now()):BusinessDecisionView|undefined {
  const d=readDecision(host,id);if(!d)return
- const {schema,actor,basis:expected,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
+ const {schema,originTriggerId,actor,basis:expected,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
  if(d.status==='answered')return view
  if(!t||t.ended||!t.attention||t.attention.id!==id)return {...view,status:'withdrawn',reason:'question_replaced_or_task_closed'}
  const latest=host.store.get<{questionId:string;terms:DecisionTerms|null}>('business-decision-terms',t.id)

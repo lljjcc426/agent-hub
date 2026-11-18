@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type ReactNode } from 'react'
 import { Check, ChevronDown, X } from 'lucide-react'
 import { IconButton } from './controls.tsx'
 
@@ -75,18 +75,25 @@ export function Dialog({
   )
 }
 
+export function DisclosureRoot({ className = '', ...props }: ComponentPropsWithRef<'details'>) {
+  return <details {...props} className={'rp-disclosure-field ' + className} />
+}
+export function DisclosureSummary({ indicator = false, ...props }: ComponentPropsWithRef<'summary'> & { indicator?: boolean }) {
+  return <summary {...props} data-rp-heading={indicator || undefined} />
+}
+
 export function Disclosure({ title, children, arrival }: { title: ReactNode; children: ReactNode; arrival?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <details className="rp-disclosure" data-arrival={arrival||undefined} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>
+    <DisclosureRoot className="rp-disclosure" data-arrival={arrival||undefined} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <DisclosureSummary>
         {title}
         <ChevronDown size={16} />
-      </summary>
+      </DisclosureSummary>
       <div className="rp-disclosure-clip" inert={!open} aria-hidden={!open}>
         <div>{children}</div>
       </div>
-    </details>
+    </DisclosureRoot>
   )
 }
 

@@ -1,14 +1,16 @@
+import '../../src/ui/form-menus.js'
 import {
   useId,
   useRef,
   type PointerEvent as ReactPointerEvent,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
+  type ComponentPropsWithRef,
   type ReactNode,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react'
-import { Check, ChevronDown, LoaderCircle } from 'lucide-react'
+import { Check, LoaderCircle } from 'lucide-react'
 import { SelectionIndicator } from './transitions.tsx'
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -58,6 +60,11 @@ export function IconButton({
   )
 }
 
+/** A field with an external or wrapping label. */
+export function InputControl({ className = '', ...props }: ComponentPropsWithRef<'input'>) {
+  return <input {...props} className={'rp-field-input ' + className} />
+}
+
 export function TextField({
   label,
   icon,
@@ -74,8 +81,8 @@ export function TextField({
 
 export function TextAreaField({
   label, ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string }) {
-  return <textarea {...props} className={'rp-textarea ' + (props.className || '')} aria-label={label} />
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: string }) {
+  return <textarea {...props} className={'rp-textarea ' + (props.className || '')} aria-label={label ?? props['aria-label']} />
 }
 
 export function SelectField({
@@ -83,14 +90,11 @@ export function SelectField({
   className = '',
   children,
   ...props
-}: SelectHTMLAttributes<HTMLSelectElement> & { label: string }) {
+}: SelectHTMLAttributes<HTMLSelectElement> & { label?: string }) {
   return (
-    <label className={'rp-select ' + className}>
-      <select {...props} aria-label={label}>
-        {children}
-      </select>
-      <ChevronDown size={14} aria-hidden="true" />
-    </label>
+    <select {...props} className={'rp-select-field ' + className} aria-label={label ?? props['aria-label']}>
+      {children}
+    </select>
   )
 }
 

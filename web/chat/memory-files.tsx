@@ -1,3 +1,4 @@
+import { TextAreaField } from '../ui/controls.tsx'
 import {useEffect,useRef,useState} from 'react';
 import {FileText,Pencil,ArrowLeft} from 'lucide-react';
 import type {Labels} from './memory-api.ts';
@@ -33,7 +34,7 @@ export function MemoryFile({file,data,L,saved,editingChanged,learned=[],notesCha
    <button className="memory-back" onClick={()=>setMobileDetail(false)} disabled={draft!==null}><ArrowLeft size={16}/>{L('Back','返回')}</button>
    <header><h3>{item.title}</h3>{draft===null&&<button ref={edit} className="button" onClick={()=>setDraft(data.files[file])}><Pencil size={15}/>{L('Edit','编辑')}</button>}</header>
    {draft===null?<div className="memory-file-text">{item.content||L('No custom instructions yet.','尚未设置自定义内容。')}</div>:<form className="memory-edit" onSubmit={e=>{e.preventDefault();setBusy(true);setError('');void personaRequest({agentId:'router',file,text:draft,revision:data.revision}).then(next=>{saved(next);setDraft(null);}).catch(e=>setError(e.message==='conflict'?L('Settings changed elsewhere. Keep your edits and reload before saving.','设置已在别处更新。请保留当前内容，刷新后再保存。'):L('Could not save. Your edits are kept.','未能保存，已保留当前编辑内容。'))).finally(()=>setBusy(false));}}>
-    <label>{file}<textarea autoFocus rows={14} maxLength={file==='SOUL.md'?4200:file==='IDENTITY.md'?2200:64000} value={draft} onChange={e=>setDraft(e.target.value)}/></label>
+    <label>{file}<TextAreaField autoFocus rows={14} maxLength={file==='SOUL.md'?4200:file==='IDENTITY.md'?2200:64000} value={draft} onChange={e=>setDraft(e.target.value)}/></label>
     <div className="memory-actions"><button className="button primary" disabled={busy}>{busy?L('Saving…','保存中…'):L('Save','保存')}</button><button type="button" className="button" disabled={busy} onClick={cancel}>{L('Cancel','取消')}</button></div>
    </form>}
    {error&&<p role="alert" className="memory-error">{error}</p>}

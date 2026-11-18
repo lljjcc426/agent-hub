@@ -6,6 +6,11 @@ const L = (en, zh) => (lang === 'en' ? en : zh)
 const el = (tag, className, text) => {
   const node = document.createElement(tag)
   if (className) node.className = className
+  if (tag === 'input') node.classList.add('rp-field-input')
+  if (tag === 'textarea') node.classList.add('rp-textarea')
+  if (tag === 'select') node.classList.add('rp-select-field')
+  if (tag === 'details') node.classList.add('rp-disclosure-field')
+  if (tag === 'summary' && text != null) node.dataset.rpHeading = ''
   if (text != null) node.textContent = String(text)
   return node
 }

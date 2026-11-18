@@ -1,4 +1,5 @@
-import {SelectField} from '../ui/controls.tsx';
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
+import { SelectField, InputControl } from '../ui/controls.tsx'
 import {memoryCategory,memoryCategoryLabel} from './memory-provenance.ts';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -218,7 +219,7 @@ export function MemorySettings({ L }: { L: Labels }) {
         <h1 id="page-title" ref={detailTitle} tabIndex={-1}>
           {profile?.label ?? L('Memory', '记忆')}
         </h1>
-        <details
+        <DisclosureRoot
           ref={menu}
           className="memory-menu"
           onKeyDown={(e) => {
@@ -228,10 +229,10 @@ export function MemorySettings({ L }: { L: Labels }) {
             }
           }}
         >
-          <summary aria-label={L('More memory actions', '更多记忆操作')}>
+          <DisclosureSummary aria-label={L('More memory actions', '更多记忆操作')}>
             <MoreHorizontal size={18} />
             {L('Actions', '更多操作')}
-          </summary>
+          </DisclosureSummary>
           <div className="memory-menu-items">
             <button
               disabled={editing || busy}
@@ -271,7 +272,7 @@ export function MemorySettings({ L }: { L: Labels }) {
               </button>
             )}
           </div>
-        </details>
+        </DisclosureRoot>
       </header>
       {error && (
         <p className="memory-error" role="alert">
@@ -285,7 +286,7 @@ export function MemorySettings({ L }: { L: Labels }) {
         <label className="memory-scope">
           <UserRound size={17} />
           {L('Memory scope', '记忆范围')}
-          <select
+          <SelectField
             disabled={editing || busy}
             value={actualScope}
             onChange={(e) => {
@@ -302,7 +303,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 </option>
               ))}
             </optgroup>
-          </select>
+          </SelectField>
         </label>
       )}
       {personal && (
@@ -320,7 +321,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 <small>{L('Start a conversation to change this setting', '开始对话后可更改')}</small>
               )}
             </span>
-            <input
+            <InputControl
               role="switch"
               aria-label={L('Learn from conversations', '从对话中学习')}
               type="checkbox"
@@ -440,7 +441,7 @@ export function MemorySettings({ L }: { L: Labels }) {
             {error ? L('Profile unavailable', '角色资料暂不可用') : L('Loading…', '加载中…')}
           </p>
         ))}
-      <input
+      <InputControl
         ref={importInput}
         type="file"
         accept=".md"
@@ -501,13 +502,13 @@ export function MemorySettings({ L }: { L: Labels }) {
         {visible.length > 1 && (
           <label>
             {L('Conversation', '对话')}
-            <select value={activeMethod?.id} onChange={(e) => setMethodEntry(e.target.value)}>
+            <SelectField value={activeMethod?.id} onChange={(e) => setMethodEntry(e.target.value)}>
               {visible.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.label}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
         )}
         {activeMethod && (

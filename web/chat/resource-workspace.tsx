@@ -1,3 +1,4 @@
+import { InputControl } from '../ui/controls.tsx'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Folder, Globe, Plus, X, Maximize2, Minimize2, Search, ArrowUpRight } from 'lucide-react';
 import { closeResource, openResource, resourceUrl, type ResourceState, type ResourceKind } from './resource-state.ts';
@@ -102,7 +103,7 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
     <div className="session-panel-content" role="tabpanel" id="resource-content" aria-labelledby={'resource-tab-'+selected.id}>
       {active.kind==='new'?<div className="resource-start">
         <form className="resource-search" onSubmit={e=>{e.preventDefault();if(url){onOpen('browser',url);setQuery('');}else if(shown.length===1)openTool(shown[0]!.kind);}}>
-          <Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} aria-label={L('Search tools or enter a website','搜索工具或输入网址')} placeholder={L('Search tools or enter a website','搜索工具或输入网址')}/>
+          <Search size={16}/><InputControl value={query} onChange={e=>setQuery(e.target.value)} aria-label={L('Search tools or enter a website','搜索工具或输入网址')} placeholder={L('Search tools or enter a website','搜索工具或输入网址')}/>
           {url?<button type="submit" className="icon-button" aria-label={L('Open website','打开网站')}><ArrowUpRight size={16}/></button>:null}
         </form>
         <div className="resource-start-scroll">

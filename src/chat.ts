@@ -16,7 +16,7 @@ import type {ModelOutput,ModelRequest} from './model.ts'
 import {measureChatInput,type ChatInputSize} from './chat-input.ts'
 import {toolTrace} from './tool-trace.ts'
 import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
-import {stableDigest} from './sources.ts'
+import {bodyDigest,stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
 import type {RouterGoal} from './router-goals.ts'
 import type {MessageBatch} from './router-proactive.ts'
@@ -723,25 +723,55 @@ export class ChatSessions {
       return {runId:run.id,duplicate:false}
     })
   }
-  businessDecisions(id:string,owner:string):BusinessDecisionView[]{
-    const c=this.get(id,owner),actor={source:c.sourceId,id:c.actor},tasks=new Set(this.tasks(c).map(t=>t.id))
-    return this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>this.host.store.list<BusinessDecisionView>('business-decision').filter(d=>{
-      if(!tasks.has(d.ticketId)||!decisionActorMatches(this.host,d.id,actor))return false
-      try{
-        const parent=this.host.taskAuthority(d.ticketId)?.parentTrigger,trigger=parent&&this.host.store.triggers.get(parent)
-        if(!trigger)return false
-        this.host.routerIngress.authority(trigger.id,c.discussion)
-        const context=this.host.scopes.context(trigger,c.discussion)
-        if(context){this.host.scopes.checkTask(d.ticketId,context);this.host.scopes.checkTaskEntry(this.host.scopes.ownership(d.ticketId)!,context.route.entryId,'result')}
-        const saved=this.host.store.get<{manifest:ContextManifest}>('task-context',d.ticketId);if(saved)this.host.memory.validate(saved.manifest)
-        return true
-      }catch{return false}
-    }).map(d=>businessDecision(this.host,d.id)!).filter(Boolean).sort((a,b)=>b.createdAt-a.createdAt).slice(0,50)))
+  businessDecisions(id:string, owner:string, query?:{runIds?:Set<string>; questionId?:string; workerId?:string}) {
+    const conversation = this.get(id, owner)
+    const actor = {source:conversation.sourceId, id:conversation.actor}
+    const tasks = new Map(this.tasks(conversation).map(task => [task.id,task]))
+    const store = this.host.store
+    type RecordRef = Pick<BusinessDecisionView,'id'|'ticketId'> & {originTriggerId?:string}
+    const records = query?.questionId
+      ? [store.get<RecordRef>('business-decision',query.questionId)]
+      : store.list<RecordRef>('business-decision')
+    return this.host.scopes.readOnly(() => this.host.memory.readOnly(() => {
+      const items = records.flatMap(record => {
+        if (!record) return []
+        const task = tasks.get(record.ticketId)
+        if (!task || (query?.workerId && task.workerId !== query.workerId)) return []
+        // Older records predate originTriggerId. The assignment retains the original
+        // delegation even after a later reply moves the active task authority.
+        const capturedRun = record.originTriggerId && this.originRun(record.originTriggerId)
+        const originalTrigger = !capturedRun && store.get<Delegation>('worker-assignment',task.id)?.parentTrigger
+        const run = capturedRun || (originalTrigger && this.originRun(originalTrigger))
+        if (!run || run.conversationId !== id || (query?.runIds && !query.runIds.has(run.id))) return []
+        if (!decisionActorMatches(this.host, record.id, actor)) return []
+        try {
+          const parent = this.host.taskAuthority(task.id)?.parentTrigger
+          const trigger = parent && store.triggers.get(parent)
+          if (!trigger) return []
+          this.host.routerIngress.authority(trigger.id,conversation.discussion)
+          const context = this.host.scopes.context(trigger,conversation.discussion)
+          if (context) {
+            this.host.scopes.checkTask(task.id,context)
+            this.host.scopes.checkTaskEntry(this.host.scopes.ownership(task.id)!,context.route.entryId,'result')
+          }
+          const saved = store.get<{manifest:ContextManifest}>('task-context',task.id)
+          if (saved) this.host.memory.validate(saved.manifest)
+        } catch { return [] }
+        const decision = businessDecision(this.host,record.id)
+        if (!decision) return []
+        const receipt = decision.answer && store.get<{triggerId:string}>('question-answer',bodyDigest([task.id,record.id]))
+        const answerRun = receipt && store.get<ChatRun>('chat-run',receipt.triggerId)
+        const answerMessageId = answerRun?.conversationId === id && answerRun.decisionTicketId === task.id
+          ? 'user:'+answerRun.id : undefined
+        return [{...decision,runId:run.id,workerId:task.workerId,answerMessageId}]
+      }).sort((a,b) => b.createdAt-a.createdAt)
+      return query ? items : items.slice(0,50)
+    }))
   }
   decide(id:string,owner:string,input:{action:'answer'|'renew';id:string;version:string;requestId:string;text?:string}){
     return this.host.store.atomic(()=>{
       const c=this.get(id,owner),h=this.host,actor={source:c.sourceId,id:c.actor},text=input.text?.trim()??'',fingerprint=stableDigest({...input,text}),key=stableDigest([owner,id,input.requestId])
-      const d=this.businessDecisions(id,owner).find(d=>d.id===input.id)
+      const d=this.businessDecisions(id,owner,{questionId:input.id})[0]
       if(!d||!decisionActorMatches(h,input.id,actor))throw new ChatError('decision_identity','This decision belongs to a different conversation or person.',403)
       const previous=h.store.get<{fingerprint:string;triggerId:string;decisionId:string}>('business-decision-action',key)
       const authorize=(triggerId:string)=>{
@@ -801,7 +831,7 @@ export class ChatSessions {
       return {tasks,result}
     }catch{throw new ChatError('file_unavailable','This file is unavailable or cannot be previewed.',404)}
   }
-  view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string){
+  view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string,decisionsFrom?:number){
     const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id),last=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
@@ -869,7 +899,21 @@ export class ChatSessions {
       const files=screenshots.filter(a=>a.runId===message.runId&&(!participant||a.ticketId===message.ticketId))
       if(files.length){message.attachments=[...(message.attachments??[]),...files];for(const file of files)screenshots.splice(screenshots.indexOf(file),1)}
     }
-    return {...result,decisions:this.businessDecisions(id,owner),tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
+    const runIds = new Set(result.messages.map(message => message.runId))
+    const firstSequence = result.messages[0]?.sequence
+    // Refresh questions on already-loaded pages too, including withdrawals and renewals.
+    if (firstSequence !== undefined && decisionsFrom !== undefined && decisionsFrom < firstSequence) {
+      const earlierRuns = this.host.store.db.prepare(`
+        SELECT DISTINCT json_extract(body,'$.runId') AS runId FROM records
+        WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=?
+          AND json_extract(body,'$.sequence')>=? AND json_extract(body,'$.sequence')<?
+          AND (? IS NULL OR json_extract(body,'$.runId')=?)
+          AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?)`
+      ).all(id,decisionsFrom,firstSequence,runId??null,runId??null,participant??null,participant??null,participant??null)
+      for (const row of earlierRuns) runIds.add(String(row.runId))
+    }
+    const decisions = this.businessDecisions(id,owner,{runIds,workerId:participant===router.id?undefined:participant})
+    return {...result,decisions,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){

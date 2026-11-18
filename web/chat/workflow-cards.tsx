@@ -1,8 +1,11 @@
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
 import type { ChatSessions, FileReview } from '../../src/chat.ts'
 import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
 import { AgentPlan } from '../ui/agent-run.tsx'
 import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
+import { WorkerQuestion } from './worker-question-preview.tsx'
+import type { DecisionAttempt } from './decision-state.ts'
 import { ChevronDown } from 'lucide-react'
 
 type Snapshot = ReturnType<ChatSessions['view']>
@@ -17,6 +20,7 @@ type Plan = {
 type FlowItem =
   | {kind:'plan'; at:number; plan:Plan}
   | {kind:'call'; at:number; call:Snapshot['calls'][number]}
+  | {kind:'question'; at:number; question:Snapshot['decisions'][number]}
   | {kind:'approval'; at:number; approval:Request}
 type Block=FlowItem[]
 const internalTools = new Set([
@@ -67,6 +71,10 @@ export function groupWorkflow(
     if(workerId&&workerId!==approval.workerId)continue
     add(approval.runId,approval.ticketId,{kind:'approval',at:approval.createdAt,approval},approval.state==='pending')
   }
+  for(const question of snapshot.decisions??[]){
+    if(workerId&&workerId!==question.workerId)continue
+    add(question.runId,question.ticketId,{kind:'question',at:question.createdAt,question},false)
+  }
   for(const block of blocks.values())block.sort((a,b)=>a.at-b.at)
   return blocks
 }
@@ -77,6 +85,8 @@ type FlowProps = {
   readonly: boolean
   actor:(id:string)=>string
   decide: (id: string, answer: string) => Promise<void>
+  answerWorker:(body:DecisionAttempt)=>Promise<unknown>
+  refresh:()=>Promise<void>
   readDraft: (id: string) => Promise<{ text: string }>
   reviewFile: (id: string, state: 'approved' | 'denied') => Promise<void>
   authorize: (id: string, value: unknown) => Promise<void>
@@ -135,11 +145,11 @@ export function FileReviewCard({ id, name, review }: { id: string; name: string;
         actionLabels={{approve: L('Deliver file', '确认交付'), deny: L('Decline', '拒绝交付')}}
         disabled={readonly || busy}
         onDecision={(state) => void submit(() => reviewFile(id, state))}>
-        {pending && <details className="workflow-draft" onToggle={e => { if(e.currentTarget.open) void openDraft() }}>
-          <summary>{L('Read draft', '查看原文')}<ChevronDown size={13} aria-hidden="true" /></summary>
+        {pending && <DisclosureRoot className="workflow-draft" onToggle={e => { if(e.currentTarget.open) void openDraft() }}>
+          <DisclosureSummary>{L('Read draft', '查看原文')}<ChevronDown size={13} aria-hidden="true" /></DisclosureSummary>
           {draft !== null ? <pre tabIndex={0}>{draft}</pre>
             : <span role="status">{readError ? L('Could not load. Reopen to retry.', '读取失败，请重新展开。') : L('Loading…', '读取中…')}</span>}
-        </details>}
+        </DisclosureRoot>}
       </ApprovalCard>
       {error}
     </div>
@@ -270,7 +280,7 @@ function NativeCard({ request: a }: { request: Request }) {
   )
 }
 export function WorkflowCards({ anchor }: { anchor: string }) {
-  const { L, blocks, tools } = useContext(Flow)!,
+  const { L, blocks, tools, readonly, answerWorker, refresh } = useContext(Flow)!,
     b = blocks.get(anchor)
   if (!b) return null
   const states = {
@@ -293,7 +303,8 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
       continue
     }
     flush()
-    if(item.kind==='approval')rows.push(<NativeCard key={item.approval.id} request={item.approval}/>)
+    if(item.kind==='question')rows.push(<WorkerQuestion key={item.question.id+item.question.version} item={item.question} L={L} readonly={readonly} send={answerWorker} refresh={refresh}/>)
+    else if(item.kind==='approval')rows.push(<NativeCard key={item.approval.id} request={item.approval}/>)
     else {
       const p=item.plan
       rows.push(<div className="workflow-plan" key={p.id}>

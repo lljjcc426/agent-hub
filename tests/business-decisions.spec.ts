@@ -38,7 +38,7 @@ function command(f:Awaited<ReturnType<typeof fixture>>,questionId:string,request
 function context(f:Awaited<ReturnType<typeof fixture>>,id='answer-user',at?:string){const incoming=f.receive(id,'Use the first local report.',at);return {discussion:'local:topic',...incoming}}
 
 function current(f:Awaited<ReturnType<typeof fixture>>){return f.h.chat.businessDecisions(f.chat.id,'owner')[0]!}
-function answer(f:Awaited<ReturnType<typeof fixture>>,d=current(f)){return {action:'answer' as const,id:d.id,version:d.version,requestId:randomUUID(),text:'Use the first report.'}}
+function answer(f:Awaited<ReturnType<typeof fixture>>,d:Pick<ReturnType<typeof current>,'id'|'version'>=current(f)){return {action:'answer' as const,id:d.id,version:d.version,requestId:randomUUID(),text:'Use the first report.'}}
 it('answers a real Chat question atomically, without queuing a second Router run',async()=>{
  const f=await fixture();await f.finish();const d=current(f)
  expect(d.status).toBe('pending');expect(d.target).toMatchObject({label:'Local report',version:'v1',amount:{value:'12.50',currency:'USD'},recipient:{id:'local-reviewer'}})
@@ -49,6 +49,34 @@ it('answers a real Chat question atomically, without queuing a second Router run
  const db=database(f.h);expect(f.h.chat.decide(f.chat.id,'owner',input).duplicate).toBe(true);expect(database(f.h)).toBe(db)
  expect(()=>f.h.chat.decide(f.chat.id,'owner',{...input,text:'Different answer'})).toThrow('different content')
  expect(f.h.store.list('tool-grant')).toEqual([]);expect(f.h.store.list('approval')).toEqual([])
+})
+it('keeps the answer on its original turn across pages and a restart, including old decisions',async()=>{
+ const f=await fixture()
+ await f.finish()
+ const {h,chat}=f, question=current(f), config=h.config
+ const original=h.chat.view(chat.id,'owner').messages.find(m=>m.role==='user')!
+ expect(question.runId).toBe(original.runId)
+ const record=h.store.get<Record<string,unknown>>('business-decision',question.id)!
+ delete record.originTriggerId
+ h.store.put('business-decision',question.id,record)
+ const input=answer(f,question)
+ h.chat.decide(chat.id,'owner',input)
+ const answerMessage=h.chat.view(chat.id,'owner').messages.find(m=>m.clientMessageId===input.requestId)!
+ expect(answerMessage.runId).not.toBe(original.runId)
+ const expected={id:question.id,runId:original.runId,answerMessageId:answerMessage.id,status:'answered'}
+ const latest=h.store.get<Record<string,unknown>>('chat-message',answerMessage.id)!
+ for(let i=1;i<=101;i++){
+   const id='later-message-'+i
+   h.store.put('chat-message',id,{...latest,id,sequence:answerMessage.sequence+i})
+ }
+ expect(h.chat.view(chat.id,'owner').decisions.find(d=>d.id===question.id)).toBeUndefined()
+ expect(h.chat.view(chat.id,'owner',answerMessage.sequence).decisions).toContainEqual(expect.objectContaining(expected))
+ await h.close()
+ hosts.delete(h)
+ const reopened=new Runtime(config,{model:{async run(){throw Error('No model calls for reading history')}}})
+ hosts.add(reopened)
+ const loaded=reopened.chat.view(chat.id,'owner',undefined,undefined,undefined,undefined,original.sequence)
+ expect(loaded.decisions).toContainEqual(expect.objectContaining(expected))
 })
 it('invalidates changed report targets and renews to a new question before accepting an answer',async()=>{
  const f=await fixture();await f.finish();const old=current(f),attention=f.ticket().attention!

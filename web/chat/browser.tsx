@@ -1,3 +1,5 @@
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
+import { InputControl, SelectField } from '../ui/controls.tsx'
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Globe,
@@ -420,7 +422,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
             >
               <RotateCw size={15} />
             </Button>
-            <input
+            <InputControl
               aria-label={L("Website address", "网站地址")}
               placeholder={L("Enter a website", "输入网址")}
               value={address}
@@ -450,7 +452,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
             onConnected={setConnected} onError={fail} L={L}/>
           <footer className="browser-control">
-            <select aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
+            <SelectField aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
               const id=e.target.value;
               void act(async()=>{
                 await viewportDrain.current();
@@ -462,11 +464,11 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
             }}>
               {data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               {data?.profiles.filter(p=>!data.sessions.some(s=>s.personal&&s.profileId===p.id)).map(p=><option key={p.id} value={'profile:'+p.id}>{p.name}</option>)}
-            </select>
+            </SelectField>
             <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
             <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
             {!session.workspace && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
-            {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<details className="browser-logins"><summary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></summary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></details>:null}
+            {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<DisclosureRoot className="browser-logins"><DisclosureSummary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></DisclosureSummary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></DisclosureRoot>:null}
             <span>
               {busy ? (
                 <LoaderCircle size={14} className="spin" />
@@ -593,7 +595,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
             >
               <label>
                 {L("Name", "名称")}
-                <input
+                <InputControl
                   autoFocus
                   required
                   maxLength={80}
@@ -610,7 +612,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 </legend>
                 {data?.workers.map((w) => (
                   <label className="browser-grant" key={w.id}>
-                    <input
+                    <InputControl
                       type="checkbox"
                       checked={grants.includes(w.id)}
                       onChange={(e) =>
@@ -712,7 +714,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
               >
                 <label>
                   {L("Browser profile", "浏览器资料")}
-                  <select
+                  <SelectField
                     required
                     value={accountProfile}
                     onChange={(e) => setAccountProfile(e.target.value)}
@@ -722,11 +724,11 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                         {p.name}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   {L("Account name", "账号名称")}
-                  <input
+                  <InputControl
                     required
                     maxLength={80}
                     value={label}
@@ -735,7 +737,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 </label>
                 <label>
                   {L("Sign-in URL", "登录网址")}
-                  <input
+                  <InputControl
                     required
                     type="url"
                     value={loginUrl}
@@ -744,7 +746,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 </label>
                 <label>
                   {L("Username", "用户名")}
-                  <input
+                  <InputControl
                     required
                     autoComplete="off"
                     value={username}
@@ -755,7 +757,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                   {accountId
                     ? L("New password", "新密码")
                     : L("Password", "密码")}
-                  <input
+                  <InputControl
                     required
                     type="password"
                     autoComplete="new-password"

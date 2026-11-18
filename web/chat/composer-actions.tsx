@@ -6,6 +6,7 @@ import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList
   type ChatCommand, type Localize, type Mode } from './composer-commands.tsx'
 import { RouterModelOptions } from './router-model.tsx'
 import type { CurrentContext } from './context-card.tsx'
+import { finishLayerExit } from '../ui/overlays.tsx'
 import './composer-controls.css'
 
 type Subpage = Exclude<ChatCommand, 'attach'>
@@ -30,14 +31,16 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
   onContext, saveMode, onModelSaved, onEnter }: Props) {
   const aui = useAui(), listId = useId(), paletteId = useId()
   const input = useRef<HTMLTextAreaElement>(null), upload = useRef<HTMLButtonElement>(null)
-  const opener = useRef<HTMLElement>(null), palette = useRef<HTMLDivElement>(null)
+  const opener = useRef<HTMLElement>(null), palette = useRef<HTMLDivElement>(null), paletteBody = useRef<HTMLDivElement>(null)
   const [menu, setMenu] = useState<Menu | null>(null), [index, setIndex] = useState(0)
+  const [closing, setClosing] = useState(false)
   const current = useRef(menu)
   current.current = menu
   const source = visible ? menu?.source : undefined
   const open = !!source
   const page = visible ? menu?.page : undefined
-  const slash = source === 'slash' && page === 'commands'
+  const slashList = source === 'slash' && page === 'commands'
+  const slash = slashList && !closing
   const nested = page !== 'commands' && (source === 'slash' || source === 'plus')
   const items = matchingCommands(menu?.query ?? '', L)
   const readout = windowReadout(usage, L)
@@ -49,8 +52,12 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
   const PolicyIcon = mode === 'full' ? ShieldOff : ShieldCheck
   const title = commands.find(c => c.id === page)?.title(L)
 
+  function show(next: Menu) {
+    setClosing(false)
+    setMenu(next)
+  }
   function close(focus = true) {
-    setMenu(null)
+    setClosing(true)
     if (focus) opener.current?.focus({ preventScroll: true })
   }
   function finish() {
@@ -59,24 +66,24 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
   function back() {
     if (!nested || !menu) { close(); return }
     if (source === 'slash') aui.composer.setText('/' + menu.query)
-    setMenu({ ...menu, page: 'commands' })
+    show({ ...menu, page: 'commands' })
   }
   function shortcut(next: Exclude<Source, 'slash'>, trigger: HTMLElement) {
-    if (source === next) { close(); return }
+    if (!closing && source === next) { close(); return }
     if (slash) aui.composer.setText('')
     opener.current = trigger
     setIndex(0)
-    setMenu({ source: next, page: next === 'plus' ? 'commands' : next, query: '' })
+    show({ source: next, page: next === 'plus' ? 'commands' : next, query: '' })
   }
   function updateQuery(text: string) {
     const query = /^\/[^\s/]*$/u.test(text) ? text.slice(1).toLowerCase() : null
     if (query === null || !matchingCommands(query, L).length) {
-      setMenu(null)
+      if (menu) close(false)
       return
     }
     opener.current = input.current
     setIndex(0)
-    setMenu({ source: 'slash', page: 'commands', query })
+    show({ source: 'slash', page: 'commands', query })
   }
   function choose(command: ChatCommand) {
     if (!menu || (command === 'attach' && uploadDisabled)) return
@@ -84,7 +91,7 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
     if (command === 'attach') {
       close()
       upload.current?.click()
-    } else setMenu({ ...menu, page: command })
+    } else show({ ...menu, page: command })
   }
   function moveInMenu(event: KeyboardEvent) {
     if (event.key === 'Escape') {
@@ -107,8 +114,8 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
 
   useEffect(() => { if (!visible) setMenu(null) }, [visible])
   useLayoutEffect(() => {
-    const panel = palette.current, form = input.current?.form
-    if (!panel || !form || !open) return
+    const panel = palette.current, body = paletteBody.current, form = input.current?.form
+    if (!panel || !body || !form || !open) return
     panel.showPopover()
     const place = () => {
       const rect = form.getBoundingClientRect(), viewport = window.visualViewport
@@ -119,6 +126,7 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
       panel.style.left = Math.max(left + 8, Math.min(rect.left, right - width - 8)) + 'px'
       const above = rect.top - top - 16, below = bottom - rect.bottom - 16
       const up = above >= 290 || above >= below
+      panel.dataset.side = up ? 'above' : 'below'
       panel.style.top = up ? 'auto' : rect.bottom + 8 + 'px'
       panel.style.bottom = up ? innerHeight - rect.top + 8 + 'px' : 'auto'
       panel.style.maxHeight = Math.max(0, up ? above : below) + 'px'
@@ -128,10 +136,15 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
       if (!(target instanceof Element) || panel!.contains(target) || target.closest('[data-menu-trigger]')) return
       if (target === input.current && current.current?.source === 'slash' && current.current.page === 'commands') return
       if (target.closest('.send-button') && current.current?.source === 'slash' && current.current.page === 'commands') return
-      setMenu(null)
+      setClosing(true)
     }
     place()
-    const observer = new ResizeObserver(place)
+    panel.style.setProperty('--palette-height', body.offsetHeight + 'px')
+    const observer = new ResizeObserver(entries => {
+      if (entries.some(entry => entry.target === body)) panel.style.setProperty('--palette-height', body.offsetHeight + 'px')
+      if (entries.some(entry => entry.target !== body)) place()
+    })
+    observer.observe(body)
     observer.observe(form)
     const area = form.closest('.composer-area')
     if (area) observer.observe(area)
@@ -153,12 +166,15 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
     }
   }, [open])
   useLayoutEffect(() => {
+    if (closing && palette.current) return finishLayerExit(palette.current, () => setMenu(null))
+  }, [closing])
+  useLayoutEffect(() => {
     const panel = palette.current
-    if (!panel || !page) return
+    if (!panel || !page || closing) return
     if (slash) { input.current?.focus({ preventScroll: true }); return }
     const target = panel.querySelector<HTMLElement>('[aria-checked=true], [role=menuitem]:not(:disabled), .palette-details') ?? panel
     target.focus({ preventScroll: true })
-  }, [page, source, slash])
+  }, [page, source, slash, closing])
 
   return <>
     <div className="command-input">
@@ -186,22 +202,22 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
     </div>
     <div className="composer-toolbar">
       <button type="button" data-menu-trigger className="composer-plus icon-button" aria-label={L('Chat actions','对话操作')}
-        title={L('Chat actions','对话操作')} aria-haspopup="menu" aria-expanded={source === 'plus'} aria-controls={source === 'plus' ? paletteId : undefined}
+        title={L('Chat actions','对话操作')} aria-haspopup="menu" aria-expanded={!closing && source === 'plus'} aria-controls={source === 'plus' ? paletteId : undefined}
         onClick={e => shortcut('plus', e.currentTarget)}><Plus size={19}/></button>
       <ComposerPrimitive.AddAttachment ref={upload} hidden tabIndex={-1} disabled={uploadDisabled} aria-label={L('Attach files','上传文件')}/>
       <button type="button" data-menu-trigger className="composer-choice composer-model"
         aria-label={L('Model connection','模型连接') + ' · ' + modelLabel} title={L('Model connection','模型连接') + ' · ' + modelLabel}
-        aria-haspopup="dialog" aria-expanded={source === 'model'} aria-controls={source === 'model' ? paletteId : undefined}
+        aria-haspopup="dialog" aria-expanded={!closing && source === 'model'} aria-controls={source === 'model' ? paletteId : undefined}
         onClick={e => shortcut('model', e.currentTarget)}><SlidersHorizontal size={15}/><span>{modelLabel}</span></button>
       <button type="button" data-menu-trigger className="composer-choice composer-policy" data-mode={mode}
-        aria-label={policyTitle} title={policyTitle} aria-haspopup="menu" aria-expanded={source === 'permissions'}
+        aria-label={policyTitle} title={policyTitle} aria-haspopup="menu" aria-expanded={!closing && source === 'permissions'}
         aria-controls={source === 'permissions' ? paletteId : undefined} onClick={e => shortcut('permissions', e.currentTarget)}>
         <PolicyIcon size={15}/><span>{policyLabel}</span>
       </button>
       <div className="send-actions">
         <button type="button" data-menu-trigger className="icon-button composer-context" aria-label={contextTitle}
           title={[contextTitle, readout.tokens].filter(Boolean).join(' · ')}
-          aria-haspopup="dialog" aria-expanded={source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
+          aria-haspopup="dialog" aria-expanded={!closing && source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
           onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>
         <SendMessage sending={sending} L={L} onClick={() => {
           if (slash && items[index]) choose(items[index].id)
@@ -211,19 +227,20 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
     </div>
     {source && page && createPortal(
       <div ref={palette} id={paletteId} popover="manual" tabIndex={-1} className="roppo-ui composer-palette"
+        data-closing={closing ? '' : undefined} inert={closing} aria-hidden={closing || undefined}
         role={page === 'model' || page === 'context' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Chat model','对话模型') : title} onKeyDown={moveInMenu}>
-        <div key={page} className="palette-page" data-page={page}>
+        <div ref={paletteBody} className="palette-body"><div key={page} className="palette-page" data-page={page}>
           {(page === 'permissions' || page === 'context') && <div className="palette-heading">
             {nested && <button type="button" aria-label={L('Back to chat actions','返回对话操作')} onClick={back}><ArrowLeft size={16}/></button>}
             <strong>{page === 'permissions' ? L('How should Roppo ask for approval?', 'Roppo 应如何请求批准？') : title}</strong>
           </div>}
-          {page === 'commands' && <CommandList items={items} slash={slash} listId={listId} active={index}
+          {page === 'commands' && <CommandList items={items} slash={slashList} listId={listId} active={index}
             uploadDisabled={uploadDisabled} mode={mode} L={L} onHighlight={setIndex} onChoose={choose}/>}
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
           {page === 'model' && <RouterModelOptions L={L} model={model} busy={modelBusy} onSaved={onModelSaved} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
-        </div>
+        </div></div>
       </div>, document.body
     )}
   </>

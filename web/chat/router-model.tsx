@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ChevronRight, Gauge, LoaderCircle, RotateCcw } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
+import { ArrowLeft, Check, ChevronRight, LoaderCircle, RotateCcw } from 'lucide-react'
 import type { Config } from '../../src/config.ts'
 import type { AgentOptions, BackendDefinition } from '../../src/backend-config.ts'
 import { mergeParameters } from '../../src/agent-options.ts'
@@ -75,6 +75,33 @@ function EffortSlider({ stops, index, valueText, L, disabled, onPreview, onCommi
   onPreview: (value: Choice['effort']) => void; onCommit: (value: Choice['effort']) => void
 }) {
   const input = useRef<HTMLInputElement>(null)
+  const slider = useRef<HTMLLabelElement>(null), rail = useRef<HTMLSpanElement>(null)
+  const drag = useRef<{ id: number; left: number; width: number; initial: number } | null>(null)
+  function follow(event: PointerEvent<HTMLInputElement>) {
+    const active = drag.current
+    if (!active || event.pointerId !== active.id) return
+    const progress = Math.max(0, Math.min(1, (event.clientX - active.left) / active.width))
+    slider.current!.style.setProperty('--effort-pointer', String(progress))
+  }
+  function start(event: PointerEvent<HTMLInputElement>) {
+    if (!event.isPrimary || event.button !== 0) return
+    const { left, width } = rail.current!.getBoundingClientRect()
+    drag.current = { id: event.pointerId, left, width, initial: event.currentTarget.valueAsNumber }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    slider.current!.dataset.dragging = ''
+    follow(event)
+  }
+  function release(event: PointerEvent<HTMLInputElement>, cancelled = false) {
+    const active = drag.current
+    if (!active || event.pointerId !== active.id) return
+    drag.current = null
+    if (cancelled) {
+      event.currentTarget.valueAsNumber = active.initial
+      onPreview(stops[active.initial]!)
+    }
+    delete slider.current!.dataset.dragging
+    slider.current!.style.removeProperty('--effort-pointer')
+  }
   useLayoutEffect(() => {
     const range = input.current!
     // The native change event commits a drag on release and keyboard steps immediately.
@@ -82,15 +109,17 @@ function EffortSlider({ stops, index, valueText, L, disabled, onPreview, onCommi
     range.addEventListener('change', commit)
     return () => range.removeEventListener('change', commit)
   }, [stops, onCommit])
-  const position = (index / (stops.length - 1)) * 100 + '%'
-  return <label className="effort-slider" data-disabled={disabled || undefined}>
-    <span aria-hidden="true" className="effort-track"><span className="effort-stops">
-      <span className="effort-fill" style={{ width: position }}/>
+  return <label ref={slider} className="effort-slider" data-disabled={disabled || undefined}
+    style={{ '--effort-stop': index / (stops.length - 1) } as CSSProperties}>
+    <span aria-hidden="true" className="effort-track"><span ref={rail} className="effort-stops">
+      <span className="effort-fill"/>
       {stops.map((stop, i) => <i key={stop} data-active={i <= index || undefined}/>)}
-      <span className="effort-thumb" style={{ left: position }}/>
+      <span className="effort-travel"><span className="effort-thumb"/></span>
     </span></span>
     <input ref={input} type="range" min={0} max={stops.length - 1} step={1} value={index}
       aria-label={L('Reasoning effort', '思考强度')} aria-valuetext={valueText} disabled={disabled}
+      onPointerDown={start} onPointerMove={follow} onPointerUp={event => release(event)}
+      onPointerCancel={event => release(event, true)} onLostPointerCapture={event => release(event, true)}
       onInput={event => onPreview(stops[event.currentTarget.valueAsNumber]!)}/>
   </label>
 }
@@ -209,9 +238,9 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
         <span>{L('Manage connections', '管理连接')}</span><ChevronRight size={14}/></a>
     </div> : <div className="model-dial">
       <div className="model-dial-head">
-        {onBack ? backButton(onBack, L('Back to chat actions', '返回对话操作')) : <Gauge size={16} aria-hidden="true" className="model-dial-icon"/>}
+        {onBack && backButton(onBack, L('Back to chat actions', '返回对话操作'))}
         <div className="model-dial-title">
-          <strong>{adjustable ? valueText : L('Model thinking', '模型思考')}</strong>
+          <strong key={adjustable ? valueText : ''}>{adjustable ? valueText : L('Model thinking', '模型思考')}</strong>
           <button ref={modelButton} type="button" className="model-name-button" aria-haspopup="menu"
             aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setList(true)}>
             <span>{modelName}</span><ChevronRight size={13}/></button>

@@ -2,23 +2,26 @@
 .router-model-loading { display: flex; align-items: center; gap: 8px; min-height: 88px; padding: 12px; color: var(--rp-muted); }
 .model-dial { padding: 8px 9px 6px; }
 .palette-page[data-page=model] { animation: none; }
-.model-connection-list, .model-dial { animation: palette-page-in .15s var(--rp-ease); }
+.model-connection-list, .model-dial { animation: palette-page-in .22s var(--rp-sweep); }
 .model-dial-head { display: grid; grid-template-columns: 28px minmax(0, 1fr) 28px; align-items: start; }
-.model-dial-title { min-width: 0; text-align: center; }
-.model-dial-title > strong { display: block; overflow-wrap: anywhere; font-size: 17px; font-weight: 600; line-height: 1.35; }
+.model-dial-title { grid-column: 2; grid-row: 1; min-width: 0; text-align: center; }
+.model-dial-head > .model-icon { grid-column: 1; grid-row: 1; }
+.model-dial-head > .model-reset { grid-column: 3; }
+.model-dial-title > strong { display: block; overflow-wrap: anywhere; font-size: 17px; font-weight: 600; line-height: 1.45; animation: effort-grade-in .18s var(--rp-sweep); }
+@keyframes effort-grade-in { from { opacity: .45; transform: translateY(3px); } }
 .router-model-options .model-icon, .model-name-button {
   display: inline-flex; justify-content: center; align-items: center;
   border: 0; background: transparent; color: var(--rp-muted); border-radius: 8px; cursor: pointer;
 }
 .model-icon { width: 28px; height: 28px; }
-.model-dial-icon { margin: 6px; color: var(--rp-faint); }
-.model-name-button { max-width: 100%; gap: 3px; padding: 2px 5px; font-size: 13px; line-height: 1.3; }
-.model-name-button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.model-name-button { max-width: 100%; gap: 3px; padding: 2px 5px; font-size: 13px; line-height: 1.5; }
+.model-name-button span { min-width: 0; overflow-wrap: anywhere; }
 .router-model-options :is(.model-icon, .model-name-button):not([aria-disabled=true]):is(:hover,:focus-visible) { background: var(--rp-soft); color: var(--rp-ink); }
 .router-model-options :is(.model-icon, .model-option)[aria-disabled=true] { opacity: .4; cursor: default; }
 .effort-slider {
   display: block; position: relative; height: 40px; margin-top: 6px;
   --thumb-size: 26px;
+  --effort-progress: var(--effort-pointer, var(--effort-stop));
   --effort-fill: color-mix(in srgb, var(--rp-action) 72%, var(--rp-muted));
 }
 .effort-track {
@@ -26,33 +29,39 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rp-ink) 5%, transparent);
 }
 .effort-stops { display: flex; position: absolute; inset: 0 calc(var(--thumb-size) / 2); justify-content: space-between; align-items: center; }
+.effort-track::before {
+  position: absolute; content: ''; inset-block: 0; left: 0; width: calc(var(--thumb-size) / 2 + .5px);
+  border-radius: 99px 0 0 99px; background: var(--effort-fill);
+}
+.effort-fill, .effort-travel {
+  position: absolute; inset: 0; transition: transform .28s var(--rp-settle);
+}
 .effort-fill {
-  position: absolute; inset-block: 0; left: 0; background: var(--effort-fill);
+  transform-origin: left center; background: var(--effort-fill); transform: scaleX(var(--effort-progress));
 }
-.effort-fill::before {
-  position: absolute; content: ''; inset-block: 0; right: 100%; width: calc(var(--thumb-size) / 2);
-  border-radius: 99px 0 0 99px; background: inherit;
-}
+.effort-travel { pointer-events: none; transform: translateX(calc(var(--effort-progress) * 100%)); }
 .effort-stops i {
   position: relative; width: 0; height: 0; display: grid; place-content: center;
 }
-.effort-stops i::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--rp-line-strong); }
+.effort-stops i::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--rp-line-strong); transition: background-color .15s, opacity .15s; }
 .effort-stops i[data-active]::before { background: var(--rp-panel); opacity: .6; }
 .effort-thumb {
-  position: absolute; top: 50%; width: var(--thumb-size); height: var(--thumb-size); transform: translate(-50%, -50%);
+  position: absolute; left: 0; top: 50%; width: var(--thumb-size); height: var(--thumb-size); transform: translate(-50%, -50%);
   border-radius: 50%; background: white; border: 1px solid rgb(0 0 0 / .13);
   box-shadow: 0 1px 3px rgb(0 0 0 / .18);
+  transition: transform .18s var(--rp-settle), box-shadow .18s;
 }
 .effort-slider input {
   position: absolute; inset: 0; margin: 0; width: 100%; height: 100%;
-  appearance: none; padding: 0; border: 0; opacity: 0; cursor: pointer;
+  appearance: none; padding: 0; border: 0; opacity: 0; cursor: grab; touch-action: pan-y;
 }
 .effort-slider input::-webkit-slider-thumb { appearance: none; width: var(--thumb-size); height: var(--thumb-size); }
 .effort-slider input::-moz-range-thumb { width: var(--thumb-size); height: var(--thumb-size); border: 0; }
 .effort-slider:has(input:focus-visible) .effort-track { outline: 2px solid var(--rp-focus); outline-offset: 3px; }
 .effort-slider[data-disabled] { opacity: .5; }
-.effort-thumb, .effort-fill { transition: left .13s var(--rp-ease), width .13s var(--rp-ease); }
-.effort-slider:active :is(.effort-thumb, .effort-fill) { transition: none; }
+.effort-slider[data-dragging] input { cursor: grabbing; }
+.effort-slider[data-dragging] :is(.effort-travel, .effort-fill) { transition: none; }
+.effort-slider[data-dragging] .effort-thumb { transform: translate(-50%, -50%) scale(1.12); box-shadow: 0 2px 6px rgb(0 0 0 / .23); }
 .model-connection-list .model-option strong, .model-connection-list .model-option small { display: block; overflow-wrap: anywhere; }
 .model-option strong { font-size: 13px; font-weight: 550; }
 .model-option small { margin-top: 1px; }

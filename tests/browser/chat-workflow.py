@@ -55,7 +55,9 @@ with sync_playwright() as pw:
     details = overview.get_by_role('button', name='View usage details')
 
     def composer_anchor():
-        palette = page.locator('.composer-palette').bounding_box()
+        popover = page.locator('.composer-palette')
+        popover.evaluate('el => Promise.allSettled(el.getAnimations().map(a => a.finished))')
+        palette = popover.bounding_box()
         composer = page.locator('form.composer').bounding_box()
         assert palette and composer and abs(palette['x'] - composer['x']) <= 1, (palette, composer)
         return palette
@@ -203,7 +205,7 @@ with sync_playwright() as pw:
     expect(panel).to_contain_text('8,192')
     expect(panel.get_by_role('meter', name='Model window')).to_have_attribute('aria-valuenow', '137')
     expect(panel.get_by_role('meter',name='Model window').locator('[data-band="0"]')).to_have_count(2)
-    grid = panel.get_by_role('img', name='Router input composition')
+    grid = panel.get_by_role('img', name='Chat input composition')
     expect(grid.locator('i')).to_have_count(100)
     assert grid.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length") == 25
     assert grid.evaluate("el => new Set([...el.children].map(cell => cell.offsetTop)).size") == 4
@@ -304,6 +306,15 @@ with sync_playwright() as pw:
     expect(box).to_be_visible()
     assert 'rp-page-in' not in page.evaluate('window.qaFrames')
     sidebar.get_by_role('button',name='Close panel').click()
+    for width in (390, 320):
+        page.set_viewport_size({'width':width, 'height':780})
+        assert direct_model.locator('span').evaluate("""span => {
+          const range = document.createRange(); range.selectNodeContents(span)
+          const bounds = span.getBoundingClientRect()
+          return Array.from(range.getClientRects()).every(rect =>
+            rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 &&
+            rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1)
+        }"""), 'The model name must fit horizontally and keep its descenders'
     page.set_viewport_size({'width':390,'height':780})
     for trigger in (direct_model, direct_policy, ring):
         trigger.click()
@@ -402,10 +413,21 @@ with sync_playwright() as pw:
     expect(effort).to_be_visible()
     assert not writes
     initial = current_settings()
+    page.emulate_media(reduced_motion='no-preference')
+    model_dialog.evaluate('el => Promise.allSettled(el.getAnimations({subtree:true}).map(a => a.finished))')
     bounds = effort.bounding_box()
     y = bounds['y'] + bounds['height'] / 2
-    page.mouse.move(bounds['x'] + 14, y)
+    thumb = model_dialog.locator('.effort-thumb')
+    def thumb_center():
+        rect = thumb.bounding_box()
+        return rect['x'] + rect['width'] / 2
+    start = thumb_center()
+    page.mouse.move(start, y)
     page.mouse.down()
+    page.mouse.move(start + 9, y, steps=3)
+    moved = thumb_center() - start
+    assert abs(moved - 9) <= 1.5, ('Thumb must follow a drag between detents', moved)
+    expect(effort).to_have_attribute('aria-valuetext', 'Medium')
     page.mouse.move(bounds['x'] + bounds['width'] - 14, y, steps=12)
     expect(effort).to_have_attribute('aria-valuetext', 'Extra high')
     assert not writes, 'Dragging must preview until release'

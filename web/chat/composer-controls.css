@@ -3,19 +3,23 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 32px;
+  min-height: 32px;
   min-width: 0;
   padding: 0 8px;
   border-radius: 9px;
   color: var(--c-muted);
   font-size: 13px;
-  line-height: 1;
-  transition: color .15s, background .15s;
+  line-height: 1.5;
+  transition: color .16s, background-color .16s, transform .18s var(--rp-sweep, ease-out);
 }
-.composer-choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-choice span { min-width: 0; text-align: start; }
 .composer-choice svg { flex: none; }
-.composer-model { max-width: 42%; }
-.composer-policy { flex: none; transition-property: background; }
+.composer-model { flex: 0 1 auto; padding-block: 4px; overflow-wrap: anywhere; }
+.composer-policy { flex: none; white-space: nowrap; transition-property: background-color, transform; }
+.composer-toolbar .send-actions { flex: none; }
+.composer-toolbar .composer-choice:active { transform: scale(.96); }
+.composer-plus svg { transition: transform .22s var(--rp-settle, ease-out); }
+.composer-plus[aria-expanded=true] svg { transform: rotate(45deg); }
 .composer-toolbar [data-menu-trigger]:is(:hover, [aria-expanded=true]) {
   background: var(--c-hover);
   color: var(--c-text);
@@ -28,14 +32,15 @@
 .usage-track { opacity: .28; }
 .usage-track[stroke-dasharray] { opacity: .7; }
 .usage-fill { transition: stroke-dashoffset .26s ease-out; }
-.composer-palette {
+.roppo-ui.composer-palette {
   position: fixed;
   inset: auto;
   margin: 0;
   box-sizing: border-box;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 5px;
+  padding: 0;
+  height: calc(var(--palette-height) + 2px);
   border: 1px solid var(--rp-line);
   border-radius: 15px;
   background: var(--rp-panel);
@@ -43,11 +48,22 @@
   box-shadow: 0 8px 28px rgb(0 0 0 / .10), 0 2px 5px rgb(0 0 0 / .04);
   font-size: 13px;
   outline: none;
+  --palette-lift: 7px;
+  transform-origin: left bottom;
+  opacity: 0;
+  transform: translateY(var(--palette-lift)) scale(.975);
+  transition: opacity .16s ease, transform .24s var(--rp-settle), height .22s var(--rp-sweep);
 }
-.composer-palette:popover-open { animation: palette-reveal .14s ease-out; }
-@keyframes palette-reveal { from { opacity: 0; } }
-.palette-page { animation: palette-page-in .15s cubic-bezier(.2,.8,.2,1); }
-@keyframes palette-page-in { from { opacity: .35; transform: translateX(4px); } }
+.composer-palette[data-side=below] { --palette-lift: -7px; transform-origin: left top; }
+.composer-palette:popover-open:not([data-closing]) { opacity: 1; transform: none; }
+.composer-palette[data-closing] { pointer-events: none; transition-duration: .13s, .16s, .16s; }
+@starting-style {
+  .composer-palette:popover-open:not([data-closing]) { opacity: 0; transform: translateY(var(--palette-lift)) scale(.975); }
+}
+.palette-body { display: flow-root; padding: 5px; }
+.palette-page { animation: palette-page-in .22s var(--rp-sweep); }
+.palette-page[data-page=commands], .model-dial { --palette-slide: -9px; }
+@keyframes palette-page-in { from { opacity: .12; transform: translateX(var(--palette-slide, 9px)); } }
 .composer-palette .palette-row {
   display: flex;
   align-items: center;
@@ -61,6 +77,7 @@
   color: inherit;
   font: inherit;
   cursor: pointer;
+  transition: background-color .15s ease;
 }
 .composer-palette .palette-row[data-mode=full] { color: var(--status-danger); }
 .palette-row span { flex: 1; min-width: 0; text-align: start; }
@@ -90,17 +107,16 @@
 .composer-palette [role=alert] { margin: 5px 9px; font-size: 12px; }
 @container chat-thread (max-width: 460px) {
   .composer-choice { gap: 4px; padding-inline: 5px; }
-  .composer-model { flex-shrink: 1; }
 }
 @container chat-thread (max-width: 355px) {
   .composer-policy:not([data-mode=full]) span { display: none; }
-  .composer-model { max-width: 38%; }
 }
 @media (pointer: coarse) {
   .composer-choice, .composer-toolbar .icon-button { min-height: 36px; }
   .composer-palette .palette-row { min-height: 42px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .composer-palette:popover-open, .palette-page { animation: none; }
-  .composer-choice, .usage-fill { transition: none; }
+  .roppo-ui.composer-palette, .composer-palette[data-closing] { transition: none; transform: none; }
+  .palette-page { animation: none; }
+  .composer-choice, .composer-plus svg, .usage-fill { transition: none; }
 }

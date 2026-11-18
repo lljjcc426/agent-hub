@@ -3,7 +3,7 @@ import { Check, ChevronDown, X } from 'lucide-react'
 import { IconButton } from './controls.tsx'
 
 /** Keep the native top layer until its exit finishes. Reopening cancels the pending dismissal. */
-function finishLayerExit(layer: HTMLElement, hide: () => void) {
+export function finishLayerExit(layer: HTMLElement, hide: () => void) {
   let current = true
   const transitions = layer.getAnimations().map((motion) => motion.finished)
   void Promise.allSettled(transitions).then(() => {

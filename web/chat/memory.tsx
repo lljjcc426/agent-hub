@@ -1,3 +1,6 @@
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
+import { SelectField, InputControl } from '../ui/controls.tsx'
+import {memoryCategory,memoryCategoryLabel} from './memory-provenance.ts';
 import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -26,6 +29,7 @@ const files: FileTab[] = ['MEMORY.md', 'USER.md', 'SOUL.md', 'IDENTITY.md', 'AGE
 type InitialLearning = { enabled: boolean; editable: boolean; available: boolean; revision: number };
 type MemoryWorkspace = { contexts: Entry[]; initialLearning: InitialLearning };
 export function MemorySettings({ L }: { L: Labels }) {
+  const [category,setCategory]=useState('all');
   const [file, setFile] = useState<FileTab>('MEMORY.md'),
     [scope, setScope] = useState('personal'),
     [entries, setEntries] = useState<Entry[] | null>(null),
@@ -58,6 +62,7 @@ export function MemorySettings({ L }: { L: Labels }) {
             (f) =>
               ['active', 'candidate'].includes(f.state) &&
               f.proposalAction !== 'forget' &&
+              (file === 'USER.md' || category === 'all' || memoryCategory(f) === category) &&
               (file !== 'USER.md' || ['profile', 'preference', 'interest'].includes(f.kind ?? '')),
           )
           .map((fact) => [fact.id, { fact, entry }] as const),
@@ -214,7 +219,7 @@ export function MemorySettings({ L }: { L: Labels }) {
         <h1 id="page-title" ref={detailTitle} tabIndex={-1}>
           {profile?.label ?? L('Memory', '记忆')}
         </h1>
-        <details
+        <DisclosureRoot
           ref={menu}
           className="memory-menu"
           onKeyDown={(e) => {
@@ -224,10 +229,10 @@ export function MemorySettings({ L }: { L: Labels }) {
             }
           }}
         >
-          <summary aria-label={L('More memory actions', '更多记忆操作')}>
+          <DisclosureSummary aria-label={L('More memory actions', '更多记忆操作')}>
             <MoreHorizontal size={18} />
             {L('Actions', '更多操作')}
-          </summary>
+          </DisclosureSummary>
           <div className="memory-menu-items">
             <button
               disabled={editing || busy}
@@ -267,7 +272,7 @@ export function MemorySettings({ L }: { L: Labels }) {
               </button>
             )}
           </div>
-        </details>
+        </DisclosureRoot>
       </header>
       {error && (
         <p className="memory-error" role="alert">
@@ -281,7 +286,7 @@ export function MemorySettings({ L }: { L: Labels }) {
         <label className="memory-scope">
           <UserRound size={17} />
           {L('Memory scope', '记忆范围')}
-          <select
+          <SelectField
             disabled={editing || busy}
             value={actualScope}
             onChange={(e) => {
@@ -298,7 +303,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 </option>
               ))}
             </optgroup>
-          </select>
+          </SelectField>
         </label>
       )}
       {personal && (
@@ -316,7 +321,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 <small>{L('Start a conversation to change this setting', '开始对话后可更改')}</small>
               )}
             </span>
-            <input
+            <InputControl
               role="switch"
               aria-label={L('Learn from conversations', '从对话中学习')}
               type="checkbox"
@@ -328,27 +333,17 @@ export function MemorySettings({ L }: { L: Labels }) {
           <section className="settings-group">
             <div className="memory-section-title">
               <h2>{L('Saved memories', '记住的内容')}</h2>
-              <div
-                className="settings-segments"
-                role="group"
-                aria-label={L('Filter memories', '筛选记忆')}
-              >
-                {(
-                  [
-                    ['MEMORY.md', L('All', '全部')],
-                    ['USER.md', L('About you', '个人偏好')],
-                  ] as const
-                ).map(([name, label]) => (
-                  <button
-                    key={name}
-                    disabled={editing || busy}
-                    aria-pressed={file === name}
-                    onClick={() => chooseFile(name)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SelectField label={L('Filter memories','筛选记忆')} disabled={editing||busy}
+                value={file==='USER.md'?'about':category} onChange={event=>{
+                  const value=event.target.value;
+                  chooseFile(value==='about'?'USER.md':'MEMORY.md');
+                  setCategory(value==='about'?'all':value);
+                }}>
+                <option value="all">{L('All memories','全部记忆')}</option>
+                <option value="about">{L('About you','个人资料')}</option>
+                {(['preference','fact','project_decision','method'] as const).map(key=>
+                  <option key={key} value={key}>{memoryCategoryLabel(key,L)}</option>)}
+              </SelectField>
             </div>
             {entries === null ? (
               <p role="status">
@@ -390,7 +385,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 <span>
                   {file === 'USER.md'
                     ? L('No saved preferences', '还没有记下个人偏好')
-                    : L('No saved memories', '还没有记住的内容')}
+                    : category==='all'?L('No saved memories', '还没有记住的内容'):L('No memories in this category','这个分类暂无记忆')}
                 </span>
               </div>
             )}
@@ -446,7 +441,7 @@ export function MemorySettings({ L }: { L: Labels }) {
             {error ? L('Profile unavailable', '角色资料暂不可用') : L('Loading…', '加载中…')}
           </p>
         ))}
-      <input
+      <InputControl
         ref={importInput}
         type="file"
         accept=".md"
@@ -507,13 +502,13 @@ export function MemorySettings({ L }: { L: Labels }) {
         {visible.length > 1 && (
           <label>
             {L('Conversation', '对话')}
-            <select value={activeMethod?.id} onChange={(e) => setMethodEntry(e.target.value)}>
+            <SelectField value={activeMethod?.id} onChange={(e) => setMethodEntry(e.target.value)}>
               {visible.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.label}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
         )}
         {activeMethod && (

@@ -182,3 +182,11 @@
   .rp-plan li { padding-inline:0; gap:4px; }
   .rp-step-tools .rp-icon-button,.rp-grip { width:23px; }
 }
+
+.rp-decision form .rp-input {
+  min-width:0; border:1px solid var(--rp-line,#ddd); border-radius:var(--rp-corner-field,12px);
+  background:var(--rp-soft,#f5f5f5); overflow:hidden;
+}
+.rp-decision form .rp-input > input {
+  min-width:0; min-height:36px; border:0; border-radius:inherit; box-shadow:none; background:transparent;
+}

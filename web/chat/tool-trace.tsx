@@ -1,3 +1,4 @@
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { useState } from 'react'
 import {
   BookOpen,
@@ -152,17 +153,17 @@ export function ToolTrace({
     }[c.state]
   }
   return (
-    <details
+    <DisclosureRoot
       className="trace-inline"
       data-arrival={arrival}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
     >
-      <summary title={L('Tool activity', '工具调用')}>
+      <DisclosureSummary title={L('Tool activity', '工具调用')}>
         <Icon aria-hidden size={16} className={current ? 'spin' : undefined} />
         <span>{label}</span>
         <ChevronDown className="trace-chevron" size={13} aria-hidden />
-      </summary>
+      </DisclosureSummary>
       <div className="trace-steps">
         {calls.map((c) => {
           const Icon =
@@ -178,8 +179,8 @@ export function ToolTrace({
           const text = rowLabel(c, L),
             target = c.target ? actor(c.target) : undefined
           return (
-            <details key={c.id} className="trace-step" data-state={c.state}>
-              <summary>
+            <DisclosureRoot key={c.id} className="trace-step" data-state={c.state}>
+              <DisclosureSummary>
                 <Icon aria-hidden size={15} className={c.state === 'running' ? 'spin' : undefined} />
                 <span>
                   {text}
@@ -189,7 +190,7 @@ export function ToolTrace({
                   {c.permission || c.state === 'failed' || c.state === 'interrupted' ? state(c) : null}
                 </small>
                 <time dateTime={new Date(c.startedAt).toISOString()}>{clock.format(c.startedAt)}</time>
-              </summary>
+              </DisclosureSummary>
               <div className="trace-meta">
                 <code>{c.name}</code>
                 <span>{actor(c.workerId)}</span>
@@ -203,10 +204,10 @@ export function ToolTrace({
                   </span>
                 )}
               </div>
-            </details>
+            </DisclosureRoot>
           )
         })}
       </div>
-    </details>
+    </DisclosureRoot>
   )
 }

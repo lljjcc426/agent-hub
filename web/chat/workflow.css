@@ -79,3 +79,7 @@
   .trace-inline[data-arrival=true] { animation:none; }
   .trace-inline > summary,.trace-inline .trace-chevron,.trace-inline::details-content,.trace-step::details-content { transition:none; }
 }
+
+.workflow-block .review-question {width:min(100%,30rem); min-width:0; overflow-wrap:anywhere}
+.workflow-block .review-target {margin:0 0 6px; color:var(--rp-muted); font-size:inherit}
+.workflow-block .review-question .rp-decision {width:100%; max-width:100%}

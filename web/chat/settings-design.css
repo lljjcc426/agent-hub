@@ -204,3 +204,13 @@
 .intake-rule { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--rp-line); border-radius: var(--rp-corner-field); }
 .intake-rule > label[for] { margin-top: 8px; }
 .intake-rule .rp-input { display: flex; }
+
+[data-settings-view] .management-content .operator-workspace .memory-settings .memory-section-title {
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px;
+}
+[data-settings-view] .management-content .operator-workspace .memory-settings .memory-section-title h2 {
+  flex:0 0 auto;
+}
+[data-settings-view] .management-content .operator-workspace .memory-settings .memory-section-title .rp-select-field {
+  flex:0 1 auto; width:auto; max-width:100%; min-width:8rem;
+}

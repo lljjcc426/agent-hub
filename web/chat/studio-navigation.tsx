@@ -1,3 +1,4 @@
+import { InputControl } from '../ui/controls.tsx'
 import { useEffect, useState } from 'react';
 import {
   Activity,
@@ -160,7 +161,7 @@ export function StudioRail({
               <h2 className="rail-title">{L('Settings', '设置')}</h2>
               <label className="settings-find">
                 <Search size={16} />
-                <input
+                <InputControl
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={L('Find settings', '查找设置')}

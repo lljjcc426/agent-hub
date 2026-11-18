@@ -1,5 +1,6 @@
 // Shared by the standalone public guide and the application content adapter.
 export const configurationScripts = [
+  "form-menus.js",
   "controls.js",
   "theme.js",
   "sections.js",

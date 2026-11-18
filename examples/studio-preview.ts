@@ -12,6 +12,8 @@ import type { RequestListener } from 'node:http';
 import { configSchema, type Config } from '../src/config.ts';
 import type { Model, ModelRequest } from '../src/model.ts';
 import { Runtime } from '../src/runtime.ts';
+import {MessageSource,bodyDigest} from '../src/sources.ts';
+import {SourceRegistry} from '../src/source-plugins.ts';
 import { serve } from '../src/server.ts';
 
 process.umask(0o077);
@@ -28,7 +30,7 @@ const login = existsSync(privateFile)
       path: '/open/' + randomBytes(20).toString('hex'),
     };
 if (!existsSync(privateFile)) writeFileSync(privateFile, JSON.stringify(login), { mode: 0o600 });
-const base = 'http://127.0.0.1:' + port;
+const base = 'http://localhost:' + port;
 const config = configSchema.parse({
   stateDir: join(root, 'state'),
   port,
@@ -52,6 +54,7 @@ const config = configSchema.parse({
     ],
   },
   sources: [
+    {id:'preview-room',kind:'preview-room',label:'示例工作群',cwd:workspace,allowedActors:['operator'],capabilities:{replies:true,events:false,resources:false}},
     {
       id: 'local',
       kind: 'local',
@@ -71,6 +74,11 @@ const model: Model = {
     request.onTurn?.(turnId);
     await wait(320, undefined, { signal: request.signal });
     if (request.role === 'worker') {
+      if (request.activity?.workerId==='review' && !request.threadId) {
+        const input=JSON.parse(request.input)
+        const askedBy=input.inputs?.findLast((i:{kind:string;human?:boolean})=>i.kind==='trigger'&&i.human)?.triggerId??input.origin?.findLast((t:{human?:boolean})=>t?.human)?.id??null
+        return {threadId,turnId,text:JSON.stringify({state:'blocked',summary:'发布说明已整理，等待确认语言。',question:'这份发布说明使用中文还是英文？',askedBy,reply:'发布说明的初稿已整理好。',handbacks:[],files:[],decision:{target:{label:'发布说明',version:'v1'},recipient:null,amount:null,validForSeconds:604800}})}
+      }
       await request.onTool?.('superagent_progress', { summary: '正在整理发布检查项' }, turnId + '-progress');
       return {
         threadId,
@@ -144,7 +152,11 @@ const model: Model = {
     return { threadId, turnId, text: raw };
   },
 };
-const createRuntime = (c: Config) => new Runtime(c, { model: desktopChatFixture(model, '我先查看这次协作需要的材料。') });
+const registry=new SourceRegistry()
+registry.register({apiVersion:1,kind:'preview-room',label:'示例工作群',create:c=>new class extends MessageSource {
+ async deliver(message:Parameters<MessageSource['deliver']>[0]){return {providerAccepted:true as const,messageId:message.id,thread:message.channel.thread,remoteMessageId:'preview-'+message.id,contentDigest:bodyDigest(message.text)}}
+}(c)})
+const createRuntime = (c: Config) => new Runtime(c, { model: desktopChatFixture(model, '我先查看这次协作需要的材料。'), sourceRegistry:registry });
 const runtime = createRuntime(config);
 // The local preview uses the same private Chat memory path as a configured workspace.
 // A preview with older tickets requires the normal ownership migration.
@@ -159,7 +171,7 @@ if (!runtime.scopes.enabled() && !runtime.store.tickets.list().length && !runtim
   });
 }
 const host = await serve(runtime, { createRuntime, clientHome: join(root, 'client-home') });
-runtime.start();
+
 const token = readFileSync(host.tokenPath, 'utf8').trim();
 async function signin(setup = false) {
   const response = await fetch(base + (setup ? '/account/setup' : '/account/login'), {
@@ -189,17 +201,35 @@ if (isNew) {
   });
   if (!response.ok) throw Error('Could not initialize preview workspace');
 }
+const account=await (await fetch(base+'/account/status',{headers:{cookie:cookie.split(';')[0]!}})).json()
+const owner=account.user.id
+let sample=runtime.store.get<{chatId:string}>('preview-sample','review')
+if(!sample){
+ const chat=runtime.chat.create(owner)
+ const sent=runtime.chat.send(chat.id,owner,{clientMessageId:randomUUID(),text:'请整理发布说明，并和我确认语言。'})
+ const trigger=runtime.store.triggers.get(sent.runId)!,discussion='local:chat:'+chat.id,scoped=runtime.scopes.context(trigger,discussion)!
+ const manifest=runtime.memory.build(scoped,{request:'整理发布说明'},'studio').manifest
+ const assignment=await runtime.manager.call({action:'assign',id:'review',revision:runtime.settings.current().revision,requestId:'preview-question',text:'确认发布说明语言'},{discussion,trigger,scoped,manifest})
+ const evidence=runtime.memory.ingest(scoped)
+ for(const [category,content] of [['project_decision','发布说明采用一页摘要，附上完整变更记录。'],['preference','对话中优先使用中文。']] as const){
+  runtime.memory.command(scoped,{action:'remember',operationId:'sample-'+category,expectedRevision:0,subject:category==='preference'?'交流语言':'发布说明',content,sourceIds:[evidence.id],category,candidate:false,...(category==='project_decision'?{ticketId:assignment.ticketId}:{})},true)
+ }
+ runtime.store.outbox.send({id:'release-01',kind:'reply',text:'发布检查已完成',channel:{source:'preview-room',thread:'release',address:{}}})
+ await runtime.flush()
+ sample={chatId:chat.id};runtime.store.put('preview-sample','review',sample)
+}
+runtime.start()
 const [normal] = host.server.listeners('request') as RequestListener[];
 if (!normal || host.server.listenerCount('request') !== 1) throw Error('Unexpected server layout');
 host.server.removeListener('request', normal);
 host.server.on('request', (req, res) => {
   if (req.headers.host === new URL(base).host) {
-    if (req.url === login.path && req.method === 'GET') {
+    if (req.url?.split('?')[0] === login.path && req.method === 'GET') {
       void signin()
         .then((session) => {
           res.writeHead(303, {
             'set-cookie': session,
-            location: '/chat',
+            location: req.url?.endsWith('?memory')?'/configure#advanced/memory':req.url?.endsWith('?receipts')?'/configure#connections':'/chat#conversation/'+sample!.chatId,
             'referrer-policy': 'no-referrer',
             'cache-control': 'no-store',
           });

@@ -57,7 +57,7 @@
 }
 .effort-slider input::-webkit-slider-thumb { appearance: none; width: var(--thumb-size); height: var(--thumb-size); }
 .effort-slider input::-moz-range-thumb { width: var(--thumb-size); height: var(--thumb-size); border: 0; }
-.effort-slider:has(input:focus-visible) .effort-track { outline: 2px solid var(--rp-focus); outline-offset: 3px; }
+.effort-slider:has(input:focus-visible) .effort-thumb { background: var(--rp-ink); }
 .effort-slider[data-disabled] { opacity: .5; }
 .effort-slider[data-dragging] input { cursor: grabbing; }
 .effort-slider[data-dragging] :is(.effort-travel, .effort-fill) { transition: none; }

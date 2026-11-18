@@ -28,6 +28,7 @@ import {
   UsersRound,
   FileText,
   PanelRight,
+  Inbox,
   Menu,
   X,
   ChevronRight,
@@ -42,7 +43,7 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,teamName,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,groupWorkflow} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
 import {ContextCard, useCurrentContext} from './context-card.tsx';
 import {ToolTrace} from './tool-trace.tsx';
@@ -84,6 +85,7 @@ import "./team-view.css";
 import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";
+import "./pending-tray.css";
 import { WorkspaceSettings, workspaceGroups } from "./workspace-settings.tsx";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
@@ -598,6 +600,13 @@ function Chat(p: ChatProps) {
     setNavExpanded,
   } = p;
   const configuring = !route.startsWith("/chat");
+  const [trayOpen,setTrayOpen]=useState(()=>read('roppo.chat.pendingTray')==='open');
+  const trayButton=useRef<HTMLButtonElement>(null);
+  const changeTray=(open:boolean)=>{
+    setTrayOpen(open);
+    write('roppo.chat.pendingTray',open?'open':'closed');
+  };
+  const closeTray=()=>{changeTray(false);trayButton.current?.focus({preventScroll:true})};
   const [resources, setResources] = useState(() =>
     initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
   );
@@ -622,6 +631,7 @@ function Chat(p: ChatProps) {
   const [pickerRequest,setPickerRequest]=useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
+    if(next&&panelOverlay&&trayOpen)changeTray(false);
     if (next === "browser" && !id) {
       if (creating.current) return;
       creating.current = true;
@@ -715,12 +725,12 @@ function Chat(p: ChatProps) {
     teamButton = useRef<HTMLButtonElement>(null),
     menuButton = useRef<HTMLButtonElement>(null);
   const [quote,setQuote]=useState<DraftQuote|null>(()=>savedQuote(id)),[around,setAround]=useState<string>();
-  const locateAfterLoad=useRef<string|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
+  const locateAfterLoad=useRef<{messageId:string;workflowId?:string}|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
   const queuedEnter=useRef<string|null>(null);
   const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
   const saveQuote=useCallback((value:DraftQuote|null)=>{quoteCurrent.current=value;setQuote(value);write(quoteKey(id),JSON.stringify(value))},[id]);
   const motion=useChatMotion(threadRef,(id??'new')+':'+selectedAgent+':'+(around??'latest'),!!around,snapshot?.messages.at(-1)?.id);
-  useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
+  useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target.messageId,target.workflowId))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
   useEffect(() => {
     const thread=threadRef.current, transcript=thread?.querySelector<HTMLElement>('.transcript');
     if(!thread||!transcript)return;
@@ -793,7 +803,7 @@ function Chat(p: ChatProps) {
   const refresh = useCallback(async () => {
     if (!id) return;
     const version = ++fetchVersion.current;
-    const query=new URLSearchParams();if(participantFilter)query.set('participant',participantFilter);if(around)query.set('around',around);
+    const query=new URLSearchParams({withPending:'1'});if(participantFilter)query.set('participant',participantFilter);if(around)query.set('around',around);
     const oldest = messagesRef.current[0]?.sequence;
     if (oldest) query.set("decisionsFrom", String(oldest));
     const data = await api<Snapshot>("/conversations/" + id + "?"+query);
@@ -801,7 +811,8 @@ function Chat(p: ChatProps) {
     const older = messagesRef.current.filter(
       (m) => m.sequence < (data.messages[0]?.sequence ?? Infinity),
     );
-    const messages = [...older, ...data.messages].map(m=>reactionWrites.current.has(m.id)?{...m,reactions:reactionWrites.current.get(m.id)!.reactions}:m);
+    const updates=new Map((data.earlierCards??[]).map(card=>[card.id,card]));
+    const messages = [...older.map(m=>updates.has(m.id)?{...m,...updates.get(m.id)}:m), ...data.messages].map(m=>reactionWrites.current.has(m.id)?{...m,reactions:reactionWrites.current.get(m.id)!.reactions}:m);
     messagesRef.current = messages;
     // A history page can arrive while this refresh is in flight.
     const newlyLoadedRuns = new Set(older.filter(m => oldest == null || m.sequence < oldest).map(m => m.runId));
@@ -1097,6 +1108,8 @@ function Chat(p: ChatProps) {
       if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
         if (menu) {
           closeNavigation();
+        } else if (trayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
+          closeTray();
         } else if (sidebarCards.revealing) {
           dismissCard(sidebarCards.items[0]!);
         } else if (panel) {
@@ -1106,7 +1119,7 @@ function Chat(p: ChatProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation]);
+  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, configuring, panelExpanded]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1114,8 +1127,16 @@ function Chat(p: ChatProps) {
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
+  const pendingCards=snapshot?.conversation.id===id?(snapshot?.pendingCards??[]):[];
+  const trayVisible=trayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
+  const toggleTray=()=>{
+    if(!trayVisible&&(panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+    changeTray(!trayVisible);
+    if(!trayVisible)requestAnimationFrame(()=>document.getElementById('pending-tray')?.focus({preventScroll:true}));
+  };
   const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setSidebarCards(emptySidebarCards)};
   function revealCard(card: "context") {
+    if(panelOverlay&&trayOpen)changeTray(false);
     if (!panel) {
       panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
       setTeamTab('activity');
@@ -1148,18 +1169,20 @@ function Chat(p: ChatProps) {
     saveQuote(value);selectAgent(currentRouter.id);
     requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus({preventScroll:true}));
   };
-  const locateMessage=async(messageId:string)=>{
+  const locateMessage=async(messageId:string,workflowId?:string)=>{
     const version=++locateRequest.current;
-    if(motion.locate(messageId))return;
+    locateAfterLoad.current=null;
+    if((!workflowId||snapshot?.messages.some(m=>m.id===messageId))&&motion.locate(messageId,workflowId))return;
     try{
       const data=await api<Snapshot>('/conversations/'+id+'?around='+encodeURIComponent(messageId));
       if(!alive.current||version!==locateRequest.current)return;
-      const message=data.messages.find(m=>m.id===messageId)!;
+      const message=data.messages.find(m=>m.id===messageId);
+      if(!message)throw new ApiError("message_missing");
       const participant=message.speaker?.kind==='worker'?message.speaker.id:message.recipient?.kind==='worker'?message.recipient.id:currentRouter.id;
-      locateAfterLoad.current=messageId;
+      locateAfterLoad.current={messageId,workflowId};
       if(display==='agents'||readonly)setSelectedAgent(participant);
       setAround(messageId);
-    }catch(e){fail(e)}
+    }catch(e){if(version===locateRequest.current)fail(e)}
   };
   const reactMessage=(messageId:string,emoji:string)=>{
     const previous=reactionWrites.current.get(messageId),message=messagesRef.current.find(m=>m.id===messageId);if(!message||!id)return;
@@ -1251,6 +1274,11 @@ function Chat(p: ChatProps) {
               </div>
               {!configuring && (snapshot?.messages.length || running) ? <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/> : null}
               <div className="header-actions">
+                {!configuring && <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
+                  aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
+                  title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
+                  <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
+                </button>}
                 {!configuring ? (
                   <button
                     ref={teamButton}
@@ -1292,6 +1320,11 @@ function Chat(p: ChatProps) {
                 data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
                 inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
               >
+                {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
+                  changeTray(false);
+                  if('messageId' in card)void locateMessage(card.messageId,card.id);
+                  else void locateMessage(card.id);
+                }}/>}
                 <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                   <div className="transcript-inner">
                     <ThreadPrimitive.LoadEarlier className="load-earlier">

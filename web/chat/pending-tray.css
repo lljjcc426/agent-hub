@@ -1,0 +1,35 @@
+.header-actions .pending-trigger { position: relative; }
+.pending-badge {
+  position: absolute; top: -2px; right: -5px; min-width: 16px; height: 16px; padding-inline: 3px;
+  display: grid; place-items: center; border-radius: 9px; border: 1px solid var(--c-bg);
+  background: var(--c-text); color: var(--c-bg); font-size: 10px; line-height: 1; font-weight: 650;
+}
+.pending-tray.roppo-ui {
+  position: absolute; z-index: 8; inset: 12px 12px auto auto; width: min(358px, calc(100% - 24px));
+  max-height: calc(100% - 28px); display: flex; flex-direction: column; margin: 0;
+  color: var(--c-text); background: var(--c-bg); border: 1px solid var(--c-line); border-radius: 16px;
+  box-shadow: 0 8px 30px #0002, 0 2px 6px #0001; overflow: hidden; font: inherit;
+  animation: pending-tray-in 150ms ease-out;
+}
+.pending-heading { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 10px 16px; }
+.pending-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; margin: 0; }
+.pending-heading .icon-button { width: 30px; height: 30px; }
+.pending-list { list-style: none; display: grid; gap: 8px; overflow: auto; min-height: 0; margin: 0; padding: 0 10px 10px; overscroll-behavior: contain; }
+.pending-list > li { min-width: 0; overflow-wrap: anywhere; }
+.pending-list :is(.rp-approval,.rp-decision,.review-question) { width: 100%; max-width: 100%; }
+.pending-list .rp-fact-list dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pending-empty { margin: 0; padding: 4px 16px 18px; font-size: 14px; color: var(--c-muted); }
+@keyframes pending-tray-in { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .pending-tray.roppo-ui { animation: none; } }
+.pending-list > li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px; align-items: start; cursor: pointer; }
+.pending-card-content { min-width: 0; }
+.pending-list .pending-locate { width: 26px; height: 30px; color: var(--c-muted); }
+.pending-list li:hover .pending-locate, .pending-locate:focus-visible { color: var(--c-text); }
+.transcript [data-located] { border-radius: 10px; position: relative; }
+.transcript [data-located]::after {
+  content: ''; position: absolute; inset: -3px; pointer-events: none; border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--c-muted); background: color-mix(in srgb,var(--c-text) 7%,transparent);
+  animation: pending-source-pulse 1.8s ease-out both;
+}
+@keyframes pending-source-pulse { 0% { opacity: .3; } 16%,52% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .transcript [data-located]::after { animation: none; } }

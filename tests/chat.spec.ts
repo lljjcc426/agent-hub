@@ -128,6 +128,26 @@ it('keeps the plan through a decision and shows only the current Router input fo
   expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
 })
 
+it('recovers unanswered cards beyond the transcript window and reconciles earlier inline cards',async()=>{
+  const {h}=fixture(),c=h.chat.create('owner'),run=send(h,c.id)
+  const {messageId}=h.chat.requestDecision(run.runId,{question:'Which layout?',options:[{label:'Table'},{label:'List'}]})
+  const draft=h.chat.deliverText(run.runId,{name:'draft.md',content:'For review',requireApproval:true})
+  if(!('messageId' in draft))throw Error('Expected a file review')
+  const seed=h.chat.view(c.id,'owner').messages[0]!
+  for(let i=0;i<105;i++)h.store.put('chat-message','later-'+i,{...seed,id:'later-'+i,sequence:seed.sequence+10+i})
+  const read=()=>h.chat.view(c.id,'owner',undefined,undefined,undefined,undefined,seed.sequence,true)
+  expect(read().messages.some(m=>m.id===messageId)).toBe(false)
+  expect(read().pendingCards.map(card=>card.id).sort()).toEqual([messageId,draft.messageId].sort())
+  expect(()=>h.chat.view(c.id,'another-owner',undefined,undefined,undefined,undefined,undefined,true)).toThrow()
+  h.chat.answerDecision(c.id,'owner',messageId,'List')
+  h.chat.answerFileReview(c.id,'owner',draft.messageId,'denied')
+  expect(read().pendingCards).toEqual([])
+  expect(read().earlierCards).toEqual(expect.arrayContaining([
+    expect.objectContaining({id:messageId,decision:expect.objectContaining({answer:'List'})}),
+    expect.objectContaining({id:draft.messageId,fileReview:expect.objectContaining({state:'denied'})}),
+  ]))
+})
+
 it('keeps a cancelled question closed when the user quotes it in a later turn',async()=>{
   const {h}=fixture(),c=h.chat.create('owner'),run=send(h,c.id,'Choose a format')
   const {messageId}=h.chat.requestDecision(run.runId,{question:'Format?',options:[{label:'CSV'},{label:'Markdown'}]})

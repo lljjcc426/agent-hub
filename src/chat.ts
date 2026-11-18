@@ -40,6 +40,11 @@ interface Conversation {
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
 interface Message {opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
+type PendingCard =
+  | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
+  | {kind:'file';id:string;createdAt:number;name:string;review:FileReview}
+  | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
+  | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
@@ -742,15 +747,20 @@ export class ChatSessions {
       return {runId:run.id,duplicate:false}
     })
   }
-  businessDecisions(id:string, owner:string, query?:{runIds?:Set<string>; questionId?:string; workerId?:string}) {
+  businessDecisions(id:string, owner:string, query?:{runIds?:Set<string>; questionId?:string; workerId?:string; currentOnly?:boolean}) {
     const conversation = this.get(id, owner)
     const actor = {source:conversation.sourceId, id:conversation.actor}
     const tasks = new Map(this.tasks(conversation).map(task => [task.id,task]))
     const store = this.host.store
     type RecordRef = Pick<BusinessDecisionView,'id'|'ticketId'> & {originTriggerId?:string}
-    const records = query?.questionId
-      ? [store.get<RecordRef>('business-decision',query.questionId)]
-      : store.list<RecordRef>('business-decision')
+    const lookup=(id:string)=>store.get<RecordRef>('business-decision',id)
+    let records:(RecordRef|undefined)[]
+    if(query?.questionId)records=[lookup(query.questionId)]
+    else if(query?.currentOnly)records=Array.from(tasks.keys()).flatMap(ticketId=>{
+      const questionId=store.tickets.get(ticketId)?.attention?.id
+      return questionId?[lookup(questionId)]:[]
+    })
+    else records=store.list<RecordRef>('business-decision')
     return this.host.scopes.readOnly(() => this.host.memory.readOnly(() => {
       const items = records.flatMap(record => {
         if (!record) return []
@@ -850,7 +860,50 @@ export class ChatSessions {
       return {tasks,result}
     }catch{throw new ChatError('file_unavailable','This file is unavailable or cannot be previewed.',404)}
   }
-  view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string,decisionsFrom?:number){
+  private pendingCards(c:Conversation,closedRuns:Set<string>,requests:Approval[],managed:PermissionAction[]):PendingCard[]{
+    if(c.archived)return []
+    const cards:PendingCard[]=[]
+    const rows=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
+      AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=?
+      AND ((json_type(body,'$.decision')='object' AND json_extract(body,'$.decision.replyRunId') IS NULL)
+        OR json_extract(body,'$.fileReview.state')='pending')`).all(c.id)
+    for(const row of rows){
+      const m=JSON.parse(String(row.body)) as Message
+      if(closedRuns.has(m.runId)||this.host.memory.cleanup.blocked('chat-message',m.id,m))continue
+      try{this.host.routerIngress.authority(m.runId,c.discussion)}catch{continue}
+      const base={id:m.id,createdAt:m.createdAt}
+      if(m.decision&&!m.decision.closed)cards.push({...base,kind:'choice',decision:m.decision})
+      else if(m.fileReview)cards.push({...base,kind:'file',name:m.text,review:m.fileReview})
+    }
+    const approvals=[
+      ...requests.filter(a=>{
+        if(a.status!=='pending'||a.expiresAt<=Date.now())return false
+        const origin=this.approvalOrigin(a.ticketId)
+        return origin?.conversationId===c.id&&origin.runId===a.chat?.runId&&origin.workerId===a.chat.workerId
+      }).map(publicApproval),
+      ...managed.filter(a=>{
+        if(a.phase!=='pending')return false
+        const actor=this.permissionActor(a.actor.triggerId,a.actor.ticketId,a.actor.agentId)
+        return actor?.runId===a.actor.runId&&actor.workerId===a.actor.workerId
+      }).map(permissionCard),
+    ]
+    // Use the same preceding ticket message as the inline activity, even beyond the latest page.
+    const anchor=this.host.store.db.prepare(`SELECT id FROM records WHERE kind='chat-message'
+      AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')=?
+      ORDER BY CASE WHEN json_extract(body,'$.createdAt')<=? THEN
+        CASE WHEN json_extract(body,'$.ticketId')=? THEN 0 ELSE 1 END ELSE 2 END,
+        CASE WHEN json_extract(body,'$.createdAt')<=? THEN -json_extract(body,'$.sequence') ELSE json_extract(body,'$.sequence') END LIMIT 1`)
+    const messageFor=(item:{runId:string;ticketId:string;createdAt:number})=>
+      String(anchor.get(c.id,item.runId,item.createdAt,item.ticketId,item.createdAt)?.id??'user:'+item.runId)
+    for(const request of approvals)if(!closedRuns.has(request.runId))
+      cards.push({kind:'approval',id:request.id,messageId:messageFor(request),createdAt:request.createdAt,request})
+    for(const question of this.businessDecisions(c.id,c.owner,{currentOnly:true})){
+      if(!closedRuns.has(question.runId)&&['pending','expired','stale'].includes(question.status))
+        cards.push({kind:'question',id:question.id,messageId:messageFor(question),createdAt:question.createdAt,question})
+    }
+    return cards.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))
+  }
+  view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string,decisionsFrom?:number,withPending=false){
     const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id),last=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
@@ -911,7 +964,8 @@ export class ChatSessions {
     const approvals=[...requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval),...managedRequests.filter(a=>!participant||participant===router.id||a.actor.workerId===participant).map(permissionCard)].sort((a,b)=>a.createdAt-b.createdAt)
     const plans=this.rows<RouterGoal>('router-goal','discussion',c.discussion).map(goalPlan).filter(p=>p.steps.length)
     const publicPlans=this.rows<ChatPlan>('chat-plan','conversationId',id).filter(p=>!participant||participant===router.id||p.workerId===participant).map(({conversationId,activityId,...p})=>({...p,live:calls.some(call=>call.id===activityId&&call.state==='running')}))
-    const result={approvals,plans,publicPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
+    const result={pendingCards,approvals,plans,publicPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue
@@ -920,23 +974,32 @@ export class ChatSessions {
     }
     const runIds = new Set(result.messages.map(message => message.runId))
     const firstSequence = result.messages[0]?.sequence
+    const earlierCards:{id:string;decision?:ChatDecision;fileReview?:FileReview;deliveries?:ChatDelivery[]}[]=[]
     // Refresh questions on already-loaded pages too, including withdrawals and renewals.
     if (firstSequence !== undefined && decisionsFrom !== undefined && decisionsFrom < firstSequence) {
-      const earlierRuns = this.host.store.db.prepare(`
-        SELECT DISTINCT json_extract(body,'$.runId') AS runId FROM records
+      const earlier = this.host.store.db.prepare(`
+        SELECT DISTINCT json_extract(body,'$.runId') AS runId,
+          CASE WHEN ? AND (json_type(body,'$.decision')='object' OR json_type(body,'$.fileReview')='object')
+            THEN body END AS card FROM records
         WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=?
           AND json_extract(body,'$.sequence')>=? AND json_extract(body,'$.sequence')<?
           AND (? IS NULL OR json_extract(body,'$.runId')=?)
           AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?)`
-      ).all(id,decisionsFrom,firstSequence,runId??null,runId??null,participant??null,participant??null,participant??null)
-      for (const row of earlierRuns) runIds.add(String(row.runId))
+      ).all(Number(withPending),id,decisionsFrom,firstSequence,runId??null,runId??null,participant??null,participant??null,participant??null)
+      for(const row of earlier){
+        runIds.add(String(row.runId))
+        if(!row.card)continue
+        const m=JSON.parse(String(row.card)) as Message
+        const decision=m.decision&&!m.decision.replyRunId&&closedRuns.has(m.runId)?{...m.decision,closed:true}:m.decision
+        earlierCards.push({id:m.id,decision,fileReview:m.fileReview,deliveries:m.deliveries})
+      }
     }
     const decisions = this.businessDecisions(id,owner,{runIds,workerId:participant===router.id?undefined:participant})
-    return {...result,decisions,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
+    return {...result,decisions,earlierCards,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){
-    const state=this.view(id,owner),hash=createHash('sha256').update(JSON.stringify(state)).digest('hex')
+    const state=this.view(id,owner,undefined,undefined,undefined,undefined,undefined,true),hash=createHash('sha256').update(JSON.stringify(state)).digest('hex')
     const previous=this.host.store.get<{hash:string;revision:number}>('chat-revision',id)
     if(previous?.hash===hash)return previous.revision
     const revision=(previous?.revision??0)+1

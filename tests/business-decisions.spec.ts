@@ -41,9 +41,12 @@ function current(f:Awaited<ReturnType<typeof fixture>>){return f.h.chat.business
 function answer(f:Awaited<ReturnType<typeof fixture>>,d:Pick<ReturnType<typeof current>,'id'|'version'>=current(f)){return {action:'answer' as const,id:d.id,version:d.version,requestId:randomUUID(),text:'Use the first report.'}}
 it('answers a real Chat question atomically, without queuing a second Router run',async()=>{
  const f=await fixture();await f.finish();const d=current(f)
+ const tray=()=>f.h.chat.view(f.chat.id,'owner',undefined,undefined,undefined,undefined,undefined,true).pendingCards
+ expect(tray()).toContainEqual(expect.objectContaining({kind:'question',id:d.id}))
  expect(d.status).toBe('pending');expect(d.target).toMatchObject({label:'Local report',version:'v1',amount:{value:'12.50',currency:'USD'},recipient:{id:'local-reviewer'}})
  const input=answer(f),before=f.h.store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind='router'").get()!.n
  const result=f.h.chat.decide(f.chat.id,'owner',input)
+ expect(tray()).toHaveLength(0)
  expect(result.decision.status).toBe('answered');expect(result.duplicate).toBe(false)
  expect(f.h.store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind='router'").get()!.n).toBe(before)
  const db=database(f.h);expect(f.h.chat.decide(f.chat.id,'owner',input).duplicate).toBe(true);expect(database(f.h)).toBe(db)
@@ -90,6 +93,8 @@ it('invalidates changed report targets and renews to a new question before accep
 it('enforces exact expiry without changing native approval deadlines and supports explicit renewal',async()=>{
  const f=await fixture();await f.finish();const d=current(f),before=database(f.h)
  vi.spyOn(Date,'now').mockReturnValue(d.expiresAt)
+ expect(f.h.chat.view(f.chat.id,'owner',undefined,undefined,undefined,undefined,undefined,true).pendingCards)
+   .toContainEqual(expect.objectContaining({id:d.id,question:expect.objectContaining({status:'expired'})}))
  expect(()=>f.h.chat.decide(f.chat.id,'owner',answer(f,d))).toThrow('decision_expired');expect(database(f.h)).toBe(before)
  expect(f.h.chat.decide(f.chat.id,'owner',{action:'renew',id:d.id,version:d.version,requestId:randomUUID()}).decision.expiresAt).toBe(d.expiresAt+86400000)
 })

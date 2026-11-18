@@ -38,14 +38,27 @@ export function useChatMotion(root:RefObject<HTMLDivElement|null>,key:string,his
     if(lastId&&previous.current&&lastId!==previous.current&&!follow.current)setUnread(true)
     previous.current=lastId
   },[lastId])
-  const locate=useCallback((id:string)=>{
-    const message=Array.from(root.current?.querySelectorAll<HTMLElement>('.message[data-message-id]')??[]).find(el=>el.dataset.messageId===id)
+  const highlight=useRef<{node:HTMLElement;timer:ReturnType<typeof setTimeout>}|null>(null)
+  const clearHighlight=useCallback(()=>{
+    if(!highlight.current)return
+    clearTimeout(highlight.current.timer)
+    delete highlight.current.node.dataset.located
+    highlight.current=null
+  },[])
+  useEffect(()=>clearHighlight,[key,clearHighlight])
+  const locate=useCallback((messageId:string,workflowId?:string)=>{
+    const selector=workflowId?'[data-workflow-id="'+CSS.escape(workflowId)+'"]':'.message[data-message-id="'+CSS.escape(messageId)+'"]'
+    const message=root.current?.querySelector<HTMLElement>('.transcript '+selector)
     if(!message)return false
-    stop();setAtBottom(false)
-    message.scrollIntoView({behavior:reduced.current?'instant':'smooth',block:'center'})
+    stop();clearHighlight();setAtBottom(false)
+    // Land first so the whole pulse is visible even after fetching a distant page.
+    const card=workflowId!==undefined||!!message.querySelector('.workflow-card')
+    message.scrollIntoView({behavior:reduced.current||card?'instant':'smooth',block:'center'})
     message.tabIndex=-1;message.focus({preventScroll:true})
-    if(!reduced.current)message.animate([{backgroundColor:'var(--c-hover)'},{backgroundColor:'transparent'}],{duration:1200,easing:'ease-out'})
+    void message.offsetWidth
+    message.dataset.located='true'
+    highlight.current={node:message,timer:setTimeout(clearHighlight,1800)}
     return true
-  },[root,stop])
+  },[root,stop,clearHighlight])
   return {atBottom,unread,latest,locate,stop}
 }

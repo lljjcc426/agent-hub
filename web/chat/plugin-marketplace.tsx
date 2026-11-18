@@ -1,4 +1,5 @@
 import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
+import {CapabilityLibrary,MarketNavigation} from './capability-library.tsx'
 import {ArrowDownToLine,ArrowUpRight,Check,ChevronRight,ExternalLink,LoaderCircle,Package,Plus,RefreshCw,Search,Settings2,X} from 'lucide-react'
 import type {CatalogPlugin,InstalledPlugin,MarketAction,MarketCatalog,MarketOperation,MarketPlan,MarketRelease} from '../../src/plugin-market-contract.ts'
 import {latestCompatible,compatible} from '../../src/plugin-market-contract.ts'
@@ -21,7 +22,11 @@ function Drawer({title,close,children,restoreKey}:{title:string;close:()=>void;c
     <header><h2 id="market-drawer-title">{title}</h2><button className="market-icon" aria-label="Close / 关闭" onClick={close}><X size={20}/></button></header>{children}
   </dialog>
 }
-export function PluginMarketplace({route,language}:{route:string;language:'en'|'zh-CN'}){
+type MarketProps={route:string;language:'en'|'zh-CN'}
+export function PluginMarketplace(props:MarketProps){
+  return props.route.split('/')[1]==='library'?<CapabilityLibrary {...props}/>:<Marketplace {...props}/>
+}
+function Marketplace({route,language}:MarketProps){
   const L=(en:string,zh:string)=>language==='en'?en:zh
   const tab=route==='integrations'||route==='integrations/tools'?'tools':route.split('/')[1]??'market'
   const [data,setData]=useState<Snapshot|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[query,setQuery]=useState(''),[category,setCategory]=useState<Category>('all')
@@ -65,9 +70,7 @@ export function PluginMarketplace({route,language}:{route:string;language:'en'|'
   useLayoutEffect(()=>{viewport.current?.scrollTo(0,0)},[tab])
   return <section ref={viewport} className={'market-page'+(tab==='tools'?' is-tools':'')} aria-label={L('Tools & MCP','工具与 MCP')}>
     <div className="market-heading"><h1>{L('Tools & MCP','工具与 MCP')}</h1><div className="market-actions"><button onClick={()=>{setSources(true);setError('')}}><Settings2 size={16}/>{L('Manage sources','管理来源')}</button><button className="market-primary" onClick={()=>{setSources(true);setURL('');setError('')}}><Plus size={16}/>{L('Add from GitHub','从 GitHub 添加')}</button></div></div>
-    <nav className="market-tabs" aria-label={L('Plugin sections','插件页面')}>
-      {(['market','installed','updates','tools'] as const).map((t,i)=><a key={t} href={'/configure#integrations/'+t} aria-current={tab===t?'page':undefined}>{[L('Marketplace','市场'),L('Installed','已安装'),L('Updates','更新'),L('Tool connections','工具连接')][i]}{t==='updates'&&updateCount>0?<span>{updateCount}</span>:null}</a>)}
-    </nav>
+    <MarketNavigation tab={tab} language={language} updates={updateCount}/>
     {tab!=='tools'?<>
       <div className="market-toolbar">
         <label className="market-search"><Search size={17}/><input aria-label={L('Search marketplace','搜索市场')} placeholder={L('Search by name','搜索名称')} value={query} onChange={e=>setQuery(e.target.value)}/>{query?<button aria-label={L('Clear search','清空搜索')} onClick={()=>setQuery('')}><X size={15}/></button>:null}</label>
@@ -78,7 +81,7 @@ export function PluginMarketplace({route,language}:{route:string;language:'en'|'
       {error&&!selection&&!sources&&!connection?<div className="market-message" role="alert">{error}<button onClick={()=>void load()}>{L('Retry','重试')}</button></div>:null}
       {notice&&!selection&&!sources?<div className="market-message" role="status"><Check size={16}/>{notice}</div>:null}
       {data?.catalogs.some(c=>c.error)&&tab==='market'?<div className="market-message"><span>{L('Some sources could not be refreshed. Saved plugins are still available.','部分来源刷新失败，已保存的插件仍可使用。')}</span><button onClick={()=>setSources(true)}>{L('View sources','查看来源')}<ChevronRight size={15}/></button></div>:null}
-      {!data?<div className="market-empty" role="status"><LoaderCircle className="spin" size={26}/><p>{L('Loading plugins…','正在加载插件…')}</p></div>:category==='skill'||category==='mcp'?<div className="market-empty" role="status"><Package size={32}/><h2>{category==='skill'?L('No skill catalog entries','暂无技能目录条目'):L('No MCP catalog entries','暂无 MCP 目录条目')}</h2><p>{category==='skill'?L('Skills are not yet part of the marketplace catalog. Manage team skills in Behavior rules.','技能尚未接入市场目录，可在行为规则中管理团队技能。'):L('MCP servers are not yet part of the marketplace catalog. Manage configured servers in Tool connections.','MCP 服务尚未接入市场目录，可在工具连接中管理已配置的服务。')}</p><a href={category==='skill'?'/configure#prompts/templates':'/configure#integrations/tools'}>{category==='skill'?L('Manage team skills','管理团队技能'):L('Manage MCP connections','管理 MCP 连接')}<ArrowUpRight size={16}/></a></div>:tab==='market'?entries.length?<div className="market-grid">{entries.map(({plugin,catalog})=>{
+      {!data?<div className="market-empty" role="status"><LoaderCircle className="spin" size={26}/><p>{L('Loading plugins…','正在加载插件…')}</p></div>:category==='skill'||category==='mcp'?<div className="market-empty" role="status"><Package size={32}/><h2>{category==='skill'?L('No skill catalog entries','暂无技能目录条目'):L('No MCP catalog entries','暂无 MCP 目录条目')}</h2><p>{category==='skill'?L('Skills are not yet part of the marketplace catalog. Manage team skills in Behavior rules.','技能尚未接入市场目录，可在行为规则中管理团队技能。'):L('MCP servers are not yet part of the marketplace catalog. Manage configured servers in Tool connections.','MCP 服务尚未接入市场目录，可在工具连接中管理已配置的服务。')}</p><a href={category==='skill'?'/configure#prompts/templates':'/configure#integrations/tools'}>{category==='skill'?L('Manage team skills','管理团队技能'):L('Manage MCP connections','管理 MCP 连接')}<ArrowUpRight size={16}/></a><a href={'/configure#integrations/library/'+category}>{L('Browse workspace capabilities','查看工作区能力')}</a></div>:tab==='market'?entries.length?<div className="market-grid">{entries.map(({plugin,catalog})=>{
         const current=data.installed.find(p=>p.id===plugin.id&&p.origin.repositoryId===catalog.origin?.repositoryId),available=latestCompatible(plugin,data.platform)
         return <article className="market-card" key={catalog.id+'/'+plugin.id}><span className="settings-glyph"><AppBrand id={plugin.id} category={plugin.category} size={27}/></span>
           <div className="market-card-copy"><h2><button className="market-card-title" data-market-key={catalog.id+'/'+plugin.id} onClick={()=>select({plugin,catalog})}>{plugin.name[language]}</button></h2><p>{plugin.description[language]}</p></div><footer><button onClick={()=>select({plugin,catalog})}>{current?status(current):available?L('Install','安装'):L('View details','查看详情')}<ChevronRight size={15}/></button></footer></article>

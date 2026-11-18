@@ -12,7 +12,11 @@ import {goalCommandSchema} from './router-goals.ts'
 import {randomUUID} from 'node:crypto'
 
 export async function startMcp(url: string, tokenFile: string,client='generic') {
-  const token = readFileSync(tokenFile, 'utf8').trim()
+  const server=createOperatorMcp(url,readFileSync(tokenFile, 'utf8').trim(),client)
+  await server.connect(new StdioServerTransport())
+}
+
+export function createOperatorMcp(url:string,token:string,client='generic'){
   const bridgeId=randomUUID()
   const server = new McpServer({ name: 'agent-hub', version: '0.10.0' },{instructions:'AgentHub carries out work asynchronously in a persistent background session. When execution.router.mode is client, this conversation is the Router: use worker_manage to delegate and collect results, then reply here. Use agent_request for ordinary host-mode requests; no source or request identifiers are needed. Reuse its returned discussion for follow-ups in the same conversation. Query agent_status for progress and the actual reply; accepted is not completed. Preserve requestId on retries. Operator settings and control tools affect the local host.'})
   async function api(path: string, value?: unknown) {
@@ -56,5 +60,5 @@ export async function startMcp(url: string, tokenFile: string,client='generic') 
   server.registerTool('agent_members_preview',{annotations:{readOnlyHint:true},description:'Read a configured source member directory and preview an allowed-list update. Does not grant access.',inputSchema:{source:z.string(),scope:z.string().optional()}},async args=>api('/members-preview',args))
   server.registerTool('agent_members_apply',{description:'Apply an operator-requested member preview at its original settings revision.',inputSchema:{id:z.string()}},async args=>api('/members-apply',args))
   server.registerTool('agent_prompt_preview',{annotations:{readOnlyHint:true},description:'Preview Roppo role instructions for a task mode and configured Worker, including runtime sections and the native managed base. Task input and backend protocol framing remain separate. Does not save configuration.',inputSchema:{role:z.enum(['router','worker']),mode:z.enum(previewModes).optional(),sourceId:z.string().optional(),workerId:z.string().optional()}},async args=>api('/prompt-preview',args))
-  await server.connect(new StdioServerTransport())
+  return server
 }

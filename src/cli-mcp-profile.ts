@@ -121,10 +121,7 @@ export function cliMcpTransport(ref:Profile,tools:string[]){
 /** The browser can inspect the host user's standard profiles, never arbitrary paths. */
 export function cliMcpPreview(input:unknown,home:string,workers:string[],env:NodeJS.ProcessEnv=process.env){
   const {cli,server,worker,tools}=z.object({cli:cliProfileSchema.shape.cli,server:z.string().min(1).max(200).optional(),worker:names.optional(),tools:z.array(z.string().min(1).max(160)).min(1).max(100).optional()}).strict().parse(input)
-  const openCodeDir=resolve(env.XDG_CONFIG_HOME||resolve(home,'.config'),'opencode')
-  const openCodeJson=resolve(openCodeDir,'opencode.json')
-  const openCodeProfile=env.OPENCODE_CONFIG||(!existsSync(openCodeJson)?resolve(openCodeDir,'opencode.jsonc'):openCodeJson)
-  const profiles={codex:resolve(env.CODEX_HOME||resolve(home,'.codex'),'config.toml'),claude:resolve(home,'.claude.json'),gemini:resolve(home,'.gemini/settings.json'),opencode:openCodeProfile}
+  const profiles=cliProfilePaths(home,env)
   const profile=profiles[cli]
   if(!server&&!worker&&!tools)return {servers:cliServerNames(cli,profile)}
   if(!server||!worker||!tools||!workers.includes(worker))throw Error('Select a server, an existing Worker and exact tool names')
@@ -134,4 +131,11 @@ export function cliMcpFragment(cli:Profile['cli'],profile:string,server:string,w
   const transport=cliMcpGrant(cli,profile,server,worker,tools)
   const id='cli_'+stableDigest([cli,profile,server,worker,tools.toSorted()]).slice(0,16)
   return {toolConnections:{[id]:{label:server,transport,allowedTools:tools}}}
+}
+
+export function cliProfilePaths(home:string,env:NodeJS.ProcessEnv){
+  const openCodeDir=resolve(env.XDG_CONFIG_HOME||resolve(home,'.config'),'opencode')
+  const openCodeJson=resolve(openCodeDir,'opencode.json')
+  const openCodeProfile=env.OPENCODE_CONFIG||(!existsSync(openCodeJson)?resolve(openCodeDir,'opencode.jsonc'):openCodeJson)
+  return {codex:resolve(env.CODEX_HOME||resolve(home,'.codex'),'config.toml'),claude:resolve(home,'.claude.json'),gemini:resolve(home,'.gemini/settings.json'),opencode:openCodeProfile}
 }

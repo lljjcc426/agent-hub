@@ -77,7 +77,6 @@ import "./navigation.css";
 import "./chat-layout.css";
 import "./message-interactions.css";
 import "./team-view.css";
-
 import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";

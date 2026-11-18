@@ -23,6 +23,8 @@ import './memory.css';
 
 type FileTab = 'MEMORY.md' | 'USER.md' | PersonaFile;
 const files: FileTab[] = ['MEMORY.md', 'USER.md', 'SOUL.md', 'IDENTITY.md', 'AGENTS.md'];
+type InitialLearning = { enabled: boolean; editable: boolean; revision: number };
+type MemoryWorkspace = { contexts: Entry[]; initialLearning: InitialLearning };
 export function MemorySettings({ L }: { L: Labels }) {
   const [file, setFile] = useState<FileTab>('MEMORY.md'),
     [scope, setScope] = useState('personal'),
@@ -68,14 +70,23 @@ export function MemorySettings({ L }: { L: Labels }) {
       .map((fact) => ({ fact, entry })),
   );
   const current = notes.find((n) => n.fact.id === selected) ?? notes[0];
-  const learning = visible.length > 0 && visible.every((e) => e.policy.writeMode !== 'explicit_only');
+  const [initialLearning, setInitialLearning] = useState<InitialLearning | null>(null);
+  const hasContext = visible.length > 0;
+  const learning = hasContext
+    ? visible.every((entry) => entry.enabled && entry.policy.writeMode !== 'explicit_only')
+    : initialLearning?.enabled ?? false;
+  const canChangeLearning = hasContext ? visible.every((entry) => entry.enabled) : initialLearning?.editable;
+  const showWorkspace = (data: MemoryWorkspace) => {
+    setInitialLearning(data.initialLearning);
+    setEntries(data.contexts);
+  };
   useEffect(() => {
     let disposed = false;
     setError('');
-    void Promise.all([request<{ contexts: Entry[] }>({ action: 'refresh' }), personaRequest()])
+    void Promise.all([request<MemoryWorkspace>({ action: 'refresh' }), personaRequest()])
       .then(([m, p]) => {
         if (!disposed) {
-          setEntries(m.contexts);
+          showWorkspace(m);
           setPersona(p);
         }
       })
@@ -119,12 +130,17 @@ export function MemorySettings({ L }: { L: Labels }) {
     setPendingLearning(enabled);
     setError('');
     try {
-      const scopes = [...new Map(visible.map((e) => [e.scopeId, e])).values()];
-      for (const e of scopes)
-        await request({ entryId: e.id, action: 'learning', enabled, revision: e.revision });
-      setEntries((await request<{ contexts: Entry[] }>({ action: 'refresh' })).contexts);
+      if (!hasContext && initialLearning?.editable) {
+        await request({action:'initial-learning', enabled, revision:initialLearning.revision});
+      } else {
+        const scopes = new Map(visible.map((entry) => [entry.scopeId,entry]));
+        for (const entry of scopes.values())
+          await request({entryId:entry.id,action:'learning',enabled,revision:entry.revision});
+      }
+      showWorkspace(await request<MemoryWorkspace>({action:'refresh'}));
     } catch {
       setError(L('Could not change learning. Try refreshing.', '学习设置未能保存，请刷新重试。'));
+      try { showWorkspace(await request<MemoryWorkspace>({action:'refresh'})); } catch { /* Keep the retry action available. */ }
     } finally {
       setPendingLearning(null);
       setBusy(false);
@@ -293,8 +309,8 @@ export function MemorySettings({ L }: { L: Labels }) {
             </span>
             <span className="learn-name">
               {L('Learn from conversations', '从对话中学习')}
-              {entries && !visible.length && (
-                <small>{L('Available after your first conversation', '开始对话后可用')}</small>
+              {entries && !hasContext && !canChangeLearning && (
+                <small>{L('Start a conversation to change this setting', '开始对话后可更改')}</small>
               )}
             </span>
             <input
@@ -302,7 +318,7 @@ export function MemorySettings({ L }: { L: Labels }) {
               aria-label={L('Learn from conversations', '从对话中学习')}
               type="checkbox"
               checked={pendingLearning ?? learning}
-              disabled={busy || !visible.length || visible.some((e) => !e.enabled)}
+              disabled={busy || !canChangeLearning}
               onChange={() => void changeLearning()}
             />
           </label>

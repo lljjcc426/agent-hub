@@ -1,9 +1,9 @@
 import {z} from 'zod'
 
-/** Existing installations keep their write policy; adaptive learning is explicit. */
+export const defaultMemoryWriteMode = 'adaptive' as const
 export const memoryPolicySchema=z.object({
  enabled:z.boolean().default(true),
- writeMode:z.enum(['explicit_only','auto','adaptive']).default('explicit_only'),
+ writeMode:z.enum(['explicit_only','auto','adaptive']).default(defaultMemoryWriteMode),
  extractBackend:z.string().min(1).optional(),extractModel:z.string().min(1).optional(),
  delayMs:z.number().int().min(0).max(3600000).default(90000),
  minIntervalMs:z.number().int().min(0).max(86400000).default(300000),

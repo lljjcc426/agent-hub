@@ -24,7 +24,7 @@ export function workspaceGroups(L: Labels) {
     {
       label: L('Task handling', '任务处理'),
       items: [
-        { route: 'intake', name: L('Intake rules', '接收规则'), Icon: ArrowDownToLine },
+        { route: 'intake', name: L('Find tasks in messages', '从消息中发现任务'), Icon: ArrowDownToLine },
         { route: 'runtime', name: L('Run limits and isolation', '运行限制与隔离'), Icon: ShieldCheck },
         { route: 'delivery', name: L('Publishing and merging', '发布与合并'), Icon: GitMerge },
       ],

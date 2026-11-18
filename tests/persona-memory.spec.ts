@@ -43,6 +43,19 @@ it('imports active memories idempotently and keeps edits revisioned',async()=>{
  const exported=await changeMemoryWorkspace(f.h,'alice',{entryId:a.entryId,action:'export',file:'USER.md'});expect(JSON.stringify(exported)).not.toContain('先列验证结果')
  expect(f.h.agentMemory.policy(a.c)).toEqual(policy)
 })
+it('uses adaptive learning from the first conversation and respects an early opt-out',async()=>{
+ const f=fixture(),initial=(owner:string)=>memoryWorkspace(f.h,owner).initialLearning
+ expect(initial('alice')).toEqual({enabled:true,editable:true,revision:0})
+ await changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:false,revision:0})
+ await expect(changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:true,revision:0})).rejects.toThrow('revision')
+ expect(initial('alice').enabled).toBe(false)
+ const a=f.chat('alice'),b=f.chat('bob')
+ expect(f.h.agentMemory.learning(a.c).mode).toBe('explicit_only')
+ expect(f.h.agentMemory.learning(b.c).mode).toBe('adaptive')
+ await expect(changeMemoryWorkspace(f.h,'alice',{action:'initial-learning',enabled:true,revision:1})).rejects.toThrow('revision')
+ await changeMemoryWorkspace(f.h,'alice',{entryId:a.entryId,action:'learning',enabled:true,revision:1})
+ expect(f.h.agentMemory.learning(a.c).mode).toBe('adaptive')
+})
 it('preserves an existing auto learning policy across pause/resume and rejects stale changes',async()=>{
  const f=fixture(),a=f.chat('alice');f.h.agentMemory.manage(a.c,{action:'configure',expectedRevision:0,policy:{writeMode:'auto',maxCallsPerDay:7}})
  await changeMemoryWorkspace(f.h,'alice',{entryId:a.entryId,action:'learning',enabled:false,revision:1})

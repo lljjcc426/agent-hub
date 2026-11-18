@@ -1,3 +1,4 @@
+import {defaultMemoryWriteMode,memoryPolicySchema,type MemoryPolicy} from './memory-policy.ts'
 import {randomUUID} from 'node:crypto'
 import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
@@ -34,9 +35,34 @@ const command=z.object({entryId:z.string().min(1),action:z.enum(['edit','forget'
  text:z.string().max(32000).optional(),operationId:z.string().uuid().optional(),
 }).strict()
 
+type StoredLearningPolicy = {value:MemoryPolicy;revision:number;pausedWriteMode?:'auto'|'adaptive'}
+function changedLearningPolicy(stored:StoredLearningPolicy|undefined, enabled:boolean) {
+ const policy = memoryPolicySchema.parse(stored?.value ?? {})
+ const activeMode = policy.writeMode === 'explicit_only' ? stored?.pausedWriteMode ?? defaultMemoryWriteMode : policy.writeMode
+ return {value:{...policy,writeMode:enabled?activeMode:'explicit_only' as const},
+  ...(!enabled?{pausedWriteMode:activeMode}:{})}
+}
+// Chat creates its private scope on the first message. Before that, only the
+// signed-in owner's learning preference may be written under its reserved ID.
+function initialChatLearning(host: Runtime, owner: string) {
+ const scopeId = '@chat:' + stableDigest(owner)
+ const scope = host.store.get<{tenantId:string;memoryEnabled:boolean}>('management-scope',scopeId)
+ const stored = host.store.get<StoredLearningPolicy>('memory-policy',scopeId)
+ const privateScope = !scope || scope.tenantId === scopeId
+ const policy = memoryPolicySchema.parse(privateScope ? stored?.value ?? {} : {})
+ return {
+  enabled: privateScope && policy.enabled && scope?.memoryEnabled !== false && policy.writeMode !== 'explicit_only',
+  editable: !scope && policy.enabled,
+  revision: privateScope ? stored?.revision ?? 0 : 0,
+ }
+}
+const initialLearningCommand = z.object({
+ action: z.literal('initial-learning'), enabled: z.boolean(), revision: z.number().int().nonnegative(),
+}).strict()
+
 export function memoryWorkspace(host:Runtime,owner:string){
  const contexts=memoryContexts(host,owner)
- return {contexts:contexts.map(({id,label,conversationId,context:c})=>({id,label:conversationId?label:host.scopes.scope(c.route.scopeId).name,conversationId,scopeId:c.route.scopeId,
+ return {initialLearning:initialChatLearning(host,owner),contexts:contexts.map(({id,label,conversationId,context:c})=>({id,label:conversationId?label:host.scopes.scope(c.route.scopeId).name,conversationId,scopeId:c.route.scopeId,
   request:{id:c.trigger.id,text:c.trigger.text},policy:host.agentMemory.policy(c),revision:host.agentMemory.policyRevision(c),enabled:host.agentMemory.enabled(c),
   items:host.agentMemory.authorized(c,true).filter(f=>f.entryId===id),
   skills:host.skills.list(c.route.scopeId,c),
@@ -52,15 +78,26 @@ export async function changeMemoryWorkspace(host:Runtime,owner:string,value:unkn
   for(const entry of memoryContexts(host,owner))host.agentMemory.settleNotes(entry.context)
   return memoryWorkspace(host,owner)
  }
+ const initial = initialLearningCommand.safeParse(value)
+ if(initial.success) return host.store.atomic(()=>{
+  const current = initialChatLearning(host,owner)
+  if(!current.editable || initial.data.revision !== current.revision) throw Error('Memory policy revision conflict')
+  const scopeId = '@chat:' + stableDigest(owner)
+  const previous = host.store.get<StoredLearningPolicy>('memory-policy',scopeId)
+  const revision = current.revision + 1
+  host.store.put('memory-policy',scopeId,{...changedLearningPolicy(previous,initial.data.enabled),revision})
+  return {revision}
+ })
  const x=command.parse(value),entry=memoryContexts(host,owner).find(c=>c.id===x.entryId)
  if(!entry)throw Error('Memory entry unavailable')
  const c=entry.context
  if(x.action==='learning'){
   if(x.enabled===undefined||x.revision===undefined)throw Error('Learning setting and revision required')
   return host.store.atomic(()=>{
-   const previous=host.store.get<{pausedWriteMode?:'auto'|'adaptive'}>('memory-policy',c.route.scopeId),policy=host.agentMemory.policy(c)
-   const result=host.agentMemory.manage(c,{action:'configure',expectedRevision:x.revision,policy:{...policy,writeMode:x.enabled?(previous?.pausedWriteMode??'adaptive'):'explicit_only'}})
-   if(!x.enabled&&policy.writeMode!=='explicit_only')host.store.put('memory-policy',c.route.scopeId,{...host.store.get<object>('memory-policy',c.route.scopeId),pausedWriteMode:policy.writeMode})
+   const previous=host.store.get<StoredLearningPolicy>('memory-policy',c.route.scopeId)
+   const next=changedLearningPolicy(previous,x.enabled!)
+   const result=host.agentMemory.manage(c,{action:'configure',expectedRevision:x.revision,policy:next.value})
+   if(next.pausedWriteMode)host.store.put('memory-policy',c.route.scopeId,{...host.store.get<object>('memory-policy',c.route.scopeId),pausedWriteMode:next.pausedWriteMode})
    return result
   })
  }

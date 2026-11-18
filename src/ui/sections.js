@@ -37,13 +37,13 @@ function renderPolicy() {
   const editRules = rules.map((rule, i) =>
     add(
       el('div', 'rule'),
-      el('h3', '', rule.id || L('New rule', '新规则')),
-      inputField('rules.' + i + '.id', L('Rule ID', '规则 ID')),
-      inputField('rules.' + i + '.instruction', L('Instruction', '指令'), { type: 'area' }),
+      el('h3', '', rule.id || L('New condition', '新条件')),
+      inputField('rules.' + i + '.id', L('Condition name', '条件名称')),
+      inputField('rules.' + i + '.instruction', L('When should Roppo follow up?', '什么情况下需要跟进？'), { type: 'area' }),
       add(
         el('div', 'rules-actions'),
         action(
-          L('Remove rule', '移除规则'),
+          L('Remove condition', '移除条件'),
           () => {
             if (!confirm(L('Remove this rule from the draft?', '从草稿中移除此规则？'))) return
             clearRelated('rules')
@@ -57,25 +57,25 @@ function renderPolicy() {
   )
   return [
     group(
-      L('Inferred requests', '推断请求'),
+      L('Automatic follow-up', '自动跟进'),
       L(
-        'Off blocks inferred work. Observe records rule matches. Auto can start work that matches an enabled rule.',
-        '关闭会阻止推断任务。观察模式记录规则匹配结果。自动模式可执行匹配规则的任务。'
+        'Choose whether Roppo should follow up on messages that meet your conditions, such as a report of a failed build.',
+        '例如，群里有人报告构建失败时，可以让 Roppo 按条件跟进。'
       ),
-      choose('acceptMode', L('Acceptance mode', '接收模式'), [
-        ['off', L('Off', '关闭')],
-        ['observe', L('Observe', '观察')],
-        ['auto', L('Auto', '自动')]
+      choose('acceptMode', L('When a message matches', '遇到符合条件的消息时'), [
+        ['off', L('Ignore', '忽略')],
+        ['observe', L('Record only', '只记录')],
+        ['auto', L('Start a task', '自动开始任务')]
       ])
     ),
     group(
-      L('Acceptance rules', '接收规则'),
+      L('Conditions', '跟进条件'),
       null,
       ...editRules,
-      rules.length ? null : el('p', 'aux', L('No acceptance rules configured.', '尚未配置接收规则。')),
+      rules.length ? null : el('p', 'aux', L('No conditions yet.', '尚未添加跟进条件。')),
       add(
         el('div', 'actions'),
-        action(L('Add rule', '添加规则'), () => {
+        action(L('Add condition', '添加条件'), () => {
           clearRelated('rules')
           rules.push({ id: '', instruction: '' })
           S.draft.rules = rules
@@ -142,7 +142,7 @@ function settingsGroupName(key) {
     execution: L('Execution', '执行配置'), models: L('Role models', '角色模型'),
     model: L('Default model', '默认模型'), effort: L('Reasoning effort', '推理强度'),
     concurrency: L('Worker count', 'Worker 数量'), acceptMode: L('Intake mode', '接收模式'),
-    rules: L('Intake rules', '接收规则'), prompts: L('Prompts', '提示词'), sources: L('Connections', '软件接入'),
+    rules: L('Find tasks in messages', '从消息中发现任务'), prompts: L('Prompts', '提示词'), sources: L('Connections', '软件接入'),
     watchdog: L('Stall detection', '停滞监测'), work: L('Runtime limits', '运行与隔离'),
     delivery: L('Publishing and merging', '发布与合并')
   })[key] || key
@@ -219,7 +219,7 @@ function renderWorkspaceSettings() {
     ['chat', L('Chat', '聊天')],
     ['memory', L('Memory', '记忆')],
     ['browser', L('Browser', '浏览器')],
-    ['intake', L('Intake rules', '接收规则')],
+    ['intake', L('Find tasks in messages', '从消息中发现任务')],
     ['runtime', L('Runtime and isolation', '运行与隔离')],
     ['delivery', L('Publishing and merging', '发布与合并')],
     ['json', L('Configuration maintenance', '配置维护')]

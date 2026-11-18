@@ -1530,3 +1530,26 @@ it('publishes a scheduled Worker file on that occurrence and reopens its message
   expect(recovered.chat.view(c.id,'owner',undefined,undefined,result.messageId).messages.some(m=>m.id===result.messageId)).toBe(true)
   expect(Buffer.from(recovered.chat.delivery(c.id,'owner',result.files[0]!.id).bytes).toString()).toBe('Worker handover')
 })
+
+it('pages retained approval history across tied timestamps and looks up older records without exposing another owner',()=>{
+  const {h}=fixture(), c=h.chat.create('owner'),foreign=h.chat.create('other')
+  const save=(id:string,conversationId:string,createdAt:number)=>{
+    h.store.put('chat-permission',id,{id,createdAt,phase:'complete',automatic:false,actor:{conversationId,workerId:'research',runId:'run',ticketId:'ticket'},
+      tool:'superagent_shell',facts:{command:'historical command contents'},args:{},notice:'Review this operation for approval.'})
+  }
+  for(let n=0;n<42;n++)save('record-'+String(n).padStart(2,'0'),c.id,5)
+  save('foreign',foreign.id,8)
+  const first=h.chat.approvalHistory(c.id,'owner')
+  expect(first.items).toHaveLength(20)
+  expect(JSON.stringify(first)).not.toContain('historical command contents')
+  save('new',c.id,9)
+  const second=h.chat.approvalHistory(c.id,'owner',first.next!)
+  const third=h.chat.approvalHistory(c.id,'owner',second.next!)
+  expect(third.next).toBeNull()
+  expect(new Set([...first.items,...second.items,...third.items].map(item=>item.id)).size).toBe(42)
+  const detail=h.chat.approvalRecord(c.id,'owner','record-00')
+  expect(detail).toMatchObject({request:{facts:{command:'historical command contents'},executionState:'complete'}})
+  expect(()=>h.chat.approvalRecord(c.id,'owner','foreign')).toThrow()
+  expect(()=>h.chat.approvalHistory(c.id,'other')).toThrow()
+  expect(()=>h.chat.approvalRecord(c.id,'other','record-00')).toThrow()
+})

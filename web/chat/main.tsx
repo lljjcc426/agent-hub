@@ -301,10 +301,11 @@ function AssistantMessage() {
     ),
     streaming = status?.type === "running",
     footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
+  const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
-    body = deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>);
+    body = <>{fileReview && <PendingNotice id={id} kind="review" notice={fileReview.notice} subject={fileReview.name}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>)}</>;
   } else if (fileReview) {
     body = <PendingNotice id={id} kind="review" notice={fileReview.notice} subject={fileReview.name} status={
       fileReview.state==='denied'?L('Declined','已拒绝'):fileReview.state==='superseded'?L('Replaced','已替换'):undefined}/>;
@@ -320,7 +321,7 @@ function AssistantMessage() {
       data-arrival={arrival}
       data-streaming={streaming ? "true" : undefined}
     >
-      <div className="assistant-identity">
+      {!continuedReview && <div className="assistant-identity">
         <AgentAvatar id={speaker?.id} kind={speaker?.kind} size={32} />
         <strong>{speaker?.kind==='worker'?speaker.label:teamName(speaker?.label??routerLabel)}</strong>
         <Timestamp at={createdAt}/>
@@ -330,7 +331,7 @@ function AssistantMessage() {
             {L("Writing", "正在输出")}
           </span>
         ) : null}
-      </div>
+      </div>}
       <div className="assistant-body">
         <div className="message-line" tabIndex={-1}>
           <div className="message-surface">
@@ -342,7 +343,7 @@ function AssistantMessage() {
           <MessageActions id={id}/>
         </div>
         <Reactions id={id}/>
-        {run && footerStatus ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
+        {run && footerStatus && !(run.state==='waiting' && waitingLabel) ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
       </div>
     </MessagePrimitive.Root><WorkflowCards anchor={id}/></>
   );
@@ -622,15 +623,30 @@ function Chat(p: ChatProps) {
   const trayButton=useRef<HTMLButtonElement>(null);
   const requestedItem=chatLocation(route.slice(route.indexOf('#')));
   const linkedItem=requestedItem?.conversation===id ? requestedItem?.item : undefined;
-  const changeTray=(open:boolean)=>{
-    if(!open && chatLocation(location.hash)?.item){
+  const linkOrigin=useRef<HTMLAnchorElement|null>(null);
+  const [linkVisit,setLinkVisit]=useState(0);
+  const previousLinkedItem=useRef<string | undefined>(undefined);
+  const readHistory=useCallback(<T,>(query:URLSearchParams,signal:AbortSignal)=>api<T>('/conversations/'+id+'/approval-history?'+query,undefined,'GET',signal),[id]);
+  const clearSelection=()=>{
+    if(chatLocation(location.hash)?.item){
+      previousLinkedItem.current=undefined;
       history.replaceState(null,'','#conversation/'+id);
       window.dispatchEvent(new Event('hashchange'));
     }
+  };
+  const changeTray=(open:boolean)=>{
+    if(!open)clearSelection();
     setTrayOpen(open);
     write('roppo.chat.pendingTray',open?'open':'closed');
   };
-  const closeTray=()=>{changeTray(false);trayButton.current?.focus({preventScroll:true})};
+  const closeTray=()=>{
+    changeTray(false);
+    const origin=linkOrigin.current;
+    const target=origin?.isConnected?origin:trayButton.current;
+    target?.focus({preventScroll:true});
+    if(target && document.activeElement!==target)requestAnimationFrame(()=>target.focus({preventScroll:true}));
+    linkOrigin.current=null;
+  };
   const [resources, setResources] = useState(() =>
     initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
   );
@@ -824,7 +840,7 @@ function Chat(p: ChatProps) {
   };
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
-  const standaloneStatus = run && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'') : undefined;
+  const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -852,7 +868,10 @@ function Chat(p: ChatProps) {
           if (newlyLoadedRuns.has(q.runId) && !decisions.has(q.id)) decisions.set(q.id,q);
         }
       }
-      return {...data, messages, decisions:[...decisions.values()], hasMore:messages[0]?.sequence === 1 ? false : data.hasMore};
+      const olderRuns=new Set(older.map(m=>m.runId));
+      const cached=previous?.conversation.id===id?previous.approvals.filter(a=>olderRuns.has(a.runId) && a.state!=='pending'):[];
+      const approvals=[...new Map([...cached,...data.approvals].map(a=>[a.id,a])).values()];
+      return {...data, messages, approvals, decisions:[...decisions.values()], hasMore:messages[0]?.sequence === 1 ? false : data.hasMore};
     });
     setLoading(false);
     const saved = savedPending(id);
@@ -945,6 +964,10 @@ function Chat(p: ChatProps) {
   }, [id, refresh, refreshList]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
+  const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
+    const before=visibleMessages[i-1];
+    return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient;
+  }).map(m=>m.id));
   const inlineAnswers = new Set<string>();
   for (const block of blocks.values()) {
     for (const item of block) {
@@ -971,7 +994,7 @@ function Chat(p: ChatProps) {
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
-        speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
+        continuedReview:continuedReviews.has(m.id),speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
         inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
@@ -1084,7 +1107,7 @@ function Chat(p: ChatProps) {
         ...messagesRef.current,
       ];
       messagesRef.current = messages;
-      setSnapshot((s) => (s ? { ...s, messages, decisions:[...new Map([...data.decisions,...s.decisions].map(q=>[q.id,q])).values()], hasMore: data.hasMore } : s));
+      setSnapshot((s) => (s ? { ...s, messages, approvals:[...new Map([...data.approvals,...s.approvals].map(a=>[a.id,a])).values()], decisions:[...new Map([...data.decisions,...s.decisions].map(q=>[q.id,q])).values()], hasMore: data.hasMore } : s));
     },
   });
   useEffect(()=>{
@@ -1159,7 +1182,13 @@ function Chat(p: ChatProps) {
   const current = snapshot?.conversation;
   const pendingCards=snapshot?.conversation.id===id?(snapshot?.pendingCards??[]):[];
   const trayVisible=trayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
-  const previousLinkedItem=useRef<string | undefined>(undefined);
+  const [trayRetained,setTrayRetained]=useState(false);
+  useEffect(()=>{
+    if(trayVisible){setTrayRetained(true);return}
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches){setTrayRetained(false);return}
+    const timer=setTimeout(()=>setTrayRetained(false),170);
+    return ()=>clearTimeout(timer);
+  },[trayVisible]);
   useEffect(()=>{
     if(linkedItem){
       changeTray(true);
@@ -1171,6 +1200,7 @@ function Chat(p: ChatProps) {
     previousLinkedItem.current=linkedItem;
   },[linkedItem]);
   const toggleTray=()=>{
+    linkOrigin.current=null;
     if(!trayVisible&&(panelOverlay||panelExpanded)&&panel)void choosePanel(null);
     changeTray(!trayVisible);
     if(!trayVisible)requestAnimationFrame(()=>document.getElementById('pending-tray')?.focus({preventScroll:true}));
@@ -1258,11 +1288,11 @@ function Chat(p: ChatProps) {
       }}
     >
       <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
-        decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})}finally{await refresh()}},
+        decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});if(matchMedia('(max-width:600px)').matches)closeTray()}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
-        reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state})}finally{await refresh()}},
-        authorize:async(request,value)=>{try{await api('/conversations/'+id+'/approvals',{id:request,value})}finally{await refresh()}}
+        reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state});closeTray()}finally{await refresh()}},
+        authorize:async(request,value)=>{try{await api('/conversations/'+id+'/approvals',{id:request,value});if(typeof value==='string'||matchMedia('(max-width:600px)').matches)closeTray()}finally{await refresh()}}
       }}><AssistantRuntimeProvider runtime={runtime}>
         <InteractionProvider L={L} messages={snapshot?.messages??[]} reply={quoteMessage} react={reactMessage} locate={messageId=>void locateMessage(messageId)}>
         <div
@@ -1359,13 +1389,23 @@ function Chat(p: ChatProps) {
                     <PanelRight size={19} />
                   </button>
                 </div>
-                {trayVisible&&<PendingTray cards={pendingCards} selectedId={linkedItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
+                {(trayVisible||trayRetained)&&<div className="tray-presence" data-closing={!trayVisible||undefined} inert={!trayVisible} aria-hidden={!trayVisible||undefined}>
+                  <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close pending panel','关闭待处理面板')} onClick={closeTray}/>
+                  <PendingTray key={(id??'')+':'+linkVisit} read={readHistory} clearSelection={clearSelection}
+                  linkedAnswer={!!linkedItem && (linkedItem.startsWith('decision:') || !!snapshot?.decisions.some(q=>q.id===linkedItem) || !!snapshot?.approvals.some(a=>a.id===linkedItem && a.method==='item/tool/requestUserInput'))}
+                  cards={pendingCards} selectedId={linkedItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
                   changeTray(false);
                   if(panel && (panelOverlay || panelExpanded))void choosePanel(null);
                   if('messageId' in card)void locateMessage(card.messageId,card.id);
                   else void locateMessage(card.id);
-                }}/>}
+                }}/></div>}
                 <ThreadPrimitive.Root
+                  onClickCapture={event=>{
+                    const target=event.target;
+                    if(!(target instanceof Element)||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+                    const link=target.closest<HTMLAnchorElement>('a.pending-action-link');
+                    if(link){linkOrigin.current=link;setLinkVisit(n=>n+1);changeTray(true)}
+                  }}
                   ref={threadRef}
                   className="thread"
                   data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}

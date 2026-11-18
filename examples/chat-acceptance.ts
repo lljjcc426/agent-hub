@@ -38,7 +38,7 @@ const model={async run(r:ModelRequest){
     if(r.role==='worker'){
       const answered=JSON.parse(r.input).inputs?.some((i:{text?:string})=>i.text?.includes('native_question_answer'))
       if(!answered){
-        const approval=await r.onHumanRequest!({id:'command',method:'item/commandExecution/requestApproval',params:{command:'pwd',reason:'Inspect the working directory'}})
+        const approval=await r.onHumanRequest!({id:'command',method:'item/commandExecution/requestApproval',params:{command:'pwd',reason:'Inspect the working directory with your approval.'}})
         if((approval as {decision:string}).decision!=='accept')return {threadId,turnId,text:JSON.stringify({state:'waiting',summary:'Awaiting the command decision',reply:'',question:null,askedBy:null,handbacks:[]})}
       }
       const answers=await r.onHumanRequest!({id:'style',method:'item/tool/requestUserInput',params:{questions:[{id:'style',question:'Which layout?',options:[{label:'List'},{label:'Table'}]}]}}) as {answers:Record<string,{answers:string[]}>}
@@ -65,7 +65,7 @@ const model={async run(r:ModelRequest){
     }
     if(text==='Keep going')return reply('Still here.')
     if(text==='Let me review the release notes before delivery.'){
-      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'The release notes are ready for your review before delivery.'},'file')
+      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'Sending the release notes needs your approval.'},'file')
       return {threadId,turnId,text:JSON.stringify({reply:''})}
     }
     await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'running'},{id:'review',title:'Delegate review',state:'pending'}]},'start')

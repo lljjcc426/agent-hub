@@ -1,11 +1,12 @@
-import {ChevronDown} from 'lucide-react'
+import {ArrowLeft,ChevronDown,History} from 'lucide-react'
 import {pendingHref} from './pending-links.ts'
 import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
-import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ChatSessions, FileReview } from '../../src/chat.ts'
 import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
 import { AgentPlan } from '../ui/agent-run.tsx'
-import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
+import { Button } from '../ui/controls.tsx'
+import { DecisionCard } from '../ui/agent-decisions.tsx'
 import { WorkerQuestion } from './worker-question-preview.tsx'
 import type { DecisionAttempt } from './decision-state.ts'
 import { DeliveryReviewCard } from '../ui/delivery-review.tsx'
@@ -28,6 +29,7 @@ type FlowItem =
 type Block=FlowItem[]
 const internalTools = new Set([
   'chat_request_decision',
+  'chat_deliver_file',
   'chat_preview_cards',
   'superagent_plan',
   'superagent_status',
@@ -68,6 +70,7 @@ export function groupWorkflow(
   }
   for(const call of snapshot.calls){
     if(call.kind!=='tool'||internalTools.has(call.name)||workerId&&workerId!==call.workerId)continue
+    if(call.permission==='pending' && snapshot.approvals.some(a=>a.runId===call.runId && a.workerId===call.workerId))continue
     add(call.runId,call.ticketId,{kind:'call',at:call.startedAt,call},call.state==='running')
   }
   for(const approval of snapshot.approvals){
@@ -100,17 +103,20 @@ type FlowProps = {
 const Flow = createContext<FlowProps | null>(null)
 export const WorkflowProvider = Flow.Provider
 
-// The host binds each link to its item. The model supplies plain text, never a destination.
+// The author controls the sentence; only the host can bind a real request to a link.
 export function PendingNotice({id,kind,notice,subject,status}:{
   id:string;kind:'approval'|'answer'|'review';notice?:string;subject?:string;status?:string
 }) {
   const {L,conversation,pendingIds}=useContext(Flow)!
-  const label=kind==='approval'?L('approval','审批'):kind==='review'?L('review','审阅'):L('answer','回答')
-  const words=kind==='approval'?/审批|批准|\bapproval\b|\bapprove\b/i:kind==='review'?/审阅|审批|\breview\b/i:/回答|选择|答复|\banswer\b|\bchoose\b/i
   const text=notice?.trim()||subject||''
-  if(!pendingIds.has(id))return <p className="pending-notice resolved" data-workflow-id={id}>{subject||label} · {status||L('Closed','已结束')}</p>
+  const permission=kind!=='answer'
+  if(!permission && !pendingIds.has(id))
+    return <p className="pending-notice resolved" data-workflow-id={id}>{subject} · {status||L('Closed','已结束')}</p>
+  const words=permission ? (L('en','zh')==='zh'?/审批/:/\bapproval\b/i) : /回答|选择|答复|\banswer\b|\bchoose\b/i
   const word=words.exec(text)
-  const link=<a className="pending-action-link" href={pendingHref(conversation,id)}>{word?.[0]||label}</a>
+  const label=word?.[0] || (permission?L('approval','审批'):L('answer','回答'))
+  const link=<a className={'pending-action-link'+(permission?' approval-link':'')} href={pendingHref(conversation,id)}
+    aria-controls="pending-tray">{label}</a>
   return <p className="pending-notice" data-workflow-id={id}>{word
     ? <>{text.slice(0,word.index)}{link}{text.slice(word.index+word[0].length)}</>
     : <>{text}{text?' ':''}{link}</>}</p>
@@ -118,6 +124,7 @@ export function PendingNotice({id,kind,notice,subject,status}:{
 
 function approvalOutcome(a:Request,L:Localize) {
   if(a.state==='denied')return L('Denied','已拒绝')
+  if('executionState' in a && a.executionState==='cancelled')return L('Cancelled','已取消')
   if(a.state==='expired')return L('Expired','已过期')
   if(a.state==='answered')return ['answerText' in a && a.answerText,L('Answered','已回答')].filter(Boolean).join(' · ')
   if('executionState' in a){
@@ -126,7 +133,6 @@ function approvalOutcome(a:Request,L:Localize) {
       case 'uncertain': return L('Outcome unconfirmed','执行结果待核对')
       case 'complete': return L('Approved · completed','已批准 · 执行成功')
       case 'executing': return L('Approved · running','已批准 · 执行中')
-      case 'cancelled': return L('Cancelled','已取消')
     }
   }
   return a.state==='approved'?L('Approved','已批准'):undefined
@@ -280,31 +286,22 @@ function NativeCard({ request: a }: { request: Request }) {
     'item/fileChange/requestApproval': L('Change files', '修改文件'),
     'item/permissions/requestApproval': L('Grant permissions', '授予权限'),
   }
-  const facts = Object.entries(a.facts)
-  const detailed = (value: string) => value.length > 180 || value.includes('\n')
-  return (
-    <>
-      <ApprovalCard
-        L={L}
-        title={titles[a.method] ?? L('Authorization request', '授权请求')}
-        risk={actor(a.workerId)}
-        statusLabel={approvalOutcome(a,L)}
-        state={a.state === 'answered' ? 'resolved' : a.state}
-        details={facts.filter(([, value]) => !detailed(value)).map(([key, value]) => ({ label: labels[key] ?? key, value }))}
-        disabled={disabled}
-        onDecision={(value) =>
-          void submit(() => authorize(a.id, value === 'approved' ? 'accept' : 'decline'))
-        }
-      >
-        {facts.filter(([, value]) => detailed(value)).map(([key,value]) =>
-          <DisclosureRoot className="workflow-draft pending-fact" key={key}>
-            <DisclosureSummary>{labels[key] ?? key}<ChevronDown size={13} aria-hidden="true"/></DisclosureSummary>
-            <pre tabIndex={0}>{value}</pre>
-          </DisclosureRoot>)}
-      </ApprovalCard>
-      {error}
-    </>
-  )
+  const scope=a.facts.target || a.facts.cwd || a.facts.connection
+  const facts=Object.entries(a.facts).filter(([key])=>key!=='tool')
+  return <section className="permission-review" role="group" aria-label={L('Authorization request','授权请求')}>
+    <h3>{titles[a.method] ?? L('Authorization request','授权请求')}</h3>
+    <div className="permission-scope">{scope || actor(a.workerId)}</div>
+    {a.notice && <p className="permission-reason">{a.notice}</p>}
+    {facts.length>0 && <DisclosureRoot className="workflow-draft pending-fact">
+      <DisclosureSummary>{a.facts.command?L('View command','查看命令'):L('Request details','请求详情')}<ChevronDown size={14}/></DisclosureSummary>
+      <dl>{facts.map(([key,value])=><div key={key}><dt>{labels[key]??key}</dt><dd><pre tabIndex={0}>{value}</pre></dd></div>)}</dl>
+    </DisclosureRoot>}
+    {pending ? <div className="permission-actions">
+      <Button tone="quiet" disabled={disabled} onClick={()=>void submit(()=>authorize(a.id,'decline'))}>{L('Deny','拒绝')}</Button>
+      <Button tone="primary" disabled={disabled} onClick={()=>void submit(()=>authorize(a.id,'accept'))}>{L('Allow once','允许一次')}</Button>
+    </div> : <p className="permission-result" role="status">{approvalOutcome(a,L)}</p>}
+    {error}
+  </section>
 }
 export function WorkflowCards({ anchor }: { anchor: string }) {
   const { L, blocks, tools } = useContext(Flow)!,
@@ -337,6 +334,10 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
       const a=item.approval, question=a.method==='item/tool/requestUserInput'
       const subject = question ? a.questions.map(q=>q.question).join(' · ')
         : a.notice || a.facts.reason?.slice(0,360) || a.facts.target?.slice(0,120) || (a.facts.command ? L('Run command','运行命令') : undefined)
+      if('automatic' in a && a.automatic){
+        rows.push(<p className="pending-notice resolved" key={a.id} data-workflow-id={a.id}>{L('Execution needs attention','执行需要检查')}</p>)
+        continue
+      }
       rows.push(<PendingNotice key={a.id} id={a.id} kind={question?'answer':'approval'} notice={a.notice} subject={subject} status={approvalOutcome(a,L)}/>)
     }
     else {
@@ -351,16 +352,102 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
 }
 
 
-// The tray belongs to the conversation owner even when the transcript shows a read-only Worker.
-export function PendingTray({cards,loading,selectedId,close,locate}:{selectedId?:string;cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void}){
-  const flow=useContext(Flow)!
+type ArchivePage=ReturnType<ChatSessions['approvalHistory']>
+type ArchiveRecord=ReturnType<ChatSessions['approvalRecord']>
+type ReadHistory=<T>(query:URLSearchParams,signal:AbortSignal)=>Promise<T>
+
+function ArchiveDetail({id,read}:{id:string;read:ReadHistory}){
+  const {L}=useContext(Flow)!
+  const [record,setRecord]=useState<ArchiveRecord>()
+  const [failure,setFailure]=useState(false)
+  const [retry,setRetry]=useState(0)
+  useEffect(()=>{
+    const controller=new AbortController()
+    setFailure(false)
+    read<ArchiveRecord>(new URLSearchParams({item:id}),controller.signal)
+      .then(value=>{if(!controller.signal.aborted)setRecord(value)})
+      .catch(()=>{if(!controller.signal.aborted)setFailure(true)})
+    return ()=>controller.abort()
+  },[id,read,retry])
+  if(!record)return <div className="pending-empty" role="status">{failure
+    ? <>{L('This record is unavailable.','这条记录暂时无法查看。')} <button className="history-text-button" onClick={()=>setRetry(n=>n+1)}>{L('Retry','重试')}</button></>
+    : L('Loading…','加载中…')}</div>
+  return <div className="history-detail" data-record-id={record.id}>
+    {record.kind==='file'?<section className="permission-review">
+      <h3>{record.name}</h3>
+      {record.review.notice && <p className="permission-reason">{record.review.notice}</p>}
+      <p className="permission-result" role="status">{({
+        approved:L('Approved · delivered','已批准 · 文件已交付'),denied:L('Denied','已拒绝'),
+        superseded:L('Replaced','已替换'),cancelled:L('Cancelled','已取消'),pending:L('Pending','待处理'),
+      })[record.review.state]}</p>
+    </section>:<NativeCard request={record.request}/>}
+  </div>
+}
+
+function HistoryList({read,select}:{read:ReadHistory;select:(id:string)=>void}){
+  const {L}=useContext(Flow)!
+  const [items,setItems]=useState<ArchivePage['items']>([])
+  const [next,setNext]=useState<ArchivePage['next']>(null)
+  const [cursor,setCursor]=useState<ArchivePage['next']>(null)
+  const [busy,setBusy]=useState(true),[error,setError]=useState(false),[retry,setRetry]=useState(0)
+  useEffect(()=>{
+    const controller=new AbortController()
+    const query=cursor?new URLSearchParams({before:String(cursor.at),beforeId:cursor.id}):new URLSearchParams()
+    setBusy(true);setError(false)
+    read<ArchivePage>(query,controller.signal).then(page=>{
+      if(controller.signal.aborted)return
+      setItems(previous=>cursor?[...new Map([...previous,...page.items].map(row=>[row.id,row])).values()]:page.items)
+      setNext(page.next);setBusy(false)
+    }).catch(()=>{if(!controller.signal.aborted){setError(true);setBusy(false)}})
+    return ()=>controller.abort()
+  },[read,cursor,retry])
+  return <div className="history-list">
+    {items.map(item=><button className="history-row" key={item.id} onClick={()=>select(item.id)}>
+      <span>{item.label || (item.tool==='superagent_shell'?L('Run command','运行命令'):L('Operation approval','操作审批'))}</span>
+      <small>{item.state==='denied'?L('Denied','已拒绝'):['expired','cancelled','superseded'].includes(item.state)?L('Closed','已结束'):L('Approved','已批准')} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString(L('en','zh-CN'),{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</time></small>
+    </button>)}
+    {busy?<p role="status">{L('Loading…','加载中…')}</p>:error?<button className="history-text-button" onClick={()=>setRetry(n=>n+1)}>{L('Could not load. Retry','加载失败，重试')}</button>
+      :next?<button className="history-text-button" onClick={()=>{setBusy(true);setCursor(next)}}>{L('Load earlier records','加载更早的记录')}</button>
+      :!items.length?<p role="status">{L('No approval history yet.','暂无审批记录')}</p>:null}
+  </div>
+}
+
+// Owner actions remain available in the tray even when viewing a read-only Worker transcript.
+export function PendingTray({cards,loading,selectedId,close,locate,read,clearSelection,linkedAnswer}:{
+  selectedId?:string;cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void
+  read:ReadHistory;clearSelection:()=>void;linkedAnswer:boolean
+}){
+  const flow=useContext(Flow)!,{L}=flow
+  const [history,setHistory]=useState(false),[opened,setOpened]=useState<string>()
+  const selected=cards.find(c=>c.id===selectedId)
+  const found=!!selected
+  const single=selected?.kind==='file'||(selected?.kind==='approval'&&selected.request.method!=='item/tool/requestUserInput')
+  const recordId=opened ?? (!loading&&!found&&!linkedAnswer?selectedId:undefined)
+  const historyVisible=history||!!recordId
+  const navRef=useRef<HTMLButtonElement>(null)
+  useEffect(()=>{if(recordId)navRef.current?.focus({preventScroll:true})},[recordId])
+  const switchPage=()=>{
+    if(single && !historyVisible){clearSelection();return}
+    if(recordId){clearSelection();setOpened(undefined);setHistory(true)}
+    else {clearSelection();setHistory(!history)}
+  }
+  const navLabel=recordId?L('Back to approval history','返回审批记录'):(history||single)?L('Back to pending requests','返回待处理事项'):L('Approval history','审批记录')
+  const archiveButton=<button ref={navRef} type="button" className="icon-button history-access" title={navLabel} aria-label={navLabel} onClick={switchPage}>
+    {historyVisible||single?<ArrowLeft size={16}/>:<><History size={15}/><span>{L('History','记录')}</span></>}
+  </button>
   return <Flow.Provider value={{...flow,readonly:false}}>
-    <PendingRequests L={flow.L} loading={loading} selectedId={selectedId} close={close}
-      items={cards.map(card => ({id:card.id, locate:()=>locate(card), content:
+    <PendingRequests L={L} loading={loading} selectedId={linkedAnswer&&!found?undefined:selectedId} close={close}
+      heading={historyVisible?L('Approval history','审批记录'):undefined} navigation={archiveButton}
+      items={(single?[selected]:cards).map(card=>({id:card.id,locate:()=>locate(card),content:
         card.kind==='choice'?<RouterDecision id={card.id} decision={card.decision}/>:
         card.kind==='file'?<FileReviewCard id={card.id} name={card.name} review={card.review}/>:
         card.kind==='approval'?<NativeCard request={card.request}/>:
-        <WorkerQuestion key={card.question.version} item={card.question} L={flow.L} readonly={false} send={flow.answerWorker} refresh={flow.refresh}/>,
-      }))}/>
+        <WorkerQuestion key={card.question.version} item={card.question} L={L} readonly={false} send={flow.answerWorker} refresh={flow.refresh}/>,
+      }))}>
+      {historyVisible ? <>
+        {history && <div hidden={!!recordId} className="history-scroll"><HistoryList read={read} select={setOpened}/></div>}
+        {recordId && <ArchiveDetail key={recordId} id={recordId} read={read}/>}
+      </> : undefined}
+    </PendingRequests>
   </Flow.Provider>
 }

@@ -575,9 +575,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|approvals|decisions|file-reviews))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|approval-history|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
+        if(action==='approval-history'&&req.method==='GET'){
+          const item=z.string().min(1).max(500),selected=query.get('item')
+          if(selected!==null){send(res,200,runtime.chat.approvalRecord(id,owner,item.parse(selected)));return}
+          const cursor=query.has('before')||query.has('beforeId')?{
+            at:z.coerce.number().int().nonnegative().safe().parse(query.get('before')??undefined),
+            id:item.parse(query.get('beforeId')),
+          }:undefined
+          send(res,200,runtime.chat.approvalHistory(id,owner,cursor));return
+        }
         if(action==='team-context'&&req.method==='GET'){send(res,200,runtime.chat.teamContext(id,owner));return}
         if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner,query.get('activity')??undefined));return}
         if(action==='file-reviews'){

@@ -48,6 +48,9 @@ export class Store implements Repositories {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT, body TEXT NOT NULL, PRIMARY KEY(kind,id));
+      CREATE INDEX IF NOT EXISTS chat_native_approval_page ON records(json_extract(body,'$.chat.conversationId'),json_extract(body,'$.createdAt') DESC,id DESC) WHERE kind='approval';
+      CREATE INDEX IF NOT EXISTS chat_managed_approval_page ON records(json_extract(body,'$.actor.conversationId'),json_extract(body,'$.createdAt') DESC,id DESC) WHERE kind='chat-permission';
+      CREATE INDEX IF NOT EXISTS chat_file_approval_page ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.createdAt') DESC,id DESC) WHERE kind='chat-message' AND json_type(body,'$.fileReview')='object';
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
         state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, error TEXT);
       CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',

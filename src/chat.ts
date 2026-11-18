@@ -27,6 +27,7 @@ import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attac
 import {ChatDeliveries,routerFileInput,type ChatDelivery} from './chat-deliveries.ts'
 import {decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecision,type ChatPlan} from './chat-workflow.ts'
 import type {Approval} from './approvals.ts'
+import {approvalHistory,approvalHistoryItem,pendingChatApprovals,transcriptApprovals,type HistoryCursor} from './chat-approval-history.ts'
 import type {UsageRecord} from './usage-ledger.ts'
 import type {BudgetReceipt} from './context-budget.ts'
 import {ChatError} from './chat-errors.ts'
@@ -911,6 +912,20 @@ export class ChatSessions {
       return {tasks,result}
     }catch{throw new ChatError('file_unavailable','This file is unavailable or cannot be previewed.',404)}
   }
+  approvalHistory(id:string,owner:string,cursor?:HistoryCursor){
+    this.get(id,owner)
+    const page=approvalHistory(this.host.store,id,cursor)
+    const cleanup=this.host.memory.cleanup
+    if(cleanup.plans().length)page.items=page.items.filter(item=>!cleanup.blocked(item.kind,item.id,this.host.store.get(item.kind,item.id)))
+    return page
+  }
+  approvalRecord(id:string,owner:string,item:string){
+    this.get(id,owner)
+    const record=approvalHistoryItem(this.host.store,id,item)
+    const kind=record.kind==='file'?'chat-message':record.request.method==='roppo/tool'?'chat-permission':'approval'
+    if(this.host.memory.cleanup.blocked(kind,item,this.host.store.get(kind,item)))throw new ChatError('approval_missing','Approval record not found.',404)
+    return record
+  }
   private pendingCards(c:Conversation,closedRuns:Set<string>,requests:Approval[],managed:PermissionAction[]):PendingCard[]{
     if(c.archived)return []
     const cards:PendingCard[]=[]
@@ -972,8 +987,7 @@ export class ChatSessions {
       if(message.decision&&!message.decision.replyRunId&&closedRuns.has(message.runId))
         message.decision={...message.decision,closed:true}
     }
-    const requests=this.rows<Approval>('approval','chat.conversationId',id).filter(a=>!a.automatic)
-    const managedRequests=this.host.permissions.forChat(id).filter(a=>!a.automatic||['uncertain','failed'].includes(permissionCard(a,this.host.store).executionState))
+    const {native:requests,managed:managedRequests}=pendingChatApprovals(this.host.store,id)
     const pendingChoice=last&&this.host.store.db.prepare(`SELECT 1 FROM records WHERE kind='chat-message'
       AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')=?
       AND ((json_type(body,'$.decision')='object' AND json_extract(body,'$.decision.replyRunId') IS NULL AND json_extract(body,'$.decision.defaultOption') IS NULL)
@@ -1014,7 +1028,16 @@ export class ChatSessions {
       const target=agent.id===router.id?null:agent.id,row=latestMessage.get(id,target,target,target)
       return {...displaySpeaker(agent),latestMessage:row?{text:transcriptText(String(row.id),String(row.text)).slice(0,280),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
-    const approvals=[...requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval),...managedRequests.filter(a=>!participant||participant===router.id||a.actor.workerId===participant).map(a=>permissionCard(a,this.host.store))].sort((a,b)=>a.createdAt-b.createdAt)
+    const worker=participant && participant!==router.id ? participant : undefined
+    const previousApprovals=transcriptApprovals(this.host.store,id,{
+      from:messages.length>100?messages[1]!.createdAt:0,
+      until:before ? Number(this.host.store.db.prepare("SELECT min(json_extract(body,'$.createdAt')) as at FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.sequence')>=?").get(id,before)?.at??Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER,
+      worker,run:runId,
+    })
+    const approvals=[...previousApprovals,
+      ...requests.filter(a=>(!worker||a.chat?.workerId===worker)&&(!runId||a.chat?.runId===runId)).map(publicApproval),
+      ...managedRequests.filter(a=>(!worker||a.actor.workerId===worker)&&(!runId||a.actor.runId===runId)).map(a=>permissionCard(a,this.host.store)),
+    ].sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))
     const plans=this.rows<RouterGoal>('router-goal','discussion',c.discussion).map(goalPlan)
     const visiblePlans=conversationPlans.map(({conversationId,activityId,...p})=>({...p,live:calls.some(call=>call.id===activityId&&call.state==='running')}))
     const workerView=participant&&participant!==router.id

@@ -31,7 +31,7 @@ export interface PermissionAction {
   receipt?: ToolResult
 }
 export const permissionInstructions =
-  'The host enforces the permission mode. A pending approval defers only that operation. Keep working on independent steps now, including local checks and drafts. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. Use the receipt when the host resumes your task. Explicit requests to review a file or make a user choice still apply.'
+  'The host enforces the permission mode. A pending approval defers only that operation. Keep working on independent steps now, including local checks and drafts. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. On your next user-facing reply after an approval decision, mention its observed outcome once, in one natural sentence in the user’s language. Approval alone does not establish execution success. If denied, failed, pending or unconfirmed, accurately state that result. Use the actual execution receipt. Explicit requests to review a file or make a user choice still apply.'
 const kind = 'chat-permission'
 const result = (state: Phase, id: string, extra?: string): ToolResult => ({
   permission:
@@ -188,6 +188,7 @@ export function permissionCard(a: PermissionAction, store?:Store) {
     workerId: a.actor.workerId,
     createdAt: a.createdAt,
     executionState,
+    automatic:a.automatic,
     notice: a.notice,
     state: state as 'pending' | 'approved' | 'denied' | 'expired',
     method: 'roppo/tool',

@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
-import { ArrowLeft, ArrowUp, ChevronDown, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, ArrowUp, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
 import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
   type ChatCommand, type Localize, type Mode } from './composer-commands.tsx'
 import { RouterModelOptions } from './router-model.tsx'
@@ -35,6 +35,7 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
   const current = useRef(menu)
   current.current = menu
   const source = visible ? menu?.source : undefined
+  const open = !!source
   const page = visible ? menu?.page : undefined
   const slash = source === 'slash' && page === 'commands'
   const nested = page !== 'commands' && (source === 'slash' || source === 'plus')
@@ -92,7 +93,8 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
       back()
       return
     }
-    if (page !== 'commands' && page !== 'permissions') return
+    const target = event.target as Element
+    if (page !== 'commands' && page !== 'permissions' && !(page === 'model' && target.closest('[role=menu]'))) return
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role^=menuitem]:not(:disabled)'))
     if (!options.length) return
@@ -105,17 +107,16 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
 
   useEffect(() => { if (!visible) setMenu(null) }, [visible])
   useLayoutEffect(() => {
-    const panel = palette.current, form = input.current?.form, anchor = opener.current
-    if (!panel || !form || !source || !anchor) return
+    const panel = palette.current, form = input.current?.form
+    if (!panel || !form || !open) return
     panel.showPopover()
     const place = () => {
       const rect = form.getBoundingClientRect(), viewport = window.visualViewport
       const top = viewport?.offsetTop ?? 0, bottom = top + (viewport?.height ?? innerHeight)
       const left = viewport?.offsetLeft ?? 0, right = left + (viewport?.width ?? innerWidth)
       const width = Math.min(320, rect.width, right - left - 16)
-      const leading = source === 'slash' || source === 'plus' ? rect.left : anchor.getBoundingClientRect().left
       panel.style.width = width + 'px'
-      panel.style.left = Math.max(left + 8, Math.min(leading, rect.right - width, right - width - 8)) + 'px'
+      panel.style.left = Math.max(left + 8, Math.min(rect.left, right - width - 8)) + 'px'
       const above = rect.top - top - 16, below = bottom - rect.bottom - 16
       const up = above >= 290 || above >= below
       panel.style.top = up ? 'auto' : rect.bottom + 8 + 'px'
@@ -132,6 +133,8 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
     place()
     const observer = new ResizeObserver(place)
     observer.observe(form)
+    const area = form.closest('.composer-area')
+    if (area) observer.observe(area)
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
     window.visualViewport?.addEventListener('resize', place)
@@ -148,7 +151,7 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
       document.removeEventListener('pointerdown', dismiss, true)
       document.removeEventListener('focusin', dismiss)
     }
-  }, [source])
+  }, [open])
   useLayoutEffect(() => {
     const panel = palette.current
     if (!panel || !page) return
@@ -189,11 +192,11 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
       <button type="button" data-menu-trigger className="composer-choice composer-model"
         aria-label={L('Model connection','模型连接') + ' · ' + modelLabel} title={L('Model connection','模型连接') + ' · ' + modelLabel}
         aria-haspopup="dialog" aria-expanded={source === 'model'} aria-controls={source === 'model' ? paletteId : undefined}
-        onClick={e => shortcut('model', e.currentTarget)}><SlidersHorizontal size={15}/><span>{modelLabel}</span><ChevronDown size={12}/></button>
+        onClick={e => shortcut('model', e.currentTarget)}><SlidersHorizontal size={15}/><span>{modelLabel}</span></button>
       <button type="button" data-menu-trigger className="composer-choice composer-policy" data-mode={mode}
         aria-label={policyTitle} title={policyTitle} aria-haspopup="menu" aria-expanded={source === 'permissions'}
         aria-controls={source === 'permissions' ? paletteId : undefined} onClick={e => shortcut('permissions', e.currentTarget)}>
-        <PolicyIcon size={15}/><span>{policyLabel}</span><ChevronDown size={12}/>
+        <PolicyIcon size={15}/><span>{policyLabel}</span>
       </button>
       <div className="send-actions">
         <button type="button" data-menu-trigger className="icon-button composer-context" aria-label={contextTitle}
@@ -211,14 +214,14 @@ export function ComposerControls({ L, visible, sending, mode, usage, router, mod
         role={page === 'model' || page === 'context' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Router model','Router 模型') : title} onKeyDown={moveInMenu}>
         <div key={page} className="palette-page" data-page={page}>
-          {page !== 'commands' && <div className="palette-heading">
+          {(page === 'permissions' || page === 'context') && <div className="palette-heading">
             {nested && <button type="button" aria-label={L('Back to chat actions','返回对话操作')} onClick={back}><ArrowLeft size={16}/></button>}
-            <strong>{title}</strong>
+            <strong>{page === 'permissions' ? L('How should Roppo ask for approval?', 'Roppo 应如何请求批准？') : title}</strong>
           </div>}
           {page === 'commands' && <CommandList items={items} slash={slash} listId={listId} active={index}
             uploadDisabled={uploadDisabled} mode={mode} L={L} onHighlight={setIndex} onChoose={choose}/>}
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
-          {page === 'model' && <RouterModelOptions L={L} busy={modelBusy} onSaved={onModelSaved} onClose={finish}/>}
+          {page === 'model' && <RouterModelOptions L={L} model={model} busy={modelBusy} onSaved={onModelSaved} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
         </div>
       </div>, document.body

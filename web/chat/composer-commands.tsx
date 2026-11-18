@@ -1,5 +1,5 @@
-import { ArrowUpRight, Check, ChevronRight, CircleGauge, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
-import { useState } from 'react'
+import { ArrowUpRight, Check, ChevronRight, CircleGauge, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { useId, useState } from 'react'
 import type { ChatSpace } from './chat-settings.tsx'
 import type { CurrentContext } from './context-card.tsx'
 
@@ -52,6 +52,7 @@ export function ApprovalOptions({ mode, L, onSave, onClose }: {
   mode?: Mode; L: Localize; onSave: (next: Mode) => Promise<void>; onClose: () => void
 }) {
   const [saving, setSaving] = useState(false), [failed, setFailed] = useState(false)
+  const descriptionId = useId()
   async function change(next: Mode) {
     if (next === mode) { onClose(); return }
     setSaving(true)
@@ -66,10 +67,15 @@ export function ApprovalOptions({ mode, L, onSave, onClose }: {
   }
   return <div role="menu" aria-label={L('Approval policy', '审批策略')}>
     {(['ask', 'full'] as const).map(id => {
-      const Icon = id === 'full' ? ShieldOff : ShieldCheck
-      return <button key={id} type="button" className="palette-row" role="menuitemradio"
+      const Icon = id === 'full' ? ShieldOff : Hand
+      const label = approvalLabel(id, L)
+      return <button key={id} type="button" className="palette-row policy-option" role="menuitemradio"
+        aria-label={label} aria-describedby={descriptionId + id}
         aria-checked={mode === id} data-mode={id} disabled={saving} onClick={() => void change(id)}>
-        <Icon size={17}/><span>{approvalLabel(id, L)}</span>{mode === id && <Check size={15}/>}
+        <Icon size={17}/><span><strong>{label}</strong><small id={descriptionId + id}>{id === 'ask'
+          ? L('Ask before sensitive actions.', '敏感操作执行前询问你。')
+          : L('Allow sensitive actions in new tasks.', '新任务可自主执行敏感操作。')}</small></span>
+        {mode === id && <Check size={15}/>}
       </button>
     })}
     {failed && <p role="alert">{L('Could not save. Try again.', '保存失败，请重试。')}</p>}

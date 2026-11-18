@@ -48,13 +48,20 @@ with sync_playwright() as pw:
     direct_model = toolbar.get_by_role('button', name='Model connection', exact=False)
     direct_policy = toolbar.get_by_role('button', name='Approval policy', exact=False)
     ring = toolbar.get_by_role('button', name='Context usage', exact=False)
+    expect(toolbar.locator('.composer-choice .lucide-chevron-down')).to_have_count(0)
     expect(ring).to_have_attribute('aria-label', 'Context usage · No usage reported yet')
     expect(ring.locator('.usage-fill')).to_have_count(0)
     overview = page.get_by_role('dialog', name='Context usage')
     details = overview.get_by_role('button', name='View usage details')
 
+    def composer_anchor():
+        palette = page.locator('.composer-palette').bounding_box()
+        composer = page.locator('form.composer').bounding_box()
+        assert palette and composer and abs(palette['x'] - composer['x']) <= 1, (palette, composer)
+        return palette
+
     def same_anchor(before):
-        after = page.locator('.composer-palette').bounding_box()
+        after = composer_anchor()
         assert after and abs(before['x'] - after['x']) <= 1 and abs(before['width'] - after['width']) <= 1
         assert min(abs(before['y'] - after['y']),
                    abs(before['y'] + before['height'] - after['y'] - after['height'])) <= 1
@@ -63,24 +70,33 @@ with sync_playwright() as pw:
     actions.click()
     menu = page.get_by_role('menu', name='Chat actions', exact=True)
     expect(menu.get_by_role('menuitem')).to_have_count(4)
-    anchor = page.locator('.composer-palette').bounding_box()
+    anchor = composer_anchor()
     menu.get_by_role('menuitem', name='Model connection').click()
     model_dialog=page.get_by_role('dialog',name='Router model')
-    expect(model_dialog.get_by_role('combobox',name='Model connection')).to_be_visible()
-    expect(model_dialog.get_by_role('combobox',name='Reasoning effort')).to_be_visible()
+    select_connection = model_dialog.get_by_role('button', name='Model connection ·')
+    effort = model_dialog.get_by_role('slider', name='Reasoning effort')
+    expect(effort).to_be_visible()
     same_anchor(anchor)
+    select_connection.click()
+    expect(model_dialog.get_by_role('menuitemradio', checked=True)).to_be_focused()
+    same_anchor(anchor)
+    page.keyboard.press('Escape')
+    expect(select_connection).to_be_focused()
     model_dialog.get_by_role('button', name='Back to chat actions').click()
     expect(menu.get_by_role('menuitem')).to_have_count(4)
     page.keyboard.press('Escape')
     expect(actions).to_be_focused()
     direct_model.click()
-    expect(model_dialog.get_by_role('combobox',name='Model connection')).to_be_visible()
+    expect(effort).to_be_visible()
+    same_anchor(anchor)
+    select_connection.click()
+    same_anchor(anchor)
     model_dialog.get_by_role('link',name='Manage connections').click()
     expect(model_dialog).not_to_be_visible()
     page.locator('a.return-chat').click()
     expect(box).to_be_visible()
     box.fill('/');expect(page.get_by_role('option')).to_have_count(4)
-    anchor = page.locator('.composer-palette').bounding_box()
+    anchor = composer_anchor()
     page.get_by_role('option',name='Approval policy /permissions').click()
     same_anchor(anchor)
     page.keyboard.press('Escape')
@@ -107,6 +123,7 @@ with sync_playwright() as pw:
     page.reload()
     direct_policy.click()
     expect(full).to_be_checked()
+    composer_anchor()
     page.keyboard.press('Escape')
     expect(direct_policy).to_be_focused()
     actions.click()
@@ -288,16 +305,24 @@ with sync_playwright() as pw:
     assert 'rp-page-in' not in page.evaluate('window.qaFrames')
     sidebar.get_by_role('button',name='Close panel').click()
     page.set_viewport_size({'width':390,'height':780})
+    for trigger in (direct_model, direct_policy, ring):
+        trigger.click()
+        composer_anchor()
+        page.keyboard.press('Escape')
+        expect(trigger).to_be_focused()
     actions.click()
     page.get_by_role('menuitem',name='Approval policy Request approval').click()
     bounds=policy.bounding_box();assert bounds and bounds['x']>=0 and bounds['x']+bounds['width']<=390
     page.keyboard.press('Escape');expect(menu).to_be_visible()
     page.keyboard.press('Escape');expect(actions).to_be_focused()
     box.fill('/model')
-    anchor = page.locator('.composer-palette').bounding_box()
+    anchor = composer_anchor()
     box.press('Enter')
-    expect(model_dialog.get_by_role('combobox', name='Model connection')).to_be_visible()
+    expect(effort).to_be_visible()
     same_anchor(anchor)
+    select_connection.click()
+    same_anchor(anchor)
+    page.keyboard.press('Escape')
     expect(toolbar.get_by_role('button', name='Send message')).to_be_visible()
     model_dialog.get_by_role('button', name='Back to chat actions').click()
     expect(box).to_have_value('/model')
@@ -362,18 +387,51 @@ with sync_playwright() as pw:
     expect(page.locator('.assistant-message').filter(has_text='Checklist ready.')).to_be_visible()
     optional.get_by_role('button',name='Table',exact=False).click()
     expect(page.locator('.assistant-message').filter(has_text='Switched to table.')).to_be_visible()
+    def current_settings():
+        return context.request.get(info['base'] + '/configuration').json()['current']
+
+    writes = []
+    page.on('request', lambda r: writes.append(r) if r.method == 'POST' and r.url == info['base'] + '/settings' else None)
+    def settings_response(r):
+        return r.request.method == 'POST' and r.url == info['base'] + '/settings'
+
+    box.fill('Unsaved message')
     direct_model.click()
-    effort = model_dialog.get_by_role('combobox', name='Reasoning effort')
-    original_effort = effort.input_value()
-    new_effort = 'low' if original_effort != 'low' else 'medium'
-    effort.select_option(new_effort)
-    model_dialog.get_by_role('button', name='Apply', exact=True).click()
-    expect(model_dialog).not_to_be_visible()
+    select_connection.click()
+    model_dialog.get_by_role('menuitemradio', checked=True).click()
+    expect(effort).to_be_visible()
+    assert not writes
+    initial = current_settings()
+    bounds = effort.bounding_box()
+    y = bounds['y'] + bounds['height'] / 2
+    page.mouse.move(bounds['x'] + 14, y)
+    page.mouse.down()
+    page.mouse.move(bounds['x'] + bounds['width'] - 14, y, steps=12)
+    expect(effort).to_have_attribute('aria-valuetext', 'Extra high')
+    assert not writes, 'Dragging must preview until release'
+    with page.expect_response(settings_response) as result:
+        page.mouse.up()
+    assert result.value.ok and len(writes) == 1
+    after = current_settings()
+    assert after['revision'] == initial['revision'] + 1 and after['config']['execution']['router']['effort'] == 'xhigh'
+    expect(effort).to_be_focused()
+    with page.expect_response(settings_response) as result:
+        effort.press('ArrowLeft')
+    assert result.value.ok
+    expect(effort).to_have_attribute('aria-valuetext', 'High')
+    page.reload(wait_until='domcontentloaded')
+    expect(box).to_have_value('Unsaved message')
     direct_model.click()
-    expect(effort).to_have_value(new_effort)
-    effort.select_option(original_effort)
-    model_dialog.get_by_role('button', name='Apply', exact=True).click()
-    expect(model_dialog).not_to_be_visible()
+    expect(effort).to_have_attribute('aria-valuetext', 'High')
+    reset = model_dialog.get_by_role('button', name='Reset reasoning to model default')
+    with page.expect_response(settings_response) as result:
+        reset.click()
+    assert result.value.ok
+    expect(reset).to_be_disabled()
+    expect(effort).to_have_attribute('aria-valuetext', 'Model default')
+    assert 'effort' not in current_settings()['config']['execution']['router']
+    page.keyboard.press('Escape')
+    expect(direct_model).to_be_focused()
     assert not errors, errors
     print('PASS: live workflow, reviewed file download, current context usage, independent dismissal and mobile focus')
     browser.close()

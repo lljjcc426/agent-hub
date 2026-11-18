@@ -639,6 +639,9 @@ function Chat(p: ChatProps) {
   };
   useEffect(() => write(resourceKey(id), JSON.stringify(resources)), [id, resources]);
   const [teamTab,setTeamTab]=useState<TeamTab>('activity'),[file,setFile]=useState<ChatDelivery|null>(null);
+  useEffect(()=>{
+    if(route === '/chat#schedules'){setTeamTab('schedules');setResources(state=>openResource(state,'activity'))}
+  },[route]);
   const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [pickerRequest,setPickerRequest]=useState(0);
@@ -1433,7 +1436,10 @@ function Chat(p: ChatProps) {
                       current={usage} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
-                  changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}
+                  locateMessage={messageId=>{if(panelOverlay)void choosePanel(null);void locateMessage(messageId)}}
+                  changeSchedule={async (planId,expectedRevision,patch)=>{
+                    try{await api('/conversations/'+id+'/schedules',{id:planId,expectedRevision,operationId:crypto.randomUUID(),...patch},'PATCH')}finally{await refresh()}
+                  }}
                 />}
                 <ResourceWorkspace
                   hidden={overview}

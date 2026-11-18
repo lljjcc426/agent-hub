@@ -1,0 +1,41 @@
+.rp-schedule-card { min-width:0; border:1px solid var(--rp-line); border-radius:var(--rp-corner-object); background:var(--rp-panel); padding:12px 14px; }
+.rp-schedule-card > header,.rp-schedule-open,.rp-schedule-links button,.rp-schedule-save { display:flex; align-items:center; gap:8px; }
+.rp-schedule-card > header { justify-content:space-between; }
+.rp-schedule-card > header .rp-icon-button { width:32px; height:32px; flex:none; }
+.rp-schedule-open,.rp-schedule-links button { min-width:0; border:0; background:transparent; color:inherit; text-align:start; cursor:pointer; border-radius:6px; }
+.rp-schedule-open { flex:1; padding:4px 0; }
+.rp-schedule-open strong { font-size:14px; overflow-wrap:anywhere; }
+.rp-schedule-open svg:last-child { color:var(--rp-faint); transition:transform .18s var(--rp-ease); }
+.rp-schedule-open:hover svg:last-child { transform:translateX(3px); }
+.rp-schedule-meta,.rp-schedule-next,.rp-schedule-receipt { font-size:12px; font-variant-numeric:tabular-nums; }
+.rp-schedule-meta { display:flex; flex-wrap:wrap; gap:2px 8px; margin:3px 0 8px; color:var(--rp-muted); }
+.rp-schedule-meta span+span { overflow-wrap:anywhere; }
+.rp-schedule-next { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:2px 10px; }
+.rp-schedule-next span,.rp-schedule-receipt small,.rp-schedule-receipt > span,.rp-schedule-detail dt,.rp-schedule-save small { color:var(--rp-muted); }
+.rp-schedule-next strong { font-weight:550; }
+.rp-schedule-receipt { border-top:1px solid var(--rp-line); margin-top:10px; padding-top:8px; }
+.rp-schedule-receipt small { font:inherit; }
+.rp-schedule-receipt > span { margin-inline-start:10px; }
+.rp-schedule-links { display:grid; gap:2px; margin-top:3px; }
+.rp-schedule-links button { width:100%; padding:3px 2px; }
+.rp-schedule-links button:hover { background:var(--rp-soft); }
+.rp-schedule-links span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.rp-schedule-card .rp-dialog { width:min(500px,calc(100% - 24px)); }
+.rp-schedule-detail,.rp-schedule-form { display:grid; gap:14px; min-width:0; }
+.rp-schedule-detail .rp-schedule-prompt { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--rp-ink); font-size:14px; }
+.rp-schedule-detail dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 14px; margin:0; font-size:13px; }
+.rp-schedule-detail dd { margin:0; overflow-wrap:anywhere; }
+.rp-schedule-form { border-top:1px solid var(--rp-line); padding-top:16px; }
+.rp-schedule-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(168px,100%),1fr)); gap:10px; }
+.rp-schedule-form label { display:grid; gap:4px; min-width:0; font-size:13px; font-weight:550; }
+.rp-schedule-form :is(input,select) { width:100%; min-width:0; height:36px; padding:5px 8px; border:1px solid var(--rp-line-strong); border-radius:var(--rp-corner-control); background:var(--rp-panel); color:var(--rp-ink); font-weight:400; }
+.rp-schedule-form summary { cursor:pointer; font-size:13px; }
+.rp-schedule-form details[open] summary { margin-bottom:8px; }
+.rp-weekdays { display:flex; flex-wrap:wrap; gap:4px; border:0; padding:0; margin:0; }
+.rp-weekdays legend { padding:0 0 4px; font-size:13px; }
+.rp-weekdays button { padding:5px 8px; min-height:32px; background:var(--rp-soft); color:var(--rp-ink); border:0; border-radius:8px; cursor:pointer; transition:background .16s ease,color .16s ease; }
+.rp-weekdays button[aria-pressed=true] { background:var(--rp-action); color:var(--rp-on-action); }
+.rp-schedule-save { justify-content:space-between; align-items:flex-end; }
+.rp-schedule-save button { flex:none; }
+.rp-schedule-card [role=alert] { margin:6px 0 0; font-size:13px; }
+.team-tab-content .rp-schedule-stack { display:grid; gap:8px; background:transparent; }

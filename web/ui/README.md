@@ -45,3 +45,5 @@ import { Button, FileCard } from '../ui'
 业务数据、运行状态和动作回调由宿主传入。示例的计时和重放逻辑位于 `web/component-preview`。在需要淡出的内容区包一层 `SwitchView`，用 `switchView('panel', update)` 提交视图切换。输入文字和普通业务事件可以直接更新。
 
 浏览器回归可在运行预览后执行 `python tests/browser/component-motion.py <预览地址>` 和 `python tests/browser/agent-components.py <预览地址>`。动效回归默认使用 Chromium，末尾加 `webkit` 可以在 WebKit 上运行同一组逐帧检查。
+
+`ScheduleCard` 用于 Chat 侧栏与任务组件页。宿主提供排期版本、最近一次执行及可追溯的交付记录，并处理暂停、恢复、保存和结果跳转。日期编辑和下次执行预览与调度器共用时区计算。

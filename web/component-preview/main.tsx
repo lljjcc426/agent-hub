@@ -27,7 +27,8 @@ import {
   IconButton,
   Message,
   NavLink,
-  ScheduleRow,
+  ScheduleCard,
+  DeliveryFileViewer,
   TaskActivityRow,
   Sidebar,
   Toast,
@@ -48,6 +49,8 @@ import {
   type Task,
 } from './samples.tsx'
 import './preview.css'
+import { sampleSchedule } from './schedule.ts'
+import { nextTime } from '../../src/schedule-calendar.ts'
 import { AgentGallery } from './agent-gallery.tsx'
 import { DeliveredFileExample, DeliveryExample, sampleWorkbook, type ExampleReview } from './delivery.tsx'
 
@@ -147,7 +150,14 @@ function App() {
   const [task, setTask] = useState<Task | null>(null)
   const [file, setFile] = useState(false)
   const [fileReview, setFileReview] = useState<ExampleReview>('pending')
-  const [schedule, setSchedule] = useState(true)
+  const [schedule, setSchedule] = useState(sampleSchedule)
+  const [scheduleFile,setScheduleFile] = useState(false)
+  const [targetMessage,setTargetMessage] = useState('')
+  useEffect(()=>{
+    if(page !== 'chat' || !targetMessage) return
+    const row = document.querySelector<HTMLElement>('[data-message-id="'+CSS.escape(targetMessage)+'"] .message-line')
+    row?.focus({preventScroll:true}); row?.scrollIntoView({block:'center'}); setTargetMessage('')
+  },[page,targetMessage])
   const [confirmClear, setConfirmClear] = useState(false)
   const [messages, setMessages] = useState<DemoMessage[]>([])
   const draft = useDemoComposer()
@@ -407,18 +417,16 @@ function App() {
                     onAgent={() => {setMode('agents'); setSpeaker('worker'); location.hash = 'chat'}}/>
                 </Specimen>
                 <Specimen title="定时任务">
-                  <ScheduleRow
-                    title="晨间摘要"
-                    cadence="每天 09:00"
-                    next={
-                      schedule
-                        ? '下次 · ' + (new Date().getHours() < 9 ? '今天' : '明天') + ' 09:00'
-                        : '已暂停'
-                    }
-                    enabled={schedule}
-                    onChange={setSchedule}
-                    switchLabel="启用晨间摘要"
-                  />
+                  <ScheduleCard plan={sample ? schedule : {...schedule,lastResult:null}} lang="zh-CN" L={(_en,zh)=>zh}
+                    onMessage={id=>{setSpeaker('router');setTargetMessage(id);location.hash='chat'}}
+                    onFile={()=>setScheduleFile(true)}
+                    onChange={async (revision,patch)=>{
+                      if(revision!==schedule.revision)throw Error('schedule_conflict')
+                      const next={...schedule,...patch,revision:revision+1}
+                      setSchedule({...next,nextAt:next.active?nextTime(next.timing,Date.now()):undefined})
+                    }}/>
+                  {scheduleFile && <DeliveryFileViewer file={sampleWorkbook} onClose={()=>setScheduleFile(false)} L={(_en,zh)=>zh}/>}
+                  {import.meta.env.VITE_CHAT_URL && <a className="text-link" href={new URL('/chat#schedules',import.meta.env.VITE_CHAT_URL).href}>打开 Chat 定时任务<ArrowUpRight size={15}/></a>}
                 </Specimen>
               </div>
             )}

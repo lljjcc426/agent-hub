@@ -16,10 +16,10 @@ export const chatScheduleChange = z.union([
 export type ScheduleEdit = { active: boolean } | { timing: Timing }
 type Plan = ReturnType<RouterProactive['chatSchedules']>[number]
 type RunInfo = { id: string; state: ScheduledRun['state']; at: number }
-export type ChatSchedule = Pick<Plan, 'id'|'name'|'prompt'|'timing'|'active'|'revision'> & {
+export type ChatSchedule<File = ChatDelivery> = Pick<Plan, 'id'|'name'|'prompt'|'timing'|'active'|'revision'> & {
   nextAt?: number
   lastRun: RunInfo | null
-  lastResult: { at: number; messageId: string; text: string; files: ChatDelivery[] } | null
+  lastResult: { at: number; messageId: string; text: string; files: File[] } | null
 }
 
 export function chatScheduleCards(db: DatabaseSync, conversation: string, plans: Plan[]): ChatSchedule[] {

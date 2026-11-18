@@ -1,20 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import {
   CalendarClock,
-  Check,
   ChevronRight,
   Folder,
   Globe,
   List,
-  Pause,
   Pencil,
-  Play,
   Users,
   X,
 } from 'lucide-react'
 import type { ChatSessions } from '../../src/chat.ts'
 import type { ChatDelivery } from '../../src/chat-deliveries.ts'
-import type { Timing } from '../../src/schedule-time.ts'
+import type { ScheduleEdit } from '../../src/chat-schedules.ts'
+import { ScheduleCard } from '../ui/schedule-card.tsx'
 import { deliveryFile } from './delivery-links.ts'
 import { DeliveryFileCard } from '../ui/delivery-files.tsx'
 import { TaskActivityRow } from '../ui/task-activity.tsx'
@@ -26,33 +24,12 @@ import { taskActivities } from './task-activity.ts'
 type View = ReturnType<ChatSessions['view']>
 type Localize = (en: string, zh: string) => string
 export type TeamTab = 'activity' | 'agents' | 'schedules'
-type Schedule = View['schedules'][number]
 const tabs = [
   { id: 'activity', Icon: List },
   { id: 'agents', Icon: Users },
   { id: 'schedules', Icon: CalendarClock },
 ] as const
 
-
-export function scheduleLabel(t: Timing, lang: string, L: Localize) {
-  if (t.kind === 'once')
-    return new Intl.DateTimeFormat(lang, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      timeZone: t.timezone,
-    }).format(new Date(t.startAt))
-  if (t.kind === 'interval') {
-    const n = t.intervalSeconds ?? 60
-    if (n % 3600 === 0) return L('Every ' + n / 3600 + ' h', '每 ' + n / 3600 + ' 小时')
-    return n % 60 === 0
-      ? L('Every ' + n / 60 + ' min', '每 ' + n / 60 + ' 分钟')
-      : L('Every ' + n + ' s', '每 ' + n + ' 秒')
-  }
-  const days = (t.weekdays ?? []).map((d) =>
-    new Intl.DateTimeFormat(lang, { weekday: 'short', timeZone: 'UTC' }).format(Date.UTC(2024, 0, 7 + d)),
-  )
-  return (t.kind === 'weekly' ? days.join('、') : L('Daily', '每天')) + ' ' + t.time + ' · ' + t.timezone
-}
 
 interface TeamOverviewProps {
   readiness?:View['readiness']|null
@@ -72,7 +49,8 @@ interface TeamOverviewProps {
   select: (id: string) => void
   openFile: (file: ChatDelivery) => void
   resource: (kind: 'browser' | 'files') => void
-  changeSchedule: (plan: Schedule) => Promise<void>
+  locateMessage: (id: string) => void
+  changeSchedule: (id: string, revision: number, change: ScheduleEdit) => Promise<void>
 }
 export function TeamOverview({
   readiness,loadContext,connected,replay,
@@ -89,27 +67,12 @@ export function TeamOverview({
   select,
   openFile,
   resource,
-  changeSchedule,
+  changeSchedule, locateMessage,
 }: TeamOverviewProps) {
-  const [busy, setBusy] = useState<string[]>([]),
-    [error, setError] = useState('')
   const titles = { activity: L('Overview', '概览'), agents: 'Agents', schedules: L('Schedules', '定时') }
   const activities = snapshot ? taskActivities(snapshot) : []
   const files = snapshot?.deliveries ?? [],
     plans = snapshot?.schedules ?? []
-  const toggle = async (plan: Schedule) => {
-    setBusy((ids) => [...ids, plan.id])
-    setError('')
-    try {
-      await changeSchedule(plan)
-    } catch {
-      setError(
-        L('Could not change this schedule. Check its latest state.', '未能修改定时任务，请查看最新状态。'),
-      )
-    } finally {
-      setBusy((ids) => ids.filter((id) => id !== plan.id))
-    }
-  }
   return (
     <>
       <div className="team-drawer-head">
@@ -206,39 +169,11 @@ export function TeamOverview({
           <>
             <h3>{L('Scheduled tasks', '定时任务')}</h3>
             {plans.length ? (
-              plans.map((p) => {
-                const finished =
-                  (!!p.timing.endAt && Date.parse(p.timing.endAt) <= Date.now()) ||
-                  (p.timing.kind === 'once' &&
-                    (!p.active || p.nextAt === undefined) &&
-                    Date.parse(p.timing.startAt) <= Date.now())
-                const status = finished ? L('Ended', '已结束') : !p.active ? L('Paused', '已暂停') : ''
-                return (
-                  <div className="team-row team-plan" key={p.id}>
-                    <CalendarClock size={20} />
-                    <span>
-                      <strong>{p.name}</strong>
-                      <small>
-                        {scheduleLabel(p.timing, lang, L)}
-                        {status ? ' · ' + status : ''}
-                      </small>
-                    </span>
-                    {finished ? (
-                      <Check size={16} />
-                    ) : (
-                      <button
-                        className="icon-button"
-                        disabled={busy.includes(p.id)}
-                        onClick={() => void toggle(p)}
-                        aria-label={(p.active ? L('Pause ', '暂停 ') : L('Resume ', '恢复 ')) + p.name}
-                        title={p.active ? L('Pause', '暂停') : L('Resume', '恢复')}
-                      >
-                        {p.active ? <Pause size={16} /> : <Play size={16} />}
-                      </button>
-                    )}
-                  </div>
-                )
-              })
+              <div className="roppo-ui rp-schedule-stack">
+                {plans.map(p => <ScheduleCard key={p.id} plan={p} lang={lang} L={L}
+                  onChange={(revision,patch)=>changeSchedule(p.id,revision,patch)}
+                  onMessage={locateMessage} onFile={openFile}/>)}
+              </div>
             ) : (
               <p>
                 {snapshot && !snapshot.schedulingAvailable
@@ -246,7 +181,6 @@ export function TeamOverview({
                   : L('No scheduled tasks', '暂无定时任务')}
               </p>
             )}
-            {error ? <p role="alert">{error}</p> : null}
           </>
         )}
       </div>

@@ -7,7 +7,8 @@ import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
-const native=process.argv[2]==='native',workflow=process.argv[2]==='workflow'
+const mode=process.argv[2],schedule=mode==='schedule-native'||mode==='schedule-fixture'
+const native=mode==='native'||mode==='schedule-native',workflow=mode==='workflow'
 const root=resolve(process.argv[3]??('.local/chat-'+(native?'native':'fixture')+'-20261107'))
 mkdirSync(join(root,'workspace'),{recursive:true})
 const config=configSchema.parse({stateDir:join(root,'state'),port:Number(process.env.ROPPO_CHAT_PORT??0),work:{sandboxDriver:'disabled',network:false},turnTimeoutMs:180000,
@@ -17,6 +18,22 @@ const model={async run(r:ModelRequest){
   const threadId=r.threadId??randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
   const wait=(ms=2800)=>new Promise<void>((resolve,reject)=>{const timer=setTimeout(done,ms);function done(){r.signal?.removeEventListener('abort',stop);resolve()}function stop(){clearTimeout(timer);reject(Error('Fixture cancelled'))}r.signal?.addEventListener('abort',stop,{once:true});if(r.signal?.aborted)stop()})
   const reply=async(text:string)=>{const raw=JSON.stringify({reply:text});r.onOutput?.({id:turnId,type:'start',phase:'answer'});for(let i=0;i<raw.length;i+=9){r.onOutput?.({id:turnId,type:'delta',phase:'answer',text:raw.slice(i,i+9)});await wait(120)}return {threadId,turnId,text:raw}}
+  if(schedule){
+    const input=JSON.parse(r.input)
+    if(input.kind==='user_message'){
+      const context=runtime.scopes.context(input.trigger,'local:'+input.trigger.threads[0].id)!
+      const result=await r.onTool!('router_manage',{action:'schedule.put',scopeId:context.route.scopeId,operationId:'create-'+turnId,expectedRevision:0,
+        schedule:{id:'release-digest',name:'Release digest',prompt:'Deliver the release digest file and report in Chat.',triggerId:input.trigger.id,
+          timing:{kind:'daily',time:'09:00',timezone:'Europe/Paris',startAt:new Date().toISOString()},mode:'standalone',notification:'always'}},'schedule')
+      if(!result.success)throw Error('Could not create the schedule')
+      return reply('Scheduled the release digest.')
+    }
+    if(input.schedule){
+      const file=await r.onTool!('chat_deliver_file',{name:'release-digest.md',content:'# Release digest\n\nThe scheduled delivery ran.'},'deliver')
+      if(!file.success)throw Error('Scheduled file delivery failed')
+      return reply('The scheduled release digest is ready.')
+    }
+  }
   if(workflow){
     if(r.role==='worker'){
       const answered=JSON.parse(r.input).inputs?.some((i:{text?:string})=>i.text?.includes('native_question_answer'))
@@ -70,6 +87,8 @@ const model={async run(r:ModelRequest){
   return reply('The team has returned its findings.\n\n## Recommended next steps\n\n1. Start with individual users.\n2. Make the first Router conversation easy to begin.\n3. Keep Worker progress visible and results easy to review.')
 }}
 const runtime=new Runtime(config,native?{}:{model:desktopChatFixture(model,'I’ll check the requested task and its inputs.')}),host=await serve(runtime)
+if(schedule&&!runtime.scopes.enabled())runtime.scopes.command({action:'scope.put',operationId:'acceptance-scope',expectedRevision:0,
+  scope:{id:'local',tenantId:'local',name:'Acceptance',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
 runtime.start()
 const token=readFileSync(join(config.stateDir,'access-token'),'utf8').trim()
 const username='chat-preview',password='Roppo-preview-2026!'

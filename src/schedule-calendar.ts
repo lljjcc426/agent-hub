@@ -20,6 +20,7 @@ export function wallInstant(value:string,zone:string){
  const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value)
  if(!match)return undefined
  const [,y,m,d,h,min,sec]=match
+ if(Number(sec??0)>59)return undefined
  const at=wall(Number(y),Number(m),Number(d),Number(h),Number(min),zone)
  return at===undefined?undefined:at+Number(sec??0)*1000
 }

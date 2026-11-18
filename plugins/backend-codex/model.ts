@@ -260,7 +260,7 @@ async function resumeThread(client:AppServer,params:unknown,request:ModelRequest
   }
 }
 
-class AppServer {
+export class AppServer {
   readonly process: ChildProcessWithoutNullStreams
   threadId?: string
   turnId?: string
@@ -429,7 +429,7 @@ class AppServer {
     this.compaction?.reject(this.failure)
   }
   async close(): Promise<void> {
-    if (this.process.exitCode !== null || !this.process.pid) return
+    if (this.process.exitCode !== null || this.process.signalCode !== null || !this.process.pid) return
     const exited = new Promise<void>(resolve => this.process.once('close', () => resolve()))
     this.process.kill('SIGTERM')
     const kill = setTimeout(() => this.process.kill('SIGKILL'), 2000)

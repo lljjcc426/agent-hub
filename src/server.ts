@@ -1,3 +1,4 @@
+import {CapabilityLibrary} from './capability-library.ts'
 import {workerProfiles} from './worker-pool.ts'
 import {cliMcpPreview} from './cli-mcp-profile.ts'
 import {homedir} from 'node:os'
@@ -52,12 +53,13 @@ import {viewQuerySchema,workspaceViewData} from './workspace-view-data.ts'
 export async function serve(runtime: Runtime,options:{configurationPreview?:boolean;createRuntime?:(config:Config,activationId?:string)=>Runtime|Promise<Runtime>;pluginGitHub?:PluginGitHub;clientHome?:string;clientName?:string}={}) {
   const tokenPath = join(runtime.config.stateDir, 'access-token')
   const connectionFile=join(runtime.config.stateDir,'connection.json')
+  const library=new CapabilityLibrary(options.clientHome)
   const account=new PersonalAccount(runtime.config.stateDir,Date.now,runtime.config.http?.publicOrigin)
   let changing=false,unavailable=false,runtimeClosed=false,endpoint='',stopping=false,closingRuntime:Promise<void>|undefined
   let delegationServer:Awaited<ReturnType<typeof serveDelegation>>|undefined
   const onboarding=new Onboarding(()=>runtime,options.configurationPreview===true)
   const sessions=new OperatorSessions(),entries=new EntrySetup(()=>runtime,onboarding,()=>endpoint,options.configurationPreview===true,options.clientHome,options.clientName)
-  async function stopRuntime(){if(!runtimeClosed){runtimeClosed=true;closingRuntime=(async()=>{await delegationServer?.close();delegationServer=undefined;await runtime.close()})()}await closingRuntime}
+  async function stopRuntime(){if(!runtimeClosed){library.close(runtime);runtimeClosed=true;closingRuntime=(async()=>{await delegationServer?.close();delegationServer=undefined;await runtime.close()})()}await closingRuntime}
   const market=new PluginMarket(()=>runtime,options.pluginGitHub)
   async function rebuild(config:Config,activationId?:string){
     await stopRuntime()
@@ -226,6 +228,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(path==='/deployments/command'&&req.method==='POST'){send(res,200,await runtime.delegation.command(await body(req)));return}
     if(path==='/deployments/recover'&&req.method==='POST'){const result=await runtime.delegation.recover(await body(req));delegationServer=await serveDelegation(runtime.delegation,runtime.delegation.preferredPort);send(res,200,result);return}
     if(path==='/deployments/revoke'&&req.method==='POST'){const input=z.object({id:z.string()}).strict().parse(await body(req));send(res,200,await runtime.delegation.revoke(input.id));return}
+    if(path==='/api/capability-library'&&req.method==='GET'){
+      const q=new URL(req.url!,'http://localhost').searchParams
+      const item=await library.read(runtime,account.status(req).user?.id??'local-operator',endpoint,{id:q.get('id')??undefined,inspect:q.get('inspect')==='1',refresh:q.get('refresh')==='1'})
+      send(res,item?200:404,item??{error:'Capability unavailable'});return
+    }
     if(path==='/api/plugin-market'&&req.method==='GET'){send(res,200,{...market.snapshot(),platform:process.platform,settingsRevision:runtime.settings.current().revision});return}
     if(path==='/api/plugin-market/preview'&&req.method==='GET'){
       const query=z.object({catalog:z.string().max(80),plugin:z.string().max(64),index:z.coerce.number().int().min(0).max(3)}).strict().parse(Object.fromEntries(new URL(req.url!,'http://localhost').searchParams))

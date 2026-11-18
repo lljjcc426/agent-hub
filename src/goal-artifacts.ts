@@ -1,3 +1,4 @@
+import {maxResourceBytes} from './execution-limits.ts'
 import {createHash} from 'node:crypto'
 import {constants,closeSync,fstatSync,lstatSync,openSync,readSync,realpathSync} from 'node:fs'
 import {basename,extname,isAbsolute,join,relative,resolve,sep} from 'node:path'
@@ -60,7 +61,7 @@ export class GoalArtifacts {
   }
   evidence(goal:RouterGoal,nodeId:string,ticketId:string,cwd:string,path:string,criteria:GoalCriterion[],head?:string,options:{readOnly?:boolean}={}){
     const mime=mimeTypes[extname(path).toLowerCase()]
-    const limit=mime?32*1024*1024:128*1024
+    const limit=mime?maxResourceBytes:4*1024*1024
     const bytes=head?this.host.projectCode.blob(goal,head,path,limit):evidenceBytes(cwd,path,limit)
     if(!bytes)return {content:'',missing:true}
     if(!mime)return {content:bytes.toString('utf8')}

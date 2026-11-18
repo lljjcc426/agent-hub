@@ -4,6 +4,7 @@ import {createServer} from 'node:http'
 import {join,resolve} from 'node:path'
 import {tmpdir} from 'node:os'
 import {configSchema} from '../src/config.ts'
+import {routerReadSpec} from '../src/resources.ts'
 import {Store} from '../src/store.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
 import {buildBackendPackage,activateBackendPackages} from '../src/backends/plugin-package.ts'
@@ -76,7 +77,7 @@ for(const kind of ['claude','gemini','opencode']){
  it(kind+' blocks invalid tools and retains uncertainty after an external operation throws',async()=>{
   const f=await setup(kind);let id='',calls=0
   const request={...f.request,onThread:(v:string)=>id=v,onTool:async()=>{calls++;throw Error('lost acknowledgement')}}
-  await expect(f.registry.run({...request,input:'bad-args'})).rejects.toMatchObject({code:'unsupported'});expect(calls).toBe(0)
+  await expect(f.registry.run({...request,input:'bad-args'})).resolves.toHaveProperty('text');expect(calls).toBe(0)
   await expect(f.registry.run({...request,input:'tool'})).rejects.toMatchObject({code:'outcome_unknown'});f.restart()
   await expect(f.registry.run({...request,threadId:id,input:'tool'})).rejects.toMatchObject({code:'outcome_unknown'});expect(calls).toBe(1)
  })
@@ -93,3 +94,15 @@ for(const kind of ['claude','gemini','opencode']){
   await expect(f.registry.run({...f.request,input:'replace',threadId:id})).rejects.toMatchObject({code:'invalid_output'})
  })
 }
+
+it('OpenCode reads the reported 20,000-character page and corrects an oversized request in the same turn',async()=>{
+ const f=await setup('opencode'),calls:{offset:number;limit:number}[]=[]
+ const text='a'.repeat(41000)
+ const done=await f.registry.run({...f.request,input:'receipt-pages',tools:[routerReadSpec],onTool:async(_name,args)=>{
+  const {offset,limit}=args as {offset:number;limit:number}
+  calls.push({offset,limit})
+  return {success:true,contentItems:[{type:'inputText',text:text.slice(offset,offset+limit)}]}
+ },contextBudget:undefined})
+ expect(calls).toEqual([{offset:0,limit:800},{offset:800,limit:20000},{offset:20800,limit:20000}])
+ expect(JSON.parse(done.text).answer).toBe('你好')
+})

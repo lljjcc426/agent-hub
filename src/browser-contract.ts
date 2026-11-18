@@ -1,3 +1,4 @@
+import {browserCapacity} from './execution-limits.ts'
 import { z } from "zod";
 
 export class BrowserError extends Error {
@@ -29,8 +30,8 @@ export const browserConfigSchema = z
     command: z.string().min(1).optional(),
     workspace: z.object({owner: z.string().uuid(), cdpPort: z.number().int().min(1).max(65535)}).strict().optional(),
     executablePath: z.string().min(1).optional(),
-    maxSessions: z.number().int().min(1).max(20).default(8),
-    timeoutMs: z.number().int().min(1000).max(120000).default(20000),
+    maxSessions: z.number().int().min(1).max(64).default(16),
+    timeoutMs: z.number().int().min(1000).max(300_000).default(45_000),
     idleMs: z.number().int().min(60000).default(900000),
     keyEnv: z
       .string()
@@ -42,7 +43,7 @@ export const browserConfigSchema = z
 export const browserOptionsSchema = z
   .object({
     enabled: z.boolean().optional(),
-    maxTabs: z.number().int().min(1).max(20).optional(),
+    maxTabs: z.number().int().min(1).max(browserCapacity.maxTabs).optional(),
   })
   .strict();
 export const profileInput = z
@@ -86,10 +87,10 @@ export const browserAction = z
       .string()
       .regex(/^@?e\d+$/)
       .optional(),
-    text: z.string().max(10000).optional(),
+    text: z.string().max(browserCapacity.textCharacters).optional(),
     key: z.string().min(1).max(80).optional(),
     direction: z.enum(["up", "down", "left", "right"]).optional(),
-    amount: z.number().int().min(1).max(5000).optional(),
+    amount: z.number().int().min(1).max(32_000).optional(),
     tab: z.string().regex(/^t\d+$/).optional(),
     credentialId: z.string().uuid().optional(),
     reason: z.string().trim().min(1).max(300).optional(),
@@ -146,10 +147,10 @@ export const browserToolSchema = z
       .string()
       .regex(/^@?e\d+$/)
       .optional(),
-    text: z.string().max(10000).optional(),
+    text: z.string().max(browserCapacity.textCharacters).optional(),
     key: z.string().max(80).optional(),
     direction: z.enum(["up", "down", "left", "right"]).optional(),
-    amount: z.number().int().min(1).max(5000).optional(),
+    amount: z.number().int().min(1).max(32_000).optional(),
     tab: z.string().regex(/^t\d+$/).optional(),
     credentialId: z.string().uuid().optional(),
     reason: z.string().trim().min(1).max(300).optional(),
@@ -176,10 +177,10 @@ export const browserToolDefinition = {
         type: "string",
         description: "Element ref from this session snapshot, e.g. @e3",
       },
-      text: { type: "string" },
+      text: { type: "string", maxLength: browserCapacity.textCharacters },
       key: { type: "string" },
       direction: { type: "string", enum: ["up", "down", "left", "right"] },
-      amount: { type: "integer" },
+      amount: { type: "integer", minimum: 1, maximum: 32_000 },
       tab: { type: "string", description: "Stable tab id from tabs, such as t1. Never use a positional index." },
       credentialId: { type: "string" },
       reason: { type: "string", description: "Short user-facing reason for request_takeover, in the user's language (for example, sign in to continue)." },

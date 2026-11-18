@@ -6,6 +6,7 @@ import {afterEach,it,expect} from 'vitest'
 import {ApiModel,type ThreadStore} from '../src/backends/api.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
 import {backendDefinition,type ApiDefinition} from '../src/backend-config.ts'
+import {stableDigest} from '../src/sources.ts'
 import {configSchema} from '../src/config.ts'
 import {Runtime} from '../src/runtime.ts'
 import type {ModelRequest} from '../src/model.ts'
@@ -74,11 +75,11 @@ it.each(kinds)('%s directs oversized Router results to its available reader',asy
  const f=await server(b=>results(kind,b).length?output(kind,'{"answer":"done"}'):output(kind,'',[{id:'large-list',name:'read_marker',args:{path:'workers'}}]))
  const model=new ApiModel('test',definition(kind,f.url),memory(),10000),base=request()
  await model.run({...base,role:'router',tools:[...base.tools!,routerReadSpec],contextBudget:scopeBudget(12000),retainToolResult:()=> 'activity:large-list',onTool:async()=>({success:true,contentItems:[{type:'inputText',text:'catalog '.repeat(1000)}]})})
- expect(JSON.stringify(results(kind,f.requests[1].body))).toContain('with router_read using limit 800')
+ expect(JSON.stringify(results(kind,f.requests[1].body))).toContain('with router_read and follow nextOffset')
  expect(JSON.stringify(results(kind,f.requests[1].body))).not.toContain('with superagent_read')
 })
 
-it('pages a large Worker catalog through the real API loop, configures its shared Worker and creates Worker eleven',async()=>{
+it.each(['inline','paged'])('uses a real %s Worker catalog, configures its shared Worker and creates Worker eleven',async mode=>{
  let step=0,resource='',catalog='',revision=0
  const wire=await server(body=>{
   const call=(name:string,args:any)=>output('openai-chat','',[{id:'call-'+step++,name,args}])
@@ -86,12 +87,12 @@ it('pages a large Worker catalog through the real API loop, configures its share
   const last=JSON.parse(body.messages.filter((m:any)=>m.role==='tool').at(-1).content)
   if(last.status==='retained'){
    expect(last.notice).toContain('router_read');resource=last.resource
-   return call('router_read',{resource,offset:0,limit:800})
+   return call('router_read',{resource,offset:0,limit:20000})
   }
-  if(typeof last.text==='string'){
-   catalog+=last.text
-   if(last.nextOffset!==null)return call('router_read',{resource,offset:last.nextOffset,limit:800})
-   const list=JSON.parse(JSON.parse(catalog).contentItems[0].text);revision=list.revision
+  if(typeof last.text==='string'||Array.isArray(last.workers)){
+   if(last.text)catalog+=last.text
+   if(last.nextOffset!=null)return call('router_read',{resource,offset:last.nextOffset,limit:20000})
+   const list=Array.isArray(last.workers)?last:JSON.parse(JSON.parse(catalog).contentItems[0].text);revision=list.revision
    expect(list.policy).toMatchObject({maxWorkers:12,backends:['codex','connected-api']})
    expect(list.workers[0]).toMatchObject({shared:true,canConfigure:true})
    return call('worker_manage',{action:'configure',id:'worker-1',revision,requestId:'configure',patch:{backend:list.connections.find((c:any)=>c.label==='DeepSeek').id,effort:'minimal'}})
@@ -100,11 +101,16 @@ it('pages a large Worker catalog through the real API loop, configures its share
   expect(last.worker.id).toBe('worker-11');return output('openai-chat','{"reply":"Configured the existing Worker and added a spare."}')
  })
  const root=mkdtempSync(join(tmpdir(),'router-catalog-'));roots.push(root)
- const h=new Runtime(configSchema.parse({stateDir:join(root,'state'),backends:{'connected-api':{...definition('openai-chat',wire.url),label:'DeepSeek'}},execution:{router:{mode:'host',backend:'connected-api'},management:{enabled:true,maxWorkers:12,backends:['codex']},workers:Array.from({length:10},(_,i)=>({id:'worker-'+(i+1),backend:'codex',prompt:'Keep the task independent. '.repeat(20)}))},work:{sandboxDriver:'disabled'},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]}));hosts.push(h)
+ const h=new Runtime(configSchema.parse({stateDir:join(root,'state'),backends:{'connected-api':{...definition('openai-chat',wire.url),label:'DeepSeek'}},execution:{router:{mode:'host',backend:'connected-api'},management:{enabled:true,maxWorkers:12,backends:['codex']},workers:Array.from({length:10},(_,i)=>({id:'worker-'+(i+1),backend:'codex',prompt:'Keep the task independent. '.repeat(140)}))},work:{sandboxDriver:'disabled'},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]}));hosts.push(h)
  h.scopes.command({action:'scope.put',operationId:'external',expectedRevision:0,scope:{id:'external',tenantId:'external',name:'External',managers:[JSON.stringify(['local','operator'])],workerIds:['worker-1'],backendIds:['codex'],sourceIds:['local']}})
+ if(mode==='paged'){
+  const id='@chat:'+stableDigest('owner')
+  h.scopes.command({action:'scope.put',operationId:'narrower-context',expectedRevision:0,scope:{id,tenantId:id,name:'Chat',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:h.config.execution.workers!.map(w=>w.id),backendIds:['codex','connected-api'],contextBytes:256000}})
+ }
  const c=h.chat.create('owner');h.chat.send(c.id,'owner',{clientMessageId:'catalog-check',text:'Configure the existing Worker and add a spare'})
  for(let i=0;i<500&&h.chat.view(c.id,'owner').run?.state!=='completed';i++){await h.tick();await new Promise(r=>setTimeout(r,3))}
  expect(h.chat.view(c.id,'owner').run?.state).toBe('completed')
+ expect(Boolean(resource)).toBe(mode==='paged')
  expect(h.config.execution.workers).toHaveLength(11)
  expect(h.config.execution.workers![0]).toMatchObject({backend:'connected-api',effort:'minimal'})
  expect(h.activity.list().filter(c=>c.name==='worker_manage'&&c.action==='list')).toHaveLength(1)

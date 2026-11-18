@@ -1,3 +1,4 @@
+import {messageCharacters} from '../execution-limits.ts'
 import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { EventEmitter } from 'node:events'
@@ -146,9 +147,9 @@ export class TerminalEditor extends EventEmitter {
     }
   }
   private edit(value: string, start = this.cursor, end = this.cursor) {
-    const room = 100000 - (this.line.length - end + start)
+    const room = messageCharacters - (this.line.length - end + start)
     if (value.length > room) {
-      this.emit('notice', ui('Draft exceeds 100,000 characters.', '输入内容超过十万字。'))
+      this.emit('notice', ui('Draft exceeds 256,000 characters.', '输入内容超过256,000 字符。'))
       return
     }
     this.line = this.line.slice(0, start) + value + this.line.slice(end)
@@ -221,13 +222,13 @@ export class TerminalEditor extends EventEmitter {
     if (this.paste) {
       if (key.name !== 'paste-end') {
         this.pastedLength += seq.length
-        if (this.pastedLength <= 100000) this.paste.push(seq)
+        if (this.pastedLength <= messageCharacters) this.paste.push(seq)
         return
       }
       const parts = this.paste
       this.paste = undefined
-      if (this.pastedLength > 100000)
-        this.emit('notice', ui('Paste exceeds 100,000 characters.', '粘贴内容超过十万字。'))
+      if (this.pastedLength > messageCharacters)
+        this.emit('notice', ui('Paste exceeds 256,000 characters.', '粘贴内容超过256,000 字符。'))
       else this.edit(clean(parts.join('').replace(/\r\n?/g, '\n')).replace(/\t/g, '  '))
       if (!this.choices) this.menu = undefined
     } else if (key.name === 'paste-start') {

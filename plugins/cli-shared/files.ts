@@ -1,3 +1,4 @@
+import {maxWireBytes} from '../../src/execution-limits.ts'
 import {createHash,randomUUID} from 'node:crypto'
 import {mkdirSync,writeFileSync,renameSync,readFileSync,lstatSync,existsSync} from 'node:fs'
 import {dirname} from 'node:path'
@@ -10,7 +11,7 @@ export function privateFile(path:string,value:string){
 }
 export function readJson(path:string){
  if(!existsSync(path))return undefined
- if(lstatSync(path).isSymbolicLink()||lstatSync(path).size>16_000_000)throw new BackendAdapterError('configuration_invalid')
+ if(lstatSync(path).isSymbolicLink()||lstatSync(path).size>maxWireBytes)throw new BackendAdapterError('configuration_invalid')
  try{return JSON.parse(readFileSync(path,'utf8'))}catch{throw new BackendAdapterError('invalid_output')}
 }
 export function endpoint(value:string|undefined){

@@ -1,3 +1,4 @@
+import {maxWireBytes} from '../../src/execution-limits.ts'
 import {createServer,request as httpRequest,Agent as HttpAgent} from 'node:http'
 import {request as httpsRequest,Agent as HttpsAgent} from 'node:https'
 import {randomBytes} from 'node:crypto'
@@ -24,7 +25,7 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
   try{
    if(req.headers['content-encoding'])throw new BackendAdapterError('unsupported')
    const chunks:Buffer[]=[];let size=0
-   for await(const chunk of req){size+=chunk.length;if(size>16_000_000)throw new BackendAdapterError('unsupported');chunks.push(chunk)}
+   for await(const chunk of req){size+=chunk.length;if(size>maxWireBytes)throw new BackendAdapterError('unsupported');chunks.push(chunk)}
    let bytes=Buffer.concat(chunks)
    const body=bytes.length?JSON.parse(bytes.toString('utf8')):{}
    const payload=body.request??body

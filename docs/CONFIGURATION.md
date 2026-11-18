@@ -112,6 +112,24 @@ Within an authorized task, the Router can choose, create and configure a Worker 
 
 Built-in Chat accepts messages while the Router or Workers are busy. Router turns serialize in the same conversation; Workers continue in the background and their results wake the Router for a follow-up. The composer always offers **Send**, without a stop button. Explicit task cancellation remains available in task controls. **Concurrent subagents per task** (`work.maxAgents`) is separate from the Worker pool limit (`execution.management.maxWorkers`).
 
+### Execution capacity
+
+| Setting or operation | Default | Configurable maximum |
+| --- | ---: | ---: |
+| Text resource read | 32,000 characters | 128,000 per page |
+| Resource list | 100 entries | 1,000 per page |
+| API model steps per turn | 256 | 2,048 |
+| Managed tool calls per turn, on engines supporting a call budget | 1,024 | 32,768 |
+| Shell output retained per job | 8 MiB | 64 MiB |
+| Scoped model input and reserved output, measured on the wire | 16,000,000 bytes | 64 MiB |
+| Parallel subagents per task | 16 | 128 |
+| Subagent nesting depth | 5 | 16 |
+| Browser sessions and tabs per session | 16 each | 64 each |
+| MCP request timeout | 2 minutes | 10 minutes |
+
+The host turn timeout defaults to 30 minutes and the background job deadline to 2 hours. The managed Worker pool defaults to 32. Explicit values saved in a connection, Worker or management scope take precedence. Providers enforce their own context windows, output limits and API page sizes. Large results can be read in successive pages using `nextOffset`. A smaller model scope can return fewer characters than requested.
+
+
 ## Verify and grant access
 
 Saving shows **configured, awaiting verification**. Start verification, copy the whole test phrase into the selected software, then inspect four separate observations:

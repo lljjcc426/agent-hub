@@ -15,7 +15,7 @@ The browser lives on the right side of the session and shares the tab panel with
 
 Input includes pointer movement, down/up, drag selection, right-button events, scrolling, text/paste/IME and common keys. Copy/cut writes the remote selection to the local clipboard and requires browser clipboard permission. F6 focuses the address bar, which accepts URLs or search terms. During manual control the remote viewport follows the panel size; watching preserves the Worker's viewport.
 
-**Browser files** uploads one file up to 25 MB into a standard file input on the current page and retrieves completed downloads. Selected uploads remain until the browser closes so a form can submit later. Task downloads are removed with their browser; save them before closing. File selection currently covers standard inputs in the main document, not every cross-origin frame, custom file manager or system file dialog.
+**Browser files** uploads one file up to 100 MiB into a standard file input on the current page and retrieves completed downloads. Selected uploads remain until the browser closes so a form can submit later. Task downloads are removed with their browser; save them before closing. File selection currently covers standard inputs in the main document, not every cross-origin frame, custom file manager or system file dialog.
 
 ## Persistence and isolation
 

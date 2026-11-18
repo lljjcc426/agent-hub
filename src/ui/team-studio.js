@@ -70,7 +70,7 @@ function teamAddWorker(cloneSelected = false) {
   render()
   document.getElementById('team-name')?.focus()
 }
-function teamWorkerLimit() { return S.draft.execution.management?.maxWorkers ?? 10 }
+function teamWorkerLimit() { return S.draft.execution.management?.maxWorkers ?? 32 }
 function teamPoolLimit() {
   const field = teamField('team-max-workers', L('Worker limit', 'Worker 数量上限'), teamWorkerLimit(), value => {
     const count = Number(value), path = 'execution.management.maxWorkers'
@@ -262,10 +262,10 @@ function teamBasics(current) {
 function teamLimits(current) {
   const fields = el('div', 'team-fields')
   for (const [key, label, min, max] of [
-    ['maxOutputTokens', L('Maximum output tokens', '最大输出 Token'), 64, 200000],
-    ['maxSteps', L('Maximum model steps', '模型调用步数上限'), 1, 256],
-    ['maxToolCalls', L('Maximum tool calls', '工具调用次数上限'), 1, 10000],
-    ['timeoutMs', L('Timeout (milliseconds)', '超时（毫秒）'), 1000, 3600000]
+    ['maxOutputTokens', L('Maximum output tokens', '最大输出 Token'), 64, 512000],
+    ['maxSteps', L('Maximum model steps', '模型调用步数上限'), 1, 2048],
+    ['maxToolCalls', L('Maximum tool calls', '工具调用次数上限'), 1, 32768],
+    ['timeoutMs', L('Timeout (milliseconds)', '超时（毫秒）'), 1000, 14400000]
   ]) {
     const path = current.path + '.' + key
     const field = teamField('team-' + key, label, S.buffers.get(path)?.text ?? current.value[key] ?? '', value => {
@@ -327,7 +327,7 @@ function teamTools(current) {
     const enabled=el('input');enabled.type='checkbox';enabled.id='team-browser-enabled';enabled.checked=current.value.browser?.enabled!==false
     enabled.onchange=()=>teamWrite('browser',{...current.value.browser,enabled:enabled.checked})
     const label=el('label','team-toggle');label.htmlFor=enabled.id
-    fields.append(add(label,enabled,el('span','',L('Browser access','浏览器访问'))),teamField('team-browser-tabs',L('Maximum browser tabs','浏览器标签页上限'),current.value.browser?.maxTabs??8,value=>teamWrite('browser',{...current.value.browser,maxTabs:Number(value)}),{values:[1,2,4,8,12,20].map(n=>[String(n),String(n)])}))
+    fields.append(add(label,enabled,el('span','',L('Browser access','浏览器访问'))),teamField('team-browser-tabs',L('Maximum browser tabs','浏览器标签页上限'),current.value.browser?.maxTabs??16,value=>teamWrite('browser',{...current.value.browser,maxTabs:Number(value)}),{values:[1,2,4,8,12,16,20,32,64].map(n=>[String(n),String(n)])}))
   }
   const catalog = operator.work?.architecture?.tools
   const tools = Array.isArray(catalog) ? current.router ? executionRouterTools() : catalog : catalog?.[current.router ? 'router' : 'worker'] || []
@@ -336,7 +336,7 @@ function teamTools(current) {
       el('p', 'team-help', L('Omitted inherits the host tools; an empty array allows no tools.', '未设置时继承宿主工具；空数组表示不允许任何工具。')))
   }
   if (current.router && teamFeatures().management) {
-    const policy = S.draft.execution.management || { enabled: false, maxWorkers: 10 }
+    const policy = S.draft.execution.management || { enabled: false, maxWorkers: 32 }
     const enabled = el('input'); enabled.type = 'checkbox'; enabled.id = 'team-management'; enabled.checked = policy.enabled === true
     enabled.onchange = () => { clearRelated('execution.management'); set(S.draft, 'execution.management', { ...policy, enabled: enabled.checked }); updateBar(); render() }
     const label = el('label', 'team-toggle'); label.htmlFor = enabled.id

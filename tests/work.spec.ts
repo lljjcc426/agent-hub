@@ -16,6 +16,16 @@ function fixture(timeout=2000){
  return {manager,store,owner,wakes,cwd,root}
 }
 async function settle(f:ReturnType<typeof fixture>,id:string){for(let i=0;i<200;i++){await f.manager.tick();const item=f.store.get<any>('work',id);if(!['running','starting'].includes(item.state))return item;await new Promise(r=>setTimeout(r,25))}throw Error('Managed process did not finish')}
+it('pages a large UTF-8 log through a code point split across disk blocks',()=>{
+ const f=fixture(),id='unicode-log',file=join(f.manager.directory,id+'.output')
+ const item={...f.owner,id,kind:'shell' as const,state:'completed' as const,createdAt:0,notify:'held' as const}
+ const body='x'.repeat(65535)+'😀'+'界'.repeat(90000)
+ writeFileSync(file,body)
+ const first=f.manager.view(item,65534,2)
+ expect(first).toMatchObject({output:'x',nextOffset:65535,outputCharacters:body.length})
+ const next=f.manager.view(item,first.nextOffset!,128000)
+ expect(next.output).toBe(body.slice(65535));expect(next.nextOffset).toBeNull()
+})
 it('keeps a command after its caller returns, deduplicates starts and sends one completion',async()=>{
  const f=fixture(),command='sleep 0.3; printf hello; printf result > result.txt'
  const first=await f.manager.shell(f.owner,command,'same',0)

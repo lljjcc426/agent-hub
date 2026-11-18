@@ -17,7 +17,7 @@ export const toolConnectionsSchema=z.record(id,z.object({
     z.object({kind:z.literal('http'),url:z.string().url().refine(value=>{const u=new URL(value);return !u.username&&!u.password&&(u.protocol==='https:'||u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname))},'Use HTTPS or loopback HTTP without credentials'),headerEnv:z.record(z.string().regex(/^[A-Za-z0-9-]+$/),envName).prefault({})}).strict(),
   ]),
   allowedTools:z.array(z.string().min(1)).min(1),
-  timeoutMs:z.number().int().min(100).max(60000).default(30000),
+  timeoutMs:z.number().int().min(100).max(600_000).default(120_000),
 }).strict()).prefault({})
 export type ToolConnection=z.infer<typeof toolConnectionsSchema>[string]
 

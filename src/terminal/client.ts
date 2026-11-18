@@ -1,3 +1,4 @@
+import {chatUploadLimits} from '../execution-limits.ts'
 import { ui } from './language.ts'
 import { terminalProfileDirectory } from './profile.ts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -283,13 +284,13 @@ export class TerminalClient {
   }
   async send(id: string, text: string, files: string[], locale: string) {
     const unique = [...new Set(files)]
-    if (unique.length > 10)
-      throw new CliError(ui('Attach up to 10 files.', '最多可添加 10 个附件。'))
+    if (unique.length > chatUploadLimits.maxFiles)
+      throw new CliError(ui('Attach up to 32 files.', '最多可添加 32 个附件。'))
     for (const file of unique) {
       const stat = statSync(file)
-      if (!stat.isFile() || stat.size > 25 * 1024 * 1024)
+      if (!stat.isFile() || stat.size > chatUploadLimits.maxBytes)
         throw new CliError(
-          ui('Choose a regular file under 25 MiB: ', '请选择不超过 25 MiB 的普通文件：') + file
+          ui('Choose a regular file under 100 MiB: ', '请选择不超过 100 MiB 的普通文件：') + file
         )
     }
     const attachments: string[] = [],

@@ -1,3 +1,4 @@
+import {modelToolCalls,maxWireBytes} from '../execution-limits.ts'
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process'
 import {mkdtempSync,mkdirSync,rmSync,realpathSync,existsSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -134,31 +135,40 @@ export class ProcessBackend implements Model {
   let child:ChildProcessWithoutNullStreams|undefined,closed=false,sequence=0,toolCalls=0,lastBudget:BudgetReceipt|undefined,buffer=''
   const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>(),readReceipts=new Map<number,()=>void>(),inflightTools=new Set<string>(),callbackIds=new Set<number>()
   const fail=(error:Error)=>{if(closed)return;closed=true;for(const p of pending.values())p.reject(error);pending.clear();if(child?.pid)try{process.kill(-child.pid,'SIGKILL')}catch{child.kill('SIGKILL')}}
-  const send=(value:unknown)=>{if(closed)throw new BackendPluginError('process_failed',this.id);const line=JSON.stringify(value);if(Buffer.byteLength(line)>16_000_000)throw new BackendPluginError('invalid_output',this.id);child!.stdin.write(line+'\n',error=>{if(error)fail(new BackendPluginError('process_failed',this.id))})}
+  const send=(value:unknown)=>{if(closed)throw new BackendPluginError('process_failed',this.id);const line=JSON.stringify(value);if(Buffer.byteLength(line)>maxWireBytes)throw new BackendPluginError('invalid_output',this.id);child!.stdin.write(line+'\n',error=>{if(error)fail(new BackendPluginError('process_failed',this.id))})}
   const call=(method:string,params:unknown,onRead?:()=>void)=>new Promise<any>((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});if(onRead)readReceipts.set(id,onRead);try{send({type:'call',id,method,params})}catch(error){pending.delete(id);reject(error)}})
   const alive=()=>{if(closed||request?.signal?.aborted)throw new BackendPluginError('cancelled',this.id)}
+  const toolSpecs=new Map(request?.tools?.map(spec=>[spec.name,spec]))
+  let uncertainTool=false
   const callback=async(m:Extract<z.infer<typeof backendEnvelope>,{type:'request'}>)=>{
    try{
     alive();if(!request||!record?.nativeId)throw new BackendPluginError('unsupported',this.id)
-    if(callbackIds.has(m.id)||callbackIds.size>=10000)throw new BackendPluginError('invalid_output',this.id)
+    if(callbackIds.has(m.id)||callbackIds.size>=modelToolCalls.max*4)throw new BackendPluginError('invalid_output',this.id)
     callbackIds.add(m.id)
     let result:unknown
     if(m.method==='tool'){
      // A thrown host operation is not permission to try the write with a new
      // native call ID. Keep the durable uncertainty fence within this turn too.
-     if(record.effectIds.some(id=>this.store.get<Effect>('backend-plugin-tool',id)?.failure))throw new BackendPluginError('outcome_unknown',this.id)
-     const p=z.object({name:text,args:z.unknown(),callId:text}).strict().parse(m.params),spec=request.tools?.find(t=>t.name===p.name)
-     if(!spec||!request.onTool||!ajv.compile(spec.inputSchema)(p.args))throw new BackendPluginError('unsupported',this.id)
+     if(uncertainTool)throw new BackendPluginError('outcome_unknown',this.id)
+     const p=z.object({name:text,args:z.unknown(),callId:text}).strict().parse(m.params),spec=toolSpecs.get(p.name)
+     if(!spec||!request.onTool)throw new BackendPluginError('unsupported',this.id)
      const id=stableDigest([record.id,record.turnId,p.callId]),fingerprint=stableDigest([p.name,p.args]),saved=this.store.get<Effect>('backend-plugin-tool',id)
      if(saved){if(saved.fingerprint!==fingerprint||saved.state!=='complete')throw new BackendPluginError('outcome_unknown',this.id);result=saved.result}
      else{
-      if(inflightTools.has(id)||record.effectIds.length>=10000)throw new BackendPluginError('outcome_unknown',this.id)
-      if(++toolCalls>(request.options?.maxToolCalls??256))throw new BackendPluginError('unsupported',this.id)
-      inflightTools.add(id);record.effectIds.push(id);this.save(record)
-      this.store.put('backend-plugin-tool',id,{fingerprint,state:'running'})
-      try{result=await request.onTool(p.name,p.args,p.callId)}
-      catch(error){const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic);this.store.put('backend-plugin-tool',id,{fingerprint,state:'running',failure:diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}});throw error}
-      this.store.put('backend-plugin-tool',id,{fingerprint,state:'complete',result});inflightTools.delete(id)
+      if(inflightTools.has(id)||record.effectIds.length>=modelToolCalls.max*4)throw new BackendPluginError('outcome_unknown',this.id)
+      if(++toolCalls>(request.options?.maxToolCalls??modelToolCalls.default))throw new BackendPluginError('unsupported',this.id)
+      const validate=ajv.compile(spec.inputSchema)
+      record.effectIds.push(id);this.save(record)
+      if(!validate(p.args)){
+       result={success:false,contentItems:[{type:'inputText',text:'Invalid tool arguments for '+p.name+': '+ajv.errorsText(validate.errors)+'. Correct the arguments and try again.'}]}
+      }else{
+       inflightTools.add(id)
+       this.store.put('backend-plugin-tool',id,{fingerprint,state:'running'})
+       try{result=await request.onTool(p.name,p.args,p.callId)}
+       catch(error){uncertainTool=true;const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic);this.store.put('backend-plugin-tool',id,{fingerprint,state:'running',failure:diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}});throw error}
+       inflightTools.delete(id)
+      }
+      this.store.put('backend-plugin-tool',id,{fingerprint,state:'complete',result})
      }
     }else if(m.method==='human'){
      if(!request.onHumanRequest)throw new BackendPluginError('unsupported',this.id)
@@ -207,7 +217,7 @@ export class ProcessBackend implements Model {
    child.stderr.resume();child.stdin.on('error',()=>fail(new BackendPluginError('process_failed',this.id)))
    child.once('error',()=>fail(new BackendPluginError('process_failed',this.id,{operation:'transport',reason:'spawn_error'})));child.once('close',code=>fail(new BackendPluginError('process_failed',this.id,{operation:'transport',reason:'process_exit',exitCode:code})))
    child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{
-    if(closed)return;buffer+=chunk;if(Buffer.byteLength(buffer)>16_000_000){fail(new BackendPluginError('invalid_output',this.id));return}
+    if(closed)return;buffer+=chunk;if(Buffer.byteLength(buffer)>maxWireBytes){fail(new BackendPluginError('invalid_output',this.id));return}
     let i:number
     while(!closed&&(i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1)
      try{

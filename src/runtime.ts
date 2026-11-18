@@ -65,7 +65,7 @@ import {RouterScopes,scopeCommandSchema,type ScopeContext} from './router-scope.
 import {RouterMemory,memoryToolSpecs,type ContextManifest} from './router-memory.ts'
 import {AgentMemory} from './agent-memory.ts'
 import type {EmbedMemory} from './memory-vectors.ts'
-import {scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
+import {fitResourcePage,scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
 import {executionEvidenceNotice} from './execution-output.ts'
 import {GoalArtifacts} from './goal-artifacts.ts'
 import {WorkflowActions} from './workflow-actions.ts'
@@ -519,6 +519,13 @@ export class Runtime {
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt,options.persona))}:{})})
     request=this.delegation.restrict(request)
     if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
+    if(request.onTool && request.contextBudget){
+      const invoke=request.onTool,byteLimit=request.contextBudget.toolReserveBytes
+      request={...request,onTool:async(name,args,id)=>{
+        const result=await invoke(name,args,id)
+        return ['router_read','superagent_read','orchestrator_eval_read','orchestrator_followup_read'].includes(name)?fitResourcePage(result,byteLimit):result
+      }}
+    }
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     let usingOpenCode=false

@@ -1,3 +1,4 @@
+import {maxWireBytes} from './execution-limits.ts'
 import {existsSync,readFileSync,statSync} from 'node:fs'
 import {dirname,isAbsolute,resolve} from 'node:path'
 import {parse as toml} from 'smol-toml'
@@ -106,7 +107,7 @@ export function cliMcpTransport(ref:Profile,tools:string[]){
     return new StdioClientTransport({
       command:expand(command),args:args.map(expand),cwd:resolve(dirname(ref.profile),expand(entry.cwd??'.')),
       env:{...getDefaultEnvironment(),...inherited,...values(entry.env??entry.environment)},
-      stderr:'ignore',maxBufferSize:8_000_000,
+      stderr:'ignore',maxBufferSize:maxWireBytes,
     })
   }
   let url:URL

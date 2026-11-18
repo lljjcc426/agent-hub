@@ -1,3 +1,4 @@
+import {maxToolArgumentBytes} from './execution-limits.ts'
 import {createServer} from 'node:http'
 import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto'
 import {Server} from '@modelcontextprotocol/sdk/server/index.js'
@@ -17,7 +18,7 @@ export async function codexToolBridge(tools:ToolSpec[],invoke:NonNullable<ModelR
   if(req.url!=='/mcp'||req.headers.host!==new URL(origin).host||req.headers.origin&&req.headers.origin!==origin){res.writeHead(403).end();return}
   if(req.method!=='POST'){res.writeHead(405).end();return}
   const chunks:Buffer[]=[];let bytes=0
-  for await(const part of req){bytes+=part.length;if(bytes>256000){res.writeHead(413).end();return}chunks.push(part)}
+  for await(const part of req){bytes+=part.length;if(bytes>maxToolArgumentBytes){res.writeHead(413).end();return}chunks.push(part)}
   let body:unknown
   try{body=JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{res.writeHead(400).end();return}
   const server=new Server({name,version:'0.10.0'},{capabilities:{tools:{}}})

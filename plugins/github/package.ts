@@ -34,8 +34,14 @@ export class PackagedGithub extends GithubSource {
   if(request.resource==='issue'||request.resource==='pull')return super.read({resource:(request.resource==='issue'?'issues/':'pulls/')+number,pageSize:request.pageSize})
   if(request.resource==='checks')return super.read({resource:'pulls/'+number+'/checks',pageSize:request.pageSize})
   if(request.resource==='files'){
-   const pull=await this.repositoryPull(Number(number)),files=await this.api.request('GET','repos/'+this.repo+'/pulls/'+number+'/files?per_page='+request.pageSize+'&page=1')
-   return {head:pull.head,files,truncated:files.length===request.pageSize}
+   const pageSize=Math.min(request.pageSize,100)
+   const pull=await this.repositoryPull(Number(number)),files:any[]=[]
+   for(let page=1;files.length<=request.pageSize;page++){
+    const items=await this.api.request('GET','repos/'+this.repo+'/pulls/'+number+'/files?per_page='+pageSize+'&page='+page)
+    files.push(...items)
+    if(items.length<pageSize)break
+   }
+   return {head:pull.head,files:files.slice(0,request.pageSize),truncated:files.length>request.pageSize}
   }
   const kind=String(t.meta.eventKind),id=String(t.meta.nativeId)
   if(!/^\d+$/.test(id))throw Error('Native message identity unavailable')

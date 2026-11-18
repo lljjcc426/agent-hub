@@ -27,7 +27,7 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    let bytes=0
    for await(const chunk of req){
     bytes+=chunk.length
-    if(bytes>Math.min(d.maxContextBytes,16_000_000)){res.writeHead(413).end();return}
+    if(bytes>d.maxContextBytes){res.writeHead(413).end();return}
     chunks.push(chunk)
    }
    const input=JSON.parse(Buffer.concat(chunks).toString('utf8'))

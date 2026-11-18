@@ -1,3 +1,4 @@
+import {messageCharacters} from './execution-limits.ts'
 import {TerminalPairing,pairingPage} from './terminal/pairing.ts'
 import {projectRoot,projectSource} from './terminal/project.ts'
 import {terminalTask} from './terminal/tasks.ts'
@@ -120,7 +121,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     let bytes = 0
     for await (const chunk of request) {
       bytes += chunk.length
-      if (bytes > 256_000) throw new Error('Request exceeds 256KB')
+      if (bytes > 4 * 1024 * 1024) throw new Error('JSON request exceeds 4 MiB')
       chunks.push(chunk)
     }
     try{return JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{throw Error('Request body must be valid JSON')}
@@ -638,7 +639,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,runtime.chat.react(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().max(100000),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().max(messageCharacters),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(chatUploadLimits.maxFiles).optional(),clientMessageId:z.string().uuid(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input));return
         }
         if(action==='cancel'&&req.method==='POST'){
@@ -819,7 +820,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     }
     if(req.method==='POST'&&path==='/request'){
       if(runtime.config.execution.router?.mode==='client'){send(res,409,{code:'client_router_use_worker_manage',error:'This CLI conversation is the Router. Use worker_manage list/assign/result in this conversation; no second Router model is started.'});return}
-      const input=z.object({text:z.string().min(1).max(100000),discussion:z.string().min(1).max(300).optional(),requestId:z.string().min(1).max(200).optional()}).strict().parse(await body(req))
+      const input=z.object({text:z.string().min(1).max(messageCharacters),discussion:z.string().min(1).max(300).optional(),requestId:z.string().min(1).max(200).optional()}).strict().parse(await body(req))
       const source=runtime.config.sources.find(s=>s.kind==='local'&&s.enabled);if(!source)throw new OnboardingError('local_entry_missing','Add a local operator source before connecting a client.')
       const discussion=input.discussion??randomUUID(),requestId=input.requestId??randomUUID(),result=runtime.receive(source.id,source.allowedActors[0]!,{id:requestId,thread:discussion,text:input.text,addressed:true}) as any
       const client=String(req.headers['x-agenthub-client']??''),bridge=String(req.headers['x-agenthub-bridge']??'').slice(0,100);if(clientIds.includes(client as any))runtime.store.put('entry-client-event',result.triggerId,{client,bridge,at:Date.now()})
@@ -852,7 +853,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     }
     send(res, 404, { error: 'Unknown endpoint' })
   }
-  server.requestTimeout = 30_000
+  server.requestTimeout = 5 * 60_000
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(runtime.config.port, runtime.config.http?.listenHost??'127.0.0.1', resolve) })
   let webhookListener:Awaited<ReturnType<typeof serveWebhooks>>|undefined
   try{if(runtime.config.webhooks&&!options.configurationPreview)webhookListener=await serveWebhooks(()=>runtime,runtime.config.webhooks.port,()=>!changing&&!unavailable&&!runtimeClosed)}catch(error){server.close();throw error}

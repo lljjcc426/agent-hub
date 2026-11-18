@@ -59,7 +59,7 @@ Upload documents, spreadsheets, images, code or archives. Send multiple files to
 
 ![Attaching a launch brief to a natural-language request](docs/images/product/attachments.jpg)
 
-Up to **10 files per message, 25 MiB each**. Understanding a particular format depends on the chosen model and task tools. [Files and formulas →](docs/CHAT_FILES_MATH_ACCEPTANCE.md)
+Up to **32 files per message, 100 MiB each**. Understanding a particular format depends on the chosen model and task tools. [Files and formulas →](docs/CHAT_FILES_MATH_ACCEPTANCE.md)
 
 ### Let it learn how you work
 

@@ -1,3 +1,4 @@
+import {modelToolCalls} from '../../src/execution-limits.ts'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {pathToFileURL} from 'node:url'
@@ -14,7 +15,7 @@ export function workspaceTools(mode:ModelRequest['harnessWorkspace']):string[]{
 export function workspaceGuard(root:string,request:ModelRequest,turnId:string){
  const directory=mkdtempSync(join(tmpdir(),'roppo-workspace-')),script=join(directory,'index.mjs'),ready=join(root,turnId+'.ready'),journal=join(root,turnId+'.operations')
  const policy={cwd:request.cwd,hidden:request.harnessPrivateFiles??[],tools:workspaceTools(request.harnessWorkspace),
-  limit:request.options?.maxToolCalls??256,ready,journal}
+  limit:request.options?.maxToolCalls??modelToolCalls.default,ready,journal}
  const source=`import fs from 'node:fs'
 import path from 'node:path'
 const policy = `+JSON.stringify(policy)+`

@@ -59,7 +59,7 @@
 
 ![在输入框中附上文件并描述任务](docs/images/product/attachments.jpg)
 
-每条消息最多 **10 个文件，单文件 25 MiB**。具体格式能否被理解，取决于所选模型和任务工具。[文件与公式 →](docs/CHAT_FILES_MATH_ACCEPTANCE.md)
+每条消息最多 **32 个文件，单文件 100 MiB**。具体格式能否被理解，取决于所选模型和任务工具。[文件与公式 →](docs/CHAT_FILES_MATH_ACCEPTANCE.md)
 
 ### 在使用中，逐渐了解你
 

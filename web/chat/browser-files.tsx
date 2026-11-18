@@ -1,3 +1,4 @@
+import {chatUploadLimits} from '../../src/execution-limits.ts'
 import { InputControl, SelectField } from '../ui/controls.tsx'
 import { useEffect, useRef, useState } from "react";
 import { Download, Paperclip, Upload, X, LoaderCircle } from "lucide-react";
@@ -31,7 +32,7 @@ export function BrowserFiles({
     trigger = useRef<HTMLButtonElement>(null);
   const base = "/api/browser/sessions/" + id;
   const fail = (error: unknown) => {
-    setError(error instanceof Error && error.message === 'attachment_too_large' ? L('File exceeds 25 MB.','文件超过 25 MB。') : L('File operation failed. Check the page and try again.','文件操作失败，请检查页面后重试。'));
+    setError(error instanceof Error && error.message === 'attachment_too_large' ? L('File exceeds 100 MiB.','文件超过 100 MiB。') : L('File operation failed. Check the page and try again.','文件操作失败，请检查页面后重试。'));
     onError(error);
   };
   const request = async (path: string, init?: RequestInit) => {
@@ -85,7 +86,7 @@ export function BrowserFiles({
     setBusy(true);
     setError("");
     try {
-      if(file.size>25*1024*1024)throw Error('attachment_too_large');
+      if(file.size>chatUploadLimits.maxBytes)throw Error('attachment_too_large');
       const query = new URLSearchParams({
         client,
         epoch: String(epoch),

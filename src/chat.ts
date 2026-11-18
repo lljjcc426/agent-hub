@@ -1,3 +1,4 @@
+import {resourcePage} from './execution-limits.ts'
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
@@ -908,7 +909,7 @@ export class ChatSessions {
     if(!input.ticket)return {tasks}
     if(!tasks.some(t=>t.id===input.ticket))throw new ChatError('file_task_missing','Task is not part of this conversation.',404)
     try{
-      const result=await this.host.resources.read({resource:(input.kind??'directory')+'/'+(input.path??''),offset:input.offset??0,limit:8000,pageSize:50,...(input.cursor?{cursor:input.cursor}:{})},{ticketId:input.ticket})
+      const result=await this.host.resources.read({resource:(input.kind??'directory')+'/'+(input.path??''),offset:input.offset??0,limit:resourcePage.defaultCharacters,pageSize:resourcePage.defaultItems,...(input.cursor?{cursor:input.cursor}:{})},{ticketId:input.ticket})
       return {tasks,result}
     }catch{throw new ChatError('file_unavailable','This file is unavailable or cannot be previewed.',404)}
   }

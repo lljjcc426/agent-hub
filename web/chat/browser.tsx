@@ -85,7 +85,7 @@ const messages: Record<string, [string, string]> = {
     "请关闭闲置浏览器后再继续。",
   ],
   browser_stream: ["Browser disconnected. Reconnect to continue.","浏览器已断开，请重新连接。"],
-  attachment_too_large: ["File exceeds 25 MB.","文件超过 25 MB。"],
+  attachment_too_large: ["File exceeds 100 MiB.","文件超过 100 MiB。"],
   browser_assignment_ended: ["The task has ended. Open its retained browser to continue manually.","任务已结束，可接管保留的页面继续操作。"],
   browser_missing: ["This browser has closed.", "此浏览器已关闭。"],
   browser_key_invalid: [

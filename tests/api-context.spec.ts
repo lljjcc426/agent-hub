@@ -8,13 +8,20 @@ it('shortens large tool results across all three protocols without mutating hist
   {type:'function_call_output',call_id:'responses',output:[{type:'input_text',text},image]},
   {role:'user',content:[{type:'tool_result',tool_use_id:'anthropic',is_error:true,content:[{type:'text',text}]}]},
  ],turns:[{id:'one',wireStart:0}],effects:{responses:{result:{success:false,contentItems:[{type:'inputText' as const,text},{type:'inputImage' as const,imageUrl:image.image_url}]}}}}
- const original=JSON.stringify(history),wire=contextProjection(history,128000)
+ const original=JSON.stringify(history),wire=contextProjection(history,32000)
  expect(JSON.stringify(wire.messages).length).toBeLessThan(18000);expect(JSON.stringify(history)).toBe(original)
  expect(wire.messages[1].output[1]).toEqual(image);expect(wire.messages[2].content[0].is_error).toBe(true)
  expect(wire.messages[0].content).toContain('backend_recall callId=chat');expect(wire.messages[0].content).toContain('结束')
  const result=recall(history,{callId:'responses',limit:8000})
  expect(result.contentItems[1]).toEqual({type:'inputImage',imageUrl:image.image_url});expect(result.contentItems[0]!.text).toContain('false')
  expect(recall(history,{callId:'responses',offset:8000}).contentItems).toHaveLength(1)
+})
+
+it('preserves complete structured tool results or returns a readable reference',()=>{
+ const content=JSON.stringify({body:'例'.repeat(18000)})
+ const history={messages:[{role:'tool',tool_call_id:'read',content}],turns:[],effects:{}}
+ expect(contextProjection(history,150000).messages[0].content).toBe(content)
+ expect(JSON.parse(contextProjection(history,32000).messages[0].content)).toMatchObject({status:'retained',callId:'read',characters:content.length})
 })
 
 it('archives whole turns while retaining paired calls/results, recoverable user input and original receipts',()=>{

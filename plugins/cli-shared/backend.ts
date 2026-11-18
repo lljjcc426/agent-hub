@@ -1,3 +1,4 @@
+import {maxWireBytes} from '../../src/execution-limits.ts'
 import {spawn,execFile} from 'node:child_process'
 import {promisify} from 'node:util'
 import {randomUUID} from 'node:crypto'
@@ -155,7 +156,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      if(event.done)done=true
      save();budget('cli-output')
     }
-    child.stdout!.on('data',chunk=>{try{outputBytes+=chunk.length;if(outputBytes>16_000_000)throw new BackendAdapterError('invalid_output');buffer+=decoder.write(chunk);let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);accept(line)}}catch(error){fail(error)}})
+    child.stdout!.on('data',chunk=>{try{outputBytes+=chunk.length;if(outputBytes>maxWireBytes)throw new BackendAdapterError('invalid_output');buffer+=decoder.write(chunk);let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);accept(line)}}catch(error){fail(error)}})
     child.stderr!.on('data',chunk=>{stderr=(stderr+errorDecoder.write(chunk)).slice(-64000)})
     child.stdin!.on('error',()=>fail(new BackendAdapterError('process_failed')))
     const code=await new Promise<number|null>((resolve,reject)=>{child!.once('error',()=>reject(new BackendAdapterError('process_failed')));child!.once('close',resolve);child!.stdin!.end(prepared.stdin)})

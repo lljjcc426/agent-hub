@@ -1,3 +1,4 @@
+import {maxToolArgumentBytes,modelToolCalls} from '../../src/execution-limits.ts'
 import {createServer} from 'node:http'
 import {randomBytes} from 'node:crypto'
 import type {ToolSpec,ToolContent} from '../backend-sdk.ts'
@@ -13,7 +14,7 @@ export async function toolBridge(tools:ToolSpec[],invoke:(name:string,args:unkno
   let id:unknown
   try{
    const chunks:Buffer[]=[];let size=0
-   for await(const chunk of req){size+=chunk.length;if(size>1_000_000)throw Error('frame');chunks.push(chunk)}
+   for await(const chunk of req){size+=chunk.length;if(size>maxToolArgumentBytes)throw Error('frame');chunks.push(chunk)}
    const message=JSON.parse(Buffer.concat(chunks).toString('utf8'));id=message.id
    if(message.jsonrpc!=='2.0'||typeof message.method!=='string')throw Error('envelope')
    if(id===undefined){if(message.method!=='notifications/initialized'&&message.method!=='notifications/cancelled')throw Error('notification');reply(202);return}
@@ -28,7 +29,7 @@ export async function toolBridge(tools:ToolSpec[],invoke:(name:string,args:unkno
     const key=typeof id+':'+id,fingerprint=JSON.stringify([name,args]),previous=calls.get(key)
     if(previous&&previous.fingerprint!==fingerprint)throw Error('reused id')
     if(!previous){
-     if(calls.size>=10000)throw Error('limit')
+     if(calls.size>=modelToolCalls.max)throw Error('limit')
      // The JSON-RPC ID is stable for retries on this turn's private endpoint.
      const promise=invoke(name,args,key).then(value=>{
       if(value.contentItems.some(c=>c.type!=='inputText'))throw Error('unsupported image result')

@@ -1,3 +1,5 @@
+import {textPage} from './context-budget.ts'
+import {resourcePage} from './execution-limits.ts'
 import type {Runtime} from './runtime.ts'
 import type {Trigger} from './vendor/dsh-core/index.ts'
 import {makeScope} from './policy.ts'
@@ -85,7 +87,7 @@ export function reconsiderRouterFollowups(host:Runtime,triggerId?:string){
 }
 
 const stopInput=z.object({triggerId:z.string(),ticketId:z.string(),explicit_stop_requested:z.literal(true),evidence:z.string().min(1).max(700)}).strict()
-const readInput=z.object({triggerId:z.string(),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(8000).default(4000)}).strict()
+const readInput=z.object({triggerId:z.string(),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(resourcePage.maxCharacters).default(resourcePage.defaultCharacters)}).strict()
 export const followupSpecs:ToolSpec[]=[
  {type:'function',name:'orchestrator_followup_stop',description:'Stop only a task explicitly named by a human follow-up in this inbox. Quote exact stop-request evidence from that message. This withdraws the mandate as a human stop; it cannot create or broaden work.',inputSchema:z.toJSONSchema(stopInput,{target:'draft-7'})},
  {type:'function',name:'orchestrator_followup_read',description:'Read the full text of a follow-up from this inbox, with bounded text paging.',inputSchema:z.toJSONSchema(readInput,{target:'draft-7',io:'input'})},
@@ -139,7 +141,7 @@ export class RouterFollowupBatch {
    const input=readInput.parse(value),notice=this.notices.find(n=>n.triggerId===input.triggerId)
    if(!notice||!this.eligible(notice).length)throw Error('Follow-up is outside this reader')
    const text=this.host.store.triggers.get(input.triggerId)!.text
-   return {text:text.slice(input.offset,input.offset+input.limit),nextOffset:input.offset+input.limit<text.length?input.offset+input.limit:null}
+   return textPage(text,input.offset,input.limit)
   }
   if(name!=='orchestrator_followup_stop')throw Error('Follow-up turns cannot create or change work')
   const input=stopInput.parse(value),relay=this.relay(input.triggerId,input.ticketId),trigger=this.authorize(relay)

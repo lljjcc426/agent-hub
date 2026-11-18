@@ -1,3 +1,4 @@
+import {chatUploadLimits} from '../../src/execution-limits.ts'
 import {teamName} from './agent-avatar.tsx';
 import {chatLocation} from './pending-links.ts';
 import '../../src/ui/tab-motion.js';
@@ -808,7 +809,7 @@ function Chat(p: ChatProps) {
     return uploadConversation.current;
   },[id]);
   const attachmentLanguage=useRef(L);attachmentLanguage.current=L;
-  const attachmentAdapter=useMemo(()=>createAttachmentAdapter(ensureConversation,boot?.uploads.maxBytes??25*1024*1024,(en,zh)=>attachmentLanguage.current(en,zh)),[ensureConversation,boot?.uploads.maxBytes]);
+  const attachmentAdapter=useMemo(()=>createAttachmentAdapter(ensureConversation,boot?.uploads.maxBytes??chatUploadLimits.maxBytes,(en,zh)=>attachmentLanguage.current(en,zh)),[ensureConversation,boot?.uploads.maxBytes]);
   const currentRouter = participants.find(a=>a.id===(snapshot?.routerId??"router"))!;
   const historicalWorker=snapshot?.tasks.find(t=>t.workerId===selectedAgent);
   const selected=participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter);

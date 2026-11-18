@@ -64,7 +64,7 @@ async function handle(m){
 }
 const lines=createInterface({input:process.stdin})
 lines.on('line',line=>{
- if(Buffer.byteLength(line)>16_000_000)process.exit(2)
+ if(Buffer.byteLength(line)>64 * 1024 * 1024)process.exit(2)
  let value;try{value=JSON.parse(line)}catch{process.exit(2)}
  void handle(value).catch(()=>process.exit(2))
 })

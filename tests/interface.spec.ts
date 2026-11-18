@@ -42,7 +42,7 @@ it('serves authenticated APIs and connects a real stdio MCP client to the same h
   // Exercise the SDK's Zod-to-JSON-Schema bridge and its real argument parser.
   const read = tools.tools.find(t=>t.name==='agent_read')!.inputSchema
   expect(read.required).toEqual(['resource'])
-  expect(read.properties).toMatchObject({ offset: { default: 0 }, limit: { default: 4000 }, pageSize: { default: 20 } })
+  expect(read.properties).toMatchObject({ offset: { default: 0 }, limit: { default: 32000, maximum: 128000 }, pageSize: { default: 100, maximum: 1000 } })
   const workers = tools.tools.find(t=>t.name==='worker_manage')!.inputSchema
   expect(workers.required).toEqual(['action'])
   expect(workers.properties).toMatchObject({ patch: { type: 'object' }, profile: { type: 'object' } })

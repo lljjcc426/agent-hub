@@ -8,8 +8,8 @@ export function attachmentParts(file:ChatAttachment):CompleteAttachment {
   return {id:file.id,name:file.name,type:file.previewUrl?'image':'document',contentType:file.mimeType,status:{type:'complete'},content:[{type:'file',filename:file.name,mimeType:file.mimeType,data:file.url},...(file.previewUrl?[{type:'image' as const,image:file.previewUrl}]:[])]}
 }
 export function attachmentError(code:string,L:Localize){
-  if(code==='attachment_too_large')return L('File exceeds 25 MB.','文件不能超过 25 MB。')
-  if(code==='attachment_limit')return L('Send or remove existing files first (10 max).','最多 10 个文件，请先发送或移除已有文件。')
+  if(code==='attachment_too_large')return L('File exceeds 100 MiB.','文件不能超过 100 MiB。')
+  if(code==='attachment_limit')return L('Send or remove existing files first (32 max).','最多 32 个文件，请先发送或移除已有文件。')
   if(code==='attachment_missing')return L('File unavailable. Upload it again.','文件已失效，请重新上传。')
   return L('Upload failed. Remove the file and try again.','上传失败，请移除文件后重试。')
 }

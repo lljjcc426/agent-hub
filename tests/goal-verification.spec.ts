@@ -424,12 +424,12 @@ it('automatically rechecks an invalid verifier protocol without rerunning the Wo
  expect(f.rounds().find(r=>!r.nodeId)?.attempts).toBe(2);expect(f.h.store.list('goal-release')).toHaveLength(1)
 })
 it('delivers complete Unicode evidence in pages below the native and API tool receipt limit',async()=>{
- const content='引号"\\\n😀'.repeat(2000);let pages=0
+ const content='引号"\\\n😀'.repeat(20000);let pages=0
  const f=fixture(r=>{writeFileSync(join(r.cwd,'result.txt'),content);return ready()},async(r,input)=>{
   for(const e of input.evidence){let offset:number|null=0,joined='';do{
    const result=await r.onTool!('goal_evidence',{id:e.id,offset},e.id+':'+offset)
    expect(protocolBytes(result)).toBeLessThanOrEqual(r.contextBudget!.toolReserveBytes)
-   const page=JSON.parse((result as any).contentItems[0].text);joined+=page.content;offset=page.nextOffset;pages++
+   const page=JSON.parse((result as any).contentItems[0].text);joined+=page.content;offset=page.nextOffset;if(e.key==='result.txt')pages++
   }while(offset!==null);if(e.key==='result.txt')expect(joined).toBe(content)}
   return {checks:input.criteria.map((c:any)=>({criterionId:c.id,verdict:'passed',explanation:'Read all pages',evidenceIds:input.evidence.filter((e:any)=>c.id==='__goal__'||e.criterionIds.includes(c.id)).map((e:any)=>e.id)}))}
  });f.start({criteria:[{id:'sum',description:'Inspect all Unicode content',files:['result.txt']}]});await until(f,()=>f.goal().state==='completed');expect(pages).toBeGreaterThan(10)

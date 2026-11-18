@@ -1,3 +1,4 @@
+import {maxWireBytes,maxMcpResultBytes} from './execution-limits.ts'
 import {cliMcpTransport,verifyCliMcpGrant} from './cli-mcp-profile.ts'
 import {ProcessSource} from './plugin-process.ts'
 import {OperationError,type Operation} from './operation-errors.ts'
@@ -78,7 +79,7 @@ export class ToolConnections {
         const resolveEnv=(refs:Record<string,string>)=>Object.fromEntries(Object.entries(refs).map(([key,env])=>{const value=process.env[env];if(!value)throw new OperationError('tool_initialize','configuration_invalid');return [key,value]}))
         const t=c.transport
         if(t.kind==='plugin')throw Error('Native plugin tools do not use an MCP transport')
-        const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:8_000_000}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:resolveEnv(t.headerEnv),redirect:'error'}})
+        const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:maxWireBytes}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:resolveEnv(t.headerEnv),redirect:'error'}})
         client.onclose=()=>{if(this.clients.get(id)===entry)this.clients.delete(id)}
         await client.connect(transport,{timeout:c.timeoutMs,signal:entry.controller.signal});if(this.closing)throw Error('Host is stopping');return client
       }catch(error){await client.close().catch(()=>{});throw toolFailure('tool_initialize',error,entry.controller.signal)}
@@ -98,7 +99,7 @@ export class ToolConnections {
       if(config.transport.kind==='cli-mcp')verifyCliMcpGrant(config.transport,config.allowedTools)
     }
     check()
-    return this.listDeclared(id,config!,check,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(60000)]))
+    return this.listDeclared(id,config!,check,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config!.timeoutMs)]))
   }
   private async listDeclared(id:string,config:import('./connector-config.ts').ToolConnection,check:()=>void,signal?:AbortSignal):Promise<Tool[]>{
     if(config.transport.kind==='plugin'){
@@ -113,7 +114,7 @@ export class ToolConnections {
       signal?.throwIfAborted();check()
       const page=await client.listTools(cursor?{cursor}:{},{timeout:config.timeoutMs,signal}).catch(error=>{throw toolFailure('tool_catalog',error,signal)})
       result.push(...page.tools);cursor=page.nextCursor
-      if(result.length>5000||seen.size>=100||cursor&&seen.has(cursor))throw Error('Tool catalog pagination did not finish')
+      if(result.length>20_000||seen.size>=1_000||cursor&&seen.has(cursor))throw Error('Tool catalog pagination did not finish')
       if(cursor)seen.add(cursor)
     }while(cursor)
     return result.filter(t=>config.allowedTools.includes(t.name))
@@ -128,9 +129,9 @@ export class ToolConnections {
   async catalog(owner:WorkOwner,selection:{connection?:string;tool?:string}={}){
     const ids:string[]=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.toolConnections??[]
     const result=[]
-    const signal=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(60000)])
     for(const id of selection.connection?[selection.connection]:ids){
-      this.allowed(owner,id)
+      const config=this.allowed(owner,id)
+      const signal=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs)])
       const tools=await this.tools(owner,id,signal)
       if(selection.tool&&!tools.some(t=>t.name===selection.tool))throw Error('Tool is not advertised by the configured MCP server')
       result.push({connection:id,tools:selection.tool?tools.filter(t=>t.name===selection.tool).map(({name,description,inputSchema,annotations})=>({name,description,inputSchema,annotations})):tools.map(({name})=>({name}))})
@@ -160,14 +161,14 @@ export class ToolConnections {
     if(!tool)throw Error('Tool is not advertised by the configured MCP server')
     if(tool.execution?.taskSupport==='required')throw Error('This tool requires MCP task execution, which is not supported by this adapter')
     const validation=schemas.getValidator(tool.inputSchema)(input.arguments)
-    if(!validation.valid)throw Error('Invalid tool arguments: '+validation.errorMessage)
+    if(!validation.valid)return {success:false,contentItems:[{type:'inputText',text:'Invalid tool arguments: '+validation.errorMessage}]}
     const client=config.transport.kind==='plugin'?undefined:await this.connect(input.connection)
     signal.throwIfAborted();this.allowed(owner,input.connection)
     const receipt:Receipt={id,ticketId:owner.ticketId,agentId:owner.agentId,connection:input.connection,tool:input.tool,fingerprint,state:'running'}
     this.host.store.put('tool-receipt',id,receipt)
     try{
       const result=client?await client.callTool({name:input.tool,arguments:input.arguments},undefined,{signal,timeout:config.timeoutMs}):await abortable(this.pluginRead(owner,input),signal)
-      if(JSON.stringify(result).length>8_000_000)throw Error('Tool result exceeds the durable receipt limit')
+      if(Buffer.byteLength(JSON.stringify(result))>maxMcpResultBytes)throw Error('Tool result exceeds the durable receipt limit')
       receipt.state='complete';receipt.result=result
     }catch{
       if(config.transport.kind==='plugin'){receipt.state='complete';receipt.result={isError:true,content:[{type:'text',text:'Plugin resource read failed; this requestId retains the failure.'}]}}

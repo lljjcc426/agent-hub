@@ -1,3 +1,4 @@
+import {chatUploadLimits} from './execution-limits.ts'
 import {decisionTermsSchema} from './business-decisions.ts'
 import { z } from 'zod'
 export const direction = z.object({
@@ -49,5 +50,5 @@ export const reportSchema = {
   }, required: ['state', 'summary', 'reply', 'question', 'askedBy', 'handbacks', 'decision'],
 }
 
-export const chatReport=report.extend({files:z.array(z.string().min(1).max(1800)).max(10).optional()})
-export const chatReportSchema={...reportSchema,properties:{...reportSchema.properties,files:{type:'array',maxItems:10,items:{type:'string'},description:'Final files for the Chat user, as paths relative to the task workspace. Use an empty array when there is no file to deliver.'}},required:[...reportSchema.required,'files']}
+export const chatReport=report.extend({files:z.array(z.string().min(1).max(1800)).max(chatUploadLimits.maxFiles).optional()})
+export const chatReportSchema={...reportSchema,properties:{...reportSchema.properties,files:{type:'array',maxItems:chatUploadLimits.maxFiles,items:{type:'string'},description:'Final files for the Chat user, as paths relative to the task workspace. Use an empty array when there is no file to deliver.'}},required:[...reportSchema.required,'files']}

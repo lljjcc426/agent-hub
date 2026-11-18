@@ -1,3 +1,4 @@
+import {maxToolArgumentBytes} from '../execution-limits.ts'
 import {apiHeaders,apiOutputFormat} from './api-request.ts'
 import {randomUUID,createHash} from 'node:crypto'
 import {resolve} from 'node:path'
@@ -89,7 +90,7 @@ export class ApiModel implements Model {
  }
  private body(t:ApiThread,instructions:string,r:ModelRequest){
   const d=this.definition,tools=r.tools??[]
-  const context=tools.some(t=>t.name===recallSpec.name)?contextProjection(t,Math.min(128000,Math.floor(d.maxContextBytes/2))):{messages:t.messages,notice:''}
+  const context=tools.some(t=>t.name===recallSpec.name)?contextProjection(t,Math.floor(Math.min(d.maxContextBytes,r.contextBudget?.maxBytes??d.maxContextBytes)/2)):{messages:t.messages,notice:''}
   t={...t,messages:context.messages}
   const finalInstructions=instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
   if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...apiOutputFormat(d,r.schema),...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
@@ -164,7 +165,7 @@ export class ApiModel implements Model {
     const response=await this.http(this.definition.kind==='openai-chat'?'chat/completions':this.definition.kind==='anthropic'?'messages':'responses',signal,body,r.onOutput,value=>r.onUsage?.(providerUsage(usageId,this.definition.kind,value)))
     signal.throwIfAborted();if(typeof response.model==='string'){(turn as any).providerModel=response.model;r.onModel?.(response.model)}const accepted=this.accept(response,t),seen=new Set<string>()
     if((toolCalls+=accepted.calls.length)>this.definition.maxToolCalls)throw Error('Backend tool call budget exceeded')
-    for(const call of accepted.calls){if(typeof call.id!=='string'||!call.id||typeof call.name!=='string'||typeof call.arguments!=='string'||call.arguments.length>1000000||seen.has(call.id)||t.effects[call.id])throw Error('Backend returned an invalid or repeated tool call ID');seen.add(call.id)}
+    for(const call of accepted.calls){if(typeof call.id!=='string'||!call.id||typeof call.name!=='string'||typeof call.arguments!=='string'||Buffer.byteLength(call.arguments)>maxToolArgumentBytes||seen.has(call.id)||t.effects[call.id])throw Error('Backend returned an invalid or repeated tool call ID');seen.add(call.id)}
     t.messages.push(...accepted.wire)
     turn.items.push(...accepted.calls.map(c=>({type:'functionCall',callId:c.id,name:c.name,arguments:c.arguments})),...(accepted.text?[{type:'agentMessage',text:accepted.text}]:[]))
     if(accepted.calls.length){
@@ -177,7 +178,7 @@ export class ApiModel implements Model {
       if(!budgetError)try{checkBudget({request:this.body(t,instructions,r),completedResults:results},r.contextBudget,'api-wire','before_tool',r.onBudget,true)}catch(error){if(!(error instanceof ContextBudgetExceeded))throw error;budgetError=error}
       signal.throwIfAborted();const effect:Effect={call,digest:hash(call.name+'\n'+call.arguments),state:'started'};t.effects[call.id]=effect;persist()
       let result:ToolResult
-      try{const args=JSON.parse(call.arguments),validate=validators.get(call.name);if(budgetError)result=failure('Context budget exceeded before execution; tool was not executed');else if(!validate||!r.onTool&&!(canRecall&&call.name===recallSpec.name))result=failure('Tool is not in this activation capability set');else if(!validate(args))result=failure('Invalid tool arguments: '+ajv.errorsText(validate.errors));else{r.onProgress?.('backend/tool/'+call.name);result=canRecall&&call.name===recallSpec.name?recall(t,args as Parameters<typeof recall>[1]):await r.onTool!(call.name,args,call.id)}}
+      try{const args=JSON.parse(call.arguments),validate=validators.get(call.name);if(budgetError)result=failure('Context budget exceeded before execution; tool was not executed');else if(!validate||!r.onTool&&!(canRecall&&call.name===recallSpec.name))result=failure('Tool is not in this activation capability set');else if(!validate(args))result=failure('Invalid tool arguments: '+ajv.errorsText(validate.errors));else{r.onProgress?.('backend/tool/'+call.name);result=canRecall&&call.name===recallSpec.name?recall(t,args as Parameters<typeof recall>[1],r.contextBudget?.toolReserveBytes):await r.onTool!(call.name,args,call.id)}}
       catch{result=failure('Host tool failed. Inspect task state and permissions before retrying; side effects may be uncertain.')}
       if(result.contentItems.some(c=>c.type==='inputImage')&&!this.definition.images)result=failure('This backend is configured without image support. Image bytes were not sent to the model.')
       for(const item of result.contentItems)if(item.type==='inputImage')image(item.imageUrl!)

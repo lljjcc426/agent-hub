@@ -32,6 +32,10 @@ async function fixture(kind='github'){
   else if(path.startsWith('/repos/owner/repo/issues?'))value=emptyHistory?[]:[{id:1,number:7,title:'Parser',body:'/agent fix parser',state:'open',user:{login:'alice',type:'User'}}]
   else if(path==='/repos/owner/repo/issues/7')value={id:1,number:7,title:'Parser',body:edited?'Changed request':'/agent fix parser',state:'open',pull_request:{},user:{login:'alice',type:'User'}}
   else if(path==='/repos/owner/repo/pulls/7')value={number:7,title:'Parser',state:'open',draft:false,merged:false,mergeable:true,additions:1,deletions:1,head:{sha:'a'.repeat(40),ref:'superagent/test',repo:{full_name:'owner/repo'}},base:{ref:'main',repo:{full_name:'owner/repo'}}}
+  else if(path.startsWith('/repos/owner/repo/pulls/7/files?')){
+   const query=new URL(path,'https://github.test').searchParams,count=Number(query.get('per_page')),first=(Number(query.get('page'))-1)*count
+   value=Array.from({length:Math.max(0,Math.min(145-first,count))},(_,i)=>({filename:'file-'+(first+i)}))
+  }
   else if(path.includes('/check-runs'))value={check_runs:[]}
   else if(path.includes('/statuses'))value=[{id:9,context:'legacy-ci',state:status,target_url:'https://example.test/ci'}]
   else if(path.includes('/reviews?'))value=[{id:3,state:'APPROVED',body:'',commit_id:'a'.repeat(40),submitted_at:new Date().toISOString(),user:{login:'reviewer',type:'User'}}]
@@ -59,6 +63,11 @@ it('runs GitHub ingress, anchored reads, CI and durable cursors in the sandboxed
  expect(f.events.every(t=>t.meta.scope==='owner/repo'&&t.channel.thread==='owner/repo#7')).toBe(true)
  expect(f.calls.some(c=>c.path.includes('NaN')||c.path.includes('delegation'))).toBe(false)
  const initial=f.events.find(t=>t.meta.eventKind==='issue')
+ const files=await f.source.read({resource:'files',trigger:initial,pageSize:1000})
+ expect(files.files).toHaveLength(145);expect(files.files.at(-1).filename).toBe('file-144');expect(files.truncated).toBe(false)
+ expect(f.calls.filter(c=>c.path.includes('/files?')).map(c=>c.path.split('?')[1])).toEqual(['per_page=100&page=1','per_page=100&page=2'])
+ const partial=await f.source.read({resource:'files',trigger:initial,pageSize:120})
+ expect(partial.files).toHaveLength(120);expect(partial.truncated).toBe(true)
  expect(await f.source.read({resource:'message',trigger:initial,pageSize:20})).toMatchObject({message:{text:'Parser\n/agent fix parser'}})
  f.edit();await expect(f.source.read({resource:'message',trigger:initial,pageSize:20})).rejects.toThrow('failed')
  const cursor=f.store.get('source-cursor','repo'),threadCursor=f.store.get('thread-cursor','repo:owner/repo#7')

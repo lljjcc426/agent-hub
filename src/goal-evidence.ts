@@ -1,3 +1,4 @@
+import {resourcePage} from './execution-limits.ts'
 import {z} from 'zod'
 import {protocolBytes} from './context-budget.ts'
 import type {ModelRequest,ToolSpec} from './model.ts'
@@ -8,7 +9,7 @@ export const evidenceTools:ToolSpec[]=[{type:'function',name:'goal_evidence',des
 export interface GoalEvidence {id:string;kind:'file'|'document'|'report'|'execution';ticketId?:string;delegationId?:string;sourceInstance?:string;key:string;content:string;hash:string;artifact?:import('./goal-artifacts.ts').ArtifactVersion;commit?:string;missing?:boolean;revision?:number;criterionIds:string[]}
 
 /** Fresh verifier/planner input stays below a quarter of the scope budget. */
-export function inlineEvidenceBudget(input:unknown,maxBytes:number){return Math.max(0,Math.min(512*1024,Math.floor(maxBytes/4)-protocolBytes(input)))}
+export function inlineEvidenceBudget(input:unknown,maxBytes:number){return Math.max(0,Math.min(2*1024*1024,Math.floor(maxBytes/4)-protocolBytes(input)))}
 
 /** A citation becomes usable only after gap-free delivery of the complete snapshot. */
 export function evidenceAccess(evidence:GoalEvidence[],pageBytes:number,current:()=>void,inlineBytes=0){
@@ -26,7 +27,7 @@ export function evidenceAccess(evidence:GoalEvidence[],pageBytes:number,current:
   if(name!=='goal_evidence'||!e)throw Error('Evidence is outside this acceptance snapshot')
   const chars=Array.from(e.content),covered=offsets.get(e.id)??0
   if(x.offset>covered||x.offset>chars.length)throw Error('Evidence pages must be read without gaps')
-  let count=Math.min(4096,chars.length-x.offset)
+  let count=Math.min(resourcePage.maxCharacters,chars.length-x.offset)
   const page=()=>({success:true,contentItems:[{type:'inputText' as const,text:JSON.stringify({id:e.id,offset:x.offset,nextOffset:x.offset+count<chars.length?x.offset+count:null,totalCharacters:chars.length,content:chars.slice(x.offset,x.offset+count).join('')})}]})
   let output=page()
   while(protocolBytes(output)>pageBytes&&count>0){count=Math.floor(count/2);output=page()}

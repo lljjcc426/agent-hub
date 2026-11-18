@@ -19,11 +19,22 @@ const baseline: { zod: string; cases: { name: string; input: any; expected: Conf
   JSON.parse(readFileSync(new URL('./fixtures/zod3-config.json', import.meta.url), 'utf8'))
 // Preserve the historical fixture byte-for-byte; account explicitly for the new feature defaults.
 const featureDefaults = (config: Config): Config => ({...config,backendPlugins:config.backendPlugins??[],viewPlugins:[],decision:decisionConfigSchema.parse({}),watchdog:Object.assign({enabled:true,reviewIntervalMs:600000,modelTimeoutMs:60000,maxReviewsPerHour:12,maxRecoveries:3},config.watchdog)})
+const workDefaults={backgroundTimeoutMs:7_200_000,maxAgents:16,maxDepth:5,maxOutputBytes:8*1024*1024}
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 it.each(baseline.cases)('preserves the $name Zod 3 configuration and serialized round trip', ({ input, expected }) => {
-  expect(configSchema.parse(input)).toEqual(featureDefaults(expected))
+  const fresh=structuredClone(featureDefaults(expected))
+  fresh.turnTimeoutMs=input.turnTimeoutMs??1_800_000
+  fresh.work={...fresh.work,...workDefaults,...input.work}
+  fresh.browser={...fresh.browser,maxSessions:16,timeoutMs:45_000,...input.browser}
+  for(const [id,backend] of Object.entries(fresh.backends)){
+    if(backend.kind==='openai-chat'||backend.kind==='openai-responses'||backend.kind==='anthropic'){
+      Object.assign(backend,{maxSteps:256,maxToolCalls:1024,maxContextBytes:32_000_000,requestTimeoutMs:300_000},input.backends[id])
+    }
+  }
+  for(const [id,connection] of Object.entries(fresh.toolConnections))connection.timeoutMs=input.toolConnections[id].timeoutMs??120_000
+  expect(configSchema.parse(input)).toEqual(fresh)
   expect(configSchema.parse(JSON.parse(JSON.stringify(expected)))).toEqual(featureDefaults(expected))
 })
 
@@ -35,7 +46,7 @@ it('continues accepting fractional milliseconds in pre-existing watchdog fields'
 it('keeps omitted patches absent and supplied empty objects/defaults intentional', () => {
   expect(patchSchema.parse({})).toEqual({})
   expect(patchSchema.parse({ effort: 'low' })).toEqual({ effort: 'low' })
-  expect(patchSchema.parse({ work: {} })).toEqual({ work: baseline.cases[0]!.expected.work })
+  expect(patchSchema.parse({ work: {} })).toEqual({ work: {...baseline.cases[0]!.expected.work,...workDefaults} })
   expect(patchSchema.parse({ backends: {}, model: undefined })).toEqual({ backends: {}, model: undefined })
   expect(() => patchSchema.parse({ typo: true })).toThrow()
   expect(() => patchSchema.parse({ work: { typo: true } })).toThrow()

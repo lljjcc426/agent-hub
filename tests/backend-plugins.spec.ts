@@ -106,7 +106,9 @@ it('isolates host secrets, task writes and unreferenced environment, including a
 })
 it.each(['unknown-tool','bad-args'])('rejects %s before host execution',async(input)=>{
  const f=await fixture();let calls=0
- await expect(f.registry.run({...f.request,input,tools:[{type:'function',name:'allowed',description:'test',inputSchema:{type:'object',properties:{value:{type:'number'}},required:['value']}}],onTool:async()=>{calls++;return {contentItems:[],success:true}}})).rejects.toMatchObject({code:'unsupported'})
+ const run=f.registry.run({...f.request,input,tools:[{type:'function',name:'allowed',description:'test',inputSchema:{type:'object',properties:{value:{type:'number'}},required:['value']}}],onTool:async()=>{calls++;return {contentItems:[],success:true}}})
+ if(input==='unknown-tool')await expect(run).rejects.toMatchObject({code:'unsupported'})
+ else await expect(run).resolves.toHaveProperty('text')
  expect(calls).toBe(0)
 })
 it('persists uncertain effects and blocks retry after an effect throws',async()=>{

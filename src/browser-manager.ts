@@ -1,3 +1,4 @@
+import {browserCapacity} from './execution-limits.ts'
 import { randomUUID, createHash } from "node:crypto";
 import { mkdirSync, rmSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -203,7 +204,7 @@ export class BrowserManager {
       user: conversation?.owner ?? "host",
       workerId: run?.workerId ?? assignment?.workerId ?? "",
       conversationId: conversation?.id,
-      maxTabs: options?.maxTabs ?? 8,
+      maxTabs: options?.maxTabs ?? browserCapacity.defaultTabs,
     };
   }
   private profile(id: string, user: string) {
@@ -466,7 +467,7 @@ export class BrowserManager {
       revision: 0,
       leaseUntil: 0,
       ended: false,
-      maxTabs: principal?.maxTabs ?? 8,
+      maxTabs: principal?.maxTabs ?? browserCapacity.defaultTabs,
       closing: false,
       tabs: [],
       url: "about:blank",
@@ -987,7 +988,8 @@ export class BrowserManager {
       if (secret) text = text.split(secret).join("[hidden]");
     let resultText = JSON.stringify({
       ...this.view(s),
-      snapshot: text.slice(0, 40000),
+      snapshot: text.slice(0, browserCapacity.snapshotCharacters),
+      ...(text.length > browserCapacity.snapshotCharacters ? {snapshotTruncated: true, totalCharacters: text.length} : {}),
     });
     for (const secret of s.secrets)
       if (secret)

@@ -146,9 +146,9 @@ it('lets a Worker retrieve scoped knowledge but rejects Worker writes',async()=>
   if(r.role==='router'&&input.kind!=='worker_result'){await tool(r,'worker_manage',{action:'assign',id:'one',text:'Read the provided document and verify it',revision:0,requestId:'read-doc'});return {reply:''}}
   if(r.role==='worker'){
    const output=await tool(r,'superagent_knowledge',{action:'read',id:docId});expect(output.content).toBe('Worker source 763');read=true
-   await expect(r.onTool!('superagent_knowledge',{action:'links',id:docId},'old-links')).rejects.toThrow()
-   await expect(r.onTool!('superagent_knowledge',{action:'list',kind:'wiki'},'old-wiki')).rejects.toThrow()
-   await expect(r.onTool!('superagent_knowledge',{action:'delete',id:docId,operationId:'forbidden',expectedRevision:1},'write')).rejects.toThrow()
+   await expect(r.onTool!('superagent_knowledge',{action:'links',id:docId},'old-links')).resolves.toMatchObject({success:false,contentItems:[{text:expect.stringContaining('Invalid arguments')}]})
+   await expect(r.onTool!('superagent_knowledge',{action:'list',kind:'wiki'},'old-wiki')).resolves.toMatchObject({success:false,contentItems:[{text:expect.stringContaining('Invalid arguments')}]})
+   await expect(r.onTool!('superagent_knowledge',{action:'delete',id:docId,operationId:'forbidden',expectedRevision:1},'write')).resolves.toMatchObject({success:false,contentItems:[{text:expect.stringContaining('Invalid arguments')}]})
   }
  })
  const input=f.receive(),c=f.context(input);docId=f.put(c,'Worker source 763').id
@@ -289,7 +289,7 @@ it('lets the actual Worker broker recall authorized memory and binds its source 
   if(r.role==='router'&&input.kind!=='worker_result'){await tool(r,'worker_manage',{action:'assign',id:'one',text:'Use the retained project note to answer the local question',revision:0,requestId:'memory-read'});return {reply:''}}
   if(r.role==='worker'){
    const output=await tool(r,'superagent_memory',{query:'worker memory marker 859'});expect(output.items.some((x:any)=>x.id===memoryId)).toBe(true);read=true
-   await expect(r.onTool!('superagent_memory',{action:'forget',id:memoryId},'write-memory')).rejects.toThrow()
+   await expect(r.onTool!('superagent_memory',{action:'forget',id:memoryId},'write-memory')).resolves.toMatchObject({success:false,contentItems:[{text:expect.stringContaining('Invalid arguments')}]})
   }
  })
  const input=f.receive(),c=f.context(input),e=f.h.memory.ingest(c)

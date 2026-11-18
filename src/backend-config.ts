@@ -1,3 +1,4 @@
+import {modelSteps,modelToolCalls,maxOutputTokens,maxTurnMs,maxWireBytes,workerPoolDefault,messageCharacters} from './execution-limits.ts'
 import {nativeToolFor} from './cli-native-tools.ts'
 import {z} from 'zod'
 import {teamTargetSchema} from './delegation/contract.ts'
@@ -18,23 +19,23 @@ export const parametersSchema=z.record(z.string(),z.unknown()).superRefine((p,ct
 export const effortSchema=z.enum(['none','minimal','low','medium','high','xhigh'])
 export const agentOptionsSchema=z.object({
  persona:personaSchema.optional(),
- effort:effortSchema.optional(),parameters:parametersSchema.optional(),prompt:z.string().max(64000).optional(),
- maxOutputTokens:z.number().int().min(64).max(200000).optional(),maxSteps:z.number().int().min(1).max(256).optional(),
- maxToolCalls:z.number().int().min(1).max(10000).optional(),timeoutMs:z.number().int().min(1000).max(3600000).optional(),
+ effort:effortSchema.optional(),parameters:parametersSchema.optional(),prompt:z.string().max(messageCharacters).optional(),
+ maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).optional(),maxSteps:z.number().int().min(1).max(modelSteps.max).optional(),
+ maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).optional(),timeoutMs:z.number().int().min(1000).max(maxTurnMs).optional(),
  tools:z.array(z.string().min(1)).optional().describe('Host tool names from worker_manage list. Omit to inherit connection defaults; with no default, all available host tools are enabled. An empty array disables tools.'),
  toolConnections:z.array(name).optional().describe('Existing MCP/tool connection IDs from worker_manage list. This selects connections; it does not create credentials or new connections.'),
  browser:browserOptionsSchema.optional(),
 }).strict()
 export type AgentOptions=z.infer<typeof agentOptionsSchema>
 const parameters=parametersSchema.prefault({})
-export const backendLimitsSchema=z.object({timeoutMs:z.number().int().min(1000).max(3600000).optional(),maxOutputTokens:z.number().int().min(64).max(200000).optional(),maxSteps:z.number().int().min(1).max(256).optional(),maxToolCalls:z.number().int().min(1).max(10000).optional()}).strict()
+export const backendLimitsSchema=z.object({timeoutMs:z.number().int().min(1000).max(maxTurnMs).optional(),maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).optional(),maxSteps:z.number().int().min(1).max(modelSteps.max).optional(),maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).optional()}).strict()
 export const apiBackendDefinition=z.object({
   kind:z.enum(['openai-responses','openai-chat','anthropic']),limits:backendLimitsSchema.optional(),label:z.string().trim().min(1).max(100).optional(),baseUrl:apiBase,model:z.string().min(1),apiKeyEnv:envName.optional(),
-  images:z.boolean().default(false),maxSteps:z.number().int().min(1).max(256).default(64),
-  maxToolCalls:z.number().int().min(1).max(10000).default(256),
-  maxContextBytes:z.number().int().min(4096).max(64000000).default(16000000),
-  maxOutputTokens:z.number().int().min(64).max(200000).default(8192),
-  requestTimeoutMs:z.number().int().min(100).max(600000).default(120000),
+  images:z.boolean().default(false),maxSteps:z.number().int().min(1).max(modelSteps.max).default(modelSteps.default),
+  maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).default(modelToolCalls.default),
+  maxContextBytes:z.number().int().min(4096).max(maxWireBytes).default(32_000_000),
+  maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).default(8192),
+  requestTimeoutMs:z.number().int().min(100).max(1_800_000).default(300_000),
   outputFormat:z.enum(['prompt','json-object','json-schema']).default('prompt'),parameters,
   headers:z.record(z.string().regex(/^[A-Za-z0-9-]+$/),z.string().regex(/^[^\r\n]*$/)).optional(),
   headerEnv:z.record(z.string().regex(/^[A-Za-z0-9-]+$/),envName).optional(),defaults:agentOptionsSchema.optional(),
@@ -62,7 +63,7 @@ function dropLegacyHarness(profile:unknown){
 }
 export const executionSchema=z.object({backend:name.default('codex'),roles:z.object({router:name.optional(),worker:name.optional(),subagent:name.optional()}).strict().prefault({}),
  router:z.preprocess(dropLegacyHarness,agentOptionsSchema.extend({nativeTool,label:z.string().trim().min(1).max(100).optional(),backend:name.optional(),model:z.string().min(1).optional(),mode:z.enum(['assessment','host','client']).optional()})).optional(),
- management:z.object({enabled:z.boolean().default(false),maxWorkers:z.number().int().min(1).default(10),backends:z.array(name).optional()}).strict().optional(),
+ management:z.object({enabled:z.boolean().default(false),maxWorkers:z.number().int().min(1).default(workerPoolDefault),backends:z.array(name).optional()}).strict().optional(),
  workers:z.array(z.preprocess(dropLegacyHarness,workerProfileSchema)).optional(),teamTargets:z.array(teamTargetSchema).max(16).optional()}).strict().prefault({})
 export function validateBackendSelection(c:{execution:z.infer<typeof executionSchema>;backends:Record<string,BackendDefinition>;toolConnections?:Record<string,unknown>;decision?:DecisionConfig}){
  const provider=c.decision?.provider

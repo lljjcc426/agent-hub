@@ -1,0 +1,19 @@
+// Host capacities shared by tool schemas, execution backends and clients.
+export const resourcePage = {defaultCharacters: 32_000, maxCharacters: 128_000, defaultItems: 100, maxItems: 1_000}
+export const modelSteps = {default: 256, max: 2_048}
+export const modelToolCalls = {default: 1_024, max: 32_768}
+export const maxOutputTokens = 512_000
+export const maxJobWaitMs = 120_000
+export const maxTurnMs = 4 * 60 * 60_000
+export const maxWireBytes = 64 * 1024 * 1024
+export const maxToolArgumentBytes = 8 * 1024 * 1024
+export const scopeContextBytes = {default: 16_000_000, max: maxWireBytes}
+export const maxResourceBytes = 64 * 1024 * 1024
+export const maxInlineImageBytes = 16 * 1024 * 1024
+export const maxMcpResultBytes = 32 * 1024 * 1024
+export const memoryCapacity = {queryCharacters: 2_000, noteCharacters: 64_000}
+export const messageCharacters = 256_000
+export const workerPoolDefault = 32
+export const shellOutputBytes = {default: 8 * 1024 * 1024, max: 64 * 1024 * 1024}
+export const browserCapacity = {defaultTabs: 16, maxTabs: 64, textCharacters: 128_000, snapshotCharacters: 256_000}
+export const chatUploadLimits = {maxBytes: 100 * 1024 * 1024, maxFiles: 32}

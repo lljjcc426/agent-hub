@@ -17,7 +17,7 @@ function flushEvents(force = false) {
   let last
   while(operations.length){
     let count=0,bytes=0
-    for(const op of operations){const size=Buffer.byteLength(JSON.stringify(op));if(size>8_000_000)throw Error('Plugin operation exceeds limit');if(count&&(bytes+size>1_000_000||count>=1000))break;bytes+=size;count++}
+    for(const op of operations){const size=Buffer.byteLength(JSON.stringify(op));if(size>32*1024*1024)throw Error('Plugin operation exceeds limit');if(count&&(bytes+size>8*1024*1024||count>=1000))break;bytes+=size;count++}
     const id=++sendSequence,batch=operations.splice(0,count)
     const promise=new Promise(resolve=>acknowledgements.set(id,{resolve}))
     acknowledgements.get(id).promise=promise
@@ -57,7 +57,7 @@ console.log=(...args)=>console.error(...args)
 let serial = Promise.resolve()
 const lines = createInterface({input:process.stdin})
 lines.on('line',line=>{
-  if(line.length>16_000_000)process.exit(2)
+  if(Buffer.byteLength(line)>64*1024*1024)process.exit(2)
   let message
   try {message=JSON.parse(line)} catch {process.exit(2)}
   if(message.type==='repository-authorized'){

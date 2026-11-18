@@ -297,7 +297,7 @@ export class FeishuSource extends MessageSource {
   private async threadPage(root:string,cursor:string,pageSize:number,signal?:AbortSignal){
     const source=await this.one(root),threadId=source.thread_id
     if(!threadId)return {items:[],has_more:false}
-    return this.api('GET','im/v1/messages?container_id_type=thread&container_id='+encodeURIComponent(threadId)+'&page_size='+pageSize+(cursor?'&page_token='+encodeURIComponent(cursor):''),undefined,signal)
+    return this.api('GET','im/v1/messages?container_id_type=thread&container_id='+encodeURIComponent(threadId)+'&page_size='+Math.min(pageSize,50)+(cursor?'&page_token='+encodeURIComponent(cursor):''),undefined,signal)
   }
   async read(request:{resource:string;trigger?:Trigger;pageSize:number}){
     const trigger=request.trigger

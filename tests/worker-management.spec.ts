@@ -162,9 +162,10 @@ it('publishes the same nested Worker options and constraints used by runtime val
   const key=action==='create'?'profile':'patch',profile={id:'test',backend:'deepseek',label:'Writer',effort:'high',parameters:{temperature:0.2},tools:['superagent_read'],toolConnections:['docs'],browser:{enabled:true,maxTabs:4},maxOutputTokens:2048,maxSteps:4,maxToolCalls:10,timeoutMs:20000},command={action,[key]:profile}
   expect(validate(command)).toBe(true);expect(workerCommandSchema.safeParse(command).success).toBe(true)
   expect(validate({...command,[key]:{...profile,apiKey:'not-a-worker-option'}})).toBe(false)
-  expect(validate({...command,[key]:{...profile,maxSteps:257}})).toBe(false)
+  expect(validate({...command,[key]:{...profile,maxSteps:2048}})).toBe(true)
+  expect(validate({...command,[key]:{...profile,maxSteps:2049}})).toBe(false)
  }
- expect(schema.properties.profile.properties.browser.properties.maxTabs.maximum).toBe(20)
+ expect(schema.properties.profile.properties.browser.properties.maxTabs.maximum).toBe(64)
  expect(schema.properties.patch.properties.effort.enum).toContain('high')
 })
 

@@ -69,7 +69,7 @@ it('reports retained work state and only nonterminal valid recorded deadlines, w
  const f=fixture();for(const [id,row]of [
  ['a',work({deadline:999})],['b',work({id:'b',kind:'agent',state:'starting',deadline:1001})],['c',work({id:'c',state:'completed',deadline:1})],['d',work({id:'d',state:'failed'})],['e',work({id:'e',state:'cancelled'})],['f',work({id:'f',state:'interrupted'})],['g',work({id:'g',deadline:'SECRET_BAD'})],['h',work({state:'unknown'})],['i',null],['j',work({kind:'unknown'})],
  ] as const)f.host.store.put('work',id,row)
- const before=db(f.host.store);expect(f.view.snapshot().work).toEqual({retainedItems:10,states:{starting:1,running:2,completed:1,failed:1,cancelled:1,interrupted:1},unrecognizedStateItems:3,deadlineItems:2,pastDeadlineItems:1,invalidDeadlineItems:1,limits:{maxAgentsPerTicket:3,maxDepth:3,backgroundTimeoutMs:1800000,maxOutputBytesPerShell:1000000}});expect(db(f.host.store)).toEqual(before)
+ const before=db(f.host.store);expect(f.view.snapshot().work).toEqual({retainedItems:10,states:{starting:1,running:2,completed:1,failed:1,cancelled:1,interrupted:1},unrecognizedStateItems:3,deadlineItems:2,pastDeadlineItems:1,invalidDeadlineItems:1,limits:{maxAgentsPerTicket:3,maxDepth:5,backgroundTimeoutMs:7200000,maxOutputBytesPerShell:8*1024*1024}});expect(db(f.host.store)).toEqual(before)
  expect(JSON.stringify(f.view.snapshot())).not.toContain('SECRET')
 })
 it('captures the getter once per read and keeps revision/config/records from the same Runtime even if it switches mid-read',()=>{

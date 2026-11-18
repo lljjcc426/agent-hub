@@ -1,3 +1,4 @@
+import {maxResourceBytes} from '../../src/execution-limits.ts'
 import {createHash} from 'node:crypto'
 import { spawn,execFile } from 'node:child_process'
 import {promisify} from 'node:util'
@@ -97,7 +98,7 @@ export class GithubSource extends MessageSource {
   private thread(number:number){return this.repo+'#'+number}
   private async pages(path:string,key?:string,signal?:AbortSignal):Promise<any[]>{
     const result:any[]=[]
-    for(let page=1;page<=20;page++){
+    for(let page=1;page<=200;page++){
       signal?.throwIfAborted()
       const data=await this.api.request('GET',path+(path.includes('?')?'&':'?')+'per_page=100&page='+page,undefined,signal)
       const items=key?data[key]:data
@@ -120,7 +121,7 @@ export class GithubSource extends MessageSource {
     if(!ctx.store.get('source-cursor',this.config.id))ctx.store.put('source-cursor',this.config.id,{since})
     const boundary=new Date().toISOString()
     for(const kind of ['issues','issues/comments']){
-      for(let page=1;page<=20;page++){
+      for(let page=1;page<=200;page++){
         const items=await this.api.request('GET','repos/'+this.repo+'/'+kind+'?since='+encodeURIComponent(since)+'&sort=updated&direction=asc&per_page=100&page='+page,undefined,ctx.signal)
         if(!Array.isArray(items))throw Error('Invalid GitHub event list')
         for(const item of items){
@@ -196,7 +197,7 @@ export class GithubSource extends MessageSource {
       if(parts.some(p=>p==='..'||p.startsWith('.')||p==='node_modules'))throw Error('Repository path is outside source resources')
       const result=await this.api.request('GET','repos/'+this.repo+'/contents/'+parts.map(encodeURIComponent).join('/'))
       if(file[1]==='directory'){if(!Array.isArray(result))throw Error('Not a directory');return result.filter(x=>!x.name.startsWith('.')&&x.name!=='node_modules').map(x=>({name:x.name,type:x.type}))}
-      if(result.type!=='file'||result.encoding!=='base64'||result.size>8000000)throw Error('File is unavailable or too large')
+      if(result.type!=='file'||result.encoding!=='base64'||result.size>maxResourceBytes)throw Error('File is unavailable or too large')
       const data=Buffer.from(result.content,'base64');if(data.includes(0))throw Error('Binary repository file');return data.toString('utf8')
     }
     const commit=/^commits\/([a-f0-9]{7,40})\/checks$/.exec(resource)
@@ -214,8 +215,9 @@ export class GithubSource extends MessageSource {
       if(!root)throw Error('Unknown review thread')
       return {messages:comments.filter(x=>x.id===root||x.in_reply_to_id===root).map(message)}
     }
-    const items=await this.api.request('GET',path+'/'+section+'?per_page='+request.pageSize+'&page='+page)
-    return {messages:items.map((x:any)=>({...message(x),...(section==='reviews'?{state:x.state,head:x.commit_id}:{})})),next_resource:items.length===request.pageSize?'github/'+kind+'/'+number+'/'+section+'/'+(Number(page)+1):null}
+    const pageSize=Math.min(request.pageSize,100)
+    const items=await this.api.request('GET',path+'/'+section+'?per_page='+pageSize+'&page='+page)
+    return {messages:items.map((x:any)=>({...message(x),...(section==='reviews'?{state:x.state,head:x.commit_id}:{})})),next_resource:items.length===pageSize?'github/'+kind+'/'+number+'/'+section+'/'+(Number(page)+1):null}
   }
   async checks(head:string){
     const checks=await this.pages('repos/'+this.repo+'/commits/'+head+'/check-runs','check_runs')

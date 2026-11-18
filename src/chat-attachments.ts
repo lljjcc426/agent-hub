@@ -1,3 +1,4 @@
+import {chatUploadLimits,maxInlineImageBytes} from './execution-limits.ts'
 import {createHash} from 'node:crypto'
 import {attachmentArtifactRegistration,type ArtifactRegistration} from './artifact-registry.ts'
 import type {ChatArtifactReference} from './artifact-reference.ts'
@@ -8,7 +9,7 @@ import type {Runtime} from './runtime.ts'
 import {ChatError} from './chat-errors.ts'
 import {stableDigest} from './sources.ts'
 
-export const chatUploadLimits={maxBytes:25*1024*1024,maxFiles:10}
+export {chatUploadLimits} from './execution-limits.ts'
 export interface ChatAttachment {id:string;name:string;mimeType:string;bytes:number;url:string;previewUrl?:string;reference?:ChatArtifactReference;registration?:Extract<ArtifactRegistration,{kind:'chat-attachment'}>}
 interface Upload {id:string;kind:'chat-upload';conversationId:string;name:string;mimeType:string;bytes:number;path:string;createdAt:number;state:'uploading'|'ready';triggerId?:string;previewType?:string;sha256?:string}
 interface Conversation {id:string;owner:string;discussion:string;archived:boolean}
@@ -49,12 +50,24 @@ export class ChatAttachments {
     const directory=join(this.host.config.stateDir,'assets',id),path=join(directory,'upload'+extname(input.name).replace(/[^.a-z0-9]/gi,'').slice(0,20))
     const row:Upload={id,kind:'chat-upload',conversationId,name:input.name,mimeType:input.mimeType,bytes:0,path,createdAt:Date.now(),state:'uploading'}
     mkdirSync(directory,{recursive:true,mode:0o700});this.host.store.put('asset',id,row)
-    const hash=createHash('sha256')
+    const hash=createHash('sha256'),header=Buffer.alloc(12)
+    let headerBytes=0
     try{
-      await pipeline(body,async function*(source){for await(const chunk of source){row.bytes+=chunk.byteLength;if(row.bytes>chatUploadLimits.maxBytes)throw new ChatError('attachment_too_large','File exceeds 25 MB.',413);hash.update(chunk);yield chunk}},createWriteStream(path,{flags:'wx',mode:0o600}))
+      // Open before the producer starts so a rejected stream cannot race file creation during cleanup.
+      const output=createWriteStream(path,{fd:openSync(path,'wx',0o600),autoClose:true})
+      await pipeline(body,async function*(source){
+        for await(const chunk of source){
+          row.bytes+=chunk.byteLength
+          if(row.bytes>chatUploadLimits.maxBytes)throw new ChatError('attachment_too_large','File exceeds 100 MiB.',413)
+          const prefix=chunk.subarray(0,header.length-headerBytes)
+          header.set(prefix,headerBytes);headerBytes+=prefix.length
+          hash.update(chunk);yield chunk
+        }
+      },output)
       authorize();this.conversation(conversationId,owner)
       if(!this.host.store.get('asset',id))throw new ChatError('attachment_missing','Upload was removed.',404)
-      row.previewType=previewType(readFileSync(path).subarray(0,12));if(row.previewType)row.mimeType=row.previewType
+      row.previewType=previewType(header.subarray(0,headerBytes))
+      if(row.previewType)row.mimeType=row.previewType
       row.sha256=hash.digest('hex');row.state='ready';this.host.store.put('asset',id,row)
       return this.public(row,true)
     }catch(error){this.discard(row);throw error}
@@ -86,7 +99,7 @@ export class ChatAttachments {
   }
   resolve(conversationId:string,owner:string,ids:string[]){
     this.conversation(conversationId,owner)
-    if(ids.length>chatUploadLimits.maxFiles||new Set(ids).size!==ids.length)throw new ChatError('attachment_limit','Select up to 10 different files.',400)
+    if(ids.length>chatUploadLimits.maxFiles||new Set(ids).size!==ids.length)throw new ChatError('attachment_limit','Select up to 32 different files.',400)
     return ids.map(id=>{const row=this.row(id,conversationId);if(row.triggerId)throw new ChatError('attachment_sent','This file was already sent.');return this.public(row)})
   }
   bind(ids:string[],triggerId:string){for(const id of ids){const row=this.host.store.get<Upload>('asset',id)!;this.host.store.put('asset',id,{...row,triggerId})}}
@@ -137,10 +150,13 @@ export class ChatAttachments {
       const copy=this.materialize(row,principal.ticketId)
       path=copy.path;resource='asset/'+copy.id
     }
-    const bytes=readFileSync(row.path)
-    if(row.previewType&&bytes.length<=8*1024*1024)return {kind:'image',mimeType:row.previewType,data:bytes.toString('base64')}
-    if(!row.previewType&&!bytes.includes(0)&&bytes.subarray(0,5).toString()!=='%PDF-'){
-      try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{/* Binary attachments are read by the Worker's task tools. */}
+    if(row.previewType){
+      if(row.bytes<=maxInlineImageBytes)return {kind:'image',mimeType:row.previewType,data:readFileSync(row.path).toString('base64')}
+    }else{
+      const bytes=readFileSync(row.path)
+      if(!bytes.includes(0)&&bytes.subarray(0,5).toString()!=='%PDF-'){
+        try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{/* Workers can process binary attachments. */}
+      }
     }
     return {name:row.name,mimeType:row.mimeType,bytes:row.bytes,resource,...(path?{path}:{processing:'Use a Worker to process the original file with task tools.'})}
   }

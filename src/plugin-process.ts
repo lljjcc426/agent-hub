@@ -1,3 +1,4 @@
+import {maxWireBytes,resourcePage} from './execution-limits.ts'
 import {randomBytes,createHmac} from 'node:crypto'
 import type {StatusTarget,TransitionView} from './workflow-actions.ts'
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process'
@@ -74,7 +75,7 @@ export class ProcessSource extends MessageSource {
   private records(kind:string,input:unknown={}){
     this.active()
     if(!readableKinds.has(kind))throw Error('Plugin record kind is unavailable')
-    const query=z.object({sourceId:z.string().max(300).optional(),ids:z.array(z.string().max(1000)).max(200).optional(),cursor:z.string().max(1000).optional(),limit:z.number().int().min(1).max(200).default(100),scope:z.string().max(300).optional(),messageIds:z.array(z.string().max(300)).max(200).optional(),subscribed:z.boolean().optional()}).strict().parse(input)
+    const query=z.object({sourceId:z.string().max(300).optional(),ids:z.array(z.string().max(1000)).max(resourcePage.maxItems).optional(),cursor:z.string().max(1000).optional(),limit:z.number().int().min(1).max(resourcePage.maxItems).default(resourcePage.defaultItems),scope:z.string().max(300).optional(),messageIds:z.array(z.string().max(300)).max(resourcePage.maxItems).optional(),subscribed:z.boolean().optional()}).strict().parse(input)
     const store=this.hostStore??this.sourceContext?.store;if(!store)throw Error('Plugin state is unavailable')
     if(query.sourceId&&query.sourceId!==this.config.id)throw Error('Plugin record source is unavailable')
     const scopes=this.scopes();if(query.scope&&!scopes.includes(query.scope))throw Error('Plugin record scope is unavailable')
@@ -105,8 +106,8 @@ export class ProcessSource extends MessageSource {
     const rows=store.db.prepare('SELECT r.id,r.body FROM records r WHERE '+where.join(' AND ')+' ORDER BY r.id LIMIT ?').all(...params,query.limit+1)
     const items:any[]=[];let bytes=0
     for(const row of rows.slice(0,query.limit)){
-      const size=Buffer.byteLength(String(row.body));if(size>1_000_000)throw Error('Plugin record exceeds page limit')
-      if(bytes+size>1_000_000)break
+      const size=Buffer.byteLength(String(row.body));if(size>8*1024*1024)throw Error('Plugin record exceeds page limit')
+      if(bytes+size>8*1024*1024)break
       const value=JSON.parse(String(row.body))
       if(kind==='thread'){
         const tickets=(value.subscriptions??[]).map((id:string)=>store.tickets.get(id))
@@ -126,7 +127,7 @@ export class ProcessSource extends MessageSource {
       do{const page=this.records(kind,{cursor,limit:200});result.push(...page.items.map(row=>({kind,...row})));cursor=page.next}while(cursor)
     }
     result.push(...(store.get<any[]>('plugin-state',this.config.id)??[]).map(row=>({kind:'plugin-state',id:row.id,value:row.value})))
-    if(JSON.stringify(result).length>12_000_000)throw Error('Plugin control context exceeds limit')
+    if(Buffer.byteLength(JSON.stringify(result))>maxWireBytes/2)throw Error('Plugin control context exceeds limit')
     return result
   }
   private apply(operations:unknown){
@@ -140,7 +141,7 @@ export class ProcessSource extends MessageSource {
         if(!this.pkg.manifest.stateKinds.includes(op.kind)||typeof op.id!=='string'||op.id.length>1000||op.value===undefined)throw Error('Plugin state access denied')
         if(op.kind==='plugin-state'){
           const rows=store.get<any[]>('plugin-state',this.config.id)??[],next=[...rows.filter(r=>r.id!==op.id),{id:op.id,value:op.value}]
-          if(JSON.stringify(next).length>2_000_000)throw Error('Plugin private state exceeds limit')
+          if(Buffer.byteLength(JSON.stringify(next))>8*1024*1024)throw Error('Plugin private state exceeds limit')
           store.put('plugin-state',this.config.id,next)
         }else{
           if(!scopedId(this.config.id,op.id))throw Error('Plugin state is outside its source')
@@ -185,7 +186,7 @@ export class ProcessSource extends MessageSource {
       child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{
         if(this.child!==child)return
         buffer+=chunk
-        if(Buffer.byteLength(buffer)>16_000_000){this.fail(Error('Plugin response exceeds limit'),child);return}
+        if(Buffer.byteLength(buffer)>maxWireBytes){this.fail(Error('Plugin response exceeds limit'),child);return}
         let i:number
         while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);this.response(line,child)}
       })
@@ -218,7 +219,7 @@ export class ProcessSource extends MessageSource {
   private request(body:Record<string,unknown>){
     const id=++this.sequence,child=this.child!
     return new Promise<any>((resolve,reject)=>{
-      const timer=setTimeout(()=>this.fail(Error('Plugin operation timed out'),child),this.options.timeoutMs??60000)
+      const timer=setTimeout(()=>this.fail(Error('Plugin operation timed out'),child),this.options.timeoutMs??120_000)
       this.pending.set(id,{resolve,reject,timer})
       child.stdin.write(JSON.stringify({...body,id})+'\n',error=>{if(error)this.fail(Error('Plugin process is unavailable'),child)})
     })

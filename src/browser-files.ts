@@ -63,7 +63,7 @@ export async function browserUpload(
           if (bytes > chatUploadLimits.maxBytes)
             throw new BrowserError(
               "attachment_too_large",
-              "File exceeds 25 MB.",
+              "File exceeds 100 MiB.",
               413,
             );
           yield chunk;

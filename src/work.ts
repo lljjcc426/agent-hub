@@ -1,6 +1,9 @@
+import {StringDecoder} from 'node:string_decoder'
+import {textPage} from './context-budget.ts'
+import {resourcePage,maxJobWaitMs} from './execution-limits.ts'
 import {execFileSync, type ChildProcess} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
-import {mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync} from 'node:fs'
+import {openSync,readSync,closeSync,mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync} from 'node:fs'
 import {dirname,join} from 'node:path'
 import {startSandboxRunner} from './sandbox.ts'
 import type {Store} from './store.ts'
@@ -123,7 +126,7 @@ export class WorkManager {
  }
  async wait(owner:WorkOwner,id:string,yieldMs=0){
   this.own(owner,id)
-  const maximum=owner.agentId?60000:5000,until=Date.now()+Math.min(maximum,Math.max(0,yieldMs))
+  const until=Date.now()+Math.min(maxJobWaitMs,Math.max(0,yieldMs))
   this.waits.set(id,(this.waits.get(id)??0)+1)
   try{do{
    await this.tick()
@@ -135,11 +138,26 @@ export class WorkManager {
    await new Promise(resolve=>setTimeout(resolve,30))
   }while(true)}finally{const n=(this.waits.get(id)??1)-1;if(n)this.waits.set(id,n);else this.waits.delete(id)}
  }
- view(item:WorkItem,offset=0,limit=4000){
-  const path=join(this.directory,item.id+'.output'),output=existsSync(path)?readFileSync(path,'utf8'):''
-  return {...item,output:output.slice(offset,offset+limit),outputOffset:offset,nextOffset:offset+limit<output.length?offset+limit:null,outputCharacters:output.length,resource:'job/'+item.id}
+ view(item:WorkItem,offset=0,limit=resourcePage.defaultCharacters){
+  const path=join(this.directory,item.id+'.output')
+  let characters=0,window=''
+  if(existsSync(path)){
+   const fd=openSync(path,'r'),decoder=new StringDecoder('utf8'),buffer=Buffer.allocUnsafe(64*1024)
+   const collect=(chunk:string)=>{
+    const start=Math.max(0,offset-characters),end=Math.min(chunk.length,offset+limit+1-characters)
+    if(start<end)window+=chunk.slice(start,end)
+    characters+=chunk.length
+   }
+   try{
+    let length
+    while((length=readSync(fd,buffer,0,buffer.length,null))>0)collect(decoder.write(buffer.subarray(0,length)))
+    collect(decoder.end())
+   }finally{closeSync(fd)}
+  }
+  const output=textPage(window,0,limit).text,next=offset+output.length
+  return {...item,output,outputOffset:offset,nextOffset:next<characters?next:null,outputCharacters:characters,resource:'job/'+item.id}
  }
- read(owner:WorkOwner,id:string,offset=0,limit=4000){return this.view(this.own(owner,id),offset,limit)}
+ read(owner:WorkOwner,id:string,offset=0,limit=resourcePage.defaultCharacters){return this.view(this.own(owner,id),offset,limit)}
  active(ticketId:string,assignmentId:string){return this.list(ticketId).filter(w=>w.assignmentId===assignmentId&&!terminal(w)&&w.notify==='auto')}
  async tick(){
   if(this.hooks.expired){

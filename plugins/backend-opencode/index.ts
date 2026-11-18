@@ -1,3 +1,4 @@
+import {modelSteps} from '../../src/execution-limits.ts'
 import {workspaceTools,workspaceGuard} from './workspace.ts'
 import {join} from 'node:path'
 import {existsSync,realpathSync} from 'node:fs'
@@ -49,7 +50,7 @@ export const opencodeDriver:CliDriver={
   const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
   const settings={...(config.apiProtocol?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
-   agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??64,tools,permission}},
+   agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
    mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},
    ...(config.baseUrl?{provider:{[provider]:providerOptions}}:{})}
   privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))

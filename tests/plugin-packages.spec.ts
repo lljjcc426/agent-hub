@@ -98,7 +98,7 @@ it('keeps source operations available after more than 12 MB of durable history',
  for(let i=0;i<150;i++){const t=f.source.trigger({id:'history-'+i,thread:'room:'+i,scope:'room',text:'x'.repeat(90000),addressed:false},'unadmitted');f.store.triggers.save(t)}
  await expect(f.source.identity()).resolves.toMatchObject({id:'fixture-bot'})
  await f.source.poll(f.context);expect(f.events).toHaveLength(1)
- const history=await f.source.read({resource:'history',pageSize:100});expect(history.count).toBe(151);expect(history.pages).toBeGreaterThan(12)
+ const history=await f.source.read({resource:'history',pageSize:100});expect(history.count).toBe(151);expect(history.pages).toBeGreaterThan(1);expect(history.pages).toBeLessThan(12)
 })
 
 it('commits a backlog exceeding ten thousand operations in bounded acknowledged batches',async()=>{

@@ -59,13 +59,13 @@ it('does not materialize profiles merely by reading a legacy pool',()=>{
   expect(b.get('Array.isArray(S.draft.execution.workers)')).toBe(true)
   expect(b.get('S.draft.execution.workers[1].prompt')).toBe('only this worker')
 })
-it('copies all options into a new stable identity and caps the pool at ten',()=>{
+it('copies all options into a new stable identity and applies the default Worker pool limit',()=>{
   const b=browser(configuration(),{agentOptions:true})
   b.get(`teamStudio.selected='worker-1';teamAddWorker(true)`)
   expect(b.get('S.draft.execution.workers[2]')).toMatchObject({id:'worker-3',parameters:{temperature:0.4},extension:{keep:true}})
-  b.get(`for(let index=0;index<12;index++)teamAddWorker()`)
-  expect(b.get('teamWorkers().length')).toBe(10)
-  expect(b.get('new Set(teamWorkers().map(worker=>worker.id)).size')).toBe(10)
+  b.get(`for(let index=0;index<36;index++)teamAddWorker()`)
+  expect(b.get('teamWorkers().length')).toBe(32)
+  expect(b.get('new Set(teamWorkers().map(worker=>worker.id)).size')).toBe(32)
 })
 it('moves invalid field buffers with their Worker when another Worker is removed',()=>{
   const b=browser(configuration(),{agentOptions:true})

@@ -21,6 +21,14 @@ const rpc=(id,method,params)=>fetch(mcp.url??mcp.httpUrl,{method:'POST',headers:
 await rpc(1,'initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'fixture',version:'1'}})
 const response=await fetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:mode==='wire-budget'?'x'.repeat(90000):input}],...(mode==='wire-native-tool'?{tools:[{name:'bash',input_schema:{type:'object'}}]}:{}),...(mode==='wire-opaque'?{previous_response_id:'unaccounted'}:{})})})
 if(!response.ok)process.exit(1)
+if(mode==='receipt-pages'){
+ const read=async(id,offset,limit)=>(await rpc(id,'tools/call',{name:'router_read',arguments:{resource:'model-tool-receipt/test',offset,limit}})).result
+ if((await read(2,0,800))?.content[0]?.text.length!==800)throw Error('Missing first page')
+ if((await read(3,800,20000))?.content[0]?.text.length!==20000)throw Error('Missing requested page')
+ const invalid=await read(4,20800,200000)
+ if(!invalid?.isError||!invalid.content[0].text.includes('128000'))throw Error('Expected a correctable page limit')
+ if((await read(5,20800,20000))?.content[0]?.text.length!==20000)throw Error('Missing corrected page')
+}
 if(mode.startsWith('tool')||['bad-args','unknown-tool'].includes(mode)){
  const name=mode==='unknown-tool'?'forbidden':'allowed',params={name,arguments:mode==='bad-args'?{n:'wrong'}:{n:1}}
  await Promise.all([rpc(2,'tools/call',params),rpc(2,'tools/call',params)])

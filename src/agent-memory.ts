@@ -1,3 +1,4 @@
+import {resourcePage,memoryCapacity} from './execution-limits.ts'
 import {randomUUID} from 'node:crypto'
 import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
@@ -114,7 +115,7 @@ export class AgentMemory {
   })
  }
  settleNotes(c:ScopeContext){for(const fact of this.authorized(c,true))if(fact.state==='candidate'&&fact.entryId===c.route.entryId&&fact.owner===c.actor)this.acceptNote(c,fact)}
- private queryKey(c:ScopeContext,q:string){return stableDigest([this.space(c),q.slice(0,200),this.policyRevision(c)])}
+ private queryKey(c:ScopeContext,q:string){return stableDigest([this.space(c),q.slice(0,memoryCapacity.queryCharacters),this.policyRevision(c)])}
  modelSelection(c:ScopeContext){const p=this.policy(c),scope=this.host.scopes.scope(c.route.scopeId),backend=p.extractBackend??scope.router?.backend??this.host.config.execution.router?.backend??this.host.config.execution.roles.router??this.host.config.execution.backend;if(!scope.backendIds.includes(backend))throw Error('Memory backend is outside scope');return {backendId:backend,model:p.extractModel??scope.router?.model??this.host.config.execution.router?.model}}
  private vectorModel(c:ScopeContext){const e=this.policy(c).embedding;return e?stableDigest([e.url,e.model]):''}
  private rankingSignature(c:ScopeContext,items=this.applicable(c)){
@@ -140,7 +141,7 @@ export class AgentMemory {
   const capture=this.host.memory.capture(c,[]),revision=this.policyRevision(c)
   let vector:number[]|undefined,mode=p.embedding?'embedding_unavailable':'lexical'
   let sensitive=false;try{assertNoMemorySecret(query)}catch{sensitive=true;mode='embedding_skipped_sensitive'}
-  if(p.embedding&&!sensitive)try{vector=validateMemoryVector(await this.embed(query.slice(0,200),p.embedding,AbortSignal.any([this.queryLifetime.signal,AbortSignal.timeout(2000)])));mode='hybrid'}catch{}
+  if(p.embedding&&!sensitive)try{vector=validateMemoryVector(await this.embed(query.slice(0,memoryCapacity.queryCharacters),p.embedding,AbortSignal.any([this.queryLifetime.signal,AbortSignal.timeout(2000)])));mode='hybrid'}catch{}
   this.queryLifetime.signal.throwIfAborted()
   this.host.scopes.assertCurrent(c)
   if(capture.generation!==this.host.memory.generation(c.route.scopeId)||revision!==this.policyRevision(c)||!this.enabled(c))return
@@ -151,7 +152,7 @@ export class AgentMemory {
    const candidates=memoryCandidates(ranking.dense.map(x=>x.f),ranking.lexical.map(x=>x.f),p.reranker?.candidateLimit??20).filter(f=>{try{assertNoMemorySecret(f.subject+' '+f.content);return true}catch{return false}})
    let rerankSucceeded=false,scores=candidates.map((_f,index)=>({index,score:1/(index+1)}))
    if(p.reranker)try{
-    const results=candidates.length?await this.rerank(query.slice(0,200),candidates.map(f=>f.subject+' '+f.content),p.reranker,AbortSignal.any([this.queryLifetime.signal,AbortSignal.timeout(5000)])):[]
+    const results=candidates.length?await this.rerank(query.slice(0,memoryCapacity.queryCharacters),candidates.map(f=>f.subject+' '+f.content),p.reranker,AbortSignal.any([this.queryLifetime.signal,AbortSignal.timeout(5000)])):[]
     if(results.length!==candidates.length||new Set(results.map(r=>r.index)).size!==candidates.length||results.some(r=>!Number.isInteger(r.index)||!candidates[r.index]||!Number.isFinite(r.score)||r.score<0||r.score>1))throw Error('invalid_rerank_results')
     scores=results.sort((a,b)=>b.score-a.score||a.index-b.index);rerankSucceeded=true
     if(mode==='hybrid'||mode==='lexical')mode='reranked'
@@ -161,7 +162,7 @@ export class AgentMemory {
    if(capture.generation!==this.host.memory.generation(c.route.scopeId)||revision!==this.policyRevision(c)||!this.enabled(c)||signature!==this.rankingSignature(c)){this.queries.delete(key);return}
    if(p.verifyRelevance)try{
     const ordered=scores.map(r=>candidates[r.index]!)
-    const accepted=await verifyMemoryRelevance(this,c,query.slice(0,200),ordered,this.queryLifetime.signal)
+    const accepted=await verifyMemoryRelevance(this,c,query.slice(0,memoryCapacity.queryCharacters),ordered,this.queryLifetime.signal)
     reranked=scores.flatMap((r,index)=>accepted.has(index)?[{id:ordered[index]!.id,revision:ordered[index]!.revision,score:r.score}]:[]);verified=true
     if(['hybrid','lexical','reranked'].includes(mode))mode='verified'
    }catch(error){mode=error instanceof Error&&error.message==='daily_model_budget'?'relevance_budget_exhausted':'relevance_unavailable'}
@@ -199,12 +200,12 @@ export class AgentMemory {
   for(const f of ranked.items){if(selected.some(s=>s.id===f.id))continue;const bytes=Buffer.byteLength(f.content);if(relatedBytes+bytes>2400)continue;relatedBytes+=bytes;selected.push(f);if(selected.length>=resident.filter(f=>selected.includes(f)).length+5)break}
   return {items:selected,status:memoryRetrievalComplete(ranked.mode)?'complete':'partial',reason:memoryRetrievalComplete(ranked.mode)?undefined:ranked.mode}
  }
- async search(c:ScopeContext,query:string,limit=20){await this.prepare(c,query);if(!this.enabled(c))return {items:[],status:'unavailable',reason:'Memory disabled'};const result=this.rank(c,query);const items=result.items.slice(0,Math.min(20,Math.max(1,limit)));this.recordUse(c,items,'search',result.mode);return {items,status:memoryRetrievalComplete(result.mode)?'complete':'partial',mode:result.mode}}
+ async search(c:ScopeContext,query:string,limit=resourcePage.defaultItems){await this.prepare(c,query);if(!this.enabled(c))return {items:[],status:'unavailable',reason:'Memory disabled'};const result=this.rank(c,query);const items=result.items.slice(0,Math.min(resourcePage.maxItems,Math.max(1,limit)));this.recordUse(c,items,'search',result.mode);return {items,status:memoryRetrievalComplete(result.mode)?'complete':'partial',mode:result.mode}}
  async tool(c:ScopeContext,value:unknown){
-  const x=z.object({action:z.enum(['query','inspect','propose']),query:z.string().max(200).optional(),id:z.string().max(300).optional(),subject:z.string().max(300).optional(),content:z.string().max(16000).optional(),operationId:z.string().max(300).optional()}).strict().parse(value)
+  const x=z.object({action:z.enum(['query','inspect','propose']),query:z.string().max(memoryCapacity.queryCharacters).optional(),limit:z.number().int().min(1).max(resourcePage.maxItems).optional(),id:z.string().max(300).optional(),subject:z.string().max(300).optional(),content:z.string().max(memoryCapacity.noteCharacters).optional(),operationId:z.string().max(300).optional()}).strict().parse(value)
   if(!this.enabled(c))return {items:[],status:'unavailable',reason:'Memory disabled'}
-  if(x.action==='query')return this.search(c,x.query??'')
-  if(x.action==='inspect'){const items=this.applicable(c).filter(f=>!x.id||f.id===x.id).slice(0,20);this.recordUse(c,items,'inspect','authorized');return {items,status:'complete'}}
+  if(x.action==='query')return this.search(c,x.query??'',x.limit)
+  if(x.action==='inspect'){const items=this.applicable(c).filter(f=>!x.id||f.id===x.id).slice(0,x.limit??resourcePage.defaultItems);this.recordUse(c,items,'inspect','authorized');return {items,status:'complete'}}
   const fact=await this.host.memory.tool(c,x) as MemoryFact
   return this.acceptNote(c,fact)
  }

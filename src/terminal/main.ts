@@ -1,3 +1,4 @@
+import {messageCharacters} from '../execution-limits.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalEditor } from './editor.ts'
 import { TerminalLayout } from './presentation.ts'
@@ -494,9 +495,9 @@ export async function main(args: string[]): Promise<number> {
       const chunks: Buffer[] = []
       for await (const chunk of process.stdin) {
         bytes += chunk.length
-        if (bytes > 400000)
+        if (bytes > messageCharacters * 4)
           throw new CliError(
-            ui('Input exceeds 100,000 characters.', '输入内容超过十万字。'),
+            ui('Input exceeds 256,000 characters.', '输入内容超过256,000 字符。'),
             'usage',
             2
           )
@@ -505,11 +506,11 @@ export async function main(args: string[]): Promise<number> {
       const piped = Buffer.concat(chunks).toString('utf8').trim()
       o.prompt = [o.prompt, piped].filter(Boolean).join('\n\n')
     }
-    if (o.prompt.length > 100000 || (print && !o.prompt && !o.files.length))
+    if (o.prompt.length > messageCharacters || (print && !o.prompt && !o.files.length))
       throw new CliError(
         ui(
-          'Provide a prompt or file (up to 100,000 characters).',
-          '请提供消息或文件，消息最多十万字。'
+          'Provide a prompt or file (up to 256,000 characters).',
+          '请提供消息或文件，消息最多256,000 字符。'
         ),
         'usage',
         2

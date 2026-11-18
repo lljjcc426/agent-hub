@@ -46,6 +46,7 @@ const textFiles = new Set([
 ])
 
 
+const routerFileCharacters=1024*1024
 export const routerFileInput = z
   .object({
     name: z
@@ -55,7 +56,7 @@ export const routerFileInput = z
       .max(255)
       .regex(/^[^/\\\x00-\x1f\x7f]+$/)
       .refine((n) => textFiles.has(extname(n).toLowerCase()), 'Choose a text file format'),
-    content: z.string().max(128 * 1024),
+    content: z.string().max(routerFileCharacters),
     requireApproval: z.boolean().optional(),
     pendingNotice: pendingNoticeSchema,
   })
@@ -68,7 +69,7 @@ export const routerFileTool: ToolSpec = {
   inputSchema: {
     type: 'object',
     additionalProperties: false,
-    properties: { name: { type: 'string' }, content: { type: 'string' }, requireApproval: { type: 'boolean' }, pendingNotice:pendingNoticeProperty },
+    properties: { name: { type: 'string' }, content: { type: 'string', maxLength: routerFileCharacters }, requireApproval: { type: 'boolean' }, pendingNotice:pendingNoticeProperty },
     required: ['name', 'content'],
   },
 }

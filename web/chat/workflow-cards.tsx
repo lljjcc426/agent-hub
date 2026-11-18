@@ -6,7 +6,8 @@ import { AgentPlan } from '../ui/agent-run.tsx'
 import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
 import { WorkerQuestion } from './worker-question-preview.tsx'
 import type { DecisionAttempt } from './decision-state.ts'
-import { ChevronDown, Inbox, LocateFixed, X } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
+import { PendingRequests } from '../ui/pending-requests.tsx'
 
 type Snapshot = ReturnType<ChatSessions['view']>
 type Request = Snapshot['approvals'][number]
@@ -320,25 +321,13 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
 // The tray belongs to the conversation owner even when the transcript shows a read-only Worker.
 export function PendingTray({cards,loading,close,locate}:{cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void}){
   const flow=useContext(Flow)!
-  const {L}=flow
-  return <aside id="pending-tray" tabIndex={-1} className="pending-tray roppo-ui" aria-labelledby="pending-tray-title">
-    <header className="pending-heading">
-      <h2 id="pending-tray-title"><Inbox size={17}/>{L('Pending requests','待处理事项')}</h2>
-      <button type="button" className="icon-button" aria-label={L('Hide pending requests','隐藏待处理事项')} onClick={close}><X size={16}/></button>
-    </header>
-    {cards.length?<ol className="pending-list"><Flow.Provider value={{...flow,readonly:false}}>
-      {cards.map(card=><li key={card.kind+':'+card.id} onClick={event=>{
-        if(event.target instanceof Element&&!event.target.closest('button, a, input, textarea, select, label, summary, [contenteditable=true]')&&window.getSelection()?.isCollapsed!==false)locate(card)
-      }}>
-        <div className="pending-card-content">
-        {card.kind==='choice'?<RouterDecision id={card.id} decision={card.decision}/>:
-         card.kind==='file'?<FileReviewCard id={card.id} name={card.name} review={card.review}/>:
-         card.kind==='approval'?<NativeCard request={card.request}/>:
-         <WorkerQuestion key={card.question.version} item={card.question} L={L} readonly={false} send={flow.answerWorker} refresh={flow.refresh}/>}
-        </div>
-        <button type="button" className="pending-locate icon-button" aria-label={L('Go to original message','定位到原消息')}
-          title={L('Go to original message','定位到原消息')} onClick={()=>locate(card)}><LocateFixed size={15}/></button>
-      </li>)}
-    </Flow.Provider></ol>:<p className="pending-empty" role="status">{loading?L('Loading…','加载中…'):L('You’re all caught up.','暂无待处理事项')}</p>}
-  </aside>
+  return <Flow.Provider value={{...flow,readonly:false}}>
+    <PendingRequests L={flow.L} loading={loading} close={close}
+      items={cards.map(card => ({id:card.kind+':'+card.id, locate:()=>locate(card), content:
+        card.kind==='choice'?<RouterDecision id={card.id} decision={card.decision}/>:
+        card.kind==='file'?<FileReviewCard id={card.id} name={card.name} review={card.review}/>:
+        card.kind==='approval'?<NativeCard request={card.request}/>:
+        <WorkerQuestion key={card.question.version} item={card.question} L={flow.L} readonly={false} send={flow.answerWorker} refresh={flow.refresh}/>,
+      }))}/>
+  </Flow.Provider>
 }

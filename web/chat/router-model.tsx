@@ -8,9 +8,21 @@ import './router-model.css'
 
 type Effort = NonNullable<AgentOptions['effort']>
 type Choice = { backend: string; effort: Effort | '' }
-type Version = { revision: number; config: Config }
+type ModelDefinition = Pick<BackendDefinition, 'kind' | 'model' | 'label' | 'defaults'> & {parameters?: AgentOptions['parameters']}
+type ModelConfig = Pick<Config, 'model' | 'models'> & {
+  backends: Record<string, ModelDefinition>
+  execution: Pick<Config['execution'], 'roles' | 'router' | 'backend'>
+}
+type Version = { revision: number; config: ModelConfig }
 type Configuration = { current: Version; agentCapabilities?: Record<string, { efforts?: Effort[] }> }
+export type ModelConnectionStore = {
+  load: (signal?: AbortSignal) => Promise<Configuration>
+  save: (revision: number, patch: ReturnType<typeof modelPatch>) => Promise<Version>
+  connectionsUrl?: string
+  thinkingUrl?: string
+}
 type Props = {
+  store?: ModelConnectionStore
   onClose: () => void; onBack?: () => void; busy: boolean; model?: string; L: Localize; onSaved: () => Promise<void>
 }
 const effortOrder: Effort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
@@ -24,11 +36,11 @@ async function request<T>(path: string, body?: unknown, signal?: AbortSignal): P
   return data
 }
 
-function selectedBackend(config: Config) {
+function selectedBackend(config: ModelConfig) {
   return config.execution.router?.backend ?? config.execution.roles.router ?? config.execution.backend
 }
 
-function configuredEffort(config: Config) {
+function configuredEffort(config: ModelConfig) {
   const router = config.execution.router
   const kind = config.backends[selectedBackend(config)]?.kind
   const parameters = router?.parameters
@@ -37,7 +49,7 @@ function configuredEffort(config: Config) {
   return router?.effort ?? (typeof provider === 'string' ? provider : '')
 }
 
-function modelPatch(config: Config, { backend, effort }: Choice) {
+function modelPatch(config: ModelConfig, { backend, effort }: Choice) {
   const changed = selectedBackend(config) !== backend
   const router = { ...config.execution.router, backend }
   if (changed) { delete router.model; delete router.parameters }
@@ -124,7 +136,13 @@ function EffortSlider({ stops, index, valueText, L, disabled, onPreview, onCommi
   </label>
 }
 
-export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }: Props) {
+const hostSettings: ModelConnectionStore = {
+  load: signal => request<Configuration>('/configuration', undefined, signal),
+  save: (revision, patch) => request<Version>('/settings', {revision, patch}),
+  connectionsUrl: '/configure#models', thinkingUrl: '/configure#execution/configuration',
+}
+
+export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, store = hostSettings }: Props) {
   const [data, setData] = useState<Configuration | null>(null)
   const [list, setList] = useState(false), [saving, setSaving] = useState(false), [error, setError] = useState('')
   const [draft, setDraft] = useState<Choice['effort'] | null>(null)
@@ -134,7 +152,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
   async function load(signal?: AbortSignal) {
     setError('')
     try {
-      const next = await request<Configuration>('/configuration', undefined, signal)
+      const next = await store.load(signal)
       version.current = next.current
       setData(next)
       setDraft(null)
@@ -144,7 +162,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
     const controller = new AbortController()
     void load(controller.signal)
     return () => controller.abort()
-  }, [])
+  }, [store])
   useLayoutEffect(() => {
     if (list) choices.current?.querySelector<HTMLButtonElement>('[aria-checked=true]')?.focus({ preventScroll: true })
     else if (wasList.current) modelButton.current?.focus({ preventScroll: true })
@@ -168,7 +186,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
         pending.current = null
         const current: Version = version.current
         if (selectedBackend(current.config) === next.backend && configuredEffort(current.config) === next.effort) continue
-        version.current = await request<Version>('/settings', { revision: current.revision, patch: modelPatch(current.config, next) })
+        version.current = await store.save(current.revision, modelPatch(current.config, next))
         const saved = version.current
         setData(previous => previous && { ...previous, current: saved })
         if (selectedBackend(current.config) !== next.backend) setList(false)
@@ -191,7 +209,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
     catch { setError(previous => previous || 'refresh_failed') }
   }
   const config = data?.current.config, backend = config ? selectedBackend(config) : ''
-  const definitions: Record<string, BackendDefinition> = { codex: { kind: 'codex' }, ...config?.backends }
+  const definitions: Record<string, ModelDefinition> = { codex: { kind: 'codex' }, ...config?.backends }
   const definition = definitions[backend]
   const connectionLabel = (id: string) => definitions[id]?.label ?? (id === 'codex' ? 'Codex' : id)
   const modelName = config?.execution.router?.model ?? config?.models.router ?? definition?.model ??
@@ -234,8 +252,8 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
           </button>
         })}
       </div>
-      <a className="palette-row model-manage" href="/configure#models" onClick={onClose}>
-        <span>{L('Manage connections', '管理连接')}</span><ChevronRight size={14}/></a>
+      {store.connectionsUrl && <a className="palette-row model-manage" href={store.connectionsUrl} onClick={onClose}>
+        <span>{L('Manage connections', '管理连接')}</span><ChevronRight size={14}/></a>}
     </div> : <div className="model-dial">
       <div className="model-dial-head">
         {onBack && backButton(onBack, L('Back to chat actions', '返回对话操作'))}
@@ -251,7 +269,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved }:
       </div>
       {adjustable ? <EffortSlider stops={stops} index={stops.indexOf(displayed)} valueText={valueText} L={L} disabled={busy}
         onPreview={setDraft} onCommit={value => void save({ backend, effort: value })}/>
-        : <a className="palette-row model-manage" href="/configure#execution/configuration" onClick={onClose}>
+        : store.thinkingUrl && <a className="palette-row model-manage" href={store.thinkingUrl} onClick={onClose}>
           <span>{L('Configure model thinking', '配置模型思考参数')}</span><ChevronRight size={14}/></a>}
     </div>)}
     {busy && config && <p className="router-model-notice">{L('Available when this run finishes.', '本次任务结束后可切换。')}</p>}

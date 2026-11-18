@@ -6,23 +6,32 @@ export function Message({
   identity,
   time,
   actions,
+  messageId,
+  sideActions,
+  reactions,
   children,
 }: {
   author: 'user' | 'agent'
   identity?: ReactNode
   time?: string
   actions?: ReactNode
+  messageId?: string
+  sideActions?: ReactNode
+  reactions?: ReactNode
   children: ReactNode
 }) {
   return (
-    <article className="rp-message" data-author={author}>
+    <article className={'rp-message message ' + (author === 'user' ? 'user-message' : 'assistant-message')} data-author={author} data-message-id={messageId}>
       {author === 'agent' && (identity || time) && (
         <header>
           {identity}
           {time && <span className="rp-time">{time}</span>}
         </header>
       )}
-      <div className="rp-message-content">{children}</div>
+      {sideActions ? <div className="message-line" tabIndex={-1}>
+        <div className="message-surface rp-message-content" data-message-body>{children}</div>{sideActions}
+      </div> : <div className="rp-message-content">{children}</div>}
+      {reactions}
       {author === 'user' && time && <span className="rp-time">{time}</span>}
       {actions && <div className="rp-message-actions">{actions}</div>}
     </article>

@@ -1,296 +1,152 @@
-import { useEffect, useRef, useState } from 'react'
+import {useEffect, useRef, useState} from 'react'
+import {Check, Inbox, Paperclip, X} from 'lucide-react'
 import {
-  Check,
-  CornerUpLeft,
-  Heart,
-  Paperclip,
-  SlidersHorizontal,
-  Smile,
-  Sparkles,
-  ThumbsUp,
-  X,
-} from 'lucide-react'
-import {
-  AgentIdentity,
-  ChoiceGroup,
-  Composer,
-  CopyButton,
-  Disclosure,
-  IconButton,
-  Message,
-  Popover,
-  SelectField,
-  StatusMark,
+  AgentIdentity, ChatComposer, ContextCard, DecisionCard, Disclosure, IconButton, InteractionProvider,
+  Message, MessageActions, PendingRequests, QuotePreview, QuotedMessage, Reactions, StatusMark,
+  type CurrentContext, type DraftQuote, type ModelConnectionStore,
 } from '../ui'
-import { SampleFile } from './samples.tsx'
+import {SampleFile} from './samples.tsx'
 
-export type DemoMessage = { id: string; text: string; time: string; quote?: string; attachment?: File }
+export type DemoMessage = {id: string; text: string; time: string; quote?: DraftQuote; attachment?: File}
 export const reply = '整理好了。三项检查已按负责人分组。'
 const zh = (_en: string, value: string) => value
+const requestText = '把发布清单按负责人整理一下。'
+const formats = [{id: 'sheet', label: '表格', detail: ''}, {id: 'document', label: '文档', detail: ''}]
 
-function LocalAttachment({ file }: { file: File }) {
+function LocalAttachment({file}: {file: File}) {
   const [href, setHref] = useState<string>()
   useEffect(() => {
-    const objectUrl = URL.createObjectURL(file)
-    setHref(objectUrl)
-    return () => URL.revokeObjectURL(objectUrl)
+    const url = URL.createObjectURL(file)
+    setHref(url)
+    return () => URL.revokeObjectURL(url)
   }, [file])
-  return (
-    <a className="inline-attachment" href={href} download={file.name}>
-      <Paperclip size={13} />
-      {file.name}
-    </a>
-  )
+  return <a className="inline-attachment" href={href} download={file.name}><Paperclip size={13}/>{file.name}</a>
 }
 
-const reactions = [
-  { name: '赞同', icon: ThumbsUp },
-  { name: '喜欢', icon: Heart },
-  { name: '庆祝', icon: Sparkles },
-]
+function previewConnections(): ModelConnectionStore {
+  let current: Awaited<ReturnType<ModelConnectionStore['load']>>['current'] = {
+    revision: 1, config: {
+      model: 'gpt-6.1-terra', models: {},
+      backends: {codex: {kind: 'codex', model: 'gpt-6.1-terra'}, deepseek: {kind: 'openai-chat', label: 'DeepSeek', model: 'deepseek-flash'}},
+      execution: {backend: 'codex', roles: {}, router: {backend: 'codex', effort: 'medium'}},
+    },
+  }
+  return {
+    load: async () => ({current, agentCapabilities: {deepseek: {efforts: ['low', 'high']}}}),
+    save: async (revision, patch) => {
+      if (revision !== current.revision) throw Error('settings_conflict')
+      current = {revision: revision + 1, config: {...current.config, ...patch}}
+      return current
+    },
+  }
+}
 
 export function useDemoComposer() {
   const [text, setText] = useState('')
-  const [quote, setQuote] = useState('')
-  const [reaction, setReaction] = useState('')
+  const [quote, setQuote] = useState<DraftQuote | null>(null)
+  const [reactions, setReactions] = useState<Record<string, string[]>>({})
   const [attachment, setAttachment] = useState<File>()
-  const [model, setModel] = useState('Codex')
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>('medium')
-  function clearDraft() {
-    setText('')
-    setQuote('')
-    setAttachment(undefined)
-  }
-  return {
-    text,
-    setText,
-    quote,
-    setQuote,
-    reaction,
-    setReaction,
-    attachment,
-    setAttachment,
-    model,
-    setModel,
-    effort,
-    setEffort,
-    clearDraft,
-  }
+  const [mode, setMode] = useState<'ask' | 'full'>('ask')
+  const [model, setModel] = useState('gpt-6.1-terra')
+  const [modelStore] = useState(previewConnections)
+  function clearDraft() { setText(''); setQuote(null); setAttachment(undefined) }
+  return {text, setText, quote, setQuote, reactions, setReactions, attachment, setAttachment,
+    mode, setMode, model, setModel, modelStore, clearDraft}
 }
 
-export function ChatExample({
-  openFile,
-  showTime,
-  messages,
-  addMessage,
-  hasSample,
-  teamActivity,
-  draft,
-}: {
-  openFile: () => void
-  showTime: boolean
-  messages: DemoMessage[]
-  addMessage: (message: DemoMessage) => void
-  hasSample: boolean
-  teamActivity: boolean
-  draft: ReturnType<typeof useDemoComposer>
+export function ChatExample({openFile, showTime, messages, addMessage, hasSample, teamActivity, draft}: {
+  openFile: () => void; showTime: boolean; messages: DemoMessage[]; addMessage: (message: DemoMessage) => void
+  hasSample: boolean; teamActivity: boolean; draft: ReturnType<typeof useDemoComposer>
 }) {
-  const {
-    text,
-    setText,
-    quote,
-    setQuote,
-    reaction,
-    setReaction,
-    attachment,
-    setAttachment,
-    model,
-    setModel,
-    effort,
-    setEffort,
-    clearDraft,
-  } = draft
-  const chosen = reactions.find((item) => item.name === reaction)
-  const upload = useRef<HTMLInputElement>(null)
-  const end = useRef<HTMLDivElement>(null)
+  const {text, quote, attachment, mode, model, modelStore, reactions} = draft
+  const [tray, setTray] = useState(false), [details, setDetails] = useState(false)
+  const [answer, setAnswer] = useState<string | null>(null)
+  const root = useRef<HTMLDivElement>(null), upload = useRef<HTMLInputElement>(null), trayButton = useRef<HTMLButtonElement>(null)
+  const end = useRef<HTMLDivElement>(null), question = useRef<HTMLDivElement>(null)
+  const canSend = !!text.trim() || !!attachment
+  const sampleMessages = [
+    ...(hasSample ? [{id: 'request', text: requestText, role: 'user' as const},
+      {id: 'reply', text: reply, role: 'assistant' as const, speaker: {id: 'router', label: 'Router'}}] : []),
+    ...messages.map(m => ({...m, role: 'user' as const, attachments: m.attachment ? [{name: m.attachment.name}] : []})),
+  ].map(m => ({...m, reactions: reactions[m.id]}))
+  const usage: CurrentContext = hasSample ? {data: {activity: null, at: null, model, inputTokens: 6400,
+    capacity: 32000, budget: null, composition: null}} : {empty: true}
+
   function send() {
-    const time = new Intl.DateTimeFormat('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(new Date())
-    addMessage({ id: crypto.randomUUID(), text: text.trim(), time, quote, attachment })
-    clearDraft()
-    requestAnimationFrame(() => {
-      const view = end.current?.parentElement
-      if (view) view.scrollTop = view.scrollHeight
-    })
+    if (!canSend) return
+    const time = new Intl.DateTimeFormat('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false}).format(new Date())
+    addMessage({id: crypto.randomUUID(), text: text.trim(), time, quote: quote ?? undefined, attachment})
+    draft.clearDraft()
+    requestAnimationFrame(() => { const view = end.current?.parentElement; if (view) view.scrollTop = view.scrollHeight })
   }
-  return (
-    <div className="sample-chat">
+  function locate(id: string) {
+    const node = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])
+      .find(row => row.dataset.messageId === id)
+    node?.querySelector<HTMLElement>('.message-line')?.focus({preventScroll: true})
+    node?.scrollIntoView({block: 'nearest'})
+  }
+  function decide(value: string) { setAnswer(value) }
+  const decision = <DecisionCard question="下一次交付用哪种格式？" options={formats} answer={answer}
+    onAnswer={decide} allowCustom={false}/>
+  function closeTray() { setTray(false); trayButton.current?.focus() }
+  return <InteractionProvider L={zh} messages={sampleMessages} locate={locate}
+    reply={q => {draft.setQuote(q); root.current?.querySelector('textarea')?.focus()}}
+    react={(id, emoji) => draft.setReactions(previous => {
+      const own = previous[id] ?? []
+      return {...previous, [id]: own.includes(emoji) ? own.filter(v => v !== emoji) : [...own, emoji]}
+    })}>
+    <div ref={root} className="sample-chat" onKeyDown={event => {
+      if (event.key === 'Escape' && tray) {event.stopPropagation(); closeTray()}
+    }}>
+      <div className="sample-chat-tools"><button ref={trayButton} type="button" className="rp-icon-button pending-trigger"
+        aria-label="待处理事项" aria-expanded={tray} aria-controls="preview-pending" onClick={() => setTray(!tray)}>
+        <Inbox size={17}/>{hasSample && !answer && <span className="pending-badge">1</span>}
+      </button></div>
+      {tray && <PendingRequests id="preview-pending" close={closeTray} L={zh} loading={false}
+        items={!hasSample || answer ? [] : [{id: 'format', content: decision, locate: () => {
+          setTray(false); question.current?.focus({preventScroll: true}); question.current?.scrollIntoView({block: 'nearest'})
+        }}]}/>}
       <div className="sample-transcript" role="region" aria-label="示例对话记录" tabIndex={0}>
-        {hasSample && (
-          <>
-            <Message author="user" time={showTime ? '09:41' : ''}>
-              <p>把发布清单按负责人整理一下。</p>
-            </Message>
-            {teamActivity && (
-              <div className="sample-worker-note">
-                <Disclosure
-                  title={
-                    <span className="worker-activity">
-                      <AgentIdentity name="文档助手" kind="worker" id="doc" size={18} />
-                      核对清单
-                    </span>
-                  }
-                >
-                  三项检查，涉及两位负责人。{showTime && <span className="rp-time">09:42</span>}
-                </Disclosure>
-              </div>
-            )}
-            <Message
-              author="agent"
-              identity={<AgentIdentity name="Router" size={25} />}
-              time={showTime ? '09:42' : ''}
-              actions={
-                <>
-                  <StatusMark state="done">已完成</StatusMark>
-                  <i aria-hidden="true" />
-                  <IconButton
-                    label="引用回复"
-                    onClick={(e) => {
-                      setQuote(reply)
-                      e.currentTarget.closest('.sample-chat')?.querySelector('textarea')?.focus()
-                    }}
-                  >
-                    <CornerUpLeft size={15} />
-                  </IconButton>
-                  <Popover label="选择回应" trigger={<Smile size={15} />}>
-                    {(dismiss) => (
-                      <div className="sample-reactions">
-                        {reactions.map(({ name, icon: Icon }) => (
-                          <IconButton
-                            key={name}
-                            label={name}
-                            aria-pressed={reaction === name}
-                            onClick={() => {
-                              setReaction(reaction === name ? '' : name)
-                              dismiss()
-                            }}
-                          >
-                            <Icon size={16} />
-                          </IconButton>
-                        ))}
-                      </div>
-                    )}
-                  </Popover>
-                  <CopyButton value={reply} L={zh} />
-                </>
-              }
-            >
-              <p>{reply}</p>
-              <SampleFile open={openFile} />
-              {chosen && (
-                <button
-                  type="button"
-                  className="sample-reaction"
-                  aria-label={'撤回' + chosen.name}
-                  onClick={() => setReaction('')}
-                >
-                  <chosen.icon size={12} /> 1
-                </button>
-              )}
-            </Message>
-          </>
-        )}
-        {messages.map((m) => (
-          <Message key={m.id} author="user" time={showTime ? m.time : ''}>
-            {m.quote && <blockquote>{m.quote}</blockquote>}
-            {m.text && <p>{m.text}</p>}
-            {m.attachment && <LocalAttachment file={m.attachment} />}
+        {hasSample && <>
+          <Message author="user" messageId="request" time={showTime ? '09:41' : ''}
+            sideActions={<MessageActions id="request"/>} reactions={<Reactions id="request"/>}><p>{requestText}</p></Message>
+          {teamActivity && <div className="sample-worker-note"><Disclosure title={<span className="worker-activity">
+            <AgentIdentity name="文档助手" kind="worker" id="doc" size={18}/>核对清单</span>}>
+            三项检查，涉及两位负责人。{showTime && <span className="rp-time">09:42</span>}</Disclosure></div>}
+          <Message author="agent" messageId="reply" identity={<AgentIdentity name="Router" size={25}/>}
+            time={showTime ? '09:42' : ''} sideActions={<MessageActions id="reply"/>}
+            reactions={<Reactions id="reply"/>} actions={<StatusMark state="done">已完成</StatusMark>}>
+            <p>{reply}</p><SampleFile open={openFile}/>
           </Message>
-        ))}
-        {!hasSample && messages.length === 0 && (
-          <div className="chat-empty">
-            <Check size={18} /> 示例对话已清空
-          </div>
-        )}
-        <div ref={end} />
+          <div ref={question} className="sample-question" tabIndex={-1}>{decision}</div>
+        </>}
+        {messages.map(m => <Message key={m.id} author="user" messageId={m.id} time={showTime ? m.time : ''}
+          sideActions={<MessageActions id={m.id}/>} reactions={<Reactions id={m.id}/>}>
+          {m.quote && <QuotedMessage quote={m.quote}/>}
+          {m.text && <p>{m.text}</p>}
+          {m.attachment && <LocalAttachment file={m.attachment}/>}
+        </Message>)}
+        {!hasSample && !messages.length && <div className="chat-empty"><Check size={18}/> 示例对话已清空</div>}
+        <div ref={end}/>
       </div>
-      <input
-        type="file"
-        hidden
-        ref={upload}
-        onChange={(event) => {
-          setAttachment(event.target.files?.[0])
-          event.target.value = ''
-        }}
-      />
-      <Composer
-        value={text}
-        hasAttachments={!!attachment}
-        onChange={setText}
-        onSend={send}
-        placeholder="输入示例消息…"
-        sendLabel="发送示例消息"
-        leading={
-          <IconButton label="选择本地附件" onClick={() => upload.current?.click()}>
-            <Paperclip size={17} />
-          </IconButton>
-        }
-        tools={
-          <Popover label="示例模型和思考强度" trigger={<SlidersHorizontal size={16} />}>
-            {() => (
-              <div className="sample-model">
-                <div>
-                  <span>模型连接</span>
-                  <SelectField label="模型连接" value={model} onChange={(e) => setModel(e.target.value)}>
-                    <option>Codex</option>
-                    <option>DeepSeek</option>
-                  </SelectField>
-                </div>
-                <div>
-                  <span>思考程度</span>
-                  <ChoiceGroup
-                    label="思考程度"
-                    value={effort}
-                    onChange={setEffort}
-                    choices={[
-                      { value: 'low', label: '低' },
-                      { value: 'medium', label: '中' },
-                      { value: 'high', label: '高' },
-                    ]}
-                  />
-                </div>
-              </div>
-            )}
-          </Popover>
-        }
-        context={
-          (quote || attachment) && (
-            <>
-              {quote && (
-                <div className="sample-context">
-                  <CornerUpLeft size={14} />
-                  <span>{quote}</span>
-                  <IconButton label="取消引用" onClick={() => setQuote('')}>
-                    <X size={13} />
-                  </IconButton>
-                </div>
-              )}
-              {attachment && (
-                <div className="sample-context">
-                  <Paperclip size={14} />
-                  <span>{attachment.name}</span>
-                  <IconButton label="移除附件" onClick={() => setAttachment(undefined)}>
-                    <X size={13} />
-                  </IconButton>
-                </div>
-              )}
-            </>
-          )
-        }
-      />
+      {details && <ContextCard current={usage} L={zh} focusOnReveal onClose={() => setDetails(false)}/>}
+      <form className="sample-composer rp-composer" onSubmit={event => {event.preventDefault(); send()}}>
+        <QuotePreview quote={quote} onClear={() => draft.setQuote(null)} L={zh}/>
+        {attachment && <div className="sample-context"><Paperclip size={14}/><span>{attachment.name}</span>
+          <IconButton label="移除附件" onClick={() => draft.setAttachment(undefined)}><X size={13}/></IconButton></div>}
+        <input ref={upload} type="file" hidden onChange={event => {
+          const file = event.target.files?.[0]; if (file) draft.setAttachment(file); event.target.value = ''
+        }}/>
+        <ChatComposer L={zh} visible sending={false} mode={mode} usage={usage} router="Router" model={model}
+          modelBusy={false} uploadDisabled={false} value={text} setText={draft.setText} canSend={canSend}
+          onAttach={() => upload.current?.click()} onEnter={send} onSend={send} modelStore={modelStore}
+          saveMode={async next => draft.setMode(next)} onContext={() => setDetails(true)}
+          onModelSaved={async () => {
+            const {current: {config}} = await modelStore.load()
+            const backend = config.execution.router?.backend ?? config.execution.backend
+            draft.setModel(config.backends[backend]?.model ?? backend)
+          }}/>
+      </form>
     </div>
-  )
+  </InteractionProvider>
 }

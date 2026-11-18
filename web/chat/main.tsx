@@ -80,12 +80,10 @@ import "./style.css";
 import "./rich-content.css";
 import "./navigation.css";
 import "./chat-layout.css";
-import "./message-interactions.css";
 import "./team-view.css";
 import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";
-import "./pending-tray.css";
 import "./floating-chat.css";
 import { WorkspaceSettings, workspaceGroups } from "./workspace-settings.tsx";
 

@@ -191,7 +191,7 @@ function App() {
     setSample(false)
     setMessages([])
     draft.clearDraft()
-    draft.setReaction('')
+    draft.setReactions({})
     setConfirmClear(false)
     notify('示例对话已清空')
   }

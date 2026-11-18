@@ -10,6 +10,8 @@ import {
   TaskRow,
   TextField,
   Timeline,
+  SwitchView,
+  switchView,
   type WorkState,
 } from '../ui'
 import sheetUrl from './release-checklist.xlsx?url'
@@ -159,7 +161,7 @@ export function TaskList({
           <ChoiceGroup
             label="任务视图"
             value={tab}
-            onChange={setTab}
+            onChange={(v) => switchView('panel', () => setTab(v))}
             choices={[
               { value: 'active', label: '进行中' },
               { value: 'history', label: '任务记录' },
@@ -181,24 +183,30 @@ export function TaskList({
           </div>
         </div>
       )}
-      {compact ? (
-        filtered.map(row)
-      ) : (
-        <>
-          {(['今天', '昨天'] as const).map((day) => {
-            const group = filtered.filter((t) => t.day === day)
-            return (
-              group.length > 0 && (
-                <section className="task-day" key={day}>
-                  <h3>{day}</h3>
-                  {group.map(row)}
-                </section>
-              )
-            )
-          })}
-          {filtered.length === 0 && <EmptyState icon={<FileSearch size={23} />}>没有匹配的任务</EmptyState>}
-        </>
-      )}
+      <SwitchView>
+        <div>
+          {compact ? (
+            filtered.map(row)
+          ) : (
+            <>
+              {(['今天', '昨天'] as const).map((day) => {
+                const group = filtered.filter((t) => t.day === day)
+                return (
+                  group.length > 0 && (
+                    <section className="task-day" key={day}>
+                      <h3>{day}</h3>
+                      {group.map(row)}
+                    </section>
+                  )
+                )
+              })}
+              {filtered.length === 0 && (
+                <EmptyState icon={<FileSearch size={23} />}>没有匹配的任务</EmptyState>
+              )}
+            </>
+          )}
+        </div>
+      </SwitchView>
     </div>
   )
 }

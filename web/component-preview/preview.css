@@ -14,6 +14,9 @@ html[data-theme="dark"] { background: #171717; }
 .skip:focus { top: 12px; }
 .mobile-menu { display: none; }
 .page-title h1 { margin: 0 0 24px; font-size: clamp(27px, 2.2vw, 35px); line-height: 1.22; letter-spacing: -.045em; font-weight: 670; }
+.page-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.shell-example { transition: grid-template-columns .32s var(--rp-sweep); }
+.example-agent-list button { transition: background .2s, border-color .2s; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr); gap: 19px; align-items: stretch; }
 .specimen { min-width: 0; padding: 19px 22px 22px; border: 1px solid var(--rp-line); border-radius: var(--rp-corner-panel); background: var(--rp-panel); }
 .specimen-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -2px -3px 14px 0; }

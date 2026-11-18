@@ -67,11 +67,10 @@
 .rp-spin, .rp-status[data-state="working"] svg { animation: rp-turn 1.7s linear infinite; }
 @keyframes rp-turn { to { transform: rotate(360deg); } }
 @keyframes rp-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes rp-drawer { from { opacity: .4; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes rp-veil { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .roppo-ui *, .roppo-ui *::before, .roppo-ui *::after, .rp-dialog::backdrop {
     scroll-behavior: auto !important; animation-duration: .01ms !important;
     animation-iteration-count: 1 !important; transition-duration: .01ms !important;
+    animation-delay: 0s !important; transition-delay: 0s !important;
   }
 }

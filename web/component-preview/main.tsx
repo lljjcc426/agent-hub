@@ -13,6 +13,7 @@ import {
   Settings2,
   SlidersHorizontal,
   Sun,
+  Workflow,
 } from 'lucide-react'
 import {
   AgentIdentity,
@@ -30,6 +31,8 @@ import {
   Sidebar,
   Toast,
   Topbar,
+  SwitchView,
+  switchView,
 } from '../ui'
 import { ChatExample, reply, useDemoComposer, type DemoMessage } from './chat.tsx'
 import { Basics, DisplayChoice, Feedback, NavigationExample, type DisplayMode } from './examples.tsx'
@@ -45,9 +48,11 @@ import {
   type Task,
 } from './samples.tsx'
 import './preview.css'
+import { AgentGallery } from './agent-gallery.tsx'
 
 const pages = [
   { id: 'overview', title: '总览', icon: LayoutGrid },
+  { id: 'agents', title: 'Agent 组件', icon: Workflow },
   { id: 'basics', title: '基础控件', icon: SlidersHorizontal },
   { id: 'navigation', title: '导航与布局', icon: PanelsTopLeft },
   { id: 'chat', title: '对话', icon: MessageSquare },
@@ -151,7 +156,8 @@ function App() {
 
   useEffect(() => {
     const navigate = () => {
-      setPage(currentPage())
+      const next = currentPage()
+      switchView('page', () => setPage(next))
       setMobileNav(false)
       window.scrollTo(0, 0)
     }
@@ -176,8 +182,10 @@ function App() {
     setTask(t)
   }
   function selectMode(next: DisplayMode) {
-    setMode(next)
-    setSpeaker('router')
+    switchView('panel', () => {
+      setMode(next)
+      setSpeaker('router')
+    })
   }
   function clearSample() {
     setSample(false)
@@ -206,44 +214,46 @@ function App() {
     const latest = messages.at(-1)
     const routerDetail = latest ? latest.text || latest.attachment?.name : sample ? reply : '暂无消息'
     return (
-      <div className={mode === 'agents' ? 'sample-agents-layout' : 'sample-group-layout'}>
-        {mode === 'agents' && (
-          <div className="example-agent-list" aria-label="Agents 列表">
-            {[
-              { id: 'router', label: 'Router', detail: routerDetail },
-              { id: 'worker', label: '文档助手', detail: sample ? workerReply : '暂无消息' },
-            ].map((agent) => (
-              <button
-                key={agent.id}
-                type="button"
-                aria-pressed={speaker === agent.id}
-                onClick={() => setSpeaker(agent.id as typeof speaker)}
-              >
-                <AgentIdentity
-                  kind={agent.id === 'worker' ? 'worker' : 'router'}
-                  id={agent.id === 'worker' ? 'doc' : agent.id}
-                  name={agent.label}
-                  detail={agent.detail}
-                  size={23}
-                />
-              </button>
-            ))}
-          </div>
-        )}
-        {mode === 'agents' && speaker === 'worker' ? (
-          <ReadOnlyWorker showTime={time} hasSample={sample} />
-        ) : (
-          <ChatExample
-            openFile={openFile}
-            hasSample={sample}
-            teamActivity={mode === 'group'}
-            draft={draft}
-            showTime={time}
-            messages={messages}
-            addMessage={(m) => setMessages((prev) => [...prev, m])}
-          />
-        )}
-      </div>
+      <SwitchView>
+        <div className={mode === 'agents' ? 'sample-agents-layout' : 'sample-group-layout'}>
+          {mode === 'agents' && (
+            <div className="example-agent-list" aria-label="Agents 列表">
+              {[
+                { id: 'router', label: 'Router', detail: routerDetail },
+                { id: 'worker', label: '文档助手', detail: sample ? workerReply : '暂无消息' },
+              ].map((agent) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  aria-pressed={speaker === agent.id}
+                  onClick={() => switchView('panel', () => setSpeaker(agent.id as typeof speaker))}
+                >
+                  <AgentIdentity
+                    kind={agent.id === 'worker' ? 'worker' : 'router'}
+                    id={agent.id === 'worker' ? 'doc' : agent.id}
+                    name={agent.label}
+                    detail={agent.detail}
+                    size={23}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          {mode === 'agents' && speaker === 'worker' ? (
+            <ReadOnlyWorker showTime={time} hasSample={sample} />
+          ) : (
+            <ChatExample
+              openFile={openFile}
+              hasSample={sample}
+              teamActivity={mode === 'group'}
+              draft={draft}
+              showTime={time}
+              messages={messages}
+              addMessage={(m) => setMessages((prev) => [...prev, m])}
+            />
+          )}
+        </div>
+      </SwitchView>
     )
   }
   const nav = pages.map(({ id, title, icon: Icon }) => (
@@ -314,127 +324,138 @@ function App() {
             </IconButton>
           }
         />
-        <main id="gallery-content" tabIndex={-1} className={'gallery-main page-' + page}>
-          <div className="page-title">
-            <h1>{page === 'overview' ? '组件总览' : label}</h1>
-          </div>
-          {page === 'overview' && (
-            <div className="overview-grid">
-              <Specimen title="对话" href="#chat" className="chat-spec">
-                {chat()}
-              </Specimen>
-              <Specimen title="基础控件" href="#basics" className="basics-spec">
-                {basics(true)}
-              </Specimen>
-              <Specimen title="任务与文件" href="#work" className="work-spec">
-                {openTaskList(true)}
-              </Specimen>
-              <Specimen title="聊天显示" href="#preferences" className="display-spec">
-                <DisplayChoice value={mode} onChange={selectMode} />
-              </Specimen>
-            </div>
-          )}
-          {page === 'basics' && <div className="dedicated solo">{basics()}</div>}
-          {page === 'navigation' && (
-            <div className="dedicated">
-              <Specimen title="侧栏与上栏">
-                <NavigationExample />
-              </Specimen>
-              <Specimen title="面包屑">
-                <Breadcrumb
-                  label="路径示例"
-                  items={[{ label: '组件库', href: '#overview' }, { label: '导航与布局' }]}
-                />
-              </Specimen>
-            </div>
-          )}
-          {page === 'chat' && (
-            <div className="dedicated solo">
-              <div className="view-controls">
-                <ChoiceGroup
-                  label="对话显示"
-                  value={mode}
-                  onChange={selectMode}
-                  choices={[
-                    { value: 'group', label: '群聊' },
-                    { value: 'agents', label: 'Agents 列表' },
-                  ]}
-                />
-                <CheckField
-                  appearance="switch"
-                  label="消息时间"
-                  checked={time}
-                  onChange={(e) => setTime(e.target.checked)}
-                />
-              </div>
-              <div className="specimen chat-spec">{chat()}</div>
-            </div>
-          )}
-          {page === 'work' && (
-            <div className="dedicated">
-              <Specimen title="任务列表">{openTaskList()}</Specimen>
-              <Specimen title="交付文件">
-                <SampleFile open={openFile} />
-              </Specimen>
-              <Specimen title="定时任务">
-                <ScheduleRow
-                  title="晨间摘要"
-                  cadence="每天 09:00"
-                  next={
-                    schedule ? '下次 · ' + (new Date().getHours() < 9 ? '今天' : '明天') + ' 09:00' : '已暂停'
-                  }
-                  enabled={schedule}
-                  onChange={setSchedule}
-                  switchLabel="启用晨间摘要"
-                />
-              </Specimen>
-            </div>
-          )}
-          {page === 'preferences' && (
-            <div className="dedicated solo">
-              <section className="preferences-group">
-                <h2>聊天显示</h2>
-                <DisplayChoice value={mode} onChange={selectMode} />
-                <a className="text-link" href="#chat">
-                  查看对话
+        <SwitchView scope="page">
+          <main id="gallery-content" tabIndex={-1} className={'gallery-main page-' + page}>
+            <div className="page-title">
+              <h1>{page === 'overview' ? '组件总览' : label}</h1>
+              {(page === 'overview' || page === 'feedback') && (
+                <a className="text-link" href="#agents">
+                  Agent 组件
                   <ArrowUpRight size={15} />
                 </a>
-              </section>
-              <section className="preferences-group">
-                <h2>记忆与上下文</h2>
-                <div className="preferences-row">
-                  <span>仅限本页示例对话</span>
-                  <div className="control-row">
-                    {!sample && (
-                      <Button
-                        tone="quiet"
-                        onClick={() => {
-                          setSample(true)
-                          notify('默认示例已恢复')
-                        }}
-                      >
-                        恢复默认示例
-                      </Button>
-                    )}
-                    <Button disabled={!sample && !messages.length} onClick={() => setConfirmClear(true)}>
-                      清空…
-                    </Button>
-                  </div>
+              )}
+            </div>
+            {page === 'overview' && (
+              <div className="overview-grid">
+                <Specimen title="对话" href="#chat" className="chat-spec">
+                  {chat()}
+                </Specimen>
+                <Specimen title="基础控件" href="#basics" className="basics-spec">
+                  {basics(true)}
+                </Specimen>
+                <Specimen title="任务与文件" href="#work" className="work-spec">
+                  {openTaskList(true)}
+                </Specimen>
+                <Specimen title="聊天显示" href="#preferences" className="display-spec">
+                  <DisplayChoice value={mode} onChange={selectMode} />
+                </Specimen>
+              </div>
+            )}
+            {page === 'agents' && <AgentGallery />}
+            {page === 'basics' && <div className="dedicated solo">{basics()}</div>}
+            {page === 'navigation' && (
+              <div className="dedicated">
+                <Specimen title="侧栏与上栏">
+                  <NavigationExample />
+                </Specimen>
+                <Specimen title="面包屑">
+                  <Breadcrumb
+                    label="路径示例"
+                    items={[{ label: '组件库', href: '#overview' }, { label: '导航与布局' }]}
+                  />
+                </Specimen>
+              </div>
+            )}
+            {page === 'chat' && (
+              <div className="dedicated solo">
+                <div className="view-controls">
+                  <ChoiceGroup
+                    label="对话显示"
+                    value={mode}
+                    onChange={selectMode}
+                    choices={[
+                      { value: 'group', label: '群聊' },
+                      { value: 'agents', label: 'Agents 列表' },
+                    ]}
+                  />
+                  <CheckField
+                    appearance="switch"
+                    label="消息时间"
+                    checked={time}
+                    onChange={(e) => setTime(e.target.checked)}
+                  />
                 </div>
-              </section>
-            </div>
-          )}
-          {page === 'feedback' && (
-            <div className="dedicated solo">
-              <Feedback
-                notify={notify}
-                openTask={showTask}
-                openFile={openFile}
-                clear={() => setConfirmClear(true)}
-              />
-            </div>
-          )}
-        </main>
+                <div className="specimen chat-spec">{chat()}</div>
+              </div>
+            )}
+            {page === 'work' && (
+              <div className="dedicated">
+                <Specimen title="任务列表">{openTaskList()}</Specimen>
+                <Specimen title="交付文件">
+                  <SampleFile open={openFile} />
+                </Specimen>
+                <Specimen title="定时任务">
+                  <ScheduleRow
+                    title="晨间摘要"
+                    cadence="每天 09:00"
+                    next={
+                      schedule
+                        ? '下次 · ' + (new Date().getHours() < 9 ? '今天' : '明天') + ' 09:00'
+                        : '已暂停'
+                    }
+                    enabled={schedule}
+                    onChange={setSchedule}
+                    switchLabel="启用晨间摘要"
+                  />
+                </Specimen>
+              </div>
+            )}
+            {page === 'preferences' && (
+              <div className="dedicated solo">
+                <section className="preferences-group">
+                  <h2>聊天显示</h2>
+                  <DisplayChoice value={mode} onChange={selectMode} />
+                  <a className="text-link" href="#chat">
+                    查看对话
+                    <ArrowUpRight size={15} />
+                  </a>
+                </section>
+                <section className="preferences-group">
+                  <h2>记忆与上下文</h2>
+                  <div className="preferences-row">
+                    <span>仅限本页示例对话</span>
+                    <div className="control-row">
+                      {!sample && (
+                        <Button
+                          tone="quiet"
+                          onClick={() => {
+                            setSample(true)
+                            notify('默认示例已恢复')
+                          }}
+                        >
+                          恢复默认示例
+                        </Button>
+                      )}
+                      <Button disabled={!sample && !messages.length} onClick={() => setConfirmClear(true)}>
+                        清空…
+                      </Button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+            {page === 'feedback' && (
+              <div className="dedicated solo">
+                <Feedback
+                  notify={notify}
+                  openTask={showTask}
+                  openFile={openFile}
+                  clear={() => setConfirmClear(true)}
+                />
+              </div>
+            )}
+          </main>
+        </SwitchView>
       </div>
       <Dialog
         open={mobileNav}
@@ -466,7 +487,7 @@ function App() {
           </Button>
         }
       >
-        {task && <TaskDetails task={task} openFile={openFile} />}
+        <TaskDetails task={task ?? currentTask} openFile={openFile} />
       </Dialog>
       <Dialog
         open={file}

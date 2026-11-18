@@ -1,11 +1,14 @@
 import {
   useId,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
 } from 'react'
 import { Check, ChevronDown, LoaderCircle } from 'lucide-react'
+import { SelectionIndicator } from './transitions.tsx'
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   tone?: 'primary' | 'secondary' | 'quiet'
@@ -106,11 +109,97 @@ export function ChoiceGroup<T extends string>({
   appearance?: 'segments' | 'tiles'
 }) {
   const name = useId()
+  const drag = useRef<{ x: number; y: number; moving: boolean } | null>(null)
+  const suppressClick = useRef(false)
+  function optionAt(root: HTMLFieldSetElement, x: number) {
+    const options = Array.from(
+      root.querySelectorAll<HTMLLabelElement>('.rp-choice:not(:has(input:disabled))'),
+    )
+    return options.find((option) => x <= option.getBoundingClientRect().right) ?? options.at(-1)
+  }
+  function move(event: ReactPointerEvent<HTMLFieldSetElement>) {
+    const start = drag.current
+    if (!start) return
+    if (!event.buttons) {
+      drag.current = null
+      return
+    }
+    const root = event.currentTarget,
+      dx = event.clientX - start.x,
+      dy = event.clientY - start.y
+    if (!start.moving) {
+      if (Math.abs(dy) > 6 && Math.abs(dy) > Math.abs(dx)) {
+        drag.current = null
+        return
+      }
+      if (Math.abs(dx) < 6) return
+      start.moving = true
+      root.setPointerCapture(event.pointerId)
+      root.dataset.dragging = ''
+    }
+    const marker = root.querySelector<HTMLElement>('.rp-selection-indicator')!
+    const x = Math.max(
+      3,
+      Math.min(
+        root.clientWidth - marker.offsetWidth - 3,
+        event.clientX - root.getBoundingClientRect().left - marker.offsetWidth / 2,
+      ),
+    )
+    root.style.setProperty('--rp-drag-x', x + 'px')
+  }
+  function end(event: ReactPointerEvent<HTMLFieldSetElement>) {
+    if (drag.current?.moving) {
+      const root = event.currentTarget
+      if (event.type === 'pointerup') {
+        const input = optionAt(root, event.clientX)?.querySelector('input')
+        if (input) {
+          onChange(input.value as T)
+          input.focus({ preventScroll: true })
+        }
+        suppressClick.current = true
+      }
+      delete root.dataset.dragging
+      root.style.removeProperty('--rp-drag-x')
+    }
+    drag.current = null
+  }
   return (
-    <fieldset className="rp-choices" data-appearance={appearance}>
+    <fieldset
+      className="rp-choices"
+      data-appearance={appearance}
+      onPointerDown={(e) => {
+        suppressClick.current = false
+        if (
+          appearance === 'segments' &&
+          e.button === 0 &&
+          e.isPrimary &&
+          (e.target as HTMLElement).closest('.rp-choice')
+        )
+          drag.current = { x: e.clientX, y: e.clientY, moving: false }
+      }}
+      onPointerMove={move}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onLostPointerCapture={(e) => {
+        delete e.currentTarget.dataset.dragging
+        drag.current = null
+      }}
+      onClickCapture={(e) => {
+        if (suppressClick.current && e.detail !== 0) {
+          suppressClick.current = false
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }}
+    >
       <legend className="rp-sr-only">{label}</legend>
+      <SelectionIndicator selector=".rp-choice[data-current]" selection={value} />
       {choices.map((choice) => (
-        <label key={choice.value} className="rp-choice">
+        <label
+          key={choice.value}
+          className="rp-choice"
+          data-current={choice.value === value ? '' : undefined}
+        >
           <input
             type="radio"
             name={name}

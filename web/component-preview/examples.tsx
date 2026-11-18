@@ -35,6 +35,8 @@ import {
   StatusMark,
   TextField,
   Topbar,
+  SwitchView,
+  switchView,
 } from '../ui'
 import { fileName, tasks, type Task } from './samples.tsx'
 
@@ -93,7 +95,7 @@ export function Basics({
           <ChoiceGroup
             label="范围"
             value={scope}
-            onChange={setScope}
+            onChange={(v) => switchView('panel', () => setScope(v))}
             choices={[
               { value: 'all', label: '全部' },
               { value: 'files', label: '文件' },
@@ -107,18 +109,22 @@ export function Basics({
             </SelectField>
           )}
         </div>
-        {searching && (
-          <div className="search-results">
-            {results.map((item) => (
-              <button key={item.name} onClick={item.open}>
-                <item.icon size={15} />
-                {item.name}
-                <ArrowUpRight size={13} />
-              </button>
-            ))}
-            {!results.length && <EmptyState icon={<FileSearch size={18} />}>没有匹配的结果</EmptyState>}
+        <SwitchView>
+          <div>
+            {searching && (
+              <div className="search-results">
+                {results.map((item) => (
+                  <button key={item.name} onClick={item.open}>
+                    <item.icon size={15} />
+                    {item.name}
+                    <ArrowUpRight size={13} />
+                  </button>
+                ))}
+                {!results.length && <EmptyState icon={<FileSearch size={18} />}>没有匹配的结果</EmptyState>}
+              </div>
+            )}
           </div>
-        )}
+        </SwitchView>
       </div>
       <div className="sample-group">
         <h3>选择与开关</h3>
@@ -202,7 +208,7 @@ export function NavigationExample() {
             icon={<Icon size={17} />}
             onClick={(e) => {
               e.preventDefault()
-              setSelected(label)
+              switchView('panel', () => setSelected(label))
             }}
           >
             {label}
@@ -221,20 +227,22 @@ export function NavigationExample() {
           }
           end={<span className="shell-mobile-title">{selected}</span>}
         />
-        <div className="shell-page">
-          <Breadcrumb label="示例路径" items={[{ label: '工作区' }, { label: selected }]} />
-          <h3>{selected}</h3>
-          {selected === '对话' ? (
-            <AgentIdentity name="Router" detail="准备就绪" />
-          ) : selected === '任务' ? (
-            <div className="sample-line">
-              <ListTodo size={17} />
-              整理发布清单
-            </div>
-          ) : (
-            <EmptyState icon={<Inbox size={20} />}>暂无待处理事项</EmptyState>
-          )}
-        </div>
+        <SwitchView>
+          <div className="shell-page">
+            <Breadcrumb label="示例路径" items={[{ label: '工作区' }, { label: selected }]} />
+            <h3>{selected}</h3>
+            {selected === '对话' ? (
+              <AgentIdentity name="Router" detail="准备就绪" />
+            ) : selected === '任务' ? (
+              <div className="sample-line">
+                <ListTodo size={17} />
+                整理发布清单
+              </div>
+            ) : (
+              <EmptyState icon={<Inbox size={20} />}>暂无待处理事项</EmptyState>
+            )}
+          </div>
+        </SwitchView>
       </div>
     </div>
   )
@@ -285,7 +293,7 @@ export function Feedback({
         <ChoiceGroup
           label="内容状态"
           value={state}
-          onChange={setState}
+          onChange={(v) => switchView('panel', () => setState(v))}
           choices={[
             { value: 'content', label: '内容' },
             { value: 'loading', label: '加载' },
@@ -293,31 +301,34 @@ export function Feedback({
             { value: 'error', label: '错误' },
           ]}
         />
-        <div className="feedback-stage">
-          {state === 'content' && (
-            <div className="feedback-content">
-              <Folder size={21} />
-              <span>交付文件</span>
-              <Button tone="quiet" onClick={openFile}>
-                查看
-                <ArrowUpRight size={14} />
-              </Button>
-            </div>
-          )}
-          {state === 'loading' && (
-            <div role="status" className="sample-line">
-              <LoaderCircle className="rp-spin" size={18} />
-              正在加载
-            </div>
-          )}
-          {state === 'empty' && <EmptyState icon={<Inbox size={23} />}>暂无交付文件</EmptyState>}
-          {state === 'error' && (
-            <div className="sample-line" role="alert">
-              <CircleAlert size={18} />
-              文件未能载入<Button onClick={() => setState('content')}>重试</Button>
-            </div>
-          )}
-        </div>
+        <SwitchView>
+          <div className="feedback-stage">
+            {state === 'content' && (
+              <div className="feedback-content">
+                <Folder size={21} />
+                <span>交付文件</span>
+                <Button tone="quiet" onClick={openFile}>
+                  查看
+                  <ArrowUpRight size={14} />
+                </Button>
+              </div>
+            )}
+            {state === 'loading' && (
+              <div role="status" className="sample-line">
+                <LoaderCircle className="rp-spin" size={18} />
+                正在加载
+              </div>
+            )}
+            {state === 'empty' && <EmptyState icon={<Inbox size={23} />}>暂无交付文件</EmptyState>}
+            {state === 'error' && (
+              <div className="sample-line" role="alert">
+                <CircleAlert size={18} />
+                文件未能载入
+                <Button onClick={() => switchView('panel', () => setState('content'))}>重试</Button>
+              </div>
+            )}
+          </div>
+        </SwitchView>
       </section>
       <section>
         <h2>折叠详情</h2>

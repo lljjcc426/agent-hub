@@ -1,0 +1,418 @@
+import { useId, useRef, useState, type KeyboardEvent } from 'react'
+import { Check, CornerDownLeft, FileText, Pencil, ShieldCheck, Trash2, X } from 'lucide-react'
+import { Button, ChoiceGroup, IconButton, TextField } from './controls.tsx'
+import { Disclosure } from './overlays.tsx'
+import { SwitchView, switchView } from './transitions.tsx'
+
+export interface ContextPart {
+  id: string
+  label: string
+  tokens: number
+  files?: { id: string; name: string; tokens: number }[]
+}
+const count = (n: number) =>
+  new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
+export function ContextWindow({
+  capacity,
+  parts,
+  onCompact,
+  canCompact,
+  onRemoveFile,
+}: {
+  capacity: number
+  parts: ContextPart[]
+  onCompact: () => void
+  canCompact: boolean
+  onRemoveFile: (id: string) => void
+}) {
+  const [active, setActive] = useState<string | null>(null)
+  const total = parts.reduce((s, p) => s + p.tokens, 0),
+    cellCount = 100
+  let idx = 0,
+    limit = parts[0]?.tokens ?? 0
+  const fields = Array.from({ length: cellCount }, (_, i) => {
+    const token = ((i + 0.5) * capacity) / cellCount
+    while (token > limit && idx < parts.length - 1) limit += parts[++idx]!.tokens
+    const part = token <= total ? parts[idx] : undefined
+    return (
+      <i
+        aria-hidden="true"
+        key={i}
+        data-band={part ? idx % 5 : 'free'}
+        data-dim={!!active && part?.id !== active}
+        style={{ transitionDelay: (i % 12) * 8 + 'ms' }}
+      />
+    )
+  })
+  return (
+    <div className="rp-context">
+      <div className="rp-capacity">
+        <strong>{count(total)}</strong>
+        <span>/ {count(capacity)} tokens</span>
+        <b>{Math.round((total * 100) / capacity)}%</b>
+      </div>
+      <div className="rp-cells" role="img" aria-label={'已用 ' + total + '，共 ' + capacity + ' tokens'}>
+        {fields}
+      </div>
+      <div className="rp-context-legend" onMouseLeave={() => setActive(null)}>
+        {parts.map((part, i) => (
+          <div key={part.id}>
+            <button
+              type="button"
+              aria-pressed={active === part.id}
+              aria-label={'突出显示' + part.label}
+              onMouseEnter={() => setActive(part.id)}
+              onFocus={() => setActive(part.id)}
+              onBlur={() => setActive(null)}
+              onClick={() => setActive(part.id)}
+            >
+              <i data-band={i % 5} />
+              <span>{part.label}</span>
+              <b>{count(part.tokens)}</b>
+            </button>
+            {part.files && part.files.length > 0 && (
+              <Disclosure title={'附件 · ' + part.files.length}>
+                {part.files.map((f) => (
+                  <div className="rp-context-file" key={f.id}>
+                    <FileText size={13} />
+                    <span>{f.name}</span>
+                    <small>{count(f.tokens)}</small>
+                    <IconButton label={'移除' + f.name} onClick={() => onRemoveFile(f.id)}>
+                      <X size={13} />
+                    </IconButton>
+                  </div>
+                ))}
+              </Disclosure>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="rp-card-foot">
+        <small>剩余 {count(Math.max(0, capacity - total))} tokens</small>
+        <Button onClick={onCompact} disabled={!canCompact}>
+          {canCompact ? '压缩对话' : '已压缩'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export interface MemoryEntry {
+  id: string
+  category: string
+  text: string
+  source: string
+}
+export function MemoryPanel({
+  items,
+  categories,
+  onEdit,
+  onDelete,
+}: {
+  items: MemoryEntry[]
+  categories: string[]
+  onEdit: (id: string, text: string) => void
+  onDelete: (id: string) => void
+}) {
+  const [category, setCategory] = useState('all')
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const filtered = items.filter((m) => category === 'all' || category === m.category)
+  function save() {
+    if (editing && draft.trim()) {
+      onEdit(editing, draft.trim())
+      setEditing(null)
+    }
+  }
+  return (
+    <div className="rp-memory">
+      <ChoiceGroup
+        label="记忆分类"
+        value={category}
+        onChange={(v) =>
+          switchView('panel', () => {
+            setCategory(v)
+            setEditing(null)
+          })
+        }
+        choices={[
+          { value: 'all', label: '全部 ' + items.length },
+          ...categories.map((c) => ({ value: c, label: c })),
+        ]}
+      />
+      <SwitchView>
+        <div className="rp-memory-items">
+          {filtered.map((m) => (
+            <div className="rp-memory-row" key={m.id}>
+              {editing === m.id ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    save()
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setEditing(null)
+                    }
+                  }}
+                >
+                  <TextField
+                    label="记忆内容"
+                    value={draft}
+                    autoFocus
+                    onChange={(e) => setDraft(e.target.value)}
+                  />
+                  <IconButton type="submit" disabled={!draft.trim()} label="保存记忆">
+                    <Check size={15} />
+                  </IconButton>
+                  <IconButton label="取消编辑记忆" onClick={() => setEditing(null)}>
+                    <X size={15} />
+                  </IconButton>
+                </form>
+              ) : (
+                <>
+                  <span>
+                    <strong>{m.text}</strong>
+                    <small>
+                      {m.category} · {m.source}
+                    </small>
+                  </span>
+                  <IconButton
+                    label={'修改记忆：' + m.text}
+                    onClick={() => {
+                      setDraft(m.text)
+                      setEditing(m.id)
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </IconButton>
+                  <IconButton label={'删除记忆：' + m.text} onClick={() => onDelete(m.id)}>
+                    <Trash2 size={14} />
+                  </IconButton>
+                </>
+              )}
+            </div>
+          ))}
+          {!filtered.length && <p className="rp-muted">暂无记忆</p>}
+        </div>
+      </SwitchView>
+    </div>
+  )
+}
+
+export type Approval = 'pending' | 'approved' | 'denied'
+export function ApprovalCard({
+  title,
+  risk,
+  details,
+  state,
+  onDecision,
+  onReset,
+}: {
+  title: string
+  risk: string
+  details: { label: string; value: string }[]
+  state: Approval
+  onDecision: (decision: 'approved' | 'denied') => void
+  onReset: () => void
+}) {
+  const root = useRef<HTMLDivElement>(null)
+  function decide(result: 'approved' | 'denied') {
+    root.current?.focus({ preventScroll: true })
+    onDecision(result)
+  }
+  function key(e: KeyboardEvent) {
+    if (state !== 'pending') return
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      decide('denied')
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      decide('approved')
+    }
+  }
+  const pending = state === 'pending'
+  return (
+    <div
+      className="rp-approval"
+      role="group"
+      ref={root}
+      tabIndex={0}
+      aria-label="授权请求"
+      onKeyDown={key}
+      data-resolved={!pending}
+    >
+      <div className="rp-approval-line">
+        <span className="rp-feature-icon">
+          {state === 'denied' ? (
+            <X size={17} />
+          ) : state === 'approved' ? (
+            <Check size={17} />
+          ) : (
+            <ShieldCheck size={18} />
+          )}
+        </span>
+        <strong>{title}</strong>
+        {pending ? (
+          <small>{risk}</small>
+        ) : (
+          <span role="status">{state === 'approved' ? '已批准' : '已拒绝'}</span>
+        )}
+      </div>
+      <div className="rp-fold" data-expanded={pending} inert={!pending}>
+        <div>
+          <dl className="rp-fact-list">
+            {details.map((d) => (
+              <div key={d.label}>
+                <dt>{d.label}</dt>
+                <dd>{d.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="rp-card-foot">
+            <Button onClick={() => decide('denied')}>
+              拒绝 <kbd>Esc</kbd>
+            </Button>
+            <Button tone="primary" onClick={() => decide('approved')}>
+              批准 <kbd>⌘ ↵</kbd>
+            </Button>
+          </div>
+        </div>
+      </div>
+      {!pending && (
+        <Button tone="quiet" onClick={onReset}>
+          重新查看
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export interface DecisionOption {
+  id: string
+  label: string
+  detail: string
+  recommended?: boolean
+}
+export function DecisionCard({
+  question,
+  options,
+  onAnswer,
+  answer,
+  onReset,
+}: {
+  question: string
+  options: DecisionOption[]
+  onAnswer: (value: string) => void
+  answer: string | null
+  onReset: () => void
+}) {
+  const [later, setLater] = useState(false),
+    [custom, setCustom] = useState(false),
+    [text, setText] = useState('')
+  const titleId = useId()
+  const root = useRef<HTMLDivElement>(null)
+  const expanded = !answer && !later
+  function choose(value: string) {
+    root.current?.focus({ preventScroll: true })
+    setCustom(false)
+    setText('')
+    onAnswer(value)
+  }
+  function key(e: KeyboardEvent<HTMLDivElement>) {
+    if (
+      !expanded ||
+      e.ctrlKey ||
+      e.metaKey ||
+      e.altKey ||
+      (e.target as HTMLElement).matches('input,textarea')
+    )
+      return
+    const option = /^[1-9]$/.test(e.key) ? options[Number(e.key) - 1] : undefined
+    if (option) {
+      e.preventDefault()
+      choose(option.label)
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('.rp-decision-option'))
+      const index = rows.indexOf(document.activeElement as HTMLButtonElement),
+        offset = e.key === 'ArrowDown' ? 1 : -1
+      if (rows.length) {
+        e.preventDefault()
+        rows[(index + offset + rows.length) % rows.length]?.focus()
+      }
+    }
+  }
+  return (
+    <div
+      className="rp-decision"
+      role="group"
+      ref={root}
+      tabIndex={0}
+      aria-labelledby={titleId}
+      onKeyDown={key}
+    >
+      <div className="rp-card-kicker">
+        <span>待你决定</span>
+        <button
+          type="button"
+          className="rp-text-control"
+          onClick={() => {
+            if (answer) {
+              onReset()
+              setLater(false)
+            } else setLater(!later)
+          }}
+        >
+          {answer ? '重新选择' : later ? '展开问题' : '稍后'}
+        </button>
+      </div>
+      <strong id={titleId}>{question}</strong>
+      {answer && (
+        <p className="rp-chosen" role="status">
+          <Check size={15} />
+          {answer}
+        </p>
+      )}
+      <div className="rp-fold" data-expanded={expanded} inert={!expanded}>
+        <div>
+          <div className="rp-decision-options">
+            {options.map((o, i) => (
+              <button type="button" key={o.id} className="rp-decision-option" onClick={() => choose(o.label)}>
+                <kbd>{i + 1}</kbd>
+                <span>
+                  <strong>{o.label}</strong>
+                  <small>{o.detail}</small>
+                </span>
+                {o.recommended && <em>推荐</em>}
+              </button>
+            ))}
+            {custom ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (text.trim()) choose(text.trim())
+                }}
+              >
+                <TextField
+                  autoFocus
+                  label="自定义答复"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                />
+                <IconButton type="submit" label="提交答复" disabled={!text.trim()}>
+                  <CornerDownLeft size={16} />
+                </IconButton>
+              </form>
+            ) : (
+              <Button tone="quiet" onClick={() => setCustom(true)}>
+                <Pencil size={13} />
+                自己填写
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

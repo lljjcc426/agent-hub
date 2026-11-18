@@ -1,6 +1,7 @@
 import type { AnchorHTMLAttributes, ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 import mark from '../../src/ui/assets/roppo-mark.png'
+import { SelectionIndicator } from './transitions.tsx'
 
 export function Brand() {
   return (
@@ -26,6 +27,7 @@ export function Sidebar({
     <aside className="rp-sidebar">
       <div className="rp-sidebar-brand">{brand}</div>
       <nav aria-label={label} className="rp-sidebar-nav">
+        <SelectionIndicator selector=".rp-nav-link[aria-current]" selection={children} />
         {children}
       </nav>
       {footer && <div className="rp-sidebar-footer">{footer}</div>}

@@ -151,10 +151,8 @@
   border-radius: var(--rp-corner-field); border: 1px solid var(--rp-line); color: var(--rp-ink);
   background: var(--rp-panel); box-shadow: 0 5px 18px rgb(0 0 0 / 13%);
 }
-.rp-popover:popover-open { animation: rp-arrive .15s var(--rp-ease); }
 .rp-dialog { width: min(460px,calc(100% - 32px)); max-height: min(83dvh,800px); margin: auto; padding: 0; border: 1px solid var(--rp-line); border-radius: var(--rp-corner-panel); background: var(--rp-panel); color: var(--rp-ink); box-shadow: 0 12px 48px #0002; overflow: auto; }
-.rp-dialog[open] { animation: rp-arrive .18s var(--rp-ease); }
-.rp-dialog::backdrop { background: var(--rp-backdrop); animation: rp-veil .14s ease-out; }
+.rp-dialog::backdrop { background: var(--rp-backdrop); }
 body:has(.rp-dialog[open]) { overflow: hidden; }
 .rp-dialog > section { min-height: 100%; padding: 22px; }
 .rp-dialog > section > header, .rp-dialog > section > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -163,17 +161,15 @@ body:has(.rp-dialog[open]) { overflow: hidden; }
 .rp-dialog > section > footer { justify-content: flex-end; }
 .rp-dialog:is([data-placement="side"],[data-placement="start"]) { position: fixed; inset: 12px 12px 12px auto; margin: 0; width: min(390px,calc(100% - 24px)); height: calc(100dvh - 24px); max-height: none; }
 .rp-dialog[data-placement="start"] { inset: 12px auto 12px 12px; width: min(275px,calc(100% - 24px)); }
-.rp-dialog[open][data-placement="start"] { animation: rp-navdrawer .19s var(--rp-ease); }
-@keyframes rp-navdrawer { from { opacity: .4; transform: translateX(-18px); } }
-.rp-dialog[open][data-placement="side"] { animation: rp-drawer .19s var(--rp-ease); }
 .rp-disclosure { border-block-end: 1px solid var(--rp-line); }
 .rp-disclosure summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; font-weight: 550; cursor: pointer; list-style: none; }
 .rp-disclosure summary::-webkit-details-marker { display: none; }
 .rp-disclosure summary svg { transition: transform .18s; }
 .rp-disclosure[open] summary > svg:last-child { transform: rotate(180deg); }
-.rp-disclosure > div { padding-bottom: 13px; color: var(--rp-muted); }
+.rp-disclosure-clip { min-height: 0; overflow: clip; color: var(--rp-muted); }
+.rp-disclosure-clip > div { padding-bottom: 13px; }
 .rp-toast-region { position: fixed; z-index: 5; inset: auto 12px 24px; display: flex; justify-content: center; pointer-events: none; }
-.rp-toast { display: inline-flex; align-items: center; gap: 9px; padding: 9px 15px; border-radius: var(--rp-corner-field); color: var(--rp-on-action); background: var(--rp-action); box-shadow: var(--rp-shadow); animation: rp-arrive .17s var(--rp-ease); }
+.rp-toast { display: inline-flex; align-items: center; gap: 9px; padding: 9px 15px; border-radius: var(--rp-corner-field); color: var(--rp-on-action); background: var(--rp-action); box-shadow: var(--rp-shadow); }
 @media (max-width:600px) {
   .rp-topbar { min-height: 53px; padding-inline: 14px; }
   .rp-task-row { grid-template-columns: minmax(0,1fr) 62px 35px; gap: 6px; padding-inline: 8px; }

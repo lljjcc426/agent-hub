@@ -1,6 +1,18 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, X } from 'lucide-react'
 import { IconButton } from './controls.tsx'
+
+/** Keep the native top layer until its exit finishes. Reopening cancels the pending dismissal. */
+function finishLayerExit(layer: HTMLElement, hide: () => void) {
+  let current = true
+  const transitions = layer.getAnimations().map((motion) => motion.finished)
+  void Promise.allSettled(transitions).then(() => {
+    if (current) hide()
+  })
+  return () => {
+    current = false
+  }
+}
 
 export function Dialog({
   open,
@@ -23,17 +35,22 @@ export function Dialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const heading = useId()
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current!
-    if (!open) return
-    el.showModal()
-    return () => el.close()
+    if (open) {
+      if (!el.open) el.showModal()
+    } else if (el.open) {
+      return finishLayerExit(el, () => el.close())
+    }
   }, [open])
   return (
     <dialog
       ref={ref}
       className="rp-dialog"
       role={role}
+      inert={!open}
+      aria-hidden={!open}
+      data-closing={open ? undefined : ''}
       data-placement={placement}
       aria-labelledby={heading}
       onCancel={(event) => {
@@ -59,26 +76,31 @@ export function Dialog({
 }
 
 export function Disclosure({ title, children }: { title: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
   return (
-    <details className="rp-disclosure">
+    <details className="rp-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
         {title}
         <ChevronDown size={16} />
       </summary>
-      <div>{children}</div>
+      <div className="rp-disclosure-clip" inert={!open} aria-hidden={!open}>
+        <div>{children}</div>
+      </div>
     </details>
   )
 }
 
 export function Toast({ message }: { message: string }) {
+  const previous = useRef(message)
+  useEffect(() => {
+    if (message) previous.current = message
+  }, [message])
   return (
     <div className="rp-toast-region" role="status" aria-live="polite" aria-atomic="true">
-      {message && (
-        <span className="rp-toast" key={message}>
-          <Check size={16} aria-hidden="true" />
-          {message}
-        </span>
-      )}
+      <span className="rp-toast" data-visible={!!message} aria-hidden={!message}>
+        <Check size={16} aria-hidden="true" />
+        {message || previous.current}
+      </span>
     </div>
   )
 }
@@ -94,13 +116,50 @@ export function Popover({
 }) {
   const id = useId()
   const panel = useRef<HTMLDivElement>(null)
+  const invoker = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
+  function dismiss() {
+    if (panel.current?.contains(document.activeElement)) invoker.current?.focus({ preventScroll: true })
+    setOpen(false)
+  }
+  useLayoutEffect(() => {
+    const el = panel.current!
+    if (open) {
+      if (!el.matches(':popover-open')) el.showPopover({ source: invoker.current! })
+    } else if (el.matches(':popover-open')) {
+      return finishLayerExit(el, () => el.hidePopover())
+    }
+  }, [open])
+  useEffect(() => {
+    if (!open) return
+    function outside(event: Event) {
+      const path = event.composedPath()
+      if (!path.includes(panel.current!) && !path.includes(invoker.current!)) setOpen(false)
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault()
+        dismiss()
+      }
+    }
+    document.addEventListener('click', outside, true)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('click', outside, true)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [open])
   return (
     <>
       <button
         type="button"
         className="rp-icon-button"
         popoverTarget={id}
+        ref={invoker}
+        onClick={(event) => {
+          event.preventDefault()
+          setOpen(!open)
+        }}
         title={label}
         aria-label={label}
         aria-haspopup="dialog"
@@ -112,12 +171,14 @@ export function Popover({
         className="rp-popover"
         ref={panel}
         id={id}
-        popover="auto"
+        popover="manual"
         role="dialog"
+        inert={!open}
+        aria-hidden={!open}
         aria-label={label}
-        onToggle={(event) => setOpen(event.newState === 'open')}
+        data-closing={open ? undefined : ''}
       >
-        {children(() => panel.current?.hidePopover())}
+        {children(dismiss)}
       </div>
     </>
   )

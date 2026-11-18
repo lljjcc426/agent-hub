@@ -1,0 +1,77 @@
+/* Registered paint tokens let every inherited surface follow one theme transition. */
+@property --rp-bg { syntax: "<color>"; inherits: true; initial-value: white; }
+@property --rp-panel { syntax: "<color>"; inherits: true; initial-value: white; }
+@property --rp-rail { syntax: "<color>"; inherits: true; initial-value: #f8f8f8; }
+@property --rp-soft { syntax: "<color>"; inherits: true; initial-value: #f5f5f5; }
+@property --rp-hover { syntax: "<color>"; inherits: true; initial-value: #eee; }
+@property --rp-selected { syntax: "<color>"; inherits: true; initial-value: #eaeaea; }
+@property --rp-ink { syntax: "<color>"; inherits: true; initial-value: #1b1b1b; }
+@property --rp-muted { syntax: "<color>"; inherits: true; initial-value: #626262; }
+@property --rp-line { syntax: "<color>"; inherits: true; initial-value: #e1e1e1; }
+@property --rp-action { syntax: "<color>"; inherits: true; initial-value: #222; }
+@property --rp-on-action { syntax: "<color>"; inherits: true; initial-value: white; }
+.roppo-ui {
+  --rp-sweep: cubic-bezier(.24,.87,.26,1);
+  --rp-settle: cubic-bezier(.2,1.07,.31,1);
+  transition: --rp-bg .26s, --rp-panel .26s, --rp-rail .26s, --rp-soft .26s, --rp-hover .26s,
+    --rp-selected .26s, --rp-ink .26s, --rp-muted .26s, --rp-line .26s, --rp-action .26s, --rp-on-action .26s;
+}
+.rp-sidebar-nav, .rp-choices { position: relative; isolation: isolate; }
+.rp-choices[data-appearance="segments"] { touch-action:pan-y; }
+.rp-choices[data-dragging] { cursor:grabbing; user-select:none; }
+.rp-choices[data-dragging] .rp-selection-indicator { transition:none; transform:translate3d(var(--rp-drag-x),3px,0) !important; }
+.rp-selection-indicator {
+  position: absolute; top: 0; left: 0; z-index: -1; pointer-events: none; opacity: 0;
+  border-radius: var(--rp-corner-control); background: var(--rp-panel); box-shadow: var(--rp-sheet-shadow);
+}
+.rp-selection-indicator[data-ready] {
+  opacity: 1; transition: transform .34s var(--rp-settle), width .34s var(--rp-settle), height .34s var(--rp-sweep), opacity .14s;
+}
+.rp-sidebar-nav > .rp-selection-indicator { border-radius: 9px; background: var(--rp-selected); box-shadow: none; }
+.rp-sidebar-nav:has(.rp-selection-indicator[data-ready]) .rp-nav-link[aria-current] { background: transparent; }
+.rp-choices[data-appearance="segments"]:has(.rp-selection-indicator[data-ready]) .rp-choice-content { background: transparent; box-shadow: none; }
+.rp-choices[data-appearance="tiles"] .rp-selection-indicator { z-index: 1; border: 1.5px solid var(--rp-ink); border-radius: var(--rp-corner-object); background: transparent; box-shadow: none; }
+.rp-choices[data-appearance="tiles"]:has(.rp-selection-indicator[data-ready]) input:checked + .rp-choice-content { border-color: transparent; box-shadow: none; }
+.rp-choice-tick svg, .rp-check-glyph svg { transform: scale(.55); opacity: 0; transition: transform .22s var(--rp-settle), opacity .16s; }
+.rp-choice input:checked + span .rp-choice-tick svg, .rp-check input:checked + .rp-check-glyph svg { transform: scale(1); opacity: 1; }
+.rp-choice-tick, .rp-check-glyph { transition: background .2s, border-color .2s; }
+.rp-check[data-appearance="switch"] .rp-check-glyph::before { transition: transform .28s var(--rp-settle), background .2s; }
+
+:root:active-view-transition-type(rp-switch-page, rp-switch-panel, rp-switch-filter) { view-transition-name: none; }
+::view-transition-group(.rp-page), ::view-transition-group(.rp-panel) { animation-duration: .34s; animation-timing-function: cubic-bezier(.22,.85,.24,1); }
+::view-transition-old(.rp-page), ::view-transition-old(.rp-panel) { animation: rp-content-out .16s ease-in both; }
+::view-transition-new(.rp-page) { animation: rp-page-in .35s cubic-bezier(.2,.8,.2,1) both; }
+::view-transition-new(.rp-panel) { animation: rp-panel-in .28s cubic-bezier(.2,.8,.2,1) both; }
+:root:active-view-transition-type(rp-switch-page, rp-switch-panel, rp-switch-filter)::view-transition { pointer-events: none; }
+@keyframes rp-content-out { to { opacity: 0; transform: translateY(-4px); } }
+@keyframes rp-page-in { from { opacity: 0; transform: translateY(13px); } }
+@keyframes rp-panel-in { from { opacity: 0; transform: translateY(7px); } }
+
+.rp-dialog, .rp-popover {
+  --rp-layer-start: translateY(12px) scale(.975);
+  opacity: 0; transform: var(--rp-layer-start);
+  transition: opacity .2s ease, transform .27s var(--rp-sweep);
+}
+.rp-popover { --rp-layer-start: translateY(5px) scale(.965); transform-origin: 30% 90%; }
+.rp-dialog[data-placement="side"] { --rp-layer-start: translateX(46px); }
+.rp-dialog[data-placement="start"] { --rp-layer-start: translateX(-46px); }
+.rp-dialog[open]:not([data-closing]), .rp-popover:popover-open:not([data-closing]) { opacity: 1; transform: none; }
+.rp-dialog[data-closing], .rp-dialog[data-closing]::backdrop, .rp-popover[data-closing] { pointer-events: none; }
+.rp-dialog::backdrop { opacity: 0; transition: opacity .22s; }
+.rp-dialog[open]:not([data-closing])::backdrop { opacity: 1; }
+@starting-style {
+  .rp-dialog[open]:not([data-closing]), .rp-popover:popover-open:not([data-closing]) { opacity: 0; transform: var(--rp-layer-start); }
+  .rp-dialog[open]:not([data-closing])::backdrop { opacity: 0; }
+}
+.rp-disclosure::details-content {
+  display: grid; grid-template-rows: 0fr; opacity: 0; overflow: clip; content-visibility: visible;
+  transition: grid-template-rows .3s var(--rp-sweep), opacity .2s;
+}
+.rp-disclosure[open]::details-content { grid-template-rows: 1fr; opacity: 1; }
+.rp-toast { opacity: 0; transform: translateY(8px) scale(.96); visibility: hidden; transition: opacity .19s, transform .25s var(--rp-settle), visibility .25s allow-discrete; }
+.rp-toast[data-visible="true"] { opacity: 1; transform: none; visibility: visible; }
+@media (prefers-reduced-motion: reduce) {
+  .roppo-ui, .rp-disclosure::details-content, .rp-dialog::backdrop { transition-duration: .01ms !important; }
+  ::view-transition-group(.rp-page), ::view-transition-group(.rp-panel),
+  ::view-transition-old(.rp-page), ::view-transition-new(.rp-page), ::view-transition-old(.rp-panel), ::view-transition-new(.rp-panel) { animation-duration: .01ms !important; }
+}

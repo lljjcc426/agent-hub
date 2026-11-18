@@ -9,7 +9,8 @@ import {
 } from "lucide-react";
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {ChoiceGroup} from '../ui';
-import {DeliveryCard} from './team-view.tsx';
+import {DeliveryFileCard} from '../ui/delivery-files.tsx';
+import {deliveryFile} from './delivery-links.ts';
 
 type Task = { id: string; title: string; workerId: string };
 type Result = {
@@ -30,7 +31,7 @@ export function FilesPanel({conversationId, deliveries, openFile, L}:{
       {value:'chat',label:L('Chat files','会话文件')},{value:'tasks',label:L('Task folders','任务目录')}
     ]}/></div>
     {tab==='tasks'?<TaskFiles conversationId={conversationId} L={L}/>:<div className="studio-deliveries">
-      {deliveries.length?[...deliveries].sort((a,b)=>b.createdAt-a.createdAt).map(file=><DeliveryCard key={file.id} file={file} open={openFile} L={L}/>):<p>{L('No files yet','还没有会话文件')}</p>}
+      {deliveries.length?[...deliveries].sort((a,b)=>b.createdAt-a.createdAt).map(file=><DeliveryFileCard key={file.id} file={deliveryFile(file)} onOpen={()=>openFile(file)} L={L}/>):<p>{L('No files yet','还没有会话文件')}</p>}
     </div>}
   </div>
 }

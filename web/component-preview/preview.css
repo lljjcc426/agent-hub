@@ -101,6 +101,13 @@ html[data-theme="dark"] { background: #171717; }
 .sample-task-detail dd { display: flex; align-items: center; margin: 0; }
 .sample-task-detail .rp-file { margin-top: 22px; }
 .dedicated { display: grid; gap: 20px; max-width: 1000px; }
+.work-delivery-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:inherit; align-items:start; }
+.work-delivery-grid > * { min-width:0; }
+.sample-delivery { outline:none; }
+.sample-delivery-footer, .sample-delivery-footer > span { display:flex; align-items:center; gap:5px; }
+.sample-delivery-footer { margin-block-start:8px; gap:12px; }
+.sample-delivery-footer > span { color:var(--rp-muted); font-size:12px; }
+.sample-delivery-footer .rp-button { min-height:30px; font-size:12px; }
 .dedicated.solo { max-width: 780px; }
 .dedicated.solo > .control-samples { max-width: 560px; padding-top: 5px; gap: 24px; }
 .dedicated .view-controls { margin-bottom: 0; }

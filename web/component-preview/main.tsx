@@ -40,7 +40,6 @@ import { Basics, DisplayChoice, Feedback, NavigationExample, type DisplayMode } 
 import {
   download,
   fileName,
-  SampleFile,
   Sheet,
   states,
   TaskDetails,
@@ -50,6 +49,7 @@ import {
 } from './samples.tsx'
 import './preview.css'
 import { AgentGallery } from './agent-gallery.tsx'
+import { DeliveredFileExample, DeliveryExample, sampleWorkbook, type ExampleReview } from './delivery.tsx'
 
 const pages = [
   { id: 'overview', title: '总览', icon: LayoutGrid },
@@ -146,6 +146,7 @@ function App() {
   const [selectedTask, setSelectedTask] = useState(tasks[0]!.id)
   const [task, setTask] = useState<Task | null>(null)
   const [file, setFile] = useState(false)
+  const [fileReview, setFileReview] = useState<ExampleReview>('pending')
   const [schedule, setSchedule] = useState(true)
   const [confirmClear, setConfirmClear] = useState(false)
   const [messages, setMessages] = useState<DemoMessage[]>([])
@@ -197,6 +198,7 @@ function App() {
     notify('示例对话已清空')
   }
   const openFile = () => setFile(true)
+  const deliveryExample = <DeliveryExample state={fileReview} onChange={setFileReview} />
   const showTask = () => openTask(tasks[0]!)
   const currentTask = tasks.find((item) => item.id === selectedTask)!
   const openTaskList = (compact = false) => (
@@ -352,7 +354,7 @@ function App() {
                 </Specimen>
               </div>
             )}
-            {page === 'agents' && <AgentGallery />}
+            {page === 'agents' && <AgentGallery delivery={deliveryExample} />}
             {page === 'basics' && <div className="dedicated solo">{basics()}</div>}
             {page === 'navigation' && (
               <div className="dedicated">
@@ -391,6 +393,10 @@ function App() {
             )}
             {page === 'work' && (
               <div className="dedicated">
+                <div className="work-delivery-grid">
+                  <Specimen title="交付验收">{deliveryExample}</Specimen>
+                  <Specimen title="Worker 交付文件"><DeliveredFileExample file={sampleWorkbook} /></Specimen>
+                </div>
                 <Specimen title="任务列表">{openTaskList()}</Specimen>
                 <Specimen title="任务动态">
                   <TaskActivityRow L={(_en, zh) => zh} agentName={() => tasks[0]!.agent}
@@ -399,9 +405,6 @@ function App() {
                       tickets: [{id: 'check', workerId: 'doc', title: '核对交付文件', state: 'completed',
                         reviewing: false, updatedAt: 0, summary: '已交付发布清单.xlsx'}]}}
                     onAgent={() => {setMode('agents'); setSpeaker('worker'); location.hash = 'chat'}}/>
-                </Specimen>
-                <Specimen title="交付文件">
-                  <SampleFile open={openFile} />
                 </Specimen>
                 <Specimen title="定时任务">
                   <ScheduleRow

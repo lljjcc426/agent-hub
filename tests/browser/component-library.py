@@ -1,5 +1,6 @@
 """Run against an open component gallery: python tests/browser/component-library.py <base-url>."""
 import sys
+from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -83,6 +84,60 @@ def check_dialogs(page):
     expect(page.get_by_role('textbox', name='请和 Router 对话')).to_be_visible()
 
 
+def check_delivery(page, base):
+    page.goto(base + "/#agents")
+    sample = page.get_by_role("group", name="文件交付验收")
+    tile = sample.get_by_role("button", name="打开文件 发布说明.md")
+    expect(tile).to_have_count(0)
+    sample.get_by_role("button", name="拒绝交付").click()
+    expect(sample.get_by_role("status")).to_have_text("已拒绝")
+    page.locator('[data-example="file-delivery"]').get_by_role("link", name="任务与文件").click()
+    expect(page.get_by_role("heading", name="任务与文件", exact=True)).to_be_visible()
+    expect(sample.get_by_role("status")).to_have_text("已拒绝")
+    expect(tile).to_have_count(0)
+
+    sample.get_by_role("button", name="重新演示").click()
+    sample.locator("summary").press("Enter")
+    draft = sample.locator("pre")
+    expect(draft).to_contain_text("陈舟")
+    source = draft.text_content().encode()
+    sample.get_by_role("button", name="确认交付").press("Enter")
+    expect(sample.get_by_role("status")).to_have_text("已交付")
+    tile.press("Enter")
+    viewer = page.get_by_role("dialog", name="发布说明.md")
+    expect(viewer.get_by_role("heading", name="发布说明", exact=True)).to_be_visible()
+    expect(viewer.get_by_role("table").get_by_role("row")).to_have_count(4)
+    preview_url = viewer.get_by_role("link", name="下载").evaluate("a => a.href")
+    with page.expect_download() as downloaded:
+        viewer.get_by_role("link", name="下载").click()
+    assert downloaded.value.suggested_filename == "发布说明.md"
+    assert downloaded.value.path().read_bytes() == source
+    box = viewer.bounding_box()
+    assert 0 <= box["x"] and box["x"] + box["width"] <= page.viewport_size["width"]
+    page.keyboard.press("Escape")
+    expect(viewer).to_have_count(0)
+    expect(tile).to_be_focused()
+    page.route(preview_url, lambda route: route.fulfill(status=503, body="Unavailable"))
+    tile.click()
+    expect(viewer.get_by_role("alert")).to_have_text("预览加载失败")
+    expect(viewer.get_by_role("link", name="下载")).to_be_visible()
+    page.keyboard.press("Escape")
+    page.unroute(preview_url)
+    tile.click()
+    expect(viewer.get_by_role("table")).to_be_visible()
+    viewer.get_by_role("button", name="关闭文件").click()
+
+    page.get_by_role("button", name="打开文件 发布清单.xlsx").click()
+    workbook = page.get_by_role("dialog", name="发布清单.xlsx")
+    expect(workbook.get_by_text("下载后查看此文件")).to_be_visible()
+    with page.expect_download() as binary:
+        workbook.get_by_role("link", name="下载").click()
+    expected = Path(__file__).resolve().parents[2] / "web/component-preview/release-checklist.xlsx"
+    assert binary.value.suggested_filename == "发布清单.xlsx"
+    assert binary.value.path().read_bytes() == expected.read_bytes()
+    page.keyboard.press("Escape")
+
+
 def check_mobile(page, base):
     page.add_init_script("localStorage.setItem('roppo-component-theme', 'dark')")
     page.goto(base + "/#chat")
@@ -121,6 +176,8 @@ if __name__ == "__main__":
         check_composer(page)
         page.goto(base + "/#work")
         check_dialogs(page)
+        check_delivery(page, base)
         mobile = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True, color_scheme="dark")
         check_mobile(mobile, base)
+        check_delivery(mobile, base)
         browser.close()

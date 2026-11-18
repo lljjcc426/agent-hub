@@ -1,4 +1,4 @@
-"""Exercise the eleven Agent gallery specimens against the same local release example."""
+"""Exercise the Agent gallery specimens against the same local release example."""
 
 import sys
 
@@ -14,11 +14,12 @@ def check_page(page, base):
     def choose(area, name):
         area.get_by_role("radio", name=name, exact=True).locator("..").click()
 
-    expect(page.locator(".agent-example:visible")).to_have_count(11)
-    sources = page.locator(".agent-example > header a").evaluate_all(
+    expect(page.locator(".agent-example:visible")).to_have_count(12)
+    sources = page.locator('.agent-example > header a[target="_blank"]').evaluate_all(
         "(xs)=>xs.map(x=>new URL(x.href).pathname)"
     )
     assert len(set(sources)) == 11 and all(s.startswith("/components/") for s in sources)
+    expect(card("file-delivery").get_by_role("link", name="任务与文件")).to_have_attribute("href", "#work")
 
     crew = card("agent-crew")
     crew.get_by_role("button", name="研究助手", exact=True).click()
@@ -50,7 +51,7 @@ def check_page(page, base):
     expect(relay.locator(".rp-handoff-receipt")).to_contain_text("发布清单.xlsx")
     expect(relay.locator(".rp-handoff-receipt")).to_contain_text("未传递")
     choose(page.get_by_role("group", name="Agent 组件分类"), "执行")
-    expect(page.locator(".agent-example:visible")).to_have_count(4)
+    expect(page.locator(".agent-example:visible")).to_have_count(5)
     plan = card("agent-plan")
     plan.get_by_role("button", name="编辑读取发布清单").click()
     plan.get_by_role("textbox", name="步骤名称").fill("读取三项检查")
@@ -66,7 +67,7 @@ def check_page(page, base):
     plan.get_by_role("textbox", name="步骤名称").press("Enter")
     plan.get_by_role("button", name="删除核对负责人").click()
     expect(plan.locator("ol li")).to_have_count(3)
-    choose(page.get_by_role("group", name="Agent 组件分类"), "全部 11")
+    choose(page.get_by_role("group", name="Agent 组件分类"), "全部 12")
     page.get_by_role("button", name="播放演示").click()
     expect(crew.locator('.rp-live-dot[data-working="true"]')).to_have_count(1)
     expect(tools.locator(".rp-travelling")).to_have_count(1)
@@ -162,7 +163,7 @@ def check_page(page, base):
     expect(memory.get_by_text("暂无记忆")).to_be_visible()
     memory.get_by_role("button", name="撤销").click()
     expect(memory.get_by_text("交付前检查下载。", exact=True)).to_be_visible()
-    choose(page.get_by_role("group", name="Agent 组件分类"), "全部 11")
+    choose(page.get_by_role("group", name="Agent 组件分类"), "全部 12")
     expect(plan.locator("ol li").first).to_contain_text("读取三项检查")
 
 
@@ -177,7 +178,7 @@ if __name__ == "__main__":
         for width in (320, 390, 768):
             p.set_viewport_size({"width": width, "height": 844})
             p.goto(base + "/#agents")
-            expect(p.locator(".agent-example:visible")).to_have_count(11)
+            expect(p.locator(".agent-example:visible")).to_have_count(12)
             for section in p.locator(".agent-example").all():
                 assert section.evaluate("el=>el.scrollWidth<=el.clientWidth+1"), (
                     width,

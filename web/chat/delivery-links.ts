@@ -4,6 +4,11 @@ export function downloadUrl(file: Pick<ChatDelivery, 'id' | 'conversationId'>) {
   return '/api/chat/conversations/' + file.conversationId + '/deliveries/' + file.id
 }
 
+export function deliveryFile(file: ChatDelivery) {
+  const href = downloadUrl(file)
+  return { ...file, href, previewHref: href + '?preview=1' }
+}
+
 /** Resolve model-written file references against this message's actual handoffs. */
 export function deliveryHref(raw: string, files: ChatDelivery[]) {
   const href = raw.trim()

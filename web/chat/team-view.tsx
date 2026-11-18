@@ -1,14 +1,10 @@
-import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowDownToLine,
-  ArrowUpRight,
   CalendarClock,
   Check,
   ChevronRight,
-  FileText,
   Folder,
   Globe,
-  Image,
   List,
   Pause,
   Pencil,
@@ -19,12 +15,11 @@ import {
 import type { ChatSessions } from '../../src/chat.ts'
 import type { ChatDelivery } from '../../src/chat-deliveries.ts'
 import type { Timing } from '../../src/schedule-time.ts'
-import { downloadUrl } from './delivery-links.ts'
+import { deliveryFile } from './delivery-links.ts'
+import { DeliveryFileCard } from '../ui/delivery-files.tsx'
 import { AgentAvatar } from './agent-avatar.tsx'
 import { TaskActivityRow } from '../ui/task-activity.tsx'
 import { taskActivities } from './task-activity.ts'
-
-const DeliveryMarkdown = lazy(() => import('./markdown.tsx').then((m) => ({ default: m.FileMarkdown })))
 
 type View = ReturnType<ChatSessions['view']>
 type Localize = (en: string, zh: string) => string
@@ -37,137 +32,6 @@ const tabs = [
 ] as const
 export const teamName = (label: string) => (label.replace(/(?:^Router$| · Router$)/, '').trim() || 'Roppo')
 
-function fileSize(bytes: number) {
-  return bytes < 1024
-    ? bytes + ' B'
-    : bytes < 1024 ** 2
-      ? Number((bytes / 1024).toFixed(1)) + ' KB'
-      : Number((bytes / 1024 ** 2).toFixed(1)) + ' MB'
-}
-export function DeliveryCard({
-  file,
-  open,
-  L,
-}: {
-  file: ChatDelivery
-  open: (file: ChatDelivery) => void
-  L: Localize
-}) {
-  const Icon = file.preview === 'image' ? Image : FileText
-  return (
-    <button
-      type="button"
-      className="team-file"
-      onClick={() => open(file)}
-      aria-label={L('Open file ', '打开文件 ') + file.name}
-    >
-      <span className="file-stamp" aria-hidden="true">
-        {file.preview === 'image' ? (
-          <img
-            loading="lazy"
-            alt=""
-            src={downloadUrl(file) + '?preview=1'}
-          />
-        ) : file.excerpt ? (
-          <span className="file-page">
-            <b>{file.name.split('.').at(-1)?.toUpperCase()}</b>
-            {file.excerpt}
-          </span>
-        ) : (
-          <Icon size={25} strokeWidth={1.4} />
-        )}
-      </span>
-      <span className="team-file-label">
-        <strong>{file.name}</strong>
-        <small>
-          {fileSize(file.size)} · {L('Delivered file', '交付文件')}
-        </small>
-      </span>
-      <ArrowUpRight size={16} />
-    </button>
-  )
-}
-
-export function FileViewer({ file, close, L }: { file: ChatDelivery; close: () => void; L: Localize }) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  const [content, setContent] = useState<string>(),
-    [error, setError] = useState(false)
-  const url = downloadUrl(file)
-  const previewText = file.preview === 'text' && file.size <= 512 * 1024
-  useEffect(() => {
-    const el = dialog.current!
-    el.showModal()
-    return () => el.close()
-  }, [])
-  useEffect(() => {
-    if (!previewText) return
-    const controller = new AbortController()
-    fetch(url + '?preview=1', { signal: controller.signal })
-      .then((r) => {
-        if (!r.ok) throw Error()
-        return r.text()
-      })
-      .then(setContent)
-      .catch(() => {
-        if (!controller.signal.aborted) setError(true)
-      })
-    return () => controller.abort()
-  }, [url, previewText])
-  return (
-    <dialog
-      ref={dialog}
-      className="team-file-dialog"
-      onCancel={close}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') e.stopPropagation()
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close()
-      }}
-      aria-labelledby="delivery-title"
-    >
-      <section>
-        <header>
-          <h2 id="delivery-title">{file.name}</h2>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={L('Close file', '关闭文件')}
-            onClick={close}
-          >
-            <X size={18} />
-          </button>
-        </header>
-        <div className="team-file-preview">
-          {error ? (
-            <p role="alert">{L('Could not load preview', '预览加载失败')}</p>
-          ) : file.preview === 'image' ? (
-            <img alt={file.name} src={url + '?preview=1'} onError={() => setError(true)} />
-          ) : previewText ? (
-            content === undefined ? (
-              <p role="status">{L('Loading…', '正在加载…')}</p>
-            ) : file.name.toLowerCase().endsWith('.md') ? (
-              <Suspense fallback={<pre>{content}</pre>}>
-                <DeliveryMarkdown text={content} />
-              </Suspense>
-            ) : (
-              <pre>{content}</pre>
-            )
-          ) : (
-            <FileText size={52} strokeWidth={1} />
-          )}
-        </div>
-        <footer>
-          <span>{fileSize(file.size)}</span>
-          <a className="delivery-download" href={url} download={file.name}>
-            <ArrowDownToLine size={16} />
-            {L('Download', '下载')}
-          </a>
-        </footer>
-      </section>
-    </dialog>
-  )
-}
 export function scheduleLabel(t: Timing, lang: string, L: Localize) {
   if (t.kind === 'once')
     return new Intl.DateTimeFormat(lang, {
@@ -323,7 +187,7 @@ export function TeamOverview({
             )}
             <h3>{L('Delivered files', '交付文件')}</h3>
             {files.length ? (
-              files.map((f) => <DeliveryCard file={f} key={f.id} open={openFile} L={L} />)
+              files.map((f) => <DeliveryFileCard file={deliveryFile(f)} key={f.id} onOpen={() => openFile(f)} L={L} />)
             ) : (
               <p>{L('No delivered files yet', '暂无交付文件')}</p>
             )}

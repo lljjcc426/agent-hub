@@ -22,6 +22,8 @@ import { Button, FileCard } from '../ui'
 
 在仓库根目录运行 `npm run dev:ui` 打开交互展示页，`npm run build:ui` 生成独立静态预览。
 
+在「任务与文件」和「Agent 组件」中都能试用交付验收。`DeliveryReviewCard` 接收草稿读取和交付决定的回调。`DeliveryFileCard`、`DeliveryFileViewer` 使用宿主提供的预览和下载地址。正式 Chat 通过会话接口读取文件，组件库使用随预览发布的 Markdown 文件。两处都可以从草稿原文核对到最终下载的内容。
+
 ## Agent 组件
 
 `#agents` 用一份本地发布清单演示以下组件。交互参考 Affect UI 的公开预览，组件使用 Roppo 的字体、头像、黑白主题和原生控件独立实现。

@@ -34,13 +34,7 @@
 .usage-breakdown-heading span { color: var(--rp-muted); font-size: 12px; font-weight: 400; }
 .usage-section .rp-context-file span { min-width: 0; overflow-wrap: anywhere; }
 .workflow-block :is(.rp-approval,.rp-decision), .workflow-card :is(.rp-approval,.rp-decision) { width:fit-content; max-width:min(100%,29rem); }
-.workflow-draft { margin-block-start:6px; font-size:12px; }
-.workflow-draft summary { display:inline-flex; align-items:center; gap:4px; padding-block:3px; color:var(--rp-muted); cursor:pointer; list-style:none; }
-.workflow-draft summary::-webkit-details-marker { display:none; }
-.workflow-draft[open] summary svg { transform:rotate(180deg); }
 .workflow-card .rp-approval .rp-fold { grid-template-columns:minmax(0,1fr); }
-.workflow-card .workflow-draft pre { box-sizing:border-box; margin:5px 0; max-height:14rem; width:100%; overflow:auto; padding:9px 11px; white-space:pre-wrap; overflow-wrap:anywhere; border:0; background:var(--rp-soft); border-radius:8px; font:inherit; line-height:1.6; }
-@media (pointer:coarse) { .workflow-draft summary { min-height:40px; } }
 @media (prefers-reduced-motion: reduce) {
   .team-card-stack > .rp-inspector-card { animation: none; }
   .function-groups > .rp-selection-indicator { transition: none; }

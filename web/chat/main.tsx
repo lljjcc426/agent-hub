@@ -41,7 +41,9 @@ import {
   Hand,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
-import {DeliveryCard,FileViewer,TeamOverview,teamName,type TeamTab} from './team-view.tsx';
+import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
+import {deliveryFile} from "./delivery-links.ts";
+import {TeamOverview,teamName,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
@@ -298,7 +300,7 @@ function AssistantMessage() {
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
-    body = deliveries.map(file => <DeliveryCard key={file.id} L={L} file={file} open={openFile}/>);
+    body = deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>);
   } else if (fileReview) {
     body = <FileReviewCard key={id} id={id} name={fileReview.name} review={fileReview}/>;
   } else if (decision) {
@@ -1447,7 +1449,7 @@ function Chat(p: ChatProps) {
             </div></SwitchView>
           </main>
         </div>
-        {file?<FileViewer key={file.id} file={file} L={L} close={()=>setFile(null)}/>:null}
+        {file?<DeliveryFileViewer key={file.id} file={deliveryFile(file)} L={L} onClose={()=>setFile(null)}/>:null}
         </InteractionProvider>
       </AssistantRuntimeProvider></WorkflowProvider>
     </Context.Provider>

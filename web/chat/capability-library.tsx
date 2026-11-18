@@ -6,7 +6,7 @@ import {capabilityKinds,type Capability,type CapabilityKind,type CapabilitySnaps
 import {AppBrand} from './app-brand.tsx'
 import './capability-library.css'
 
-const Markdown=lazy(()=>import('./markdown.tsx').then(m=>({default:m.FileMarkdown})))
+const Markdown=lazy(()=>import('./file-markdown.tsx'))
 type Language='en'|'zh-CN'
 type Filter=CapabilityKind|'all'
 type Detail=Capability&{body?:string}

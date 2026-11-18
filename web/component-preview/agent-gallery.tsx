@@ -49,6 +49,7 @@ const examples = [
   { id: 'tool-call-card', title: '工具调用', name: 'Tool Call Card', group: 'run' },
   { id: 'agent-checkpoints', title: '检查点', name: 'Agent Checkpoints', group: 'run' },
   { id: 'agent-handoff', title: '任务交接', name: 'Agent Handoff', group: 'team' },
+  { id: 'file-delivery', title: '交付验收', name: '任务与文件', group: 'run', href: '#work' },
   { id: 'context-window', title: '上下文用量', name: 'Context Window', group: 'context' },
   { id: 'approval-card', title: '授权请求', name: 'Approval Card', group: 'context' },
   { id: 'decision-card', title: '决策卡', name: 'Decision Card', group: 'context' },
@@ -291,7 +292,7 @@ function useSampleRun(steps: PlanStep[]) {
   }
 }
 
-export function AgentGallery() {
+export function AgentGallery({ delivery }: { delivery: ReactNode }) {
   const [category, setCategory] = useState<Category>('all')
   const [crewMember, setCrewMember] = useState('router')
   const [owner, setOwner] = useState('doc'),
@@ -399,6 +400,7 @@ export function AgentGallery() {
       result: t.result,
     }))
   const content: Record<(typeof examples)[number]['id'], ReactNode> = {
+    'file-delivery': delivery,
     'agent-crew': (
       <AgentCrew
         lead={crew[0]!}
@@ -570,10 +572,10 @@ export function AgentGallery() {
               <header>
                 <h2>{ex.title}</h2>
                 <a
-                  href={'https://www.affectui.com/components/' + ex.id}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={'查看 Affect UI 的 ' + ex.name}
+                  href={'href' in ex ? ex.href : 'https://www.affectui.com/components/' + ex.id}
+                  target={'href' in ex ? undefined : '_blank'}
+                  rel={'href' in ex ? undefined : 'noreferrer'}
+                  aria-label={'href' in ex ? ex.name : '查看 Affect UI 的 ' + ex.name}
                   title={ex.name}
                 >
                   {ex.name}

@@ -1,4 +1,3 @@
-import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
 import type { ChatSessions, FileReview } from '../../src/chat.ts'
 import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
@@ -6,7 +5,7 @@ import { AgentPlan } from '../ui/agent-run.tsx'
 import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
 import { WorkerQuestion } from './worker-question-preview.tsx'
 import type { DecisionAttempt } from './decision-state.ts'
-import { ChevronDown } from 'lucide-react'
+import { DeliveryReviewCard } from '../ui/delivery-review.tsx'
 import { PendingRequests } from '../ui/pending-requests.tsx'
 
 type Snapshot = ReturnType<ChatSessions['view']>
@@ -129,29 +128,11 @@ function useSubmit(L: Localize) {
 export function FileReviewCard({ id, name, review }: { id: string; name: string; review: FileReview }) {
   const { L, readonly, readDraft, reviewFile } = useContext(Flow)!
   const { busy, submit, error } = useSubmit(L)
-  const [draft, setDraft] = useState<string | null>(null)
-  const [readError, setReadError] = useState(false)
-  async function openDraft() {
-    if (draft !== null) return
-    setReadError(false)
-    try { setDraft((await readDraft(id)).text) }
-    catch { setReadError(true) }
-  }
-  const pending = review.state === 'pending'
   return (
     <div className="roppo-ui workflow-card">
-      <ApprovalCard L={L} title={name} risk={L('File delivery', '文件交付')} details={[]}
-        state={review.state === 'superseded' || review.state === 'cancelled' ? 'resolved' : review.state}
-        statusLabel={review.state === 'superseded' ? L('Replaced', '已替换') : review.state === 'cancelled' ? L('Cancelled', '已取消') : undefined}
-        actionLabels={{approve: L('Deliver file', '确认交付'), deny: L('Decline', '拒绝交付')}}
-        disabled={readonly || busy}
-        onDecision={(state) => void submit(() => reviewFile(id, state))}>
-        {pending && <DisclosureRoot className="workflow-draft" onToggle={e => { if(e.currentTarget.open) void openDraft() }}>
-          <DisclosureSummary>{L('Read draft', '查看原文')}<ChevronDown size={13} aria-hidden="true" /></DisclosureSummary>
-          {draft !== null ? <pre tabIndex={0}>{draft}</pre>
-            : <span role="status">{readError ? L('Could not load. Reopen to retry.', '读取失败，请重新展开。') : L('Loading…', '读取中…')}</span>}
-        </DisclosureRoot>}
-      </ApprovalCard>
+      <DeliveryReviewCard key={review.fileId} name={name} state={review.state} L={L}
+        disabled={readonly || busy} readDraft={async () => (await readDraft(id)).text}
+        onDecision={state => void submit(() => reviewFile(id, state))}/>
       {error}
     </div>
   )

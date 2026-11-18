@@ -8,7 +8,7 @@ import { TerminalEditor } from '../src/terminal/editor.ts'
 import { projectFiles, suggestions } from '../src/terminal/suggestions.ts'
 import { command, mentionedFiles } from '../src/terminal/commands.ts'
 import type { Snapshot, TerminalClient } from '../src/terminal/client.ts'
-import { draftLines, TerminalLayout } from '../src/terminal/presentation.ts'
+import { draftLines } from '../src/terminal/presentation.ts'
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
@@ -108,23 +108,6 @@ it('binds a selected Router answer to the original question and ignores closed q
   ])
   await expect(command(client, 'chat', '/choose old 1')).rejects.toThrow('no longer available')
 })
-it('keeps the responsive identity panel and picker within the terminal width', async () => {
-  const { default: width } = await import('string-width')
-  const view = {
-    conversation: { project: '/tmp/示例' },
-    readiness: { workers: [] }
-  } as unknown as Snapshot
-  for (const columns of [24, 38, 42, 80, 132]) {
-    const layout = new TerminalLayout(columns, true)
-    const header = layout.header(view)
-    expect(header.every((line) => width(line) < columns)).toBe(true)
-    const borders = header.filter(
-      (line) => line.includes('╭') || line.includes('│') || line.includes('╰')
-    )
-    expect(new Set(borders.map((line) => width(line))).size).toBeLessThanOrEqual(1)
-  }
-})
-
 it('orders capabilities by source and inspects the selected item by stable ID', async () => {
   const library = {
     items: [

@@ -32,11 +32,13 @@ Type `/` to browse commands and `@` to search project files. Use ↑ and ↓ to 
 
 Run `roppo -r` to search this project's conversations by title. Press Enter to resume a match or use `roppo -c` for the most recent conversation.
 
+Interactive startup clears the screen. The project and team appear above the composer. Ctrl+O shows workspace details while idle.
+
 During a run, the status shows the current public activity and elapsed time. Ctrl+O expands recent tools. Esc interrupts the current run when the picker is closed. Ctrl+D on an empty prompt or `/exit` leaves work running.
 
 Use `/plan` to read published steps or `/choose` to answer an open Router question. Type `/diff` followed by a space to select a Worker task and inspect its changes. `/approvals` shows pending requests for a selected task. `/approve`, `/decline` and `/answer` let you pick a task and request, then submit your response. `/tools Codex` filters the capability picker by source or name. Press Enter to inspect the selected capability. `/open` opens the same conversation in the web workspace.
 
-[Worker in progress](images/product/terminal-working.png) · [Completed reply](images/product/terminal-reply.png).
+[Start screen](images/product/terminal-home.png) · [Worker in progress](images/product/terminal-working.png) · [Completed reply](images/product/terminal-reply.png).
 
 ## Use in scripts
 

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { stripVTControlCharacters } from 'node:util'
 import stringWidth from 'string-width'
+import type { Snapshot } from '../src/terminal/client.ts'
 import { draftLines, fit, TerminalLayout } from '../src/terminal/presentation.ts'
 
 describe('interactive terminal layout', () => {
   it('positions the cursor in cells across CJK, joined emoji and combining marks', () => {
     const text = 'AB你👩‍💻e\u0301'
-    expect(draftLines(text, 3, 5)).toEqual({ lines: ['AB你', '👩‍💻e\u0301'], caret: { row: 1, col: 0 } })
+    expect(draftLines(text, 3, 5)).toEqual({
+      lines: ['AB你', '👩‍💻e\u0301'],
+      caret: { row: 1, col: 0 }
+    })
     expect(draftLines(text, text.length, 5).caret).toEqual({ row: 1, col: 3 })
     expect(fit('你👩‍💻好', 5)).toBe('你👩‍💻…')
   })
@@ -35,5 +39,43 @@ describe('interactive terminal layout', () => {
     expect(result.join('\n')).not.toContain(bad)
     expect(stripVTControlCharacters(result.join('\n'))).toContain('结论')
     expect(result.join('\n')).not.toContain('**')
+  })
+  it('keeps the home prompt in place when suggestions open and fits its cursor and borders', () => {
+    const view = {
+      conversation: { project: '/tmp/示例' },
+      readiness: { workers: [], routerLabel: 'Router' },
+      tasks: [],
+      calls: [],
+      messages: [],
+      approvals: []
+    } as unknown as Snapshot
+    const menu = {
+      title: 'Commands',
+      start: 0,
+      end: 1,
+      selected: 0,
+      items: [{ label: '/tasks', detail: 'Inspect Worker tasks', value: '/tasks' }]
+    }
+    for (const [columns, rows] of [
+      [24, 14],
+      [43, 21],
+      [80, 24],
+      [132, 30]
+    ] as const) {
+      const layout = new TerminalLayout(columns, true)
+      const empty = layout.composer(view, '', 0, false, rows, { home: true })
+      const open = layout.composer(view, '/', 1, false, rows, { home: true, menu })
+      expect(open.row).toBe(empty.row)
+      expect(open.col).toBe(empty.col + 1)
+      expect(open.lines.length).toBeLessThanOrEqual(rows)
+      expect(open.lines.findIndex((line) => line.includes('Commands'))).toBeGreaterThan(open.row)
+      for (const line of [...open.lines, ...layout.header(view)])
+        expect(stringWidth(line)).toBeLessThan(columns)
+      const borders = open.lines.filter(
+        (line) => line.includes('╭') || line.includes('╰') || line.includes('│')
+      )
+      expect(borders).toHaveLength(3)
+      expect(new Set(borders.map((line) => stringWidth(line))).size).toBe(1)
+    }
   })
 })

@@ -45,7 +45,7 @@ it('publishes the model’s specific opening once before any tools are available
   expect(calls[0]).toMatchObject({tools:[],options:{tools:[],toolConnections:[]}})
   expect(calls[0]!.onTool).toBeUndefined()
   expect(calls[1]!.threadId).toBeTruthy()
-  expect(JSON.parse(calls[1]!.input)).toEqual({kind:'continue_after_opening',triggerId:run.runId})
+  expect(JSON.parse(calls[1]!.input)).toEqual({kind:'continue_after_opening',triggerId:run.runId,runtimeContext:expect.objectContaining({role:'router',channel:'chat',eventAt:h.store.triggers.get(run.runId)!.at})})
   h.chat.introduce(run.runId,'Duplicate retry')
   expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text,opening,'已检查摘要。'])
   expect(h.chat.history(run.runId).map(m=>m.text)).toEqual([input.text,'已检查摘要。'])

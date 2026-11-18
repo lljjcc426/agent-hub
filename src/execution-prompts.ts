@@ -27,14 +27,16 @@ export function composeExecutionPrompt(config:Config,input:ExecutionPrompt){
  const sections:PromptSection[]=[]
  const add=(id:string,text:string,source:string)=>{if(text)sections.push({id,text,source,digest:digest(text)})}
  const part=(id:Part)=>add(id,config.prompts.overrides[id]?.text??builtins[id],config.prompts.overrides[id]?'override:'+id:'built-in:'+id)
+ const coordinator=input.role==='router'&&input.hostRouter
+ const role=coordinator?composeCoordinator(config,input.environment):compose(config,input.role==='router'?'router':'worker',input.environment,input.policyVersion??'preview')
+ const timeReference='The current input includes host runtimeContext. Use localTime and timeZone for current calendar questions. Anchor relative requests to eventAt when available. An explicit time zone in the request takes precedence. For a scheduled run, scheduledFor is its intended instant and localTime is the actual dispatch time.'
+ add('role',role+'\n'+timeReference,coordinator?'src/prompts.ts#composeCoordinator':'src/prompts.ts#compose')
  if(input.role==='router'){
-  add('role',input.hostRouter?composeCoordinator(config,input.environment):compose(config,'router',input.environment,input.policyVersion??'preview'),input.hostRouter?'src/prompts.ts#composeCoordinator':'src/prompts.ts#compose')
   if(input.hostRouter){
    if(input.project)part('runtime/coordinator/project')
    if(input.scoped){part('runtime/coordinator/context');part('runtime/personalization')}
   }
  }else{
-  add('role',compose(config,'worker',input.environment,input.policyVersion??'preview'),'src/prompts.ts#compose')
   if(input.role==='subagent')part('runtime/subagent')
   else{
    if(input.delegated)part('runtime/worker/delegated')
@@ -47,7 +49,6 @@ export function composeExecutionPrompt(config:Config,input:ExecutionPrompt){
    part(input.managedGoal?'runtime/worker/goal':input.delegated?'runtime/worker/continuation':'runtime/worker/standalone')
   }
  }
- add('turn-context','The current input includes host runtimeContext. Use localTime and timeZone for current calendar questions. Anchor relative requests to eventAt when available. An explicit time zone in the request takes precedence. For a scheduled run, scheduledFor is its intended instant and localTime is the actual dispatch time.','host:turn-context')
  if(config.prompts.personality)add('team-personality','Shared personality (communication style; preserve role and current task requirements):\n'+config.prompts.personality,'settings:prompts.personality')
  const persona=input.role==='router'?routerPersona(input.persona):input.persona
  const agentPrompt=input.agentPrompt??(input.role==='router'?routerWorkingRules:undefined)

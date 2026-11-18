@@ -1,4 +1,5 @@
 import {teamName} from './agent-avatar.tsx';
+import {chatLocation} from './pending-links.ts';
 import '../../src/ui/tab-motion.js';
 import '../../src/ui/tab-motion.css';
 import {
@@ -44,7 +45,7 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,PendingTray,groupWorkflow} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
 import {ContextCard, useCurrentContext} from './context-card.tsx';
 import {ToolTrace} from './tool-trace.tsx';
@@ -70,7 +71,7 @@ import { AgentAvatar } from "./agent-avatar.tsx";
 import {HandoffStage,useHandoffPlayer,type HandoffCursor} from './handoff-stage.tsx';
 import './team-context.css';
 import {ChatCompanion} from "./companion.tsx";
-import {companionStatus} from "./companion-state.ts";
+import {companionStatus,pendingWaitLabel} from "./companion-state.ts";
 import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
 import {useChatMotion} from './chat-motion.ts';
 import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts';
@@ -173,6 +174,7 @@ const Context = createContext({
   openAgent: (_id:string)=>{},
   run: null as Snapshot['run'],
   runMessageId: '',
+  waitingLabel: '',
   arrivals: {since: Infinity, seen: new Set<string>()},
 });
 const useUI = () => useContext(Context);
@@ -246,8 +248,8 @@ function Timestamp({ at }: { at: Date | number }) {
   const { lang } = useUI(), date = new Date(at);
   return <time className="message-time" dateTime={date.toISOString()} title={new Intl.DateTimeFormat(lang, {dateStyle:'medium', timeStyle:'medium'}).format(date)}>{new Intl.DateTimeFormat(lang, {hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)}</time>;
 }
-function runLabel(state: string, L: (en: string, zh: string) => string) {
-  return ({waiting:L('Waiting for your input','等待你的补充'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
+function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string) {
+  return ({waiting:waitingLabel||L('Waiting for your input','等待你的补充'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
   const { L } = useUI(),
@@ -285,7 +287,7 @@ function Markdown(){
   return <Suspense fallback={<PlainText/>}><RichMarkdown L={L} files={files}/></Suspense>
 }
 function AssistantMessage() {
-  const { L, run, runMessageId, routerLabel, openFile,openAgent } = useUI(),
+  const { L, run, runMessageId, waitingLabel, routerLabel, openFile,openAgent } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
@@ -300,15 +302,17 @@ function AssistantMessage() {
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
     streaming = status?.type === "running",
-    footerStatus = run && runMessageId === id ? runLabel(run.state,L) : undefined;
+    footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
     body = deliveries.map(file => <DeliveryCard key={file.id} L={L} file={file} open={openFile}/>);
   } else if (fileReview) {
-    body = <FileReviewCard key={id} id={id} name={fileReview.name} review={fileReview}/>;
+    body = <PendingNotice id={id} kind="review" notice={fileReview.notice} subject={fileReview.name} status={
+      fileReview.state==='denied'?L('Declined','已拒绝'):fileReview.state==='superseded'?L('Replaced','已替换'):undefined}/>;
   } else if (decision) {
-    body = <RouterDecision id={id} decision={decision}/>;
+    body = <PendingNotice id={id} kind="answer" notice={decision.pendingNotice} subject={decision.question}
+      status={decision.answer || (decision.closed?L('Cancelled','已取消'):undefined)}/>;
   } else {
     body = <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }}/></div>;
   }
@@ -436,8 +440,8 @@ function App() {
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && read("roppo.chat.reset") !== space.cleanup.id){clearChatDrafts();write("roppo.chat.reset",space.cleanup.id)}
-    const linked=location.pathname==="/chat" && /^#conversation\/([a-f0-9-]{36})$/.exec(location.hash);
-    setId((linked && linked[1]) || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
+    const linked=location.pathname==="/chat" ? chatLocation(location.hash) : undefined;
+    setId(linked?.conversation || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
   }, []);
   useEffect(()=>{const change=()=>void refreshList();window.addEventListener('roppo:chat-space',change);return()=>window.removeEventListener('roppo:chat-space',change)},[refreshList]);
   const navigate = useCallback((next: string | null) => {
@@ -450,15 +454,17 @@ function App() {
   useEffect(() => {
     const isLibrary = (hash: string) => hash === '#integrations' || /^#integrations\/library(?:\/|$)/.test(hash);
     let previousHash = location.hash;
+    let previousPath = location.pathname;
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
       if (location.pathname === "/chat" && previousHash !== location.hash) void refreshList();
       const next = location.pathname + location.search + location.hash;
       // Filtering and opening library items update the same page, including its live search input.
-      if (isLibrary(previousHash) && isLibrary(location.hash)) setRoute(next);
+      if ((previousPath === "/chat" && location.pathname === "/chat") || (isLibrary(previousHash) && isLibrary(location.hash))) setRoute(next);
       else switchView("page", () => setRoute(next));
       previousHash = location.hash;
+      previousPath = location.pathname;
     };
     const click = (event: MouseEvent) => {
       if (
@@ -615,7 +621,13 @@ function Chat(p: ChatProps) {
   const configuring = !route.startsWith("/chat");
   const [trayOpen,setTrayOpen]=useState(()=>read('roppo.chat.pendingTray')==='open');
   const trayButton=useRef<HTMLButtonElement>(null);
+  const requestedItem=chatLocation(route.slice(route.indexOf('#')));
+  const linkedItem=requestedItem?.conversation===id ? requestedItem?.item : undefined;
   const changeTray=(open:boolean)=>{
+    if(!open && chatLocation(location.hash)?.item){
+      history.replaceState(null,'','#conversation/'+id);
+      window.dispatchEvent(new Event('hashchange'));
+    }
     setTrayOpen(open);
     write('roppo.chat.pendingTray',open?'open':'closed');
   };
@@ -807,7 +819,8 @@ function Chat(p: ChatProps) {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
-  const standaloneStatus = run && !readonly && !runMessageId ? runLabel(run.state,L) : undefined;
+  const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
+  const standaloneStatus = run && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -1141,6 +1154,17 @@ function Chat(p: ChatProps) {
   const current = snapshot?.conversation;
   const pendingCards=snapshot?.conversation.id===id?(snapshot?.pendingCards??[]):[];
   const trayVisible=trayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
+  const previousLinkedItem=useRef<string | undefined>(undefined);
+  useEffect(()=>{
+    if(linkedItem){
+      changeTray(true);
+      if((panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+    }else if(previousLinkedItem.current){
+      setTrayOpen(false);
+      write('roppo.chat.pendingTray','closed');
+    }
+    previousLinkedItem.current=linkedItem;
+  },[linkedItem]);
   const toggleTray=()=>{
     if(!trayVisible&&(panelOverlay||panelExpanded)&&panel)void choosePanel(null);
     changeTray(!trayVisible);
@@ -1224,11 +1248,11 @@ function Chat(p: ChatProps) {
         routerLabel:currentRouter.label,
         openFile:setFile,openAgent:readAgent,
         run: run ?? null,
-        runMessageId,
+        runMessageId,waitingLabel:waitingLabel??'',
         arrivals:arrivals.current,
       }}
     >
-      <WorkflowProvider value={{L,blocks,readonly,actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
+      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
@@ -1331,7 +1355,7 @@ function Chat(p: ChatProps) {
                     <PanelRight size={19} />
                   </button>
                 </div>
-                {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
+                {trayVisible&&<PendingTray cards={pendingCards} selectedId={linkedItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
                   changeTray(false);
                   if(panel && (panelOverlay || panelExpanded))void choosePanel(null);
                   if('messageId' in card)void locateMessage(card.messageId,card.id);

@@ -5,6 +5,7 @@ import {isAbsolute,relative,sep} from 'node:path'
 import {realpathSync,statSync} from 'node:fs'
 import {hostPrivateFiles} from './private-files.ts'
 import {toolTrace} from './tool-trace.ts'
+import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {actionFacts,workerRisk,type ToolResult} from './chat-permissions.ts'
 import {stableDigest} from './sources.ts'
 import {eventWaitSchema} from './webhook-continuations.ts'
@@ -45,7 +46,7 @@ export const workerDefinitions=[
  {name:'superagent_review',description:'Handle an inline review delivered to the task own PR. Fixed requires a successful managed verification job and a clean published head. Decline sends one concise inline explanation, then resolves the thread.',validator:z.object({triggerId:z.string(),action:z.enum(['fixed','decline']),reason:z.string().min(1).max(1000),evidenceJobId:z.string().optional()}).strict(),schema:json({triggerId:text,action:{type:'string',enum:['fixed','decline']},reason:text,evidenceJobId:text},['triggerId','action','reason'])},
  {name:'superagent_follow',description:'Follow a related configured thread for context, or mark a followed thread unrelated. This never grants new authority.',validator:z.object({source:z.string(),thread:z.string(),action:z.enum(['context','unrelated']),reason:z.string().default('Unrelated')}).strict(),schema:json({source:text,thread:text,action:{type:'string',enum:['context','unrelated']},reason:text},['source','thread','action'])}
 ] as const
-export const workerSpecs:ToolSpec[]=workerDefinitions.map(d=>({type:'function',name:d.name,description:d.description,inputSchema:d.schema}))
+export const workerSpecs:ToolSpec[]=workerDefinitions.map(d=>withPendingNotice({type:'function',name:d.name,description:d.description,inputSchema:d.schema}))
 export class WorkerTools {
  constructor(private host:Runtime){}
  async call(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt):Promise<{contentItems:ToolContent[];success:boolean}>{
@@ -65,7 +66,8 @@ export class WorkerTools {
   const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
   const definition=workerDefinitions.find(d=>d.name===name);if(!definition)throw Error('Unknown worker tool')
-  const args=definition.validator.parse(value) as any
+  const input=splitPendingNotice(name,value)
+  const args=definition.validator.parse(input.args) as any
   if(!plan){
    if(!owner.agentId)await this.host.deliverLiveInputs(owner.ticketId)
    await this.host.refreshWork(owner)
@@ -144,7 +146,7 @@ export class WorkerTools {
     if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
     const current=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)
     if(!current||current.runId!==actor.runId)throw Error('The task no longer owns its Chat permissions')
-    return this.host.permissions.run(current,name,args,risk,execute,expectedId)
+    return this.host.permissions.run(current,name,args,risk,execute,expectedId,input.notice)
   }
   return execute()
  }
@@ -210,7 +212,8 @@ export class WorkerTools {
    return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)},{type:'inputImage',imageUrl:'data:'+image.mimeType+';base64,'+image.data}]}
   }
   if(result?.kind==='image')return {success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}
-  return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+  const failedCommand=name==='superagent_shell' && ['failed','interrupted','cancelled'].includes(result?.state)
+  return {success:!failedCommand,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
  }
  grant(owner:WorkOwner){
   const token=randomBytes(32).toString('hex'),key=createHash('sha256').update(token).digest('hex')

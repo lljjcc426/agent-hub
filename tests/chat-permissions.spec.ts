@@ -139,3 +139,32 @@ it('keeps file and command labels useful without persisting queries, shell argum
   ] as const)
     expect(JSON.stringify(toolTrace(name, args))).not.toContain('private-value')
 })
+
+it('reads the exit status of historical shell approvals and follows their background job', async () => {
+  const { store, permissions } = fixture()
+  const worker = { ...actor, ticketId: 'ticket', mode: 'full' as const }
+  const original = { id: 'job-1', ticketId: 'ticket', state: 'failed', exitCode: 2 }
+  await permissions.run(worker, 'superagent_shell', { command: 'check' }, {}, async () => ({
+    success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(original) }],
+  }))
+  const action = permissions.forChat('chat')[0]!
+  expect(permissionCard({ ...action, jobId: undefined }, store).executionState).toBe('failed')
+  store.put('work', 'job-1', { ...original, ticketId: 'other', state: 'completed', exitCode: 0 })
+  expect(permissionCard(action, store).executionState).toBe('failed')
+  store.put('work', 'job-1', { ...original, state: 'running', exitCode: null })
+  expect(permissionCard(action, store).executionState).toBe('executing')
+  store.put('work', 'job-1', { ...original, state: 'cancelled' })
+  expect(permissionCard(action, store).executionState).toBe('cancelled')
+  store.put('work', 'job-1', { ...original, state: 'completed', exitCode: 0 })
+  expect(permissionCard(action, store).executionState).toBe('complete')
+})
+
+it('keeps the first authored notice without changing the approval identity on retry', async () => {
+  const { permissions } = fixture()
+  const args = {command:'check'}
+  for (const notice of ['This check needs approval.', 'Please approve the same check.'])
+    await permissions.run(actor, 'superagent_shell', args, {}, async () => receipt, undefined, notice)
+  const actions = permissions.forChat('chat')
+  expect(actions).toHaveLength(1)
+  expect(permissionCard(actions[0]!).notice).toBe('This check needs approval.')
+})

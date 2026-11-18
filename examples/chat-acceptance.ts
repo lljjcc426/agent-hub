@@ -48,12 +48,12 @@ const model={async run(r:ModelRequest){
     }
     if(text==='Keep going')return reply('Still here.')
     if(text==='Let me review the release notes before delivery.'){
-      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true},'file')
+      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'The release notes are ready for your review before delivery.'},'file')
       return {threadId,turnId,text:JSON.stringify({reply:''})}
     }
     await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'running'},{id:'review',title:'Delegate review',state:'pending'}]},'start')
     await r.onTool!('worker_manage',{action:'list'},'list')
-    await r.onTool!('chat_request_decision',{question:'Which language?',options:[{label:'English'},{label:'Chinese'}]},'decision')
+    await r.onTool!('chat_request_decision',{question:'Which language?',pendingNotice:'Before I draft the guide, please answer the language question.',options:[{label:'English'},{label:'Chinese'}]},'decision')
     return {threadId,turnId,text:JSON.stringify({reply:''})}
   }
   await wait()

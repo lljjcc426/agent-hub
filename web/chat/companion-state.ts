@@ -5,6 +5,18 @@ export type CompanionPhase='idle'|'thinking'|'working'|'reviewing'|'waiting'|'co
 export interface CompanionStatus {phase:CompanionPhase;label:string;runId?:string}
 type Localize=(en:string,zh:string)=>string;
 
+export function pendingWaitLabel(snapshot:Snapshot,L:Localize,participant?:string){
+ const run=snapshot.run
+ if(!run)return
+ const items=(snapshot.pendingCards??[]).filter(card=>{
+   if(card.kind==='approval')return card.request.runId===run.id && (!participant||participant===card.request.workerId)
+   if(card.kind==='question')return card.question.runId===run.id && (!participant||participant===card.question.workerId)
+   return !participant && snapshot.messages.some(m=>m.id===card.id && m.runId===run.id) && (card.kind!=='choice'||!card.decision.defaultOption)
+ })
+ if(items.some(c=>c.kind==='approval'&&c.request.method!=='item/tool/requestUserInput'))return L('Awaiting your approval','等待你的审批')
+ if(items.some(c=>c.kind==='file'))return L('Awaiting file review','等待你审阅文件')
+ if(items.length)return L('Awaiting your answer','等待你的回答')
+}
 export function companionStatus(snapshot:Snapshot|null, L:Localize, options:{participantId?:string;connected:boolean;sending?:boolean;loading?:boolean}):CompanionStatus{
  const result=(phase:CompanionPhase,label:string):CompanionStatus=>({phase,label,runId:snapshot?.run?.id});
  if(!options.connected)return result('offline',L('Reconnecting','正在重新连接'));
@@ -33,15 +45,15 @@ export function companionStatus(snapshot:Snapshot|null, L:Localize, options:{par
    if(run.state==='cancel_requested')return result('stopped',L('Stopping this task','正在停止任务'));
    if(run.state==='cancelled')return result('stopped',L('Task stopped','任务已停止'));
    if(run.state==='failed')return result('failed',L('Task needs attention','任务需要处理'));
-   if(run.state==='waiting')return result('waiting',L('Waiting for your input','等你补充信息'));
+   if(run.state==='waiting')return result('waiting',pendingWaitLabel(snapshot,L,participant)??L('Waiting for your input','等你补充信息'));
    if(run.state==='completed')return result('completed',L('Task complete','本次任务已完成'));
  }
  if(snapshot.browsers.some(b=>(b.runId===run.id||!!b.ticketId&&activeTasks.has(b.ticketId))&&!b.ended&&b.control==='paused'&&(!participant||b.workerId===participant)))
    return result('waiting',L('Waiting for your help','等你操作浏览器'));
  if(worker&&!activeTasks.size&&tasks.filter(t=>t.state==='waiting').sort((a,b)=>b.updatedAt-a.updatedAt)[0]?.failed)return result('failed',L('Task needs attention','任务需要处理'));
- if(waiting&&!activeTasks.size&&(participant||!snapshot.reply))return result('waiting',L('Waiting for your input','等你补充信息'));
+ if(waiting&&!activeTasks.size&&(participant||!snapshot.reply))return result('waiting',pendingWaitLabel(snapshot,L,participant)??L('Waiting for your input','等你补充信息'));
  if(worker){
-   if(worker.tasks.some(t=>t.state==='waiting')&&!worker.tasks.some(t=>t.state==='running'))return result('waiting',L('Waiting for your input','等你补充信息'));
+   if(worker.tasks.some(t=>t.state==='waiting')&&!worker.tasks.some(t=>t.state==='running'))return result('waiting',pendingWaitLabel(snapshot,L,participant)??L('Waiting for your input','等你补充信息'));
    if(worker.tasks.length&&!worker.tasks.some(t=>t.state==='running'||t.state==='queued'))return result('idle',L('Ready when you are','随时待命'));
  }
  const live=calls.filter(c=>c.state==='running');

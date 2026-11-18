@@ -1,3 +1,4 @@
+import {pendingNoticeSchema} from './chat-pending-notice.ts'
 import { z } from 'zod'
 import type { ToolSpec } from './model.ts'
 import type { Approval } from './approvals.ts'
@@ -39,6 +40,7 @@ export const decisionSchema = z
   .object({
     question: z.string().trim().min(1).max(1000),
     defaultOption: label.optional(),
+    pendingNotice: pendingNoticeSchema,
     options: z
       .array(z.object({ label, detail: z.string().trim().max(500).optional() }).strict())
       .min(2)
@@ -116,6 +118,12 @@ export function publicApproval(a: Approval) {
         }))
       : []
   return {
+    answerText: a.outcome === 'answered' ? questions.flatMap(q => {
+      const entry = a.decision?.answers?.[q.id]
+      if (q.secret || !entry || typeof entry !== 'object' || !('answers' in entry) || !Array.isArray(entry.answers)) return []
+      return entry.answers.filter((value): value is string => typeof value === 'string')
+    }).join(' · ') : undefined,
+    notice: typeof params.reason === 'string' ? params.reason.slice(0,360) : undefined,
     id: a.id,
     ticketId: a.ticketId,
     runId: a.chat!.runId,

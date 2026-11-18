@@ -39,7 +39,7 @@ interface Conversation {
   nativeId?:string
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
-export interface FileReview {fileId:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
+export interface FileReview {fileId:string;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
 interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
@@ -502,10 +502,11 @@ export class ChatSessions {
   }
   requestDecision(triggerId:string,value:unknown){
     const {run,c}=this.cardTarget(triggerId)
-    const decision=decisionSchema.parse(value)
+    const {pendingNotice,...terms}=decisionSchema.parse(value)
+    const decision={...terms,...(pendingNotice?{pendingNotice}:{})}
     if(new Set(decision.options.map(o=>o.label)).size!==decision.options.length)throw new ChatError('answer_invalid','Provide distinct choices.',400)
     if(decision.defaultOption && !decision.options.some(o=>o.label===decision.defaultOption))throw new ChatError('answer_invalid','The default must match one of the choices.',400)
-    const id='decision:'+stableDigest([run.id,decision])
+    const id='decision:'+stableDigest([run.id,terms])
     this.host.store.atomic(()=>this.message(c,{id,runId:run.id,role:'assistant',text:decision.question,status:'complete',decision:{...decision,planId:this.turnPlan(c.id,run.id)}}))
     this.changed(c.id)
     return {messageId:id,...(decision.defaultOption?{continueWith:decision.defaultOption}:{})}
@@ -566,7 +567,7 @@ export class ChatSessions {
   }
   deliverText(triggerId:string,value:unknown){
     const {run,c}=this.cardTarget(triggerId)
-    const {name,content,requireApproval}=routerFileInput.parse(value),id='router-file:'+stableDigest([triggerId,name,content])
+    const {name,content,requireApproval,pendingNotice}=routerFileInput.parse(value),id='router-file:'+stableDigest([triggerId,name,content])
     const receipt=(file:ChatDelivery)=>({name:file.name,size:file.size,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id})
     return this.host.store.atomic(()=>{
       const existing=this.host.store.get<Message>('chat-message',id)
@@ -585,7 +586,7 @@ export class ChatSessions {
       }
       const file=this.deliveries.text(c.id,run.id,name,content,!hold)
       this.message(c,{id,runId:run.id,role:'assistant',text:name,status:'complete',
-        ...(hold?{fileReview:{fileId:file.id,state:'pending'}}:{deliveries:[file]})})
+        ...(hold?{fileReview:{fileId:file.id,state:'pending',...(pendingNotice?{notice:pendingNotice}:{})}}:{deliveries:[file]})})
       this.changed(c.id)
       return hold?{name,messageId:id,state:'pending'}:receipt(file)
     })
@@ -912,7 +913,7 @@ export class ChatSessions {
         if(a.phase!=='pending')return false
         const actor=this.permissionActor(a.actor.triggerId,a.actor.ticketId,a.actor.agentId)
         return actor?.runId===a.actor.runId&&actor.workerId===a.actor.workerId
-      }).map(permissionCard),
+      }).map(a=>permissionCard(a,this.host.store)),
     ]
     // Use the same preceding ticket message as the inline activity, even beyond the latest page.
     const anchor=this.host.store.db.prepare(`SELECT id FROM records WHERE kind='chat-message'
@@ -949,7 +950,7 @@ export class ChatSessions {
         message.decision={...message.decision,closed:true}
     }
     const requests=this.rows<Approval>('approval','chat.conversationId',id).filter(a=>!a.automatic)
-    const managedRequests=this.host.permissions.forChat(id).filter(a=>!a.automatic||a.phase==='uncertain'||a.receipt?.success===false)
+    const managedRequests=this.host.permissions.forChat(id).filter(a=>!a.automatic||['uncertain','failed'].includes(permissionCard(a,this.host.store).executionState))
     const pendingChoice=last&&this.host.store.db.prepare(`SELECT 1 FROM records WHERE kind='chat-message'
       AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')=?
       AND ((json_type(body,'$.decision')='object' AND json_extract(body,'$.decision.replyRunId') IS NULL AND json_extract(body,'$.decision.defaultOption') IS NULL)
@@ -990,7 +991,7 @@ export class ChatSessions {
       const target=agent.id===router.id?null:agent.id,row=latestMessage.get(id,target,target,target)
       return {...displaySpeaker(agent),latestMessage:row?{text:transcriptText(String(row.id),String(row.text)).slice(0,280),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
-    const approvals=[...requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval),...managedRequests.filter(a=>!participant||participant===router.id||a.actor.workerId===participant).map(permissionCard)].sort((a,b)=>a.createdAt-b.createdAt)
+    const approvals=[...requests.filter(a=>!participant||participant===router.id||a.chat?.workerId===participant).map(publicApproval),...managedRequests.filter(a=>!participant||participant===router.id||a.actor.workerId===participant).map(a=>permissionCard(a,this.host.store))].sort((a,b)=>a.createdAt-b.createdAt)
     const plans=this.rows<RouterGoal>('router-goal','discussion',c.discussion).map(goalPlan)
     const visiblePlans=conversationPlans.map(({conversationId,activityId,...p})=>({...p,live:calls.some(call=>call.id===activityId&&call.state==='running')}))
     const workerView=participant&&participant!==router.id

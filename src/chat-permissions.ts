@@ -24,12 +24,14 @@ export interface PermissionAction {
   facts: Record<string, string>
   phase: Phase
   createdAt: number
+  notice?: string
+  jobId?: string
   automatic: boolean
   approved?: boolean
   receipt?: ToolResult
 }
 export const permissionInstructions =
-  'The host enforces the permission mode. A pending approval defers only that operation. Keep working on independent steps now, including local checks and drafts. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. Use the receipt when the host resumes your task. Explicit requests to review a file or make a user choice still apply.'
+  'The host enforces the permission mode. A pending approval defers only that operation. Keep working on independent steps now, including local checks and drafts. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. Use the receipt when the host resumes your task. Explicit requests to review a file or make a user choice still apply.'
 const kind = 'chat-permission'
 const result = (state: Phase, id: string, extra?: string): ToolResult => ({
   permission:
@@ -92,7 +94,8 @@ export class ChatPermissions {
     args: Record<string, unknown>,
     facts: Record<string, string>,
     perform: (id: string) => Promise<ToolResult>,
-    expectedId?: string
+    expectedId?: string,
+    notice?: string
   ): Promise<ToolResult> {
     // Transport retry IDs carry no authority. A retry with a fresh requestId cannot repeat the same effect.
     const { requestId, operationId, yieldMs, ...effect } = args
@@ -122,6 +125,7 @@ export class ChatPermissions {
         tool,
         args,
         facts,
+        ...(notice ? {notice} : {}),
         phase: actor.mode === 'full' ? 'approved' : 'pending',
         automatic: actor.mode === 'full',
         approved: actor.mode === 'full' ? true : undefined,
@@ -137,8 +141,9 @@ export class ChatPermissions {
         JSON.stringify(receipt).length <= 12000 &&
         receipt.contentItems.every((item) => item.type === 'inputText')
           ? receipt
-          : result('complete', id)
-      this.save({ ...action, phase: 'complete', receipt: short })
+          : { ...result('complete', id), success: receipt.success }
+      const shell = shellReceipt({...action, receipt})
+      this.save({ ...action, phase: 'complete', receipt: short, ...(shell?.id ? {jobId:shell.id} : {}) })
       return receipt
     } catch (error) {
       this.save({ ...action, phase: 'uncertain' })
@@ -151,7 +156,23 @@ export class ChatPermissions {
   }
 }
 
-export function permissionCard(a: PermissionAction) {
+type ShellOutcome = {id?:string; ticketId?:string; state?:string; exitCode?:number}
+function shellReceipt(a: PermissionAction): ShellOutcome | undefined {
+  if (a.tool !== 'superagent_shell') return
+  try { return JSON.parse(a.receipt?.contentItems[0]?.text ?? 'null') ?? undefined } catch { return }
+}
+export function permissionCard(a: PermissionAction, store?:Store) {
+  let executionState:Phase|'failed' = a.phase === 'complete' && a.receipt?.success === false ? 'failed' : a.phase
+  if (a.phase === 'complete' && a.tool === 'superagent_shell') {
+    const receipt = shellReceipt(a)
+    const jobId = a.jobId ?? receipt?.id
+    const job = jobId && store?.get<ShellOutcome>('work',jobId)
+    const shell = job && job.ticketId === a.actor.ticketId ? job : receipt
+    if (shell?.state === 'interrupted') executionState = 'uncertain'
+    else if (shell?.state === 'cancelled') executionState = 'cancelled'
+    else if (shell?.state === 'failed' || (typeof shell?.exitCode === 'number' && shell.exitCode !== 0)) executionState = 'failed'
+    else if (shell?.state === 'running' || shell?.state === 'starting') executionState = 'executing'
+  }
   const state =
     a.phase === 'pending'
       ? 'pending'
@@ -166,7 +187,8 @@ export function permissionCard(a: PermissionAction) {
     runId: a.actor.runId,
     workerId: a.actor.workerId,
     createdAt: a.createdAt,
-    executionState: a.phase === 'complete' && a.receipt?.success === false ? ('failed' as const) : a.phase,
+    executionState,
+    notice: a.notice,
     state: state as 'pending' | 'approved' | 'denied' | 'expired',
     method: 'roppo/tool',
     facts: { tool: a.tool, ...a.facts } as Record<string, string>,

@@ -138,7 +138,7 @@ export function ToolTrace({
       ? summary(group(current), L, false)
       : problem
         ? L('Tool activity · needs attention', '工具调用有异常')
-        : finished
+        : calls.some(c => c.permission === 'pending') ? L('Tool activity', '工具调用') : finished
   const clock = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
   function state(c: ExecutionCall) {
     if (c.permission === 'pending') return L('Requested approval', '已请求批准')

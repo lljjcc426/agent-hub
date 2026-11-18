@@ -32,3 +32,10 @@
 }
 @keyframes pending-source-pulse { 0% { opacity: .3; } 16%,52% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .transcript [data-located]::after { animation: none; } }
+
+.pending-notice { margin: 4px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.pending-notice.resolved { color: var(--c-muted); }
+.pending-notice a.pending-action-link { color: #155dc1; text-decoration: underline; text-underline-offset: .17em; }
+[data-theme="dark"] .pending-notice a.pending-action-link { color: #89baff; }
+.pending-list > li:focus { outline: none; }
+.pending-fact pre { max-height: 13rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

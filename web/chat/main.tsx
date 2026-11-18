@@ -1338,11 +1338,9 @@ function Chat(p: ChatProps) {
                   <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
-                <div className="chat-float chat-float-center">
-                  <ChatCompanion actor={companionActor} event={handoff.event} onFinish={handoff.finish}
-                    status={companionStatus(snapshot,L,{participantId:companionWorker,connected,sending:sending&&!companionWorker,loading})} L={L}
-                    onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
-                </div>
+                <ChatCompanion actor={companionActor} event={handoff.event} onFinish={handoff.finish}
+                  status={companionStatus(snapshot,L,{participantId:companionWorker,connected,sending:sending&&!companionWorker,loading})} L={L}
+                  onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
                 <div className="chat-float chat-float-end">
                   <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
                     aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}

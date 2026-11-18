@@ -3,7 +3,8 @@
 .chat-companion:hover{background:var(--c-soft)}
 .companion-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
 .companion-copy strong{font-size:13px;font-weight:600;line-height:1.3}
-.companion-label{font-size:12px;line-height:1.4;color:var(--c-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.companion-label,.companion-ruler{font-size:12px;line-height:1.4}
+.companion-label{color:var(--c-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roppo-character{position:relative;display:block;width:64px;height:58px;flex:none;isolation:isolate}
 .roppo-pose{position:absolute;inset:0;transform-origin:50% 88%;transition:transform 220ms ease-out}
 .roppo-body{position:absolute;inset:0 3px;width:58px;height:58px;transform-origin:50% 88%;animation:roppo-breathe 4.8s ease-in-out infinite}

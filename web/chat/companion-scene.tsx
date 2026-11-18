@@ -4,10 +4,13 @@ import {RoppoCharacter} from './roppo-character.tsx'
 import type {Handoff, Speaker} from './use-handoff.ts'
 import './companion-scene.css'
 
-const duration = 3250
+const duration = 6000
 const mix = (a: number, b: number, t: number) => a + (b-a)*t
+function progress(t: number, start: number, end: number) {
+  return Math.max(0, Math.min(1, (t-start)/(end-start)))
+}
 function ease(t: number, start: number, end: number) {
-  const u = Math.max(0, Math.min(1, (t-start)/(end-start)))
+  const u = progress(t,start,end)
   return u*u*(3-2*u)
 }
 
@@ -24,31 +27,34 @@ export function CompanionScene({actor, phase, event, paused, onFinish}: {
     let frame = 0, elapsed = 0, last: number | undefined, released = false
     const draw = () => {
       const t = Math.min(1, elapsed / (reduced.matches ? 450 : duration))
-      const step = ease(t, .04, .43)
-      const meet = ease(t, .43, .55)
-      const pass = ease(t, .55, .69)
-      const leave = ease(t, .70, .96)
+      const walkStart = .08, atPartner = .52, facing = .63, exitStart = .78, gone = .99
+      const step = ease(t, walkStart, atPartner)
+      const meet = ease(t, atPartner, facing)
+      const pass = ease(t, facing, .765)
+      const leave = ease(t, exitStart, gone)
       // World coordinates. Track the sender first, frame the pair at contact,
       // then settle on the receiver while the sender walks off to the left.
       const gap = 42, travel = 134, receiver = travel + gap
       const sender = travel*step - 146*leave
       const camera = mix(mix(travel*step, travel+gap/2, meet), receiver, leave)
-      const stride = t < .55 ? step : leave
-      const rock = Math.sin(8*Math.PI*stride)*Math.sin(Math.PI*stride)
+      const departing = t >= exitStart
+      const stride = departing ? progress(t,exitStart,gone) : progress(t,walkStart,atPartner)
+      const cycles = departing ? 2 : 4
+      const rock = Math.sin(2*Math.PI*cycles*stride)*Math.sin(Math.PI*stride)
       const vars = node.style
       vars.setProperty('--giver-x', (reduced.matches ? 0 : sender-camera)+'px')
       vars.setProperty('--taker-x', (reduced.matches ? 0 : receiver-camera)+'px')
-      vars.setProperty('--giver-opacity', String(reduced.matches ? 1-ease(t,.25,.56) : 1-ease(t,.72,.91)))
+      vars.setProperty('--giver-opacity', String(reduced.matches ? 1-ease(t,.25,.56) : 1-ease(t,.80,.96)))
       vars.setProperty('--taker-opacity', String(reduced.matches ? ease(t,.44,.74) : 1))
       vars.setProperty('--sway', (reduced.matches ? 0 : rock*9)+'deg')
       vars.setProperty('--hop', (reduced.matches ? 0 : -Math.abs(rock)*2.6)+'px')
-      vars.setProperty('--reach', String(ease(t,.43,.54)*(1-ease(t,.67,.78))))
+      vars.setProperty('--reach', String(ease(t,atPartner,facing)*(1-ease(t,.74,.86))))
       vars.setProperty('--document-x', (mix(sender+14, receiver-14, pass)-camera)+'px')
       vars.setProperty('--document-y', (-5*Math.sin(Math.PI*pass)-Math.abs(rock)*2*(1-pass))+'px')
-      vars.setProperty('--document-opacity', String(reduced.matches ? 0 : ease(t,0,.09)*(1-ease(t,.72,.86))))
+      vars.setProperty('--document-opacity', String(reduced.matches ? 0 : ease(t,0,.09)*(1-ease(t,.79,.90))))
       vars.setProperty('--ground-x', (-camera%18)+'px')
-      vars.setProperty('--ground-opacity', String(reduced.matches ? 0 : ease(t,.02,.12)*(1-ease(t,.80,.97))))
-      if (!released && t >= .80) { released = true; setReleasedEvent(eventId) }
+      vars.setProperty('--ground-opacity', String(reduced.matches ? 0 : ease(t,.02,.12)*(1-ease(t,.86,gone))))
+      if (!released && t >= .88) { released = true; setReleasedEvent(eventId) }
     }
     const tick = (now: number) => {
       if (document.hidden) return

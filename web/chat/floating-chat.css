@@ -53,14 +53,18 @@
 .chat-float-center {
   left: 50%;
   transform: translateX(-50%);
-  max-width: min(240px, calc(100% - 196px));
+  --capsule-space: max(0px, calc(100% - 196px));
+  width: min(var(--capsule-space), clamp(68px, calc(var(--resting-caption, 46px) + 22px), 240px));
+  transition: width 1000ms cubic-bezier(.42, 0, .35, 1);
   border-radius: 18px;
   padding: 0;
 }
+.chat-float-center[data-expanded] { width: min(var(--capsule-space), 248px); }
 .chat-float-center .chat-companion {
   flex-direction: column;
   max-width: 100%;
-  min-width: min(66px, 100%);
+  width: 100%;
+  min-width: 0;
   padding: 2px 10px 6px;
   gap: 1px;
   border-radius: inherit;
@@ -73,6 +77,22 @@
   -webkit-line-clamp: 2;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+/* Measure the resting caption independently of truncation and the handoff caption. */
+.chat-float-center .companion-ruler {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.chat-float-center .companion-ruler > span {
+  display: block;
+  width: max-content;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-float-center { transition: none; }
 }
 .chat-float-center .roppo-character { width: 46px; height: 42px; }
 .chat-float-center .roppo-pose { width: 64px; height: 58px; transform-origin: top left; scale: .72; }

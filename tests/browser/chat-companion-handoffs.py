@@ -14,15 +14,18 @@ with sync_playwright() as pw:
     context.add_cookies([{'name': name, 'value': value, 'url': fixture['url']}])
     context.add_init_script("""localStorage.setItem('agenthub.configuration.language','zh-CN');
       localStorage.setItem('agenthub.configuration.theme','light');
-      window.shots={};
+      window.shots={}; window.widths=[];
       function sample(){
-        const cap=document.querySelector('.chat-float-center [data-handoff]');
+        const shell=document.querySelector('.chat-float-center');
+        const cap=shell?.querySelector('[data-handoff]');
+        const now=performance.now();
+        if(shell) window.widths.push({time:now, width:shell.getBoundingClientRect().width, active:!!cap});
         if(cap){
           const lens=cap.querySelector('.companion-lens').getBoundingClientRect();
           const pos=actor=>{const b=actor.getBoundingClientRect();return b.x+b.width/2-lens.x-lens.width/2};
           const giver=cap.querySelector('[data-place=giver]'), taker=cap.querySelector('[data-place=taker]');
           (window.shots[cap.dataset.handoff]??=[]).push({
-            g:pos(giver),r:pos(taker),opacity:+getComputedStyle(giver).opacity,
+            time:now,g:pos(giver),r:pos(taker),opacity:+getComputedStyle(giver).opacity,
             width:cap.getBoundingClientRect().width, top:lens.top,
             file:+getComputedStyle(cap.querySelector('.companion-document')).opacity});
           window.lastTaker=taker;
@@ -57,7 +60,7 @@ with sync_playwright() as pw:
         frames=root/'frames'
         frames.mkdir(exist_ok=True)
         start=time.monotonic()
-        for i in range(83):
+        for i in range(148):
             delay=start+i/20-time.monotonic()
             if delay>0:time.sleep(delay)
             page.screenshot(path=str(frames/('%03d.png'%i)),clip={'x':round(center)-155,'y':0,'width':310,'height':90},timeout=5000)
@@ -73,6 +76,26 @@ with sync_playwright() as pw:
     assert any(abs(s['g'])<1 and 43<s['r']<57 for s in shots)
     assert any(abs(s['g']+s['r'])<2 and 39<s['r']-s['g']<45 and s['file']>.95 for s in shots)
     assert any(s['g']<-80 and s['opacity']<.2 and abs(s['r'])<8 for s in shots)
+    # Check the outside edge on both transitions, including the frames where the caption changes.
+    page.evaluate('''() => new Promise(resolve => {
+      const end = Object.values(window.shots)[0].at(-1).time + 1100;
+      function poll() { if (window.widths.at(-1).time >= end) resolve(); else requestAnimationFrame(poll); }
+      poll();
+    })''')
+    widths = page.evaluate('window.widths')
+    start = next(i for i, sample in enumerate(widths) if sample['active'])
+    end = next(i for i in range(start, len(widths)) if not widths[i]['active'])
+    for edge in (start, end):
+        segment = [w for w in widths[edge:] if w['time'] - widths[edge]['time'] <= 1070]
+        before, after = widths[edge-1]['width'], segment[-1]['width']
+        assert abs(after-before) > 30
+        midway = [w for w in segment if .1 < (w['width']-before)/(after-before) < .9]
+        assert midway[-1]['time'] - midway[0]['time'] > 420
+        for a, b in zip([widths[edge-1]] + segment, segment):
+            assert abs(b['width']-a['width']) < 2 + .5*(b['time']-a['time'])
+    assert shots[-1]['time'] - shots[0]['time'] >= 5800
+    approach = [s for s in shots if abs(s['g']) < 1 and 46 < s['r'] < 172]
+    assert approach[-1]['time'] - approach[0]['time'] > 2000
     page.reload()
     expect(solo).to_have_attribute('data-member','developer',timeout=5000)
     assert page.evaluate('Object.keys(window.shots).length') == 0
@@ -93,6 +116,8 @@ with sync_playwright() as pw:
     remaining=page.evaluate('window.shots')
     assert list(remaining)==[e['id'] for e in events[-2:]]
     assert all(abs(s['g'])<1 and abs(s['r'])<1 and s['file']==0 for frames in remaining.values() for s in frames)
+    assert all(frames[-1]['time']-frames[0]['time'] < 800 for frames in remaining.values())
+    assert page.locator('.chat-float-center').evaluate("el => getComputedStyle(el).transitionDuration") == '0s'
     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
     assert not errors,errors
     print('PASS: top capsule only; tracking, meeting, transfer and left exit; same recipient continues; original sidebar; real file delivery, history and reduced motion.')

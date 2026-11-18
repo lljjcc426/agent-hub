@@ -23,7 +23,7 @@ interface RpcMessage { id?: number | string; method?: string; params?: any; resu
 // before thread/start and otherwise advertises unrelated native capabilities.
 const managedFeatures={apps:false,plugins:false,memories:false,shell_tool:false,unified_exec:false,multi_agent:false,browser_use:false,computer_use:false,image_generation:false,goals:false,sleep_tool:false}
 const managedContext={skills:{include_instructions:false},memories:{use_memories:false,generate_memories:false},web_search:'disabled'}
-const managedStartup=Object.keys(managedFeatures).flatMap(name=>['--disable',name]).concat(['-c','skills.include_instructions=false','-c','memories.use_memories=false','-c','memories.generate_memories=false','-c','web_search="disabled"'])
+const managedStartup=Object.keys(managedFeatures).flatMap(name=>['--disable',name]).concat(['-c','skills.include_instructions=false','-c','memories.use_memories=false','-c','memories.generate_memories=false'])
 export const nativeContextProfile=1
 
 /** Account identity is rechecked before each plugin activation; no credential leaves this process. */
@@ -118,7 +118,8 @@ export class CodexModel implements Model {
         return result
       }finally{if(pending)context.toolReturned(pending)}
     }:undefined
-    const client = new AppServer(this.config.codex, [...this.extraArgs,...(request.managed?managedStartup:[])], request.cwd,request.onHumanRequest,request.onProgress,guardedTool,this.environment,request.onOutput,(method,params)=>{
+    const search=request.nativeTool==='cached-web-search'?'cached':'disabled'
+    const client = new AppServer(this.config.codex, [...this.extraArgs,...(request.managed?[...managedStartup,'-c','web_search='+JSON.stringify(search)]:[])], request.cwd,request.onHumanRequest,request.onProgress,guardedTool,this.environment,request.onOutput,(method,params)=>{
       if(request.contextBudget&&method==='rawResponseItem/completed'&&params?.threadId===client.threadId&&params?.turnId===client.turnId){
         context.observe(params.item)
         if(!budgetError)try{check('native_item')}catch(error){exceeded(error)}
@@ -168,7 +169,7 @@ export class CodexModel implements Model {
         if(request.privateState)filesystem[request.privateState]='deny'
         for(const path of request.attachments??[])filesystem[path]='read'
         for(const path of hostPrivateFiles())filesystem[path]='deny'
-        isolated={...managedContext,mcp_servers:mcp,plugins:Object.fromEntries(Object.keys(effective.plugins??{}).map(name=>[name,{enabled:false}])),features:managedFeatures,default_permissions:'superagent-managed',permissions:{'superagent-managed':{extends:request.sandbox==='workspace-write'?':workspace':':read-only',filesystem,network:{enabled:false}}}}
+        isolated={...managedContext,web_search:search,mcp_servers:mcp,plugins:Object.fromEntries(Object.keys(effective.plugins??{}).map(name=>[name,{enabled:false}])),features:managedFeatures,default_permissions:'superagent-managed',permissions:{'superagent-managed':{extends:request.sandbox==='workspace-write'?':workspace':':read-only',filesystem,network:{enabled:false}}}}
       }
       const developerInstructions=request.instructions+(bridge?'\nFor this activation use the '+bridge.name+' MCP tools: they expose the current tools and schemas. Older native dynamic tools may remain in history; do not substitute those for this activation’s MCP tools.':'')
       context.setInstructions(developerInstructions)

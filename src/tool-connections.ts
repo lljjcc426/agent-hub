@@ -1,3 +1,4 @@
+import {cliMcpTransport,verifyCliMcpGrant} from './cli-mcp-profile.ts'
 import {ProcessSource} from './plugin-process.ts'
 import type {TaskContinuation} from './task-context.ts'
 import {Client} from '@modelcontextprotocol/sdk/client/index.js'
@@ -39,13 +40,18 @@ export class ToolConnections {
   constructor(private readonly host:Runtime){
     for(const receipt of host.store.list<Receipt>('tool-receipt'))if(receipt.state==='running')host.store.put('tool-receipt',receipt.id,{...receipt,state:'uncertain',reason:'Host stopped during the call; inspect the destination before issuing a new request'})
   }
-  configured(){return Object.entries(this.host.config.toolConnections).map(([id,c])=>({id,label:c.label??id,enabled:c.enabled,transport:c.transport.kind,allowedTools:c.allowedTools}))}
+  configured(){return Object.entries(this.host.config.toolConnections).map(([id,c])=>({id,label:c.label??id,enabled:c.enabled,transport:c.transport.kind,...(c.transport.kind==='cli-mcp'?{workers:c.transport.workers}:{}),allowedTools:c.allowedTools}))}
   receipts(ticketId?:string){return this.host.store.list<Receipt>('tool-receipt').filter(r=>!ticketId||r.ticketId===ticketId).map(({result,fingerprint,...r})=>({...r,resource:'tool-call/'+r.id}))}
   private allowed(owner:WorkOwner,id:string){
     if(this.closing||!this.host.validWork(owner))throw Error('Assignment capability has ended')
     const grant=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.toolConnections??[]
     const connection=this.host.config.toolConnections[id]
     if(!grant.includes(id)||!connection?.enabled)throw Error('Tool connection is not enabled for this Worker')
+    if(connection.transport.kind==='cli-mcp'){
+      const worker=this.host.store.get<{workerId?:string}>('run',owner.ticketId)?.workerId
+      if(!worker||!connection.transport.workers.includes(worker))throw Error('CLI profile is not granted to this Worker')
+      verifyCliMcpGrant(connection.transport,connection.allowedTools)
+    }
     return connection
   }
   private connect(id:string):Promise<Client>{
@@ -56,7 +62,7 @@ export class ToolConnections {
       const resolveEnv=(refs:Record<string,string>)=>Object.fromEntries(Object.entries(refs).map(([key,env])=>{const value=process.env[env];if(!value)throw Error('Missing tool credential environment variable '+env);return [key,value]}))
       const t=c.transport
       if(t.kind==='plugin')throw Error('Native plugin tools do not use an MCP transport')
-      const transport=t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:8_000_000}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:resolveEnv(t.headerEnv),redirect:'error'}})
+      const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:8_000_000}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:resolveEnv(t.headerEnv),redirect:'error'}})
       client.onclose=()=>{if(this.clients.get(id)===entry)this.clients.delete(id)}
       try{await client.connect(transport,{timeout:c.timeoutMs,signal:entry.controller.signal});if(this.closing)throw Error('Host is stopping');return client}
       catch(error){await client.close().catch(()=>{});throw error}

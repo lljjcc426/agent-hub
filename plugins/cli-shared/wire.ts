@@ -33,7 +33,7 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
    if(!Array.isArray(nativeTools))throw new BackendAdapterError('unsupported')
    for(const tool of nativeTools){
     const names=Array.isArray(tool.functionDeclarations)?tool.functionDeclarations.map((f:any)=>f.name):[tool.name??tool.function?.name]
-    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!(driver.id==='claude-code'&&name==='EndConversation')&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
+    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!(driver.id==='claude-code'&&name==='EndConversation')&&!(r.nativeTool==='task-list'&&name===driver.taskListTool)&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
    }
    checkBudget(body,r.contextBudget,'api-wire','before-native-request',r.onBudget,true)
    beforeRequest()

@@ -1,3 +1,6 @@
+import {workerProfiles} from './worker-pool.ts'
+import {cliMcpPreview} from './cli-mcp-profile.ts'
+import {homedir} from 'node:os'
 import {memoryWorkspace,changeMemoryWorkspace} from './memory-workspace.ts'
 import {personaFiles,importPersonaFile} from './persona.ts'
 import {deploymentMaintenance,DeploymentError} from './deployment-maintenance.ts'
@@ -437,6 +440,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       }
       send(res,404,{code:'not_found'});return
     }
+    if(req.method==='POST'&&path==='/integrations/cli-mcp'){send(res,200,cliMcpPreview(await operatorBody(req),homedir(),workerProfiles(runtime.config).map(w=>w.id)));return}
     if(req.method==='GET'&&path==='/integrations'){send(res,200,{adapters:runtime.sourceRegistry.catalog(),sources:runtime.config.sources.map(s=>({id:s.id,kind:s.kind,enabled:s.enabled,capabilities:s.capabilities})),tools:runtime.toolConnections.configured()});return}
     if(req.method==='POST'&&path==='/workers'){send(res,200,await runtime.manager.call(await body(req)));return}
     if(req.method==='GET'&&path==='/workers'){send(res,200,runtime.manager.list());return}

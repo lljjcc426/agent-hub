@@ -198,7 +198,7 @@ function teamBasics(current) {
   const name = teamField('team-name', L('Name', '名称'), current.value.label || '', value => teamWrite('label', value.trim() || undefined), { placeholder: current.name })
   name.querySelector('input').maxLength = 100
   fields.append(name)
-  if (current.router && teamFeatures().options) fields.append(teamField('team-router-mode', L('Router mode', 'Router 模式'), current.value.mode || 'assessment', value => { teamWrite('mode', value); render() }, {
+  if (current.router && teamFeatures().options) fields.append(teamField('team-router-mode', L('Router mode', 'Router 模式'), current.value.mode || 'assessment', value => { teamWrite('mode', value); if(value!=='host')teamWrite('nativeTool', undefined); render() }, {
     values: [['assessment', L('Task intake', '任务受理')], ['host', L('Persistent host Router', '宿主持久 Router')], ['client', L('Current CLI is Router', '当前 CLI 会话作为 Router')]],
     help: L('Client mode uses the model and session of your connected CLI.', '客户端模式使用已接入 CLI 的模型与会话。')
   }))
@@ -209,7 +209,7 @@ function teamBasics(current) {
   }
 
   fields.append(connectionPickerField('team-backend', backend, value => {
-    teamWrite('backend', value); teamWrite('model', undefined); render()
+    teamWrite('nativeTool', undefined); teamWrite('backend', value); teamWrite('model', undefined); render()
   }))
   const model = current.router ? route.routerModel : current.value.model
   fields.append(teamField('team-model', L('Model', '模型'), model || '', value => teamWrite('model', value.trim() || undefined), {
@@ -343,6 +343,16 @@ function teamTools(current) {
     const label = el('label', 'team-toggle'); label.htmlFor = enabled.id
     fields.append(add(label, enabled, el('span', '', L('Allow Router to manage Workers', '允许 Router 管理 Worker'))),
       teamJson('execution.management.backends', L('External Router connection IDs (JSON array)', '外部 Router 可用连接 ID（JSON 数组）'), 'array'))
+  }
+  const backend = current.value.backend || (current.router ? S.draft.execution.roles?.router : S.draft.execution.roles?.worker) || S.draft.execution.backend || 'codex'
+  const definition = S.draft.backends?.[backend]
+  const driver = definition?.kind === 'plugin' ? definition.plugin : definition?.kind || backend
+  const search = ['codex', 'codex-cli'].includes(driver)
+  if ((!current.router || current.value.mode === 'host') && (search || ['claude-code', 'gemini-cli', 'opencode-cli'].includes(driver))) {
+    const native = search ? 'cached-web-search' : 'task-list'
+    const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = current.value.nativeTool === native
+    checkbox.onchange = () => teamWrite('nativeTool', checkbox.checked ? native : undefined)
+    fields.append(add(el('label', 'team-toggle'), checkbox, el('span', '', search ? L('Codex cached web search', 'Codex 缓存网页搜索') : L('CLI task list', 'CLI 原生任务清单'))))
   }
   if (integrations.data || S.snap?.toolConnections) fields.append(integrationGrants(current))
   fields.append(el('h3', '', L('Host tool catalog', '宿主工具目录')))

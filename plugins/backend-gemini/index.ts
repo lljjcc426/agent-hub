@@ -5,6 +5,7 @@ import {privateFile,readJson,digest,endpoint} from '../cli-shared/files.ts'
 import {isolatedEnvironment} from '../cli-shared/environment.ts'
 import type {CliDriver} from '../cli-shared/contract.ts'
 export const geminiDriver:CliDriver={
+ taskListTool:'write_todos',
  id:'gemini-cli',version:'0.67.0',credentialEnvs:['GEMINI_API_KEY','GOOGLE_API_KEY'],
  upstream:config=>config.baseUrl??(process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY?'https://generativelanguage.googleapis.com':'https://cloudcode-pa.googleapis.com'),
  auth(directory){
@@ -16,9 +17,9 @@ export const geminiDriver:CliDriver={
   if(request.options?.effort)throw new BackendAdapterError('unsupported')
   const env={...isolatedEnvironment(root),GEMINI_CLI_HOME:join(root,'home'),GEMINI_CLI_SYSTEM_SETTINGS_PATH:join(root,'absent-system-settings.json'),GEMINI_SYSTEM_MD:join(root,'instructions.md'),NO_BROWSER:'true',...(config.baseUrl?{GOOGLE_GEMINI_BASE_URL:endpoint(config.baseUrl)!,CODE_ASSIST_ENDPOINT:endpoint(config.baseUrl)!}:{})}
   privateFile(join(root,'instructions.md'),request.instructions)
-  privateFile(join(root,'home','.gemini','settings.json'),JSON.stringify({security:{auth:{selectedType:process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY?'gemini-api-key':'oauth-personal'},enablePermanentToolApproval:false},tools:{core:['__roppo_no_native_tools__']},mcp:{allowed:['roppo']},mcpServers:{roppo:{httpUrl:mcp.url,headers:{Authorization:'Bearer '+mcp.token},trust:true,includeTools:(request.tools??[]).map(t=>t.name)}},hooks:{},general:{enableAutoUpdate:false,enablePromptCompletion:false},privacy:{usageStatisticsEnabled:false},telemetry:{enabled:false},experimental:{enableAgents:false,enableAutoMemory:false},context:{fileName:'ROPPODOESNOTEXIST.md'},model:{maxSessionTurns:request.options?.maxSteps??64}}))
+  privateFile(join(root,'home','.gemini','settings.json'),JSON.stringify({security:{auth:{selectedType:process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY?'gemini-api-key':'oauth-personal'},enablePermanentToolApproval:false},tools:{core:request.nativeTool==='task-list'?['write_todos']:['__roppo_no_native_tools__']},mcp:{allowed:['roppo']},mcpServers:{roppo:{httpUrl:mcp.url,headers:{Authorization:'Bearer '+mcp.token},trust:true,includeTools:(request.tools??[]).map(t=>t.name)}},hooks:{},general:{enableAutoUpdate:false,enablePromptCompletion:false},privacy:{usageStatisticsEnabled:false},telemetry:{enabled:false},experimental:{enableAgents:false,enableAutoMemory:false},context:{fileName:'ROPPODOESNOTEXIST.md'},model:{maxSessionTurns:request.options?.maxSteps??64}}))
   // An explicit admin allowlist outranks native/default/user policy rules.
-  privateFile(join(root,'policy.toml'),'[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 1\n\n[[rule]]\nmcpName = "roppo"\ntoolName = "*"\ndecision = "allow"\npriority = 2\n')
+  privateFile(join(root,'policy.toml'),'[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 1\n\n[[rule]]\nmcpName = "roppo"\ntoolName = "*"\ndecision = "allow"\npriority = 2\n'+(request.nativeTool==='task-list'?'\n[[rule]]\ntoolName = "write_todos"\ndecision = "allow"\npriority = 2\n':''))
   const args=['--prompt','','--output-format','stream-json','--skip-trust','--extensions','','--allowed-mcp-server-names','roppo','--admin-policy',join(root,'policy.toml'),...(nativeId?['--resume',nativeId]:['--session-id',newId])]
   if(request.model??config.model)args.push('--model',(request.model??config.model)!)
   return {args,env,stdin:prompt}

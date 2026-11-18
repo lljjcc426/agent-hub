@@ -103,6 +103,7 @@ export class WorkerManager {
     if(profiles.some(w=>w.id===candidate.id))throw Error('Duplicate Worker id')
     if(profiles.length>=policy.maxWorkers)throw Error('Worker limit reached')
     if(host.store.get('retired-worker',candidate.id))throw Error('Retired Worker identity cannot be reused')
+    if(candidate.nativeTool)throw Error('Grant native CLI tools to the new Worker in Agent team settings')
     verifyBackend(candidate.backend);profiles.push(candidate);if(context?.scoped)host.scopes.addWorker(context.scoped.route.scopeId,candidate.id)
    }else{
     if(!worker)throw Error('Unknown Worker')
@@ -112,6 +113,7 @@ export class WorkerManager {
     if(input.action==='set_prompt'){if(input.prompt===undefined)throw Error('prompt required');candidate.prompt=input.prompt}
     if(['pause','resume','retire'].includes(input.action))candidate.state=input.action==='pause'?'paused':input.action==='retire'?'retiring':'enabled'
     candidate=workerProfileSchema.parse(candidate);verifyBackend(candidate.backend)
+    if(candidate.nativeTool&&(candidate.nativeTool!==worker.nativeTool||candidate.backend!==worker.backend))throw Error('Change native CLI grants in Agent team settings')
     profiles=profiles.map(w=>w.id===worker.id?candidate:w)
    }
    const saved=save();return complete({revision:saved.revision,applied:true,effective:'next activation; backend/model changes require migration for existing tasks',worker:profiles.find(w=>w.id===(input.profile?.id??input.id))})

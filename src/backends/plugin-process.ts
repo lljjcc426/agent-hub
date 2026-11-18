@@ -46,6 +46,7 @@ export class ProcessBackend implements Model {
  private save(record:Thread){this.store.put('backend-plugin-thread',record.id,record)}
  async run(request:ModelRequest):Promise<ModelResult>{
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
+  if(request.nativeTool&&!caps.nativeTools?.includes(request.nativeTool))throw new BackendPluginError('unsupported',this.id)
   if(old&&!caps.resume)throw new BackendPluginError('unsupported',this.id)
   if(request.managed&&(!caps.managed||!caps.tools||!caps.resume||!caps.history||!caps.contextBudget))throw new BackendPluginError('unsupported',this.id)
   if(request.contextBudget&&!caps.contextBudget||request.tools?.length&&!caps.tools||request.workerMcp&&!caps.managed||request.compactBeforeTurn)throw new BackendPluginError('unsupported',this.id)

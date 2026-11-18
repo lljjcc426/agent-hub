@@ -114,7 +114,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      call.result=result;save();budget('cli-tool-result');wire?.check('native-tool-result',{id,result})
      return call.result as Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
     },fail)
-    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences. Use only the supplied Roppo tools for external actions.'
+    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences. Use only the supplied Roppo tools for external actions.'+(request.nativeTool==='task-list'?' You may use '+driver.taskListTool+' to organize this session.':'')
     wire=await wireBridge(endpoint(driver.upstream(config,request.model))!,driver,request,fail,()=>{
      if(failure)throw failure
      if(!session.nativeId){const id=driver.discoverSession?.(root);if(id)bind(id)}
@@ -122,7 +122,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
     })
     const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,prompt})
     request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion}})
-    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:['native-tools','workspace-plugins','workspace-hooks'],managed:request.managed===true})
+    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
     request.onContextReady?.()
     request.onActive?.({interrupt:async()=>abort(),steer:async()=>{throw new BackendAdapterError('unsupported')}})
     if(failure)throw failure
@@ -133,7 +133,9 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      const value=JSON.parse(line),event=driver.event(value)
      turn.protocolBytes+=Buffer.byteLength(line);if(event.session)bind(event.session)
      if(event.error)throw new BackendAdapterError(cliFailure(event.error))
-     if(event.tool&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
+     const nativeTask=event.tool===driver.taskListTool&&request.nativeTool==='task-list'
+     if(nativeTask)request.onProgress?.('cli/tool/'+driver.taskListTool)
+     if(event.tool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
      if(event.tool)turn.text=''
      if(event.model)request.onModel?.(event.model)
      if(event.text)turn.text+=event.text

@@ -1,3 +1,4 @@
+import {cliProfileSchema} from './cli-mcp-profile.ts'
 import {z} from 'zod'
 
 const envName=z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
@@ -10,6 +11,7 @@ export const sourceCapabilitiesSchema=z.object({events:z.boolean().default(true)
 export const toolConnectionsSchema=z.record(id,z.object({
   enabled:z.boolean().default(true),label:z.string().min(1).optional(),
   transport:z.discriminatedUnion('kind',[
+    cliProfileSchema,
     z.object({kind:z.literal('plugin'),sourceId:id}).strict(),
     z.object({kind:z.literal('stdio'),command:z.string().min(1),args:z.array(z.string()).default([]),cwd:z.string().optional(),env:z.record(envName,envName).prefault({})}).strict(),
     z.object({kind:z.literal('http'),url:z.string().url().refine(value=>{const u=new URL(value);return !u.username&&!u.password&&(u.protocol==='https:'||u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname))},'Use HTTPS or loopback HTTP without credentials'),headerEnv:z.record(z.string().regex(/^[A-Za-z0-9-]+$/),envName).prefault({})}).strict(),

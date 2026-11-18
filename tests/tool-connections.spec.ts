@@ -1,4 +1,5 @@
-import {mkdtempSync,readFileSync,rmSync,existsSync} from 'node:fs'
+import {cliMcpGrant,cliMcpFragment} from '../src/cli-mcp-profile.ts'
+import {mkdtempSync,readFileSync,rmSync,existsSync,writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {tmpdir} from 'node:os'
@@ -122,7 +123,7 @@ it('cancels in-flight tools with the assignment and recovers unfinished receipts
   expect(f.calls()).toHaveLength(1)
 })
 
-it('uses the Streamable HTTP protocol and configured credential references',async()=>{
+it.each(['host','gemini'] as const)('uses Streamable HTTP with %s credential references',async(kind)=>{
   const seen:string[]=[],instances:Server[]=[]
   const http=createServer(async(req,res)=>{
     seen.push(String(req.headers.authorization))
@@ -136,7 +137,42 @@ it('uses the Streamable HTTP protocol and configured credential references',asyn
   await new Promise<void>(r=>http.listen(0,'127.0.0.1',r))
   process.env.AGENTHUB_MCP_FIXTURE_AUTH='Bearer fixture-only'
   closers.push(async()=>{delete process.env.AGENTHUB_MCP_FIXTURE_AUTH;await Promise.allSettled(instances.map(s=>s.close()));http.closeAllConnections();await new Promise<void>(r=>http.close(()=>r()))})
-  const f=await fixture({toolConnections:{docs:{enabled:true,transport:{kind:'http',url:'http://127.0.0.1:'+(http.address() as any).port,headerEnv:{Authorization:'AGENTHUB_MCP_FIXTURE_AUTH'}},allowedTools:['echo'],timeoutMs:1500}}})
+  const url='http://127.0.0.1:'+(http.address() as any).port
+  const root=mkdtempSync(join(tmpdir(),'mcp-http-profile-'));roots.push(root)
+  const profile=join(root,'settings.json')
+  const save=(httpUrl:string)=>writeFileSync(profile,JSON.stringify({mcpServers:{docs:{httpUrl,headers:{Authorization:'$AGENTHUB_MCP_FIXTURE_AUTH'},includeTools:['echo']}}}))
+  save(url)
+  const transport=kind==='gemini'?cliMcpGrant('gemini',profile,'docs','one',['echo']):{kind:'http' as const,url,headerEnv:{Authorization:'AGENTHUB_MCP_FIXTURE_AUTH'}}
+  const f=await fixture({toolConnections:{docs:{enabled:true,transport,allowedTools:['echo'],timeoutMs:1500}}})
   expect((await f.host.workerTools.call(f.owner,'superagent_tool',input())).contentItems[0]?.text).toBe('HTTP actual tool output')
   expect(seen.length).toBeGreaterThan(2);expect(new Set(seen)).toEqual(new Set(['Bearer fixture-only']))
+  if(kind==='gemini'){
+    expect(()=>cliMcpGrant('gemini',profile,'docs','one',['write'])).toThrow('not explicitly allowed')
+    save(url+'/changed')
+    await expect(f.host.workerTools.call(f.owner,'superagent_tool',input('echo','after-change'))).rejects.toThrow('renew its grant')
+  }
 })
+
+for(const cli of ['codex','claude','gemini','opencode'] as const){
+ it(`runs the selected ${cli} profile MCP tool and rejects a changed grant`,async()=>{
+  const root=mkdtempSync(join(tmpdir(),'cli-profile-'));roots.push(root)
+  const profile=join(root,cli==='codex'?'config.toml':'settings.json'),log=join(root,'calls.jsonl')
+  const args=[fileURLToPath(new URL('./fixtures/mcp-tool-server.mjs',import.meta.url)),log]
+  const save=(enabled:boolean)=>{
+   const stdio={command:process.execPath,args,env:{PRIVATE_FIXTURE:'private-value'}}
+   if(cli==='codex')writeFileSync(profile,'[mcp_servers.docs]\ncommand = '+JSON.stringify(process.execPath)+'\nargs = '+JSON.stringify(args)+'\nenabled = '+enabled+'\n[mcp_servers.docs.env]\nPRIVATE_FIXTURE = "private-value"\n')
+   else if(cli==='opencode')writeFileSync(profile,JSON.stringify({mcp:{docs:{type:'local',command:[process.execPath,...args],environment:stdio.env,enabled}}}))
+   else writeFileSync(profile,JSON.stringify({mcpServers:{docs:{...stdio,disabled:!enabled}}}))
+  }
+  save(true)
+  const fragment=cliMcpFragment(cli,profile,'docs','one',['echo']);expect(JSON.stringify(fragment)).not.toContain('private-value')
+  const connection={enabled:true,label:'docs',timeoutMs:3000,allowedTools:['echo'],transport:cliMcpGrant(cli,profile,'docs','one',['echo'])}
+  const {host,owner}=await fixture({toolConnections:{docs:connection}})
+  const call=()=>host.workerTools.call(owner,'superagent_tool',input('echo','first'))
+  expect((await call()).contentItems[0]?.text).toBe('actual tool output')
+  expect((await call()).success).toBe(true);expect(readFileSync(log,'utf8').trim().split('\n')).toHaveLength(1)
+  const run=host.store.get<any>('run',owner.ticketId);host.store.put('run',owner.ticketId,{...run,workerId:'other'})
+  await expect(call()).rejects.toThrow('not granted to this Worker');host.store.put('run',owner.ticketId,run)
+  save(false);await expect(call()).rejects.toThrow('disabled')
+ })
+}

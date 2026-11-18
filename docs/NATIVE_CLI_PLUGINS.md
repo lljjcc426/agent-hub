@@ -84,10 +84,24 @@ The existing host admission rules consequently **reject anonymous managed roles*
 This mode supports isolated, non-managed model/tool validation. Free availability
 and quotas are provider controlled; there is no automatic paid fallback.
 
+## Use tools already configured in a CLI
+
+In **Tools and apps → Tools → From local CLI**, select the CLI, read its configuration, select a server and Worker, then enter the exact tool names. Download the generated `toolConnections` fragment, add it to the host startup configuration, and restart. In **Agent team → Worker → Tools**, grant the connection to the selected Worker. The Worker can use it in personal and group tasks. The Router delegates external MCP calls to that Worker. Catalog, input validation, tool-call receipts and retry handling use the existing Worker MCP path.
+
+The UI reads `CODEX_HOME/config.toml` (normally `~/.codex/config.toml`), `~/.claude.json`, `~/.gemini/settings.json` or the OpenCode JSON/JSONC configuration. For a project `.mcp.json` or a non-default profile, generate the same fragment using an absolute path:
+
+```sh
+npx tsx src/cli.ts cli-mcp grant claude /path/to/.mcp.json linear worker-1 list_issues
+```
+
+The grant pins the selected entry and lists the Workers allowed to use it. Credentials are read by the host from that profile or its environment. Settings and downloads contain the reference and digest. Changing the entry requires regenerating the grant. Supported transports are stdio and Streamable HTTP. Native OAuth stores, SSE and provider-specific settings outside the supported profile format require a separate supported connection. The host process must have access to the profile, executable and referenced environment variables.
+
+In **Agent team → Tools**, a hosted Router or Worker can also enable one native capability for its CLI. Codex offers cached web search. Claude Code, Gemini CLI and OpenCode offer their own session task lists (`TodoWrite`, `write_todos`, `todowrite`). These tools are opt-in per role. Roppo records task ownership and completion independently. Inference-only calls, including memory maintenance, receive no native grant. Existing plugin installations need a package declaring the matching `nativeTools` capability. A pinned older session reports an unsupported grant until the operator uses a compatible session or removes that grant. ZCode has no managed native tool grant.
+
 ## Isolation, budgeting and recovery
 
 Each activation starts a private loopback MCP endpoint with a random capability.
-Only host-supplied tools are listed. Native shell, file operations, unrelated MCP
+Host tools are exposed through this endpoint. An explicit native tool grant can also expose the CLI task list. Native shell, file operations, unrelated MCP
 servers, plugins, hooks and workspace discovery are disabled. CLI work directories
 are separate from the actual task directory; task operations go through Roppo's
 authorized tools. The outer OS sandbox remains mandatory.
@@ -143,6 +157,8 @@ npx tsx tests/manual/cli-protocol.ts claude /absolute/cli-prefix --host
 npx tsx tests/manual/cli-protocol.ts gemini /absolute/cli-prefix --host
 npx tsx tests/manual/cli-protocol.ts opencode /absolute/cli-prefix --host
 ```
+
+Add `--native` to exercise each CLI’s own task-list tool and inspect the returned tool result across session recovery.
 
 This checks native flags, upstream tool allowlists, MCP calls, complete prior
 conversation in resumed requests, private native persistence and retry-safe purge.

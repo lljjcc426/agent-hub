@@ -7,6 +7,7 @@ import {privateFile,readJson,digest,endpoint} from '../cli-shared/files.ts'
 import {isolatedEnvironment} from '../cli-shared/environment.ts'
 import type {CliDriver} from '../cli-shared/contract.ts'
 export const opencodeDriver:CliDriver={
+ taskListTool:'todowrite',
  id:'opencode-cli',version:'1.19.5',credentialEnvs:['ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','OPENCODE_API_KEY'],
  anonymous:config=>config.authMode==='anonymous'&&!config.baseUrl&&/^opencode\/(?:[a-z0-9.-]+-free|big-pickle)$/.test(config.model??''),
  credentialKeys(config){const provider=config.provider??config.model?.split('/')[0];return ({anthropic:['ANTHROPIC_API_KEY'],openai:['OPENAI_API_KEY'],google:['GEMINI_API_KEY'],opencode:['OPENCODE_API_KEY']} as Record<string,string[]>)[provider??'']??[]},
@@ -36,7 +37,8 @@ export const opencodeDriver:CliDriver={
   const model=request.model??config.model;if(!model||!model.includes('/'))throw new BackendAdapterError('configuration_invalid')
   const provider=config.provider??config.model?.split('/')[0]??model.split('/')[0]!
   if(provider!==model.split('/')[0])throw new BackendAdapterError('configuration_invalid')
-  const settings={model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission:{'*':'deny','roppo_*':'allow'},agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??64,tools:{'*':false,'roppo_*':true},permission:{'*':'deny','roppo_*':'allow'}}},mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},...(config.baseUrl?{provider:{[provider]:{options:{baseURL:endpoint(config.baseUrl)}}}}:{})}
+  const taskList=request.nativeTool==='task-list'
+  const settings={model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission:{'*':'deny','roppo_*':'allow',...(taskList?{todowrite:'allow'}:{})},agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??64,tools:{'*':false,'roppo_*':true,...(taskList?{todowrite:true}:{})},permission:{'*':'deny','roppo_*':'allow',...(taskList?{todowrite:'allow'}:{})}}},mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},...(config.baseUrl?{provider:{[provider]:{options:{baseURL:endpoint(config.baseUrl)}}}}:{})}
   privateFile(join(root,'opencode.json'),JSON.stringify(settings))
   const env={...isolatedEnvironment(root),OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}
   const args=['run','--pure','--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]

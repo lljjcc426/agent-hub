@@ -1,7 +1,7 @@
 {
   "id": "codex-cli",
   "label": "Codex CLI",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "stateVersion": 1,
   "configSchema": {
     "type": "object",
@@ -20,6 +20,7 @@
     "additionalProperties": false
   },
   "capabilities": {
+    "nativeTools": ["cached-web-search"],
     "resume": true, "tools": true, "managed": true, "contextBudget": true,
     "steering": true, "promptRefresh": true, "images": true, "nativeTakeover": true,
     "history": true, "purge": true, "modelCatalog": true

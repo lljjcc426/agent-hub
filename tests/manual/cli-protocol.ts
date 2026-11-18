@@ -15,6 +15,10 @@ import {configSchema} from '../../src/config.ts'
 import {Store} from '../../src/store.ts'
 import {BackendRegistry} from '../../src/backends/registry.ts'
 const kind=process.argv[2]!,prefix=resolve(process.argv[3]!),root=mkdtempSync(join(tmpdir(),'roppo-real-cli-'+kind+'-'))
+const native=process.argv.includes('--native')
+const nativeName=kind==='claude'?'TodoWrite':kind==='gemini'?'write_todos':'todowrite'
+const nativeArgs=kind==='claude'?{todos:[{content:'Validate the local CLI',activeForm:'Validating the local CLI',status:'in_progress'}]}:kind==='gemini'?{todos:[{description:'Validate the local CLI',status:'in_progress'},{description:'Record the result',status:'pending'}]}:{todos:[{content:'Validate the local CLI',status:'in_progress',priority:'high'}]}
+let nativeResults=0
 const requests:any[]=[],errors:string[]=[]
 const server=createServer(async(req,res)=>{
  try{
@@ -25,25 +29,29 @@ const server=createServer(async(req,res)=>{
   if(req.url?.includes('count_tokens')){res.setHeader('content-type','application/json');res.end(JSON.stringify({input_tokens:100}));return}
   if(req.url?.includes('messages')){
    const names=(body.tools??[]).map((t:any)=>t.name)
-   assert(names.every((n:string)=>n.startsWith('mcp__roppo__')||n.startsWith('roppo_')||n==='EndConversation'),'native tools leaked: '+names)
-   const name=names.find((n:string)=>n.endsWith('read_sample'))
+   assert(names.every((n:string)=>n.startsWith('mcp__roppo__')||n.startsWith('roppo_')||n==='EndConversation'||native&&n===nativeName),'native tools leaked: '+names)
+   const name=native?names.find((n:string)=>n===nativeName):names.find((n:string)=>n.endsWith('read_sample'))
+   if(native&&names.length)assert(name,'Missing native tool '+nativeName)
    const last=body.messages?.at(-1),got=last?.content?.some?.((p:any)=>p.type==='tool_result')
-   const content=name&&!got?{type:'tool_use',id:'call_'+requests.length,name,input:{}}:{type:'text',text:'{"answer":"你好，验证通过"}'}
+   if(native&&got){assert(!last.content.some((p:any)=>p.is_error),JSON.stringify(last.content));nativeResults++}
+   const content=name&&!got?{type:'tool_use',id:'call_'+requests.length,name,input:native?nativeArgs:{}} :{type:'text',text:'{"answer":"你好，验证通过"}'}
    const message={id:'msg_'+requests.length,type:'message',role:'assistant',model:body.model,content:[content],stop_reason:content.type==='tool_use'?'tool_use':'end_turn',stop_sequence:null,usage:{input_tokens:100,output_tokens:20}}
    if(!body.stream){res.setHeader('content-type','application/json');res.end(JSON.stringify(message));return}
    res.setHeader('content-type','text/event-stream')
    const event=(type:string,data:any)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n')
    event('message_start',{message:{...message,content:[],stop_reason:null,usage:{input_tokens:100,output_tokens:0}}})
    event('content_block_start',{index:0,content_block:content.type==='tool_use'?{...content,input:{}}:{type:'text',text:''}})
-   event('content_block_delta',{index:0,delta:content.type==='tool_use'?{type:'input_json_delta',partial_json:'{}'}:{type:'text_delta',text:content.text}})
+   event('content_block_delta',{index:0,delta:content.type==='tool_use'?{type:'input_json_delta',partial_json:JSON.stringify(native?nativeArgs:{})}:{type:'text_delta',text:content.text}})
    event('content_block_stop',{index:0});event('message_delta',{delta:{stop_reason:message.stop_reason,stop_sequence:null},usage:{output_tokens:20}});event('message_stop',{});res.end();return
   }
   if(req.url?.includes('generateContent')||req.url?.includes('streamGenerateContent')){
    const names=(body.tools??[]).flatMap((t:any)=>t.functionDeclarations??[]).map((t:any)=>t.name)
-   assert(names.every((n:string)=>n==='read_sample'||n.includes('roppo')),'native tools leaked: '+names)
-   const name=names.find((n:string)=>n.endsWith('read_sample'))
+   assert(names.every((n:string)=>n==='read_sample'||n.includes('roppo')||native&&n===nativeName),'native tools leaked: '+names)
+   const name=native?names.find((n:string)=>n===nativeName):names.find((n:string)=>n.endsWith('read_sample'))
+   if(native&&names.length)assert(name,'Missing native tool '+nativeName)
    const got=body.contents?.at(-1)?.parts?.some((p:any)=>p.functionResponse)
-   const part=name&&!got?{functionCall:{name,args:{}}}:{text:'{"answer":"你好，验证通过"}'}
+   if(native&&got){assert(!body.contents.at(-1).parts.some((p:any)=>p.functionResponse?.response?.error),JSON.stringify(body.contents.at(-1)));nativeResults++}
+   const part=name&&!got?{functionCall:{name,args:native?nativeArgs:{}}}:{text:'{"answer":"你好，验证通过"}'}
    const response={candidates:[{content:{role:'model',parts:[part]},finishReason:'STOP',index:0}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:20,totalTokenCount:120},modelVersion:body.model??'gemini-2.5-flash',responseId:'response_'+requests.length}
    res.setHeader('content-type',req.url?.includes('alt=sse')?'text/event-stream':'application/json')
    res.end(req.url?.includes('alt=sse')?'data: '+JSON.stringify(response)+'\n\n':JSON.stringify(response));return
@@ -71,21 +79,21 @@ let store:Store|undefined
 try{
  const manifest=JSON.parse(readFileSync(resolve('plugins/backend-'+kind+'/manifest.json'),'utf8'))
  const pkg=hosted?await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),manifest,join(root,'package')):undefined
- const config=hosted?configSchema.parse({stateDir:join(root,'host-state'),sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},turnTimeoutMs:90000,backendPlugins:[{directory:pkg!.directory,digest:pkg!.digest}],backends:{external:{kind:'plugin',plugin:manifest.id,config:wrappedConfig,readPaths:[prefix,wrapper],env:kind==='gemini'?{GEMINI_API_KEY:'GEMINI_API_KEY'}:{ANTHROPIC_API_KEY:'ANTHROPIC_API_KEY'}}},execution:{backend:'external'}}):undefined
+ const config=hosted?configSchema.parse({stateDir:join(root,'host-state'),sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},turnTimeoutMs:90000,backendPlugins:[{directory:pkg!.directory,digest:pkg!.digest}],backends:{external:{kind:'plugin',plugin:manifest.id,config:wrappedConfig,readPaths:[prefix,wrapper],env:kind==='gemini'?{GEMINI_API_KEY:'GEMINI_API_KEY'}:{ANTHROPIC_API_KEY:'ANTHROPIC_API_KEY'}}},execution:{backend:'external',workers:[{id:'cli-worker',backend:'external',...(native?{nativeTool:'task-list'}:{})}]}}):undefined
  if(config){store=new Store(join(config.stateDir,'state.sqlite'));activateBackendPackages(store,config)}
  const adapter=config?new BackendRegistry(config,store!):selected.plugin.create(wrappedConfig,{dataDirectory:join(root,'state')})
  console.log(JSON.stringify({kind,root,probe:await (adapter instanceof BackendRegistry?adapter.probe('external'):adapter.probe!())}))
- const runRequest={...request,...(hosted?{managed:true,contextBudget:{maxBytes:1_000_000,outputReserveBytes:8192,toolReserveBytes:4096}}:{})}
+ const runRequest={...request,...(native?{allowNativeTools:true,nativeTool:'task-list' as const,role:'worker' as const,activity:{workerId:'cli-worker',ticketId:'fixture'}}:{}),...(hosted?{managed:true,contextBudget:{maxBytes:1_000_000,outputReserveBytes:8192,toolReserveBytes:4096}}:{})}
  const first=await adapter.run(runRequest)
  let upgraded:Awaited<ReturnType<typeof buildBackendPackage>>|undefined
  if(config){
-  upgraded=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...manifest,version:'1.0.1'},join(root,'upgraded'))
+  upgraded=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...manifest,version:'1.0.2'},join(root,'upgraded'))
   config.backendPlugins=[{directory:upgraded.directory,digest:upgraded.digest}];activateBackendPackages(store!,config)
   store!.close();store=new Store(join(config.stateDir,'state.sqlite'))
  }
  const restarted=config?new BackendRegistry(config,store!):selected.plugin.create(wrappedConfig,{dataDirectory:join(root,'state')})
  const second=await restarted.run({...runRequest,threadId:first.threadId,input:'Read the sample again after restarting.'})
- assert.equal(second.threadId,first.threadId);assert.equal(JSON.parse(second.text).answer,'你好，验证通过');assert.equal(calls,2);assert.deepEqual(errors,[])
+ assert.equal(second.threadId,first.threadId);assert.equal(JSON.parse(second.text).answer,'你好，验证通过');assert.equal(native?nativeResults:calls,2);assert.deepEqual(errors,[])
   assert(JSON.stringify(requests.at(-1).body).includes('Read the sample and say hello.'))
   assert(JSON.stringify(requests.at(-1).body).includes('Read the sample again after restarting.'))
   if(config){
@@ -96,12 +104,12 @@ try{
    store!.close();store=new Store(join(config.stateDir,'state.sqlite'))
    const rolledBack=new BackendRegistry(config,store)
    const continued=await rolledBack.run({...runRequest,threadId:fresh.threadId,input:'Read the sample again after restarting.'})
-   assert.equal(continued.threadId,fresh.threadId);assert.equal(store.get<any>('backend-plugin-thread',fresh.threadId).digest,upgraded!.digest);assert.equal(calls,4)
+   assert.equal(continued.threadId,fresh.threadId);assert.equal(store.get<any>('backend-plugin-thread',fresh.threadId).digest,upgraded!.digest);assert.equal(native?nativeResults:calls,4)
    await rolledBack.purge(fresh.threadId,root)
   }
  const inspector=config?new BackendRegistry(config,store!):restarted
  assert.equal((await inspector.history!(first.threadId,root) as any).turns.length,2)
  await inspector.purge!(first.threadId,root);await inspector.purge!(first.threadId,root)
- console.log(JSON.stringify({kind,hosted,result:'pass',calls,requests:requests.length,session:first.threadId,root}))
+ console.log(JSON.stringify({kind,hosted,native,nativeResults,result:'pass',calls,requests:requests.length,session:first.threadId,root}))
 }catch(e){console.error(JSON.stringify({kind,root,errors,requests:requests.length,error:String(e)}));process.exitCode=1}
 finally{store?.close();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()))}

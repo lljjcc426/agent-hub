@@ -2,7 +2,10 @@ import {createServer} from 'node:http'
 import {mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {it,expect} from 'vitest'
+import {it,expect,vi} from 'vitest'
+import {BackendRegistry} from '../src/backends/registry.ts'
+import {CodexModel} from '../src/codex.ts'
+import type {ModelRequest} from '../src/model.ts'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 
@@ -28,4 +31,28 @@ it('uses separate Router and Worker models across all three API protocols and re
   expect(host.store.get<any>('run',first.id)).toMatchObject({threadId,backendId:'chat',model:'worker-chat'})
   expect(requests.filter(r=>r.model==='worker-chat')).toHaveLength(2);expect(requests.some(r=>r.model==='changed-model')).toBe(false)
  }finally{await host.close();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));rmSync(root,{recursive:true,force:true})}
+})
+
+it('selects the live native grant for each managed role and drops it on revocation or auxiliary turns',async()=>{
+ const config=configSchema.parse({sources:[{id:'local',kind:'local',cwd:tmpdir(),allowedActors:['operator']}],execution:{
+  router:{mode:'host',nativeTool:'cached-web-search'},workers:[{id:'one',backend:'codex',nativeTool:'cached-web-search'},{id:'two',backend:'codex'}]
+ }})
+ const registry=new BackendRegistry(config,{get:()=>undefined,put:()=>{}})
+ const model=vi.spyOn(CodexModel.prototype,'run').mockResolvedValue({threadId:'sample',turnId:'sample',text:'done'})
+ const request:ModelRequest={role:'router',allowNativeTools:true,managed:true,cwd:tmpdir(),instructions:'',input:'read',schema:{},
+  tools:[{type:'function',name:'read',description:'read',inputSchema:{}}],onTool:async()=>({success:true,contentItems:[]})}
+ const selected=async(overrides:Partial<ModelRequest>)=>{
+  await registry.run({...request,...overrides})
+  return model.mock.lastCall![0].nativeTool
+ }
+ try{
+  expect(await selected({})).toBe('cached-web-search')
+  expect(await selected({role:'worker',activity:{workerId:'one',sourceId:'group'}})).toBe('cached-web-search')
+  expect(await selected({role:'worker',activity:{workerId:'two'},nativeTool:'cached-web-search'})).toBeUndefined()
+  expect(await selected({role:'subagent',activity:{workerId:'one'}})).toBeUndefined()
+  expect(await selected({ephemeral:true})).toBeUndefined()
+  expect(await selected({allowNativeTools:false})).toBeUndefined()
+  delete config.execution.router!.nativeTool
+  expect(await selected({threadId:'existing'})).toBeUndefined()
+ }finally{model.mockRestore()}
 })

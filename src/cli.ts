@@ -1,3 +1,4 @@
+import {cliMcpFragment,cliProfileSchema} from './cli-mcp-profile.ts'
 import {upgradeWebhooks} from './webhook-upgrade.ts'
 import {pluginCommand} from './plugin-cli.ts'
 import {backendPluginCommand} from './backends/plugin-cli.ts'
@@ -25,6 +26,12 @@ const command = args[0]==='--help'||args[0]==='-h'
 async function main() {
   if(process.env.AGENTHUB_ENV_FILE)try{process.loadEnvFile(process.env.AGENTHUB_ENV_FILE)}catch{throw Error('Cannot load AGENTHUB_ENV_FILE; check its path and access permissions')}
   if(command==='webhooks'){if(args[0]!=='upgrade'||!args[1]||!args[2])throw Error('Use webhooks upgrade <config.json> <new backup directory>; stop the host first');console.log(JSON.stringify(await upgradeWebhooks(loadConfig(args[1]),args[2]),null,2));return}
+  if(command==='cli-mcp'){
+    const [action,kind,profile,server,worker,...tools]=args
+    if(action!=='grant'||!profile||!server||!worker||!tools.length)throw Error('Use cli-mcp grant <codex|claude|gemini|opencode> <absolute profile path> <server> <worker-id> <tool> [tool...]')
+    const fragment=cliMcpFragment(cliProfileSchema.shape.cli.parse(kind),profile,server,worker,tools)
+    console.log(JSON.stringify(fragment,null,2));return
+  }
   if(command==='plugins'){console.log(JSON.stringify(await pluginCommand(args),null,2));return}
   if(command==='backend-plugins'){console.log(JSON.stringify(await backendPluginCommand(args),null,2));return}
   if(command==='office'){
@@ -128,6 +135,6 @@ async function main() {
     })
     console.log(JSON.stringify(await response.json(), null, 2))
     if (!response.ok) process.exitCode = 1
-  } else console.log('Commands: backend-plugins pack|inspect|stage|probe (see docs/EXECUTION_PLUGINS.md), setup [private-directory] [--no-open] (default), serve <config>, supervise <config>, watchdog <config> [--once], watch <url> <token-file> [--once], open <url> <token-file> [--no-open], mcp <url> <token-file>, router <url> <token-file> --prompt <message> [--resume <UUID>] [--json], request <url> <token-file> <source> <discussion> <request-id> <text>, status <url> <token-file>, action <url> <token-file> <pause|resume|stop|retry|takeover|return> [id]')
+  } else console.log('Commands: cli-mcp grant <cli> <profile> <server> <worker-id> <tool> [tool...], backend-plugins pack|inspect|stage|probe (see docs/EXECUTION_PLUGINS.md), setup [private-directory] [--no-open] (default), serve <config>, supervise <config>, watchdog <config> [--once], watch <url> <token-file> [--once], open <url> <token-file> [--no-open], mcp <url> <token-file>, router <url> <token-file> --prompt <message> [--resume <UUID>] [--json], request <url> <token-file> <source> <discussion> <request-id> <text>, status <url> <token-file>, action <url> <token-file> <pause|resume|stop|retry|takeover|return> [id]')
 }
 main().catch(error => { console.error(String(error)); process.exitCode = 1 })

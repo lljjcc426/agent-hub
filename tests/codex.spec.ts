@@ -84,6 +84,10 @@ it('does not create invalid startup entries for absent MCP aliases and disables 
  const calls=readFileSync(log,'utf8').trim().split('\n').map(s=>JSON.parse(s)),config=calls.find(c=>c.method==='thread/start').params.config
  expect(config.mcp_servers).toEqual({existing:{enabled:false}})
  expect(config.plugins).toEqual({example:{enabled:false}})
+ expect(config.web_search).toBe('disabled')
+ await model.run({cwd:root,instructions:'search',input:'test',schema:{},managed:true,nativeTool:'cached-web-search'})
+ const next=readFileSync(log,'utf8').trim().split('\n').map(s=>JSON.parse(s)).filter(c=>c.method==='thread/start').at(-1).params.config
+ expect(next.web_search).toBe('cached');expect(next.features.shell_tool).toBe(false)
  expect(config.features.shell_tool).toBe(false)
  expect(config.permissions['superagent-managed'].filesystem[envFile]).toBe('deny')
  expect(config.permissions['superagent-managed'].filesystem[privateState]).toBe('deny')

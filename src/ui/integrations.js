@@ -24,7 +24,7 @@ function integrationGrants(current) {
     section.append(el('p', 'team-help', L('Router delegates external tool work to Workers.', 'Router 通过 Worker 执行外部工具任务。')))
     return section
   }
-  const tools = integrationTools(), own = get(S.draft, current.path + '.toolConnections')
+  const tools = integrationTools().filter(t => !t.workers || t.workers.includes(current.value.id)), own = get(S.draft, current.path + '.toolConnections')
   const definition = S.draft.backends?.[get(S.draft, current.path + '.backend')]
   const effective = own ?? definition?.defaults?.toolConnections ?? []
   section.append(el('p', 'team-help', L('Grants apply on the next activation. Connection status is not a connectivity test.', '授权在下次激活时生效。已配置不代表连接已验证。')))
@@ -50,7 +50,7 @@ function integrationGrants(current) {
     row.append(check, add(el('span'), el('strong', '', item.label), el('small', '', item.missing ? L('Unavailable; remove this grant', '连接不存在，请移除授权') : (item.enabled ? item.allowedTools.join(', ') : L('Disabled', '已停用')))))
     section.append(row)
   }
-  if (!tools.length) section.append(el('p', 'team-help', L('No external tool connections configured.', '尚未配置外部工具连接。')))
+  if (!tools.length) section.append(el('p', 'team-help', L('No external tool connections available to this Worker.', '此 Worker 暂无可授权的外部工具连接。')))
   section.append(opButton(L('Manage tools and apps', '管理工具与应用'), () => opNavigate('integrations'), 'text-button'))
   return section
 }
@@ -95,6 +95,61 @@ async function integrationReadReceipts(append = false) {
     integrations.next = page.nextOffset
   })
 }
+function integrationCliForm() {
+  const form = el('form', 'integration-deployment')
+  form.hidden = true
+  const cli = el('select'), server = el('select'), worker = el('select'), names = el('input'), message = el('p')
+  for (const id of ['codex', 'claude', 'gemini', 'opencode']) cli.append(new Option(id, id))
+  for (const w of teamWorkers()) worker.append(new Option(w.label || w.id, w.id))
+  const fields = [[L('CLI', 'CLI'), cli], [L('MCP server', 'MCP 服务'), server], [L('Worker', 'Worker'), worker], [L('Allowed tool names (comma-separated)', '允许的工具名（逗号分隔）'), names]]
+  for (const [label, field] of fields) {
+    field.required = true
+    field.setAttribute('aria-label', label)
+    form.append(add(el('label', 'team-field'), el('span', '', label), field))
+  }
+  message.setAttribute('role', 'status')
+  const discover = async () => {
+    const selected = cli.value
+    server.replaceChildren()
+    message.textContent = ''
+    try {
+      const data = await api('/integrations/cli-mcp', {cli: selected})
+      if (cli.value !== selected) return
+      server.replaceChildren(...data.servers.map(id => new Option(id, id)))
+      if (!data.servers.length) message.textContent = L('No MCP servers in this profile.', '此配置中没有 MCP 服务。')
+    } catch {
+      if (cli.value === selected) message.textContent = L('CLI configuration unavailable.', '无法读取此 CLI 的配置。')
+    }
+  }
+  cli.onchange = discover
+  const read = opButton(L('Read CLI configuration', '读取 CLI 配置'), discover, 'button')
+  read.type = 'button'
+  const submit = el('button', 'button', L('Generate connection', '生成连接配置'))
+  submit.type = 'submit'
+  form.append(read, submit, message)
+  form.onsubmit = async e => {
+    e.preventDefault()
+    const tools = names.value.split(/[,，]/).map(name => name.trim()).filter(Boolean)
+    if (!tools.length) {
+      message.textContent = L('Enter at least one tool name.', '请输入至少一个工具名。')
+      return
+    }
+    if (integrations.draft && !confirm(L('Replace the deployment draft?', '替换当前部署草稿？'))) return
+    const epoch = workspaceContext.epoch
+    submit.disabled = true
+    try {
+      const fragment = await api('/integrations/cli-mcp', {cli: cli.value, server: server.value, worker: worker.value, tools})
+      if (epoch !== workspaceContext.epoch) return
+      integrations.draft = JSON.stringify(fragment, null, 2)
+      integrations.draftError = ''
+      render()
+    } catch {
+      message.textContent = L('Could not generate a grant for these tools.', '无法为这些工具生成授权。')
+      submit.disabled = false
+    }
+  }
+  return form
+}
 function integrationDeployment() {
   const panel = el('section', 'integration-deployment')
   panel.append(el('h2', '', L('Deploy a connection', '部署新连接')),
@@ -109,7 +164,9 @@ function integrationDeployment() {
     if (integrations.draft && !confirm(L('Replace the deployment draft?', '替换当前部署草稿？'))) return
     integrations.draft = JSON.stringify(templates[key], null, 2); integrations.draftError = ''; render()
   }, 'button'))
-  panel.append(choices)
+  const form = integrationCliForm()
+  choices.append(opButton(L('From local CLI', '从本地 CLI 接入'), () => { form.hidden = !form.hidden }, 'button'))
+  panel.append(choices, form)
   if (integrations.draft) {
     const input = el('textarea', 'json-editor'); input.id = 'integration-deployment-json'; input.rows = 14; input.spellcheck = false; input.value = integrations.draft
     input.oninput = () => { integrations.draft = input.value; integrations.draftError = ''; panel.querySelector('.alert')?.remove() }
@@ -138,10 +195,11 @@ function controlIntegrations() {
   const tools = el('section'), cards = el('div', 'integration-grid')
   tools.append(el('h2', '', L('Worker tool connections', 'Worker 工具连接')), el('p', 'team-help', L('Configured connections. Grant access per Worker in Agent team → Tools.', '以下为已配置连接。请在 Agent 团队 → 工具中逐个授权 Worker。')))
   for (const item of integrations.data.tools) {
-    const workers = teamWorkers().filter(worker => (worker.toolConnections ?? S.draft.backends?.[worker.backend]?.defaults?.toolConnections ?? []).includes(item.id))
+    const eligible = teamWorkers().filter(worker => !item.workers || item.workers.includes(worker.id))
+    const workers = eligible.filter(worker => (worker.toolConnections ?? S.draft.backends?.[worker.backend]?.defaults?.toolConnections ?? []).includes(item.id))
     cards.append(add(el('article', 'integration-card'), el('h3', '', item.label), el('span', 'pill', (item.enabled ? L('Configured', '已配置') : L('Disabled', '已停用')) + ' · ' + item.transport),
       el('p', 'integration-tool-names', item.allowedTools.join(' · ')), el('p', 'team-help', L('Granted in draft: ', '当前草稿授权：') + (workers.map(w => w.label || w.id).join(', ') || L('None', '无'))),
-      opButton(L('Set Worker access', '设置 Worker 授权'), () => { teamStudio.selected = teamWorkers()[0]?.id || 'router'; teamStudio.tab = 'tools'; opNavigate('execution', '', { view: 'configuration' }) }, 'button')))
+      opButton(L('Set Worker access', '设置 Worker 授权'), () => { teamStudio.selected = eligible[0]?.id || 'router'; teamStudio.tab = 'tools'; opNavigate('execution', '', { view: 'configuration' }) }, 'button')))
   }
   if (!integrations.data.tools.length) cards.append(el('p', 'team-help', L('No tool connections configured.', '尚未配置工具连接。')))
   tools.append(cards); root.append(tools)

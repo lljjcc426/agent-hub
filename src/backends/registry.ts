@@ -1,3 +1,4 @@
+import {nativeToolFor} from '../cli-native-tools.ts'
 import {ProcessBackend,pluginIdentity} from './plugin-process.ts'
 import {backendPackages} from './plugin-package.ts'
 import type {Config} from '../config.ts'
@@ -41,6 +42,12 @@ export class BackendRegistry implements Model {
   const id=r.threadId?this.forThread(r.threadId):r.backendId??this.selected(r.role??(r.ephemeral?'router':'worker'))
   const definition=structuredClone(this.definition(id)),role=r.role??(r.ephemeral?'router':'worker')
   const options=mergeOptions(definition.defaults,r.options??(role==='router'?this.config.execution.router:undefined))
+  const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
+  const profileBackend=profile?.backend??this.selected(role)
+  const {allowNativeTools,nativeTool:ignored,...activation}=r
+  const interactive=allowNativeTools&&r.managed&&!r.ephemeral&&r.onTool&&r.tools?.length
+  const granted=profileBackend===id&&profile?.nativeTool===nativeToolFor(definition)?profile?.nativeTool:undefined
+  r=interactive&&granted?{...activation,nativeTool:granted,instructions:r.instructions+'\nThe operator grants the native CLI '+granted+' tool for this task.'}:activation
   if(definition.kind!=='codex'&&definition.kind!=='plugin'&&definition.subscription){
    const sub=definition.subscription
    if(!sub.backgroundAuthorized||!r.principal||r.principal.source!==sub.owner.source||r.principal.actor!==sub.owner.actor)throw Error('Subscription requires its owner and authorized background activity')

@@ -33,6 +33,9 @@ export interface ModelRequest {
   tools?:ToolSpec[]
   onTool?:(name:string,args:unknown,callId:string)=>Promise<{contentItems:ToolContent[];success:boolean}>
   workerMcp?:{command:string;args:string[]}
+  /** Set only on foreground coordination and assigned Worker turns. */
+  allowNativeTools?:boolean
+  nativeTool?:import('./cli-native-tools.ts').CliNativeTool
   managed?:boolean
   /** Host-owned migration of legacy native context; never replaces the thread. */
   compactBeforeTurn?:boolean

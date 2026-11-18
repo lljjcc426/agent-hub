@@ -63,7 +63,7 @@ History deletion fences reads and resume immediately. The host retains only the 
 | Capability | Required behavior |
 | --- | --- |
 | resume/history | Persist native IDs and authoritative history; never replace a failed session silently. |
-| tools/managed | Expose only host-supplied tools. Forward tool calls to `onTool`, with stable native call IDs and schema-valid arguments. Disable unrelated native tools. |
+| tools/managed | Expose the supplied host tools and forward their calls to `onTool` with stable IDs and valid arguments. A package may additionally declare a supported `nativeTools` capability. Expose it only for a matching role and activation grant. |
 | contextBudget | Count actual model-visible history and new input; stop before exceeding the host budget. |
 | steering | A successful send is not read acknowledgement. Invoke `onRead` only after input enters model history. |
 | promptRefresh | Change current instructions without replacing the native session. |

@@ -9,6 +9,7 @@ export interface LaunchContext {
  request:ModelRequest;mcp:{url:string;token:string};prompt:string
 }
 export interface CliDriver {
+ taskListTool:string
  id:string;version:string;credentialEnvs:string[]
  upstream(config:CliConfig,model?:string):string
  credentialKeys?(config:CliConfig):string[]

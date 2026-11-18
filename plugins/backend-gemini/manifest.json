@@ -1,7 +1,7 @@
 {
   "id": "gemini-cli",
   "label": "Gemini CLI",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "stateVersion": 1,
   "configSchema": {
     "type": "object",
@@ -44,6 +44,7 @@
     "additionalProperties": false
   },
   "capabilities": {
+    "nativeTools": ["task-list"],
     "resume": true,
     "tools": true,
     "managed": true,

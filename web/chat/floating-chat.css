@@ -5,7 +5,7 @@
   --float-left: max(var(--float-gap), env(safe-area-inset-left));
   --float-right: max(var(--float-gap), env(safe-area-inset-right));
   --float-bottom: max(var(--float-gap), env(safe-area-inset-bottom));
-  --below-controls: calc(var(--float-top) + 60px);
+  --below-controls: calc(var(--float-top) + 92px);
   --float-shadow: 0 2px 8px #0000000d, 0 8px 26px #00000009;
 }
 .floating-chat .chat-main { position: relative; grid-column: 1; }
@@ -54,10 +54,26 @@
   left: 50%;
   transform: translateX(-50%);
   max-width: min(240px, calc(100% - 196px));
-  border-radius: 24px;
+  border-radius: 18px;
   padding: 0;
 }
-.chat-float-center .chat-companion { max-width: 100%; padding: 1px 12px 1px 4px; gap: 4px; border-radius: inherit; }
+.chat-float-center .chat-companion {
+  flex-direction: column;
+  max-width: 100%;
+  min-width: min(66px, 100%);
+  padding: 2px 10px 6px;
+  gap: 1px;
+  border-radius: inherit;
+  text-align: center;
+}
+.chat-float-center .companion-copy { max-width: 100%; }
+.chat-float-center .companion-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .chat-float-center .roppo-character { width: 46px; height: 42px; }
 .chat-float-center .roppo-pose { width: 64px; height: 58px; transform-origin: top left; scale: .72; }
 .chat-float-center .roppo-body { width: 58px; height: 58px; }

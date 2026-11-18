@@ -24,7 +24,11 @@ with sync_playwright() as pw:
         regions = [el.bounding_box() for el in controls.all()]
         left, center, right = regions
         assert 0 <= left['x'] and left['x'] + left['width'] < center['x']
-        assert abs(center['x'] + center['width'] / 2 - width / 2) < 1
+        character = page.locator('.chat-companion .roppo-character').bounding_box()
+        status = page.locator('.companion-label').bounding_box()
+        assert status['y'] >= character['y'] + character['height']
+        for box in (center, character, status):
+            assert abs(box['x'] + box['width'] / 2 - width / 2) < 1
         assert center['x'] + center['width'] < right['x'] and right['x'] + right['width'] <= width
     trigger = page.locator('.pending-trigger')
     tray = page.get_by_role('complementary', name='Pending requests')

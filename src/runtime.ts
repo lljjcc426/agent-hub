@@ -1,5 +1,6 @@
 import {ApiUsage} from './api-usage.ts'
 
+import {workspaceBrowserSpec} from './browser-contract.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatStatusTool} from './chat-status.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
@@ -773,7 +774,11 @@ export class Runtime {
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
     const scoped=reportMessage?.ticketId?this.scopes.contextForTask(trigger,discussion,reportMessage.ticketId):this.scopes.context(trigger,discussion),profile=scoped?this.scopes.scope(scoped.route.scopeId).router:undefined
     const chatBinding=this.chat.binding(triggerId)
-    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec])
+    const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
+      ? this.store.get<{conversationId:string}>('chat-run', triggerId) : undefined
+    const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
+    const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
+    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool])
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
     if(scoped&&!this.chat.isReactionInput(triggerId))this.memory.ingest(scoped)
     const controller=new AbortController(),key='router:'+discussion
@@ -832,8 +837,8 @@ export class Runtime {
       }
       const modelInput=continuity?.input??packet?.input??JSON.stringify({...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),...(chatBinding&&!threadId?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{})})
       const result=await this.runModel({role:'router',...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text,
-        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
+        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
         onTool:async(name,args)=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -853,6 +858,10 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
+            if(name==='workspace_browser' && workspaceTool && browserRun && browserOwner){
+              const result = await this.browser.routerAction(browserOwner,browserRun.conversationId,triggerId,args,validateReplyContext)
+              return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+            }
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
               const result=await this.resources.read(args,{routerTriggerId:triggerId})
@@ -925,7 +934,7 @@ export class Runtime {
       candidates?.fail(error);this.chat.endOutput(job.id,controller.signal.aborted?'interrupted':'failed')
       if(error instanceof ContextBudgetExceeded||continuity?.reuse&&/thread[^\n]*not found|not found[^\n]*thread|unknown[^\n]*thread|conversation[^\n]*not found/i.test(String(error))){const saved=this.store.get<any>('router-session',sessionKey);if(saved)this.store.put('router-session',sessionKey,{...saved,signature:undefined,rebuildReason:error instanceof ContextBudgetExceeded?error.code:'native_session_unavailable'})}
       throw error
-    }finally{this.chat.endOutput(job.id);this.controllers.delete(key)}
+    }finally{this.browser.endRouterTurn(triggerId);this.chat.endOutput(job.id);this.controllers.delete(key)}
   }
   async scopeCommand(value:unknown):Promise<unknown>{
     if(['source.verify','identity.challenge','identity.link','identity.unlink'].includes((value as any)?.action))return new SourceIdentities(this.store,this.scopes,this.sources).command(value)

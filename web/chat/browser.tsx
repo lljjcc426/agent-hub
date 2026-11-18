@@ -317,7 +317,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
     setDialog(null);
   };
   const labelFor = (s: Session) =>
-    s.personal
+    s.workspace ? L('Workspace browser','工作区浏览器') : s.personal
       ? (data?.profiles.find((p) => p.id === s.profileId)?.name ??
         L("My browser", "我的浏览器"))
       : (data?.workers.find((w) => w.id === s.workerId)?.label ?? "Worker") +
@@ -388,7 +388,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
               onChange={(e) => setAddress(e.target.value)}
               disabled={!controlled || busy}
             />
-            <Button
+            {!session.workspace && <Button
               label={L("Close this browser", "关闭此浏览器")}
               onClick={() =>
                 void act(async () => {
@@ -405,7 +405,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
               }
             >
               <Power size={15} />
-            </Button>
+            </Button>}
           </form>
           <div
             className="browser-tabs"
@@ -468,9 +468,9 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
               {data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               {data?.profiles.filter(p=>!data.sessions.some(s=>s.personal&&s.profileId===p.id)).map(p=><option key={p.id} value={'profile:'+p.id}>{p.name}</option>)}
             </select>
-            <Button label={L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
+            <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
             <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
-            <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>
+            {!session.workspace && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
             {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<details className="browser-logins"><summary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></summary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></details>:null}
             <span>
               {busy ? (
@@ -484,7 +484,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
               )}{" "}
               {session.controlledByYou
                 ? L("You have control", "由你控制")
-                : session.control === "worker"
+                : session.control === "router" ? L("Router has control","由 Router 控制") : session.control === "worker"
                   ? L("Worker has control", "由 Worker 控制")
                   : session.control === "handoff"
                     ? L("Handing over…", "正在交接…")
@@ -509,7 +509,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
                 }
               >
                 <Play size={14} />
-                {session.personal || session.ended
+                {session.workspace ? L("Return to Router","交还 Router") : session.personal || session.ended
                   ? L("Release control", "结束操作")
                   : L("Continue task", "继续任务")}
               </button>
@@ -546,7 +546,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
             onClick={()=>void openDefault()}
           >
             <Plus size={16} />
-            {L("Open browser", "打开浏览器")}
+            {data?.workspace ? L("Open workspace browser","打开工作区浏览器") : L("Open browser", "打开浏览器")}
           </button>
           {!data && <LoaderCircle size={18} className="spin" />}
         </div>

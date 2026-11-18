@@ -21,6 +21,7 @@ import {
 export interface DriverSession {
   id: string;
   directory: string;
+  cdpPort?: number;
 }
 export interface BrowserDriver {
   version(): Promise<string>;
@@ -191,11 +192,10 @@ export class AgentBrowserDriver implements BrowserDriver {
         this.configFile,
         "--session",
         "roppo-" + s.id,
-        "--profile",
-        s.directory,
-        "--download-path",
-        join(s.directory,"downloads"),
-        ...(this.executable ? ["--executable-path", this.executable] : []),
+        ...(s.cdpPort ? ["--cdp", String(s.cdpPort)] : [
+          "--profile", s.directory, "--download-path", join(s.directory,"downloads"),
+          ...(this.executable ? ["--executable-path", this.executable] : []),
+        ]),
         "--json",
         ...args,
       ],
@@ -337,6 +337,6 @@ export class AgentBrowserDriver implements BrowserDriver {
   }
   async close(s: DriverSession) {
     this.streams.get(s.id)?.terminate();this.streams.delete(s.id);
-    await this.run(s, ["close"]);
+    if (!s.cdpPort) await this.run(s, ["close"]);
   }
 }

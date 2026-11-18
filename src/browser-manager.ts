@@ -18,6 +18,7 @@ import { BrowserVault } from "./browser-vault.ts";
 import {
   BrowserError,
   browserAction,
+  workspaceAction,
   browserUrl,
   type BrowserProfile,
   type BrowserAction,
@@ -25,7 +26,7 @@ import {
   type BrowserFrame,
 } from "./browser-contract.ts";
 
-type Control = "worker" | "human" | "paused" | "handoff" | "ended";
+type Control = "worker" | "router" | "human" | "paused" | "handoff" | "ended";
 interface Session extends DriverSession {
   user: string;
   profileId?: string;
@@ -41,6 +42,8 @@ interface Session extends DriverSession {
   ended: boolean;
   maxTabs: number;
   handoffReason?: string;
+  routerTurn?: string;
+  routerConversation?: string;
   closing: boolean;
   tabs: { id: string; index: number; url: string; title: string; active?: boolean }[];
   url: string;
@@ -57,6 +60,7 @@ interface Session extends DriverSession {
   closePromise?: Promise<void>;
   secrets: Set<string>;
 }
+interface WorkspaceBinding { id: string; paused: boolean; resume?: {conversation: string; message: string; turn: string} }
 interface Receipt {
   fingerprint: string;
   state: "running" | "complete" | "uncertain";
@@ -127,7 +131,7 @@ export class BrowserManager {
     this.recovery = Promise.allSettled(
       abandoned.map(async (row) => {
         await this.driver.close(row);
-        if (!row.personal)
+        if (!row.personal && !row.cdpPort)
           rmSync(row.directory, { recursive: true, force: true });
         host.store.put("browser-session", row.id, {
           ...row,
@@ -155,7 +159,7 @@ export class BrowserManager {
         }
         if (
           Date.now() - s.updatedAt > host.config.browser.idleMs &&
-          s.control !== "human"
+          !s.cdpPort && s.control !== "human"
         )
           void this.closeSession(s).catch(() => {});
       }
@@ -269,6 +273,7 @@ export class BrowserManager {
       id: s.id,
       profileId: s.profileId,
       personal: s.personal,
+      workspace: !!s.cdpPort,
       workerId: s.workerId,
       conversationId: s.conversationId,
       control: s.control,
@@ -298,11 +303,12 @@ export class BrowserManager {
     return {
       enabled: this.host.config.browser.enabled,
       profiles,
+      workspace: this.workspaceEnabled(user),
       credentials: this.getVault().list(user),
       sessions: [...this.sessions.values()]
         .filter(
           (s) =>
-            s.ready && !s.closing && (s.user === user || s.user === "host") && (!conversationId || s.conversationId === conversationId),
+            s.ready && !s.closing && (s.user === user || s.user === "host") && (!conversationId || !!s.cdpPort || s.conversationId === conversationId),
         )
         .map((s) => this.view(s, client)),
       workers: workerProfiles(this.host.config).map((w) => ({
@@ -314,8 +320,8 @@ export class BrowserManager {
   }
   conversation(user: string, conversationId: string) {
     return [...this.sessions.values()]
-      .filter(s => s.ready && !s.closing && s.user === user && s.conversationId === conversationId && !s.personal)
-      .map(s => ({...this.view(s), runId: this.host.taskAuthority(s.owner!.ticketId)?.parentTrigger}));
+      .filter(s => s.ready && !s.closing && s.user === user && s.conversationId === conversationId && (s.cdpPort || !s.personal))
+      .map(s => ({...this.view(s), runId: s.owner ? this.host.taskAuthority(s.owner.ticketId)?.parentTrigger : s.routerTurn}));
   }
   waiting(ticketId: string, assignmentId: string) {
     return [...this.sessions.values()].find(s => !s.ended && !s.closing && s.owner?.ticketId === ticketId && s.owner.assignmentId === assignmentId && s.control !== 'worker');
@@ -406,6 +412,7 @@ export class BrowserManager {
     profileId?: string,
     owner?: WorkOwner,
     url = "about:blank",
+    workspace?: WorkspaceBinding,
   ) {
     this.enabled();
     browserUrl.parse(url);
@@ -426,10 +433,10 @@ export class BrowserManager {
     const p = profileId
       ? this.authorizeProfile(profileId, user, principal?.workerId)
       : undefined;
-    const id = randomUUID(),
+    const id = workspace?.id ?? randomUUID(),
       directory = join(
         this.root,
-        personal ? "profiles" : "tasks",
+        workspace ? "workspace" : personal ? "profiles" : "tasks",
         personal && p ? p.id : id,
       );
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -445,7 +452,8 @@ export class BrowserManager {
       owner,
       workerId: principal?.workerId,
       conversationId: principal?.conversationId,
-      control: personal ? "paused" : "worker",
+      cdpPort: workspace ? this.host.config.browser.workspace!.cdpPort : undefined,
+      control: workspace ? workspace.paused ? "paused" : "router" : personal ? "paused" : "worker",
       epoch: 0,
       revision: 0,
       leaseUntil: 0,
@@ -466,12 +474,19 @@ export class BrowserManager {
     this.host.store.put("browser-session", id, {
       id,
       directory,
+      cdpPort: s.cdpPort,
       personal,
       profileId,
       user,
       active: true,
     });
     s.initialization = (async () => {
+      if (workspace) {
+        await this.capture(s, s.controller.signal);
+        s.conversationId = workspace.resume?.conversation;
+        s.ready = true;
+        return;
+      }
       // Reap only our previous daemon for this exact personal profile before reopening it.
       if (personal && p)
         for (const old of this.host.store
@@ -570,7 +585,75 @@ export class BrowserManager {
     if (s.control === "paused") await this.takeover(user, s.id, client);
     return this.view(s, client);
   }
+  workspaceEnabled(user: string) {
+    return this.host.config.browser.enabled && this.host.config.browser.workspace?.owner === user;
+  }
+  private workspaceBinding(user: string): WorkspaceBinding {
+    const saved = this.host.store.get<WorkspaceBinding>("browser-workspace", user);
+    if (saved) return saved;
+    const binding = {id: randomUUID(), paused: false};
+    this.host.store.put("browser-workspace", user, binding);
+    return binding;
+  }
+  private workspaceSession(user: string): Promise<Session> {
+    this.enabled();
+    if (!this.workspaceEnabled(user)) throw new BrowserError("browser_owner", "Workspace browser unavailable.", 403);
+    const binding = this.workspaceBinding(user);
+    const pending = this.opening.get(binding.id);
+    if (pending) return pending;
+    const live = this.sessions.get(binding.id);
+    if (live?.ready && !live.closing) return Promise.resolve(live);
+    const opening = this.create(user, true, undefined, undefined, "about:blank", binding)
+      .finally(() => this.opening.delete(binding.id));
+    this.opening.set(binding.id, opening);
+    return opening;
+  }
+  private pauseWorkspace(s: Session) {
+    if (!s.cdpPort) return;
+    const binding = this.workspaceBinding(s.user);
+    binding.paused = true;
+    if (s.routerConversation && s.routerTurn && !binding.resume)
+      binding.resume = {conversation: s.routerConversation, message: randomUUID(), turn:s.routerTurn};
+    this.host.store.put("browser-workspace", s.user, binding);
+  }
+  endRouterTurn(turn: string) {
+    for (const s of this.sessions.values()) if (s.routerTurn === turn) {
+      s.routerTurn = undefined;
+      s.routerConversation = undefined;
+    }
+  }
+  async routerAction(user: string, conversation: string, turn: string, input: unknown, valid: () => void) {
+    const action = workspaceAction(input);
+    valid();
+    const s = await this.workspaceSession(user);
+    const epoch = s.epoch;
+    const guard = () => {
+      valid();
+      if (s.closing || s.control !== "router" || s.epoch !== epoch)
+        throw new BrowserError("browser_control_required", "The user has control. Wait for them to return the workspace browser.");
+      if (s.routerTurn && s.routerTurn !== turn)
+        throw new BrowserError("browser_control_busy", "Another Router turn is using this browser.");
+    };
+    return this.enqueue(s, async () => {
+      guard();
+      s.routerTurn = turn;
+      s.routerConversation = conversation;
+      s.conversationId = conversation;
+      if (action.action === "request_takeover") this.pauseWorkspace(s);
+      await this.perform(s, action, guard);
+      if (action.action === "request_takeover") return this.view(s);
+      guard();
+      const page = await this.snapshot(s);
+      guard();
+      return page;
+    });
+  }
   async openDefault(user:string,client:string,conversationId:string) {
+    if (this.workspaceEnabled(user)) {
+      const s = await this.workspaceSession(user);
+      return s.control === "paused" || s.control === "router"
+        ? this.takeover(user, s.id, client) : this.view(s, client);
+    }
     const existing=this.host.store.list<BrowserProfile>('browser-profile').find(p=>p.owner===user);
     const profile=existing??this.saveProfile(user,{name:'Browser',allowedWorkers:[]});
     return this.openPersonal(user,profile.id,client,conversationId);
@@ -589,6 +672,7 @@ export class BrowserManager {
         "browser_control_busy",
         "This browser is controlled in another window.",
       );
+    this.pauseWorkspace(s);
     s.control = "handoff";
     s.epoch++;
     const epoch = s.epoch;
@@ -631,9 +715,28 @@ export class BrowserManager {
     s.control = "handoff";
     s.epoch++;
     await this.enqueue(s, async () => {
+      try {
+        if (s.cdpPort) this.host.store.atomic(() => {
+          const binding = this.workspaceBinding(user);
+          const pending = binding.resume;
+          if (pending && !this.host.store.get<{cancelRequested?:boolean}>("chat-run",pending.turn)?.cancelRequested) {
+            const locale = this.host.chat.locale(pending.turn);
+            this.host.chat.send(pending.conversation, user, {
+              clientMessageId: pending.message, locale,
+              text: locale?.startsWith("en") ? "I returned the workspace browser. Inspect the current tab and continue our browser task."
+                : "已交还工作区浏览器。请重新读取当前标签页，继续刚才的浏览器任务。",
+            });
+          }
+          this.host.store.put("browser-workspace", user, {id:s.id, paused:false});
+        });
+      } catch (error) {
+        s.control = "human";
+        s.epoch = epoch;
+        throw error;
+      }
       s.client = undefined;
       s.revision++;
-      s.control = s.personal ? "paused" : s.ended ? "ended" : "worker";
+      s.control = s.cdpPort ? "router" : s.personal ? "paused" : s.ended ? "ended" : "worker";
       s.handoffReason = undefined;
       s.updatedAt = Date.now();
     });
@@ -782,6 +885,8 @@ export class BrowserManager {
         "browser_stale_snapshot",
         "The page or control changed. Read a fresh snapshot.",
       );
+    if (s.cdpPort && input.action === "close_tab" && s.tabs.length <= 1)
+      throw new BrowserError("browser_tab_limit","The workspace browser keeps one tab open.");
     if (input.action === "new_tab" && s.tabs.length >= s.maxTabs)
       throw new BrowserError(
         "browser_tab_limit",
@@ -835,6 +940,10 @@ export class BrowserManager {
         forward: ["forward"],
         reload: ["reload"],
       };
+      if (s.cdpPort && input.action === "click") {
+        await this.driver.run(s, ["scrollintoview", input.ref!], signal);
+        guard();
+      }
       if (input.action !== "snapshot")
         await this.driver.run(s, actions[input.action]!, signal);
     }
@@ -1034,6 +1143,7 @@ export class BrowserManager {
   }
   async closeOwned(user: string, id: string, client: string, epoch: number) {
     const s = this.session(id, user);
+    if (s.cdpPort) throw new BrowserError("browser_control_required","The workspace browser stays open.");
     if (s.control === "human") this.human(s, client, epoch);
     else if (s.control === "handoff")
       throw new BrowserError(

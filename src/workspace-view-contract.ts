@@ -13,7 +13,7 @@ export interface ViewSnapshot {
   counts:Record<TaskState,number>;
   tasks:{items:ViewTask[];total:number;offset:number;limit:number;more:boolean};
   attention:{items:ViewTask[];total:number};
-  browsers:{total:number;items:{id:string;workerId?:string;control:'worker'|'human'|'paused'|'handoff'|'ended'}[]};
+  browsers:{total:number;items:{id:string;workerId?:string;control:'worker'|'router'|'human'|'paused'|'handoff'|'ended'}[]};
   calls:{items:ViewCall[];totalRetained:number;limit:number};
   listening:{limit:number;admissions:{id:string;sourceId:string;at:string;state:string;basis:'explicit'|'inferred'|'none'}[];batches:{id:string;messages:number;phase:string}[]};
   decision:{mode:'off'|'shadow'|'advisory';scope:'workspace';retained:number;probesExcluded:number;inputTokens:number|null;outputTokens:number|null;inputReported:number;outputReported:number;records:{id:string;at:number;mode:string;model:string;status:string;latencyMs:number;actions:string[]}[]};

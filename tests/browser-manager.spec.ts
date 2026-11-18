@@ -1016,3 +1016,27 @@ it('serves screenshot previews only to the owning Chat',async()=>{
  host.store.put('chat-conversation',c.id,{...host.store.get<any>('chat-conversation',c.id),owner:'someone-else'});
  expect((await fetch(url,{headers})).status).toBe(404);
 });
+
+it("attaches Router and account to one persistent browser, fencing the active controller", async () => {
+  const {host, driver, config} = await fixture();
+  const user = randomUUID(), client = randomUUID(), conversation = randomUUID();
+  config.browser.workspace = {owner:user, cdpPort:9222};
+  const action = (turn:string, input:unknown) => host.browser.routerAction(user,conversation,turn,input,()=>{});
+  const first = await action("turn-a",{action:"snapshot"});
+  const opened = driver.calls.filter(c=>c.id===first.id && c.args[0]==="open");
+  expect(opened).toHaveLength(0);
+  expect(first.workspace).toBe(true);
+  await expect(action("turn-b",{action:"snapshot"})).rejects.toMatchObject({code:"browser_control_busy"});
+  host.browser.endRouterTurn("turn-a");
+  const human = await host.browser.openDefault(user,client,conversation);
+  expect(human).toMatchObject({id:first.id,controlledByYou:true});
+  await expect(action("turn-b",{action:"snapshot"})).rejects.toMatchObject({code:"browser_control_required"});
+  expect(host.browser.list(randomUUID()).sessions.some(s=>s.id===first.id)).toBe(false);
+  await host.browser.action(user,first.id,client,human.epoch,{action:"navigate",url:"https://example.com/"});
+  await host.browser.release(user,first.id,client,human.epoch);
+  const current = await action("turn-b",{action:"snapshot"});
+  expect(current).toMatchObject({id:first.id,url:"https://example.com/",control:"router"});
+  await expect(action("turn-b",{action:"click",ref:"@e1",revision:first.revision})).rejects.toMatchObject({code:"browser_stale_snapshot"});
+  await action("turn-b",{action:"click",ref:"@e1",revision:current.revision});
+  expect(driver.calls.some(c=>c.id===first.id&&c.args[0]==="scrollintoview")).toBe(true);
+});

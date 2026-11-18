@@ -67,3 +67,16 @@ Current acceptance covers macOS with local Chrome. Linux/Windows, arbitrary exte
 Workers can export a PNG using `screenshot`, with optional `fullPage`. The tool records a task-owned attachment, hash and, for writable workspaces, `workspacePath`. Images up to 8 MB are returned visually to the model and can be read through `superagent_read asset/<id>`. Chat displays a downloadable thumbnail. Screenshot attachments survive browser closure and follow task-history cleanup.
 
 Human input uses agent-browser's existing WebSocket input protocol instead of starting a CLI and querying tabs for each click or scroll. Pointer moves and wheel events are coalesced. The latest JPEG is checked every 33 ms; this is a delivery ceiling, not a measured frame-rate guarantee. See [upstream Streaming](https://agent-browser.dev/streaming).
+
+### Persistent workspace browser
+
+For an account with a dedicated external Chromium, the host configuration can set
+`browser.workspace` to an object containing the account's `owner` UUID and a
+loopback `cdpPort`. The external service owns the browser profile and must keep
+it on persistent storage. Restrict its debugging endpoint to the local host.
+The built-in Chat opens that browser for the account and exposes
+`workspace_browser` to its Router. Taking control suspends Router input.
+Returning control after a requested takeover continues the original conversation
+in the same tab. An AgentHub restart reconnects to the external browser.
+Before stopping the external service, close Chromium gracefully so it can flush
+recent login data. Sites determine the lifetime of their sessions.

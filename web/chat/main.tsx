@@ -433,6 +433,7 @@ function ToolCalls({
     superagent_tools: L("Inspect tools", "查看工具"),
   };
   Object.assign(names, {
+    workspace_browser: L("Workspace browser", "工作区浏览器"),
     superagent_browser: L("Use browser", "\u64cd\u4f5c\u6d4f\u89c8\u5668"),
     "browser:profiles": L(
       "Read browser profiles",
@@ -1516,7 +1517,7 @@ function Chat(p: ChatProps) {
                       components={{ UserMessage, AssistantMessage }}
                     />
                     {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
-                      <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):b.control==='worker'?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
+                      <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                       <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                     </div>)}
                     {run && !readonly ? (
@@ -1618,7 +1619,7 @@ function Chat(p: ChatProps) {
                   {panel === "files" ? (
                     <FilesPanel conversationId={id} L={L} />
                   ) : panel === "browser" && id && !configuring ? (
-                    <BrowserPanel L={L} conversationId={id} requestedSession={browserRequest} requestedUrl={pendingWebsite} onUrlConsumed={consumeWebsite} />
+                    <BrowserPanel key={id} L={L} conversationId={id} requestedSession={browserRequest} requestedUrl={pendingWebsite} onUrlConsumed={consumeWebsite} />
                   ) : panel === "activity" ? (
                     <TeamPanel workers={workers}
                       calls={snapshot?.calls?.filter((c) => c.runId === run?.id) ?? []}

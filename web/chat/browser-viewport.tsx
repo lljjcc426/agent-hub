@@ -15,7 +15,6 @@ type Props = {
   controlled: boolean;
   accepting: boolean;
   input: (event: BrowserInput) => Promise<unknown>;
-  resize: (width: number, height: number) => Promise<unknown>;
   selection: () => Promise<{ text: string }>;
   drainRef: { current: () => Promise<unknown> };
   onConnected: (connected: boolean) => void;
@@ -28,7 +27,6 @@ export function BrowserViewport({
   controlled,
   accepting,
   input,
-  resize,
   selection,
   drainRef,
   onConnected,
@@ -49,8 +47,8 @@ export function BrowserViewport({
   const composing = useRef(false),
     pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [queue] = useState(() => new BrowserInputQueue());
-  const callbacks = useRef({ input, resize, selection, onConnected, onError });
-  callbacks.current = { input, resize, selection, onConnected, onError };
+  const callbacks = useRef({ input, selection, onConnected, onError });
+  callbacks.current = { input, selection, onConnected, onError };
   const [state, setState] = useState<
       "connecting" | "connected" | "disconnected"
     >("connecting"),
@@ -90,29 +88,6 @@ export function BrowserViewport({
     source.onerror = disconnected;
     return () => source.close();
   }, [id, attempt]);
-  useEffect(() => {
-    if (!controlled || state !== "connected" || !viewport.current) return;
-    let timer: ReturnType<typeof setTimeout>,
-      last = "";
-    const observer = new ResizeObserver(([entry]) => {
-      const width = Math.max(320, Math.round(entry!.contentRect.width)),
-        height = Math.max(200, Math.round(entry!.contentRect.height)),
-        key = width + ":" + height;
-      clearTimeout(timer);
-      if (key !== last)
-        timer = setTimeout(() => {
-          last = key;
-          void callbacks.current
-            .resize(width, height)
-            .catch(callbacks.current.onError);
-        }, 180);
-    });
-    observer.observe(viewport.current);
-    return () => {
-      clearTimeout(timer);
-      observer.disconnect();
-    };
-  }, [controlled, state, id, epoch]);
   const report = (error: unknown) => {
     if (!(error instanceof DOMException && error.name === "AbortError"))
       callbacks.current.onError(error);
@@ -135,7 +110,8 @@ export function BrowserViewport({
       : null;
   };
   const mouse = (event: ReactPointerEvent, phase: "down" | "move" | "up") => {
-    if (!controlled) return;
+    if (!controlled || !accepting || state !== "connected") return;
+    if (phase === "up" && !event.currentTarget.hasPointerCapture(event.pointerId)) return;
     const p =
       point(event.clientX, event.clientY) ??
       (phase === "up" ? pointer.current : null);

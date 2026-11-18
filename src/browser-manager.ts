@@ -49,7 +49,7 @@ interface Session extends DriverSession {
   url: string;
   title: string;
   updatedAt: number;
-  watchers: number;
+  watchers: Set<() => void>;
   ready: boolean;
   initialization?: Promise<void>;
   queue: Promise<unknown>;
@@ -428,7 +428,7 @@ export class BrowserManager {
     this.enabled();
     if (this.sessions.size >= this.host.config.browser.maxSessions) {
       const retained = [...this.sessions.values()]
-        .filter(s => s.ended && !s.watchers && s.control === 'ended' && !s.closing)
+        .filter(s => s.ended && !s.watchers.size && s.control === 'ended' && !s.closing)
         .sort((a, b) => a.updatedAt - b.updatedAt)[0];
       if (retained) await this.closeSession(retained);
     }
@@ -472,7 +472,7 @@ export class BrowserManager {
       url: "about:blank",
       title: "",
       updatedAt: Date.now(),
-      watchers: 0,
+      watchers: new Set(),
       ready: false,
       queue: Promise.resolve(),
       controller: new AbortController(),
@@ -582,7 +582,9 @@ export class BrowserManager {
     return promise;
   }
   private receiveFrame(s: Session, frame: BrowserFrame) {
-    if (!s.closing) s.frame = { ...frame, seq: (s.frame?.seq ?? 0) + 1 };
+    if (s.closing) return;
+    s.frame = { ...frame, seq: (s.frame?.seq ?? 0) + 1 };
+    for (const notify of s.watchers) notify();
   }
   async openPersonal(user: string, profileId: string, client: string, conversationId?: string) {
     const s = await this.openPersonalSession(user, profileId);
@@ -766,22 +768,23 @@ export class BrowserManager {
     });
     return this.view(s, client);
   }
-  async subscribe(user: string, id: string) {
+  async subscribe(user: string, id: string, onFrame?: () => void) {
     await this.restoreWorkspace(user, id);
     const s = this.session(id, user);
-    s.watchers++;
+    const notify = () => onFrame?.();
+    s.watchers.add(notify);
     try {
       await this.enqueue(s, () => this.ensureFrames(s));
     } catch (error) {
-      s.watchers--;
+      s.watchers.delete(notify);
       throw error;
     }
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      s.watchers--;
-      if (!s.watchers) {
+      s.watchers.delete(notify);
+      if (!s.watchers.size) {
         s.stopFrames?.();
         s.stopFrames = undefined;
         s.streaming = false;
@@ -789,7 +792,7 @@ export class BrowserManager {
     };
   }
   private async ensureFrames(s: Session) {
-    if (s.closing || !s.watchers || s.streaming) return;
+    if (s.closing || !s.watchers.size || s.streaming) return;
     s.stopFrames?.();
     s.stopFrames = await this.driver.frames(
       s,
@@ -798,7 +801,7 @@ export class BrowserManager {
         s.streaming = connected;
       },
     );
-    if (s.closing || !s.watchers) {
+    if (s.closing || !s.watchers.size) {
       s.stopFrames();
       s.streaming = false;
     }

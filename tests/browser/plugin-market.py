@@ -1,5 +1,5 @@
 """Real host UI acceptance. GitHub transport and connector are explicitly isolated fixtures."""
-import json, sys
+import json, re, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -16,14 +16,27 @@ with sync_playwright() as p:
         page.screenshot(path=str(out/'market-light.png'))
         page.get_by_role('button',name='Switch to dark mode',exact=True).click();page.wait_for_timeout(220)
         page.screenshot(path=str(out/'market-dark.png'))
-        search=page.get_by_role('textbox',name='Search plugins');search.fill('NO_SUCH_PLUGIN')
+        search=page.get_by_role('textbox',name='Search marketplace');search.fill('NO_SUCH_PLUGIN')
         expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible();expect(search).to_be_focused();search.fill('')
-        page.get_by_role('combobox',name='Plugin category').select_option('workspace-view')
+        types=page.get_by_role('navigation',name='Content type',exact=True)
+        types.get_by_role('button',name=re.compile(r'^Plugins \d+$')).click()
         expect(page.locator('.market-card')).to_have_count(2)
-        page.get_by_role('combobox',name='Plugin category').select_option('all')
-        checks.append('shared shell, white/dark themes, search empty state and category filter')
+        types.get_by_role('button',name=re.compile(r'^App connections \d+$')).click()
+        expect(page.get_by_role('heading',name='Agent board',exact=True)).to_have_count(0)
+        expect(page.get_by_role('heading',name='Test connector',exact=True)).to_be_visible()
+        search.fill('Agent board');expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible()
+        types.get_by_role('button',name=re.compile(r'^All \d+$')).click()
+        expect(page.locator('.market-card')).to_have_count(2);expect(search).to_have_value('Agent board');search.fill('')
+        types.get_by_role('button',name='Skills 0',exact=True).click()
+        expect(page.get_by_role('heading',name='No skill catalog entries',exact=True)).to_be_visible()
+        expect(page.get_by_role('link',name='Manage team skills',exact=True)).to_have_attribute('href','/configure#prompts/templates')
+        types.get_by_role('button',name='MCP 0',exact=True).click()
+        expect(page.get_by_role('heading',name='No MCP catalog entries',exact=True)).to_be_visible()
+        expect(page.get_by_role('link',name='Manage MCP connections',exact=True)).to_have_attribute('href','/configure#integrations/tools')
+        types.get_by_role('button',name=re.compile(r'^All \d+$')).click()
+        checks.append('shared shell, themes, combined search/category filters, and skill/MCP empty states with management links')
 
-        card=page.locator('.market-card').filter(has_text='Roppo acceptance').filter(has=page.get_by_role('heading',name='Agent board',exact=True))
+        card=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Agent board',exact=True)).filter(has=page.get_by_role('button',name='Install',exact=True))
         button=card.get_by_role('button',name='Agent board',exact=True);button.click()
         drawer=page.get_by_role('dialog');expect(drawer).to_be_visible()
         drawer.get_by_role('combobox',name='Version',exact=True).select_option('1.0.0')
@@ -42,7 +55,7 @@ with sync_playwright() as p:
         assert page.url.endswith('#plugin/agent-board')
         page.locator('iframe[title="Agent board"]').screenshot(path=str(out/'board-preview.png'))
         page.goto(info['url']);page.wait_for_load_state('networkidle')
-        unpublished=page.locator('.market-card').filter(has_text='pythc').filter(has=page.get_by_role('heading',name='Agent board',exact=True))
+        unpublished=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Agent board',exact=True)).filter(has=page.get_by_role('button',name='View details',exact=True))
         unpublished.get_by_role('button',name='Agent board',exact=True).click();drawer=page.get_by_role('dialog')
         expect(drawer).to_contain_text('No installation package has been published yet.')
         expect(drawer.get_by_role('link',name='Open',exact=True)).to_have_count(0)
@@ -104,6 +117,20 @@ with sync_playwright() as p:
 
         page.get_by_role('link',name='Tool connections',exact=True).click()
         expect(page.locator('.management-content')).to_be_visible();expect(page.get_by_role('navigation',name='Plugin sections')).to_be_visible()
+        expect(page.get_by_role('heading',name='WeCom',exact=True)).to_be_visible()
+        expect(page.get_by_role('heading',name='Lark',exact=True)).to_be_visible()
+        for language in ('en','zh'):
+            page.wait_for_function("""() => {
+                const heading = document.querySelector('.market-heading')?.getBoundingClientRect();
+                const content = document.querySelector('.integrations-page')?.getBoundingClientRect();
+                return heading && content && heading.width > 0 &&
+                    Math.abs(heading.x - content.x) < 1 && Math.abs(heading.width - content.width) < 1;
+            }""", timeout=5000)
+            page.get_by_role('button',name='Switch to Chinese' if language=='en' else '切换为英文',exact=True).click()
+            if language=='en':
+                expect(page.get_by_role('heading',name='企业微信',exact=True)).to_be_visible()
+                expect(page.get_by_role('heading',name='Feishu/飞书',exact=True)).to_be_visible()
+        checks.append('Tool connections share marketplace content bounds and localize built-in adapter names')
         page.get_by_role('link',name='Marketplace',exact=True).click()
         page.get_by_role('button',name='Manage sources',exact=True).click();drawer=page.get_by_role('dialog')
         drawer.get_by_label('GitHub repository or directory',exact=True).fill('https://github.com/acme/missing')

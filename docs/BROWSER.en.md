@@ -66,7 +66,7 @@ Current acceptance covers macOS with local Chrome. Linux/Windows, arbitrary exte
 
 Workers can export a PNG using `screenshot`, with optional `fullPage`. The tool records a task-owned attachment, hash and, for writable workspaces, `workspacePath`. Images up to 8 MB are returned visually to the model and can be read through `superagent_read asset/<id>`. Chat displays a downloadable thumbnail. Screenshot attachments survive browser closure and follow task-history cleanup.
 
-Human input uses agent-browser's existing WebSocket input protocol instead of starting a CLI and querying tabs for each click or scroll. Pointer moves and wheel events are coalesced. The latest JPEG is checked every 33 ms; this is a delivery ceiling, not a measured frame-rate guarantee. See [upstream Streaming](https://agent-browser.dev/streaming).
+Human input uses agent-browser's existing WebSocket input protocol instead of starting a CLI and querying tabs for each click or scroll. Pointer moves and wheel events are coalesced. Chat receives each new frame as it arrives. If the client falls behind, the host resumes with the latest frame. The preview fits within the sidebar at its original aspect ratio and never enlarges the image. Taking control leaves the remote viewport size intact. See [upstream Streaming](https://agent-browser.dev/streaming).
 
 ### Persistent workspace browser
 
@@ -80,3 +80,5 @@ Returning control after a requested takeover continues the original conversation
 in the same tab. An AgentHub restart reconnects to the external browser.
 Before stopping the external service, close Chromium gracefully so it can flush
 recent login data. Sites determine the lifetime of their sessions.
+
+For LinuxServer Chromium on the local Colima deployment, set `PIXELFLUX_WAYLAND=false` when creating the container. This selects X11/Xvfb. In a local comparison with the Selkies viewer disconnected, it reduced click-to-preview latency. Reuse the persistent `/config` volume and stop Chromium gracefully before switching the container.

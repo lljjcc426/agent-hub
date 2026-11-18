@@ -113,12 +113,33 @@ export async function browserRequest(
       return;
     }
     if (action === "stream" && req.method === "GET") {
-      const unsubscribe = await manager.subscribe(user, id);
+      let seq = 0;
+      const push = (status = false) => {
+        if (!res.headersSent || res.destroyed || res.writableEnded) return;
+        if (!stillAuthorized()) {
+          res.end();
+          return;
+        }
+        // Slow clients resume at the latest frame on drain, without queueing old JPEGs.
+        if (res.writableNeedDrain) return;
+        try {
+          const frame = manager.frame(user, id);
+          if (frame && frame.seq !== seq) {
+            seq = frame.seq;
+            if (!res.write("event: frame\ndata: " + JSON.stringify(frame) + "\n\n")) return;
+          }
+          if (status) res.write("event: status\ndata: " +
+            JSON.stringify({connected: manager.streamStatus(user, id)}) + "\n\n");
+        } catch {
+          res.end("event: closed\ndata: {}\n\n");
+        }
+      };
+      const nextFrame = () => push();
+      const unsubscribe = await manager.subscribe(user, id, nextFrame);
       if (res.destroyed) {
         unsubscribe();
         return;
       }
-      res.on("close", unsubscribe);
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -126,35 +147,15 @@ export async function browserRequest(
         "x-accel-buffering": "no",
       });
       res.flushHeaders();
-      let seq = 0,
-        ticks = 0;
-      const push = () => {
-        if (res.destroyed || res.writableEnded) return;
-        if (!stillAuthorized() || res.writableLength > 2_000_000) {
-          res.end();
-          return;
-        }
-        try {
-          const frame = manager.frame(user, id);
-          if (frame && frame.seq !== seq) {
-            seq = frame.seq;
-            res.write("event: frame\ndata: " + JSON.stringify(frame) + "\n\n");
-          }
-          if (ticks++ % 20 === 0)
-            res.write(
-              "event: status\ndata: " +
-                JSON.stringify({ connected: manager.streamStatus(user, id) }) +
-                "\n\n",
-            );
-        } catch {
-          res.write("event: closed\ndata: {}\n\n");
-          res.end();
-        }
-      };
-      const timer = setInterval(push, 33);
-      timer.unref();
-      res.on("close", () => clearInterval(timer));
-      push();
+      const heartbeat = setInterval(() => push(true), 660);
+      heartbeat.unref();
+      res.on("drain", nextFrame);
+      res.once("close", () => {
+        clearInterval(heartbeat);
+        res.off("drain", nextFrame);
+        unsubscribe();
+      });
+      push(true);
       return;
     }
     if (req.method === "POST") {

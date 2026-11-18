@@ -747,8 +747,12 @@ it("streams only while watched and reconnects with monotonically increasing fram
   const { host, owner } = await fixture(),
     s = await open(host, owner);
   expect(host.browser.streamStatus("alice", s.id)).toBe(false);
-  const stop = await host.browser.subscribe("alice", s.id),
-    first = host.browser.frame("alice", s.id)!.seq;
+  const received: number[] = [];
+  const stop = await host.browser.subscribe("alice", s.id, () => {
+    received.push(host.browser.frame("alice", s.id)!.seq);
+  });
+  const first = host.browser.frame("alice", s.id)!.seq;
+  expect(received).toEqual([first]);
   const secondWatcher = await host.browser.subscribe("alice", s.id);
   stop();
   expect(host.browser.streamStatus("alice", s.id)).toBe(true);
@@ -756,6 +760,7 @@ it("streams only while watched and reconnects with monotonically increasing fram
   expect(host.browser.streamStatus("alice", s.id)).toBe(false);
   const resumed = await host.browser.subscribe("alice", s.id);
   expect(host.browser.frame("alice", s.id)!.seq).toBeGreaterThan(first);
+  expect(received).toEqual([first]);
   resumed();
 });
 it("records bounded browser action metadata without account arguments", async () => {

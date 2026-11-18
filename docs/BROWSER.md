@@ -66,4 +66,6 @@ Worker 可用 `superagent_browser` 的 `screenshot` 动作导出 PNG，默认当
 
 当前验收覆盖 macOS + 本机 Chrome。Linux/Windows、任意外部网站、Chrome 扩展、系统 Passkey 和复杂跨站登录流程未计入通过项。见[验收记录](BROWSER_ACCEPTANCE_2026-11-07.md)及[开源许可](THIRD_PARTY_BROWSER.md)。
 
-人工输入复用 agent-browser 的实时 WebSocket 输入协议，不再为每个点击或滚轮启动 CLI 和查询标签页；移动及滚轮事件在前端合并。画面按最新 JPEG 帧推送，检查间隔为 33 ms；这只是推送上限，不是已测得的帧率保证。见[上游 Streaming 文档](https://agent-browser.dev/streaming)。
+人工输入复用 agent-browser 的实时 WebSocket 输入协议，不再为每个点击或滚轮启动 CLI 和查询标签页；移动及滚轮事件在前端合并。新画面到达时立即推送。客户端跟不上时，恢复发送最新帧。侧栏按原比例缩小预览，最多显示到图像原尺寸。接管和展开侧栏都会保留远端网页原有的视口。见[上游 Streaming 文档](https://agent-browser.dev/streaming)。
+
+本地 Colima 部署使用 LinuxServer Chromium。创建容器时设置 `PIXELFLUX_WAYLAND=false` 可启用 X11/Xvfb。在 Selkies 查看器断开时的本地对照中，这一设置缩短了从点击到侧栏显示变化的时间。切换前让 Chromium 正常退出，新容器继续挂载原来的 `/config` 持久卷。

@@ -446,7 +446,6 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
             </Button>}
           </form>
           <BrowserViewport key={session.id} id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={!busy} input={input} drainRef={viewportDrain}
-            resize={(width,height)=>request('/sessions/'+session.id+'/viewport',{client,epoch:session.epoch,width,height})}
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
             onConnected={setConnected} onError={fail} L={L}/>
           <footer className="browser-control">

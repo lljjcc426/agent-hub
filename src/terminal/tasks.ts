@@ -1,0 +1,81 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { realpath } from 'node:fs/promises'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import type { Runtime } from '../runtime.ts'
+import type { CodeReceipt } from '../project-code.ts'
+import type { Run } from '../store.ts'
+import type { Approval } from '../approvals.ts'
+import { ChatError } from '../chat-errors.ts'
+
+const exec = promisify(execFile)
+export async function terminalTask(
+  host: Runtime,
+  owner: string,
+  input: {
+    conversation: string
+    ticket: string
+    action: 'diff' | 'stop' | 'approvals' | 'answer'
+    approval?: string
+    answer?: unknown
+  }
+) {
+  const { conversation, ticket } = input
+  const view = host.chat.view(conversation, owner)
+  if (!view.tasks.some((t) => t.id === ticket))
+    throw new ChatError('task_missing', 'Task not found in this conversation.', 404)
+  if (input.action === 'stop') {
+    await host.stop(ticket)
+    return { stopped: ticket }
+  }
+  const pending = host.store
+    .list<Approval>('approval')
+    .filter((a) => a.ticketId === ticket && a.status === 'pending' && a.expiresAt > Date.now())
+  if (input.action === 'approvals')
+    return {
+      pending: pending.map((a) => ({
+        id: a.id,
+        method: a.native.method,
+        params: a.native.params,
+        expiresAt: a.expiresAt
+      }))
+    }
+  if (input.action === 'answer') {
+    if (!input.approval || !pending.some((a) => a.id === input.approval))
+      throw new ChatError('approval_missing', 'No matching pending request.', 404)
+    host.approvals.answer(input.approval, input.answer)
+    return { answered: input.approval }
+  }
+  const receipt = host.store
+    .list<CodeReceipt>('project-commit')
+    .findLast((r) => r.ticketId === ticket && r.diff)
+  if (receipt)
+    return { diff: receipt.diff!.text, truncated: receipt.diff!.truncated, head: receipt.head }
+  const run = host.store.get<Run>('run', ticket)
+  const expected = join(
+    host.config.stateDir,
+    'work',
+    createHash('sha256').update(ticket).digest('hex').slice(0, 20)
+  )
+  if (
+    !run ||
+    !view.conversation.project ||
+    (await realpath(run.cwd).catch(() => null)) !== (await realpath(expected).catch(() => undefined))
+  )
+    throw new ChatError('diff_unavailable', 'No isolated Git changes are available for this task.', 404)
+  const git = async (cwd: string, args: string[]) =>
+    (
+      await exec('git', ['--no-pager', '-c', 'core.fsmonitor=false', '-C', cwd, ...args], {
+        timeout: 5000,
+        maxBuffer: 2_000_000
+      })
+    ).stdout
+  const head = (await git(view.conversation.project, ['rev-parse', 'HEAD'])).trim()
+  const base = (await git(run.cwd, ['merge-base', head, 'HEAD'])).trim()
+  const diff = await git(run.cwd, ['diff', '--no-ext-diff', '--no-textconv', base, '--'])
+  const untracked = (await git(run.cwd, ['ls-files', '--others', '--exclude-standard', '-z']))
+    .split('\0')
+    .filter(Boolean)
+  return { diff, untracked, base }
+}

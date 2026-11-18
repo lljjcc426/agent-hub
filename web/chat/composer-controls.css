@@ -1,0 +1,101 @@
+.composer-plus { flex: none; }
+.composer-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: 9px;
+  color: var(--c-muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: color .15s, background .15s;
+}
+.composer-choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-choice svg { flex: none; }
+.composer-model { max-width: 42%; }
+.composer-policy { flex: none; transition-property: background; }
+.composer-toolbar [data-menu-trigger]:is(:hover, [aria-expanded=true]) {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+.composer-toolbar .composer-policy[data-mode=full],
+.composer-palette [data-mode=full] { color: var(--status-danger); }
+.composer-toolbar .composer-policy[data-mode=full]:is(:hover, [aria-expanded=true]) { background: var(--status-danger-bg); color: var(--status-danger); }
+.composer-context { flex: none; color: var(--c-muted); }
+.usage-ring { display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 2.4; }
+.usage-track { opacity: .28; }
+.usage-track[stroke-dasharray] { opacity: .7; }
+.usage-fill { transition: stroke-dashoffset .26s ease-out; }
+.composer-palette {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--rp-line);
+  border-radius: 15px;
+  background: var(--rp-panel);
+  color: var(--rp-ink);
+  box-shadow: 0 8px 28px rgb(0 0 0 / .10), 0 2px 5px rgb(0 0 0 / .04);
+  font-size: 13px;
+  outline: none;
+}
+.composer-palette:popover-open { animation: palette-reveal .14s ease-out; }
+@keyframes palette-reveal { from { opacity: 0; } }
+.palette-page { animation: palette-page-in .15s cubic-bezier(.2,.8,.2,1); }
+@keyframes palette-page-in { from { opacity: .35; transform: translateX(4px); } }
+.composer-palette .palette-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.composer-palette .palette-row[data-mode=full] { color: var(--status-danger); }
+.palette-row span { flex: 1; min-width: 0; text-align: start; }
+.palette-row > svg { flex: none; }
+.palette-row small, .palette-trailing { color: var(--rp-muted); }
+.palette-row small { font-size: 11px; }
+.composer-palette .palette-row:is(:hover, :focus-visible, [aria-selected=true]) { background: var(--rp-soft); outline: 0; }
+.composer-palette .palette-row:disabled { opacity: .5; cursor: default; }
+.palette-heading { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; margin-bottom: 4px; }
+.palette-heading strong { font-weight: 600; }
+.palette-heading button {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  border: 0; border-radius: 8px; margin-inline-start: -4px; color: var(--rp-muted); background: transparent; cursor: pointer;
+}
+.palette-heading button:is(:hover, :focus-visible) { background: var(--rp-soft); color: var(--rp-ink); }
+.palette-context { display: flex; align-items: center; gap: 10px; padding: 6px 10px 13px; }
+.palette-context strong, .palette-context small { display: block; }
+.palette-context strong { font-weight: 550; }
+.palette-context small { color: var(--rp-muted); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.palette-details { border-top: 1px solid var(--rp-line); }
+.composer-palette [role=alert] { margin: 5px 9px; font-size: 12px; }
+@container chat-thread (max-width: 460px) {
+  .composer-choice { gap: 4px; padding-inline: 5px; }
+  .composer-model { flex-shrink: 1; }
+  .composer-choice > svg:last-child { display: none; }
+}
+@container chat-thread (max-width: 355px) {
+  .composer-policy:not([data-mode=full]) span { display: none; }
+  .composer-model { max-width: 38%; }
+}
+@media (pointer: coarse) {
+  .composer-choice, .composer-toolbar .icon-button { min-height: 36px; }
+  .composer-palette .palette-row { min-height: 42px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-palette:popover-open, .palette-page { animation: none; }
+  .composer-choice, .usage-fill { transition: none; }
+}

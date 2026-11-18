@@ -8,41 +8,48 @@ type Usage = ReturnType<ChatSessions['contextUsage']>
 type Localize = (en: string, zh: string) => string
 type LoadUsage = (id: string, signal: AbortSignal) => Promise<Usage>
 
-export function ContextCard({ conversationId, turnId, load, L, focusOnReveal, onClose }: {
-  conversationId: string | null
-  turnId?: string
-  load: LoadUsage
-  L: Localize
-  focusOnReveal: boolean
-  onClose: () => void
-}) {
-  const [snapshot, setSnapshot] = useState<{ turn: string; data?: Usage; failed?: boolean }>()
-  const current = snapshot?.turn === turnId ? snapshot : undefined
-  const usage = current?.data
-  const closeButton = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (focusOnReveal) closeButton.current?.focus({ preventScroll: true })
-  }, [focusOnReveal])
+export function useCurrentContext(conversationId: string | null, turnId: string | undefined,
+  model: string | undefined, backend: string | undefined, callId: string | undefined, watch: boolean, load: LoadUsage): CurrentContext {
+  const key = JSON.stringify([conversationId, turnId, backend, model, callId])
+  const [snapshot, setSnapshot] = useState<{ key: string; data?: Usage; failed?: boolean }>()
   useEffect(() => {
     if (!conversationId || !turnId) return
-    const id = conversationId, turn = turnId
+    const id = conversationId
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
     async function read() {
+      let refreshIn = watch ? 4000 : 0
       try {
         const data = await load(id, controller.signal)
-        if (!controller.signal.aborted) setSnapshot({ turn, data })
+        if (!controller.signal.aborted) setSnapshot({ key, data })
       } catch {
-        if (!controller.signal.aborted) setSnapshot(last => ({ turn, data: last?.turn === turn ? last.data : undefined, failed: true }))
+        if (!controller.signal.aborted) setSnapshot(last => ({ key, data: last?.key === key ? last.data : undefined, failed: true }))
+        refreshIn = 8000
       }
-      if (!controller.signal.aborted) timer = setTimeout(read, 4000)
+      if (refreshIn && !controller.signal.aborted) timer = setTimeout(read, refreshIn)
     }
     void read()
     return () => {
       controller.abort()
       clearTimeout(timer)
     }
-  }, [conversationId, turnId, load])
+  }, [key, conversationId, turnId, watch, load])
+  return !conversationId || !turnId ? {empty: true} : snapshot?.key === key ? snapshot : {}
+}
+
+export type CurrentContext = { data?: Usage; failed?: boolean; empty?: boolean }
+
+export function ContextCard({ current, L, focusOnReveal, onClose }: {
+  current: CurrentContext
+  L: Localize
+  focusOnReveal: boolean
+  onClose: () => void
+}) {
+  const usage = current.data
+  const closeButton = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (focusOnReveal) closeButton.current?.focus({ preventScroll: true })
+  }, [focusOnReveal])
   const modelWindow = L('Model window', '模型窗口')
   const hostBudget = L('Host context budget', '宿主上下文预算')
   const count = usage?.inputTokens
@@ -51,10 +58,10 @@ export function ContextCard({ conversationId, turnId, load, L, focusOnReveal, on
   const breakdown = L('Router input composition', 'Router 输入构成')
   const units = L('bytes','字节')
   let status = ''
-  if (current?.failed) status = usage
+  if (current.failed) status = usage
     ? L('Couldn’t refresh usage', '暂时无法刷新用量')
     : L('Usage unavailable', '暂时无法读取用量')
-  else if (!conversationId || !turnId || (usage && count == null && !budget && !composition)) status = L('No usage reported yet', '暂无用量记录')
+  else if (current.empty || (usage && count == null && !budget && !composition)) status = L('No usage reported yet', '暂无用量记录')
   else if (composition && count == null) status = L('Model token count not reported yet', '模型尚未上报 token 数')
   else if (!usage) status = L('Loading…', '读取中…')
 

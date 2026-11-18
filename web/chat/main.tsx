@@ -17,16 +17,13 @@ import {
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
-  useAui,
   useAuiState,
   useMessagePartText,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
 import {
-  ArrowUp,
   ArrowDown,
-  Users,
   ListChecks,
   UsersRound,
   FileText,
@@ -46,9 +43,8 @@ import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,groupWorkflow} from './workflow-cards.tsx';
-import {ComposerActions} from './composer-actions.tsx';
-import {CommandInput, type ChatCommand} from './composer-commands.tsx';
-import {ContextCard} from './context-card.tsx';
+import {ComposerControls} from './composer-actions.tsx';
+import {ContextCard, useCurrentContext} from './context-card.tsx';
 import {ToolTrace} from './tool-trace.tsx';
 import '../ui/theme.css';
 import '../ui/components.css';
@@ -234,13 +230,6 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     </div>
   );
 }
-function SendMessage({sending,consume}:{sending:boolean;consume:()=>boolean}){
-  const {L}=useUI(),aui=useAui();
-  const canSend=useAuiState(s=>!s.thread.isDisabled&&s.composer.canSend);
-  return <button type="button" className="send-button" disabled={!canSend} aria-label={L('Send message','发送消息')} onClick={()=>{if(!consume())aui.composer.send()}}>
-    {sending?<LoaderCircle size={18} className="spin"/>:<ArrowUp size={20}/>}
-  </button>;
-}
 function useArrival(id: string, createdAt: number) {
   const { arrivals } = useUI();
   const [fresh] = useState(() => createdAt >= arrivals.since && !arrivals.seen.has(id));
@@ -421,7 +410,7 @@ function App() {
   );
   const [id, setId] = useState<string | null>(null),
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
-    [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>("ask"),
+    [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>(),
     [ready, setReady] = useState<Ready | null>(null);
   const [navExpanded, setNavExpanded] = useState(read("roppo.navigation.expanded") !== "false");
   useEffect(() => write("roppo.navigation.expanded", String(navExpanded)), [navExpanded]);
@@ -434,6 +423,11 @@ function App() {
     [lang],
   );
   const spaceVersion=useRef(0);
+  const saveApprovalMode = async (mode: ChatSpace["approvalMode"]) => {
+    const saved = await spaceRequest({approvalMode: mode}, "PATCH");
+    spaceVersion.current++;
+    setApprovalMode(saved.approvalMode);
+  };
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && read("roppo.chat.reset") !== space.cleanup.id){clearChatDrafts();write("roppo.chat.reset",space.cleanup.id)}
@@ -504,27 +498,24 @@ function App() {
       window.removeEventListener("roppo:navigation", sync);
     };
   }, [id]);
+  const readinessVersion = useRef(0);
+  const refreshReady = useCallback(async () => {
+    const version = ++readinessVersion.current;
+    const next = await api<Ready>("/readiness");
+    if (version === readinessVersion.current) setReady(next);
+  }, []);
   useEffect(() => {
-    let alive = true;
-    api<Ready>("/readiness")
-      .then((r) => {
-        if (alive) setReady(r);
-      })
-      .catch(() => {});
-    refreshList().catch(() => {});
-    const timer = setInterval(() => {
-      api<Ready>("/readiness")
-        .then((r) => {
-          if (alive) setReady(r);
-        })
-        .catch(() => {});
+    const read = () => {
+      refreshReady().catch(() => {});
       refreshList().catch(() => {});
-    }, 10000);
+    };
+    read();
+    const timer = setInterval(read, 10000);
     return () => {
-      alive = false;
+      readinessVersion.current++;
       clearInterval(timer);
     };
-  }, [refreshList]);
+  }, [refreshList, refreshReady]);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     write("agenthub.configuration.theme", dark ? "dark" : "light");
@@ -559,7 +550,9 @@ function App() {
           display,
           setDisplay,
           approvalMode,
+          saveApprovalMode,
           ready,
+          refreshReady,
           lang,
           L,
           dark,
@@ -580,7 +573,8 @@ type ChatProps = {
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
-  approvalMode: ChatSpace["approvalMode"];
+  approvalMode?: ChatSpace["approvalMode"];
+  saveApprovalMode: (mode: ChatSpace["approvalMode"]) => Promise<void>;
   setDisplay: (value:ChatSpace["display"])=>void;
   route: string;
   id: string | null;
@@ -591,6 +585,7 @@ type ChatProps = {
   setDark: (v: boolean) => void;
   navigate: (id: string | null) => void;
   refreshList: () => Promise<void>;
+  refreshReady: () => Promise<void>;
   setLang: (v: Language) => void;
 };
 const emptySidebarCards: { items: "context"[]; revealing: boolean } = { items: [], revealing: false };
@@ -789,6 +784,9 @@ function Chat(p: ChatProps) {
       loadingAttachments ||
       attachmentBlocked ||
       sending;
+  const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
+  const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
+    routerCall?.id, running || (overview && sidebarCards.items.includes('context')), loadContext);
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
@@ -906,8 +904,6 @@ function Chat(p: ChatProps) {
   }, [id, refresh, refreshList]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
-  const composerAction=useRef<((action:ChatCommand)=>void)|null>(null);
-  const commandAction=useRef<(()=>boolean)|null>(null);
   const runtime = useExternalStoreRuntime({
     isRunning: !readonly && (!!reply || sending),
     isLoading: loading,
@@ -1119,16 +1115,20 @@ function Chat(p: ChatProps) {
     const items = sidebarCards.items.filter(item => item !== card);
     const revealing = sidebarCards.revealing && items.length > 0;
     setSidebarCards({items, revealing});
-    requestAnimationFrame(() => {
-      const target = panelOverlay
+    restorePanelFocus(() => panelOverlay
         ? bodyRef.current?.querySelector<HTMLElement>('#session-panel [role=tab][aria-selected=true]:not([tabindex="-1"])')
-        : threadRef.current?.querySelector<HTMLElement>('.composer-input');
-      target?.focus({preventScroll:true});
+        : threadRef.current?.querySelector<HTMLElement>('.composer-input'));
+  }
+  function restorePanelFocus(target: () => HTMLElement | null | undefined) {
+    const previous = document.activeElement;
+    requestAnimationFrame(() => {
+      if (document.activeElement === previous || document.activeElement === document.body)
+        target()?.focus({preventScroll: true});
     });
   }
   function closePanel() {
     void choosePanel(null);
-    requestAnimationFrame(() => (panelOpener.current?.isConnected ? panelOpener.current : teamButton.current)?.focus({preventScroll: true}));
+    restorePanelFocus(() => panelOpener.current?.isConnected ? panelOpener.current : teamButton.current);
   }
   const readAgent=(agentId:string)=>{selectAgent(agentId);void choosePanel(null);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
   const quoteMessage=(value:DraftQuote)=>{
@@ -1330,46 +1330,15 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <CommandInput visible={!configuring} L={L} onCommand={command=>composerAction.current?.(command)} consume={commandAction}
-                      className="composer-input"
-                      placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
-                      aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
-                      rows={1}
-                      maxLength={100000}
-                      submitMode="none"
-                      onKeyDown={event=>{
-                        if(event.key!=="Enter"||event.shiftKey||event.nativeEvent.isComposing||event.keyCode===229)return;
-                        event.preventDefault();
-                        if((sending||loading||loadingAttachments)&&event.currentTarget.value.trim()){
-                          queuedEnter.current=event.currentTarget.value;return;
-                        }
+                    <ComposerControls visible={!configuring} L={L} sending={sending} router={currentRouter.label}
+                      model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
+                      uploadDisabled={sending || loadingAttachments || !ready?.ready}
+                      onContext={() => revealCard('context')} saveMode={p.saveApprovalMode}
+                      onModelSaved={id ? refresh : p.refreshReady}
+                      onEnter={text => {
+                        if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }
                         runtime.thread.composer.send();
-                      }}
-                    />
-                    <div className="composer-toolbar">
-                      <ComposerActions actions={composerAction} L={L} mode={p.approvalMode} modelBusy={!!reply}
-                        uploadDisabled={sending||loadingAttachments||!ready?.ready}
-                        onContext={()=>revealCard("context")} onModeSaved={refreshList}
-                        onModelSaved={async()=>{await refreshList();if(id)await refresh()}}/>
-                      <button type="button" className="compose-resource" onClick={()=>void choosePanel("browser")}><Globe size={16}/><span>{L("Browser","浏览器")}</span></button>
-                      {workers.length ? (
-                        <button
-                          className="team-chip"
-                          type="button"
-                          aria-expanded={panel === "activity"}
-                          aria-label={L("View Workers and team settings", "查看 Worker 和团队设置")}
-                          onClick={()=>{setTeamTab("agents");void choosePanel("activity")}}
-                        >
-                          <Users size={15} />
-                          <span>
-                            {workers.length} {L(workers.length===1?"member":"members", "位成员")}
-                          </span>
-                        </button>
-                      ) : null}
-                      <div className="send-actions">
-                        <SendMessage sending={sending} consume={()=>commandAction.current?.()??false}/>
-                      </div>
-                    </div>
+                      }}/>
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                 </div>
                 {!readonly && !loading && !snapshot?.messages.length && !sending && !running ? <div className="starter-actions">
@@ -1392,7 +1361,7 @@ function Chat(p: ChatProps) {
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                   cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
-                      conversationId={id} turnId={run?.id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
+                      current={usage} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
                   changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}

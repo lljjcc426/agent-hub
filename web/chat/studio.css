@@ -550,15 +550,9 @@
   gap: 4px;
   min-width: 0;
 }
-.studio-shell .conversation-body .composer .team-chip {
-  margin-left: auto;
-  font-size: 13px;
-}
 .studio-shell .conversation-body .composer .send-actions {
-  margin-left: auto;
-}
-.studio-shell .conversation-body .composer .team-chip + .send-actions {
-  margin-left: 3px;
+  margin-inline-start: auto;
+  gap: 4px;
 }
 .studio-shell .field-notes {
   font-size: 14px;
@@ -572,11 +566,6 @@
 .studio-shell .field-notes p {
   margin: 6px 0;
   max-width: 60ch;
-}
-@container chat-thread (max-width:680px) {
-  .studio-shell .conversation-body .composer .send-actions {
-    margin-left: auto;
-  }
 }
 .workspace-choose {
   display: inline-flex;
@@ -596,20 +585,6 @@
   margin-bottom: 10px;
 }
 
-.compose-resource {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  border-radius: 8px;
-  padding: 4px 8px;
-  color: var(--c-muted);
-  font-size: 14px;
-}
-.compose-resource:hover {
-  background: var(--c-soft);
-  color: var(--c-text);
-}
 .studio-files {
   min-width: 0;
   min-height: 0;
@@ -638,11 +613,6 @@
 .studio-deliveries .team-file {
   width: 100%;
   max-width: none;
-}
-@container chat-main (max-width:680px) {
-  .studio-shell .conversation-body .composer .team-chip + .send-actions {
-    margin-left: auto;
-  }
 }
 .studio-page-title {
   display: flex;

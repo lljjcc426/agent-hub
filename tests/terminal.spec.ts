@@ -310,6 +310,10 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     const nested = join(project, 'sub')
     mkdirSync(nested)
     expect(await projectRoot(nested)).toEqual({ cwd: realpathSync(project), git: true, committed: true })
+    const child = join(nested,'child')
+    mkdirSync(child)
+    const registered = [{ ...config.sources.find(s=>s.kind==='local')!, cwd:nested }]
+    expect(await projectRoot(child,registered)).toEqual({cwd:realpathSync(nested),git:false,committed:false})
     const dir = join(
       config.stateDir,
       'work',

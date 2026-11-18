@@ -1,4 +1,5 @@
-import { Writable } from 'node:stream'
+import type { CapabilitySnapshot } from '../capability-types.ts'
+import { TerminalEditor } from './editor.ts'
 import { TerminalLayout } from './presentation.ts'
 import { SessionDisplay } from './session-display.ts'
 import { spawn } from 'node:child_process'
@@ -9,7 +10,7 @@ import { createInterface } from 'node:readline'
 import { createInterface as promptInterface } from 'node:readline/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { TerminalClient, CliError, clean, type Snapshot, type Conversation } from './client.ts'
-import { command, commandHelp, mentionedFiles, runResult } from './commands.ts'
+import { command, mentionedFiles, runResult } from './commands.ts'
 
 const help = `Roppo — work with your Router and Workers from this directory.
 
@@ -96,10 +97,16 @@ async function ask(text: string) {
     rl.close()
   }
 }
-async function selectConversation(client: TerminalClient, o: Options, project: string, tty: boolean) {
+async function selectConversation(
+  client: TerminalClient,
+  o: Options,
+  project: string,
+  tty: boolean
+) {
   if (!o.latest && o.resume === undefined) return client.create(project)
   const list = await client.list(project)
-  if (!list.length) throw new CliError('No saved conversations in this project. Start one with roppo.')
+  if (!list.length)
+    throw new CliError('No saved conversations in this project. Start one with roppo.')
   if (o.latest) return list[0]!
   if (o.resume) {
     const match = list.find((c) => c.id === o.resume)
@@ -107,13 +114,44 @@ async function selectConversation(client: TerminalClient, o: Options, project: s
     throw new CliError('Conversation not found in this project.')
   }
   if (!tty) throw new CliError('Pass a conversation ID with -r when running a script.', 'usage', 2)
+  if (process.env.TERM !== 'dumb') {
+    const input = new TerminalEditor(process.stdin, process.stderr, project, (query) => ({
+      title: 'Resume conversation',
+      start: 0,
+      end: query.length,
+      empty: 'No matching conversations',
+      items: list
+        .filter((c) => (c.title + ' ' + c.id).toLowerCase().includes(query.toLowerCase()))
+        .map((c) => ({
+          label: c.title || 'New conversation',
+          detail: new Date(c.updatedAt).toLocaleString(),
+          value: c.id,
+          submit: true
+        }))
+    }))
+    const display = new SessionDisplay(process.stderr, input, false, true)
+    const paint = () => display.paint()
+    input.on('change', paint)
+    process.stderr.on('resize', paint)
+    try {
+      paint()
+      for await (const id of input) return list.find((c) => c.id === id)!
+      return undefined
+    } finally {
+      input.close()
+      display.close()
+      process.stderr.off('resize', paint)
+    }
+  }
   const layout = new TerminalLayout(
     process.stderr.columns || 80,
     !!process.stderr.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
   )
   const choices = [...layout.result('Resume a conversation · ' + basename(project))]
   for (const [i, c] of list.entries()) {
-    choices.push(...layout.message(String(i + 1) + '. ' + (c.title || 'New conversation'), c.id, true))
+    choices.push(
+      ...layout.message(String(i + 1) + '. ' + (c.title || 'New conversation'), c.id, true)
+    )
   }
   process.stderr.write(choices.join('\n') + '\n\n')
   const n = Number(await ask('Resume number › '))
@@ -159,7 +197,8 @@ async function printRun(client: TerminalClient, c: Conversation, o: Options) {
     if (result.text) console.log(clean(result.text))
     for (const delivery of result.deliveries)
       console.log(clean(delivery.name + '  ' + client.base + delivery.path))
-    if (status !== 'completed') process.stderr.write(clean(status + ' · ' + client.link(c.id)) + '\n')
+    if (status !== 'completed')
+      process.stderr.write(clean(status + ' · ' + client.link(c.id)) + '\n')
   }
   switch (status) {
     case 'completed':
@@ -176,20 +215,29 @@ async function printRun(client: TerminalClient, c: Conversation, o: Options) {
 }
 async function interactive(client: TerminalClient, c: Conversation, o: Options) {
   const plain = process.env.TERM === 'dumb'
-  const output = plain
-    ? process.stdout
-    : new Writable({
-        write(_chunk, _encoding, done) {
-          done()
-        }
+  const editor = plain
+    ? undefined
+    : new TerminalEditor(process.stdin, process.stdout, o.cwd, undefined, () =>
+        client.request<CapabilitySnapshot>('/api/capability-library')
+      )
+  const basic = plain
+    ? createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: false,
+        prompt: '› '
       })
-  const rl = createInterface({ input: process.stdin, output, terminal: !plain, prompt: '› ' })
-  const lines = rl[Symbol.asyncIterator]()
+    : undefined
+  const rl = editor ?? basic!
+  const lines: AsyncIterable<string> = rl
   const display = new SessionDisplay(process.stdout, rl, plain)
   const stream = new AbortController()
   let stopped = false,
     buffer = '',
     lastError = ''
+  let latest: Snapshot | undefined,
+    interrupting = false
+  let tick: NodeJS.Timeout | undefined
   let redraw: NodeJS.Immediate | undefined
   const requestDraw = () => {
     if (stopped || redraw) return
@@ -200,26 +248,49 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
   }
   const refresh = async () => {
     const view = await client.view(c.id, undefined, stream.signal)
-    if (!stopped) display.update(view)
+    if (stopped) return
+    if (!latest)
+      editor?.recall(
+        view.messages.filter((m) => m.role === 'user' && !m.recipient).map((m) => m.text)
+      )
+    latest = view
+    editor?.setView(view)
+    display.update(view)
+    const busy =
+      view.run?.state === 'running' ||
+      view.run?.state === 'queued' ||
+      view.tasks.some((t) => ['queued', 'running'].includes(t.state))
+    if (editor && busy && !tick) tick = setInterval(requestDraw, 150).unref()
+    if (!busy && tick) {
+      clearInterval(tick)
+      tick = undefined
+    }
   }
   const say = (value: string, error = false) => {
     if (!stopped) display.paint(display.layout.result(value, error))
   }
   const send = async (text: string, files: string[] = []) =>
     client.send(c.id, text, [...files, ...mentionedFiles(text, o.cwd)], locale())
-  rl.on('SIGINT', () => {
-    if (rl.line || buffer) {
-      buffer = ''
-      display.continuation = false
-      rl.write(null, { ctrl: true, name: 'u' })
-      requestDraw()
-    } else rl.close()
+  editor?.on('change', requestDraw)
+  editor?.on('notice', (message) => say(message, true))
+  editor?.on('interrupt', async () => {
+    const run = latest?.run
+    if (interrupting || !run || !['running', 'queued', 'waiting'].includes(run.state)) return
+    interrupting = true
+    try {
+      await client.request('/api/chat/conversations/' + c.id + '/cancel', { runId: run.id })
+    } catch (error) {
+      say((error as Error).message, true)
+    } finally {
+      interrupting = false
+    }
   })
-  rl.on('close', () => {
+  const closed = () => {
     stopped = true
     stream.abort()
-  })
-  process.stdin.on('data', requestDraw)
+  }
+  editor?.on('close', closed)
+  basic?.on('close', closed)
   process.stdout.on('resize', requestDraw)
   let watch: Promise<void> | undefined
   try {
@@ -243,13 +314,13 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
         }
       }
     )
-    if (plain) rl.prompt()
+    basic?.prompt()
     for await (const line of lines) {
-      if (line.endsWith('\\')) {
+      if (basic && line.endsWith('\\')) {
         buffer += line.slice(0, -1) + '\n'
         display.continuation = true
         display.paint()
-        if (plain) rl.prompt()
+        basic?.prompt()
         continue
       }
       display.continuation = false
@@ -260,21 +331,29 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
         break
       }
       try {
-        if (text.startsWith('/')) {
-          display.paint(display.layout.message('You', text, true))
-          say(await command(client, c.id, text))
+        if (text.startsWith('/') && !text.includes('\n')) {
+          if (!text.startsWith('/choose ') && !text.startsWith('/tools --inspect '))
+            display.paint(display.layout.message('You', text, true))
+          const result = await command(client, c.id, text)
+          if (result)
+            display.paint(
+              text.startsWith('/diff ')
+                ? display.layout.diff(result)
+                : display.layout.result(result)
+            )
         } else if (text) await send(text)
       } catch (e) {
+        editor?.restoreDraft(text)
         say((e as Error).message, true)
       }
       display.paint()
-      if (plain) rl.prompt()
+      basic?.prompt()
     }
   } finally {
     stopped = true
     stream.abort()
     clearImmediate(redraw)
-    process.stdin.off('data', requestDraw)
+    clearInterval(tick)
     process.stdout.off('resize', requestDraw)
     display.close()
     rl.close()
@@ -349,6 +428,7 @@ export async function main(args: string[]): Promise<number> {
       await client.project(project.cwd, true)
     }
     const c = await selectConversation(client, o, project.cwd, tty && !print)
+    if (!c) return 0
     return print ? await printRun(client, c, o) : await interactive(client, c, o)
   } catch (e) {
     const err = e as Error

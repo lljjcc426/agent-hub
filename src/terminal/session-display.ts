@@ -1,4 +1,4 @@
-import type { Interface } from 'node:readline'
+import type { TerminalEditor } from './editor.ts'
 import stringWidth from 'string-width'
 import { TerminalLayout } from './presentation.ts'
 import type { Snapshot } from './client.ts'
@@ -14,13 +14,23 @@ export class SessionDisplay {
   private view?: Snapshot
   private seen = new Map<string, string>()
   continuation = false
+  private cachedLayout?: { columns: number; layout: TerminalLayout }
   get layout() {
-    return new TerminalLayout(this.out.columns || 80, !this.plain && !process.env.NO_COLOR)
+    const columns = this.out.columns || 80
+    if (columns !== this.cachedLayout?.columns)
+      this.cachedLayout = {
+        columns,
+        layout: new TerminalLayout(columns, !this.plain && !process.env.NO_COLOR)
+      }
+    return this.cachedLayout.layout
   }
   constructor(
     private out: NodeJS.WriteStream,
-    private editor: Interface,
-    readonly plain: boolean
+    private editor: { line: string; cursor: number } & Partial<
+      Pick<TerminalEditor, 'menu' | 'expanded'>
+    >,
+    readonly plain: boolean,
+    private picker = false
   ) {}
   private erase() {
     if (!this.frame) return ''
@@ -43,7 +53,8 @@ export class SessionDisplay {
       this.editor.line || '',
       this.editor.cursor || 0,
       this.continuation,
-      this.out.rows || 24
+      this.out.rows || 24,
+      { menu: this.editor.menu, expanded: this.editor.expanded, picker: this.picker }
     )
     if (
       !history.length &&
@@ -70,7 +81,10 @@ export class SessionDisplay {
       const key = 'task/' + task.id,
         previous = this.seen.get(key)
       this.seen.set(key, task.state)
-      if ((previous !== task.state || first) && !['queued', 'running', 'waiting'].includes(task.state)) {
+      if (
+        (previous !== task.state || first) &&
+        !['queued', 'running', 'waiting'].includes(task.state)
+      ) {
         entries.push({ at: task.updatedAt, lines: ['', layout.task(task, view)] })
       }
     }
@@ -85,7 +99,7 @@ export class SessionDisplay {
         call.action === 'assign' &&
         call.state === 'completed' &&
         view.tasks.some((t) => t.workerId === call.target)
-      if (!first && !represented && call.state !== 'running' && call.state !== previous)
+      if (!represented && call.state !== 'running' && call.state !== previous)
         entries.push({ at: call.endedAt ?? call.startedAt, lines: [layout.activity(call)] })
     }
     for (const message of view.messages) {

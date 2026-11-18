@@ -247,7 +247,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       }
       if(path==='/api/terminal/projects'||path==='/api/terminal/conversations'){
         const {cwd,trust}=z.object({cwd:z.string().min(1).max(4096),trust:z.boolean().optional()}).strict().parse(raw)
-        const project=await projectRoot(cwd)
+        const project=await projectRoot(cwd,runtime.config.sources)
         requireCurrentOperator(req)
         const {source,registered}=projectSource(runtime.config,project,id=>runtime.chat.acceptsProjectSource(id))
         if(!registered&&trust&&path==='/api/terminal/projects'){

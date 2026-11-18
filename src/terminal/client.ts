@@ -61,7 +61,8 @@ function discoverHost() {
     return JSON.parse(readFileSync(selected, 'utf8')).url as string
   const path =
     process.env.ROPPO_CONNECTION_FILE ?? join(homedir(), '.agent-hub', 'state', 'connection.json')
-  if (!existsSync(path)) throw new CliError('No local host found. Run roppo init or set ROPPO_HOST.')
+  if (!existsSync(path))
+    throw new CliError('No local host found. Run roppo init or set ROPPO_HOST.')
   return JSON.parse(readFileSync(path, 'utf8')).url as string
 }
 export class TerminalClient {
@@ -88,7 +89,8 @@ export class TerminalClient {
   ): Promise<T> {
     const headers: Record<string, string> = {}
     if (!native) {
-      if (!this.token) throw new CliError('Sign in with roppo login on this host.', 'login_required')
+      if (!this.token)
+        throw new CliError('Sign in with roppo login on this host.', 'login_required')
       headers.authorization = 'Roppo-CLI ' + this.token
       headers.origin = this.base
     }
@@ -178,8 +180,19 @@ export class TerminalClient {
       { native: true }
     )
     const url = this.base + '/terminal/pair#' + pair.id
-    process.stderr.write('Connect code ' + pair.id.slice(-8).toUpperCase() + '  ' + url + '\n')
-    await openLocalBrowser(url)
+    process.stderr.write(
+      '\nRoppo CLI  ·  Connect your account\n\nConnect code ' +
+        pair.id.slice(-8).toUpperCase() +
+        '  ' +
+        url +
+        '\n'
+    )
+    const browser = await openLocalBrowser(url)
+    process.stderr.write(
+      (browser.opened
+        ? 'In your browser, match the code and choose Connect terminal.'
+        : 'Open the link above, match the code and choose Connect terminal.') + '\n'
+    )
     for (;;) {
       const { token } = await this.request<{ token?: string }>('/api/terminal/pair/claim', pair, {
         native: true

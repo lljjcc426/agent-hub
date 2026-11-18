@@ -20,7 +20,7 @@ export class TerminalPairing {
   private get(id: string) {
     const pair = this.pairs.get(id)
     if (!pair || pair.expires <= this.now())
-      throw new AccountError('pair_expired', 'Start a new terminal sign-in.', 410)
+      throw new AccountError('pair_expired', 'The connection code expired. Run roppo login for a new code.', 410)
     return pair
   }
   approve(id: string, issue: () => string) {

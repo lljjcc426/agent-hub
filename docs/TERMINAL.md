@@ -26,13 +26,17 @@ roppo -r
 roppo -r <conversation-id>
 ```
 
-On first use of a new folder, Roppo shows its resolved project path and requested access. Git subdirectories share the repository root. Git projects with an existing commit use per-task worktrees. Empty repositories and other new directories use read-only access. Existing sources keep their configured workspace and permissions. Registering a new source uses the host's configuration update and requires an idle host. A subscription restricted to a specific source uses that registered source.
+On first use of a new folder, Roppo shows its resolved project path and requested access. Subdirectories use the nearest Git root or a more specific registered workspace. Git projects with an existing commit use per-task worktrees. Empty repositories and other new directories use read-only access. Existing sources keep their configured workspace and permissions. Registering a new source uses the host's configuration update and requires an idle host. A subscription restricted to a specific source uses that registered source.
 
-Type normally to talk to the Router. Use a trailing backslash to continue on the next line, or attach a file with `@notes.md` or `@"meeting notes.md"`. Use `/tasks` to find a ticket, then `/diff TICKET` for its recorded patch or isolated Git worktree changes. `/approvals TICKET` displays the scope of a pending request. Respond with `/approve TICKET ID`, `/decline TICKET ID`, or `/answer TICKET ID JSON` for structured questions.
+Type `/` to browse commands and `@` to search project files. Use ↑ and ↓ to select, Tab to complete and Esc to dismiss. Git projects include tracked files and non-ignored untracked files. File names with spaces are quoted on insertion. Alt+Enter inserts a newline. Pasting several lines in a terminal with bracketed paste keeps them together until you press Enter.
 
-`/tools` lists workspace capabilities by source. For example, `/tools Codex` filters the list. `/open` opens the same conversation in the browser. Use `/exit` to leave it running, `/stop` to cancel the current run, or `/stop TICKET` to stop one Worker task.
+Run `roppo -r` to search this project's conversations by title. Press Enter to resume a match or use `roppo -c` for the most recent conversation.
 
-The status beside the input shows what Roppo is doing. A running Worker updates in place while you type. Completed tasks and replies stay in the terminal history. [Worker in progress](images/product/terminal-working.png) · [Completed reply](images/product/terminal-reply.png).
+During a run, the status shows the current public activity and elapsed time. Ctrl+O expands recent tools. Esc interrupts the current run when the picker is closed. Ctrl+D on an empty prompt or `/exit` leaves work running.
+
+Use `/plan` to read published steps or `/choose` to answer an open Router question. Type `/diff` followed by a space to select a Worker task and inspect its changes. `/approvals` shows pending requests for a selected task. `/approve`, `/decline` and `/answer` let you pick a task and request, then submit your response. `/tools Codex` filters the capability picker by source or name. Press Enter to inspect the selected capability. `/open` opens the same conversation in the web workspace.
+
+[Worker in progress](images/product/terminal-working.png) · [Completed reply](images/product/terminal-reply.png).
 
 ## Use in scripts
 

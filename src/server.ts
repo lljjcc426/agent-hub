@@ -1,3 +1,6 @@
+import {TerminalPairing,pairingPage} from './terminal/pairing.ts'
+import {projectRoot,projectSource} from './terminal/project.ts'
+import {terminalTask} from './terminal/tasks.ts'
 import {CapabilityLibrary} from './capability-library.ts'
 import {workerProfiles} from './worker-pool.ts'
 import {cliMcpPreview} from './cli-mcp-profile.ts'
@@ -55,6 +58,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   const connectionFile=join(runtime.config.stateDir,'connection.json')
   const library=new CapabilityLibrary(options.clientHome)
   const account=new PersonalAccount(runtime.config.stateDir,Date.now,runtime.config.http?.publicOrigin)
+  const terminalPairs=new TerminalPairing()
   let changing=false,unavailable=false,runtimeClosed=false,endpoint='',stopping=false,closingRuntime:Promise<void>|undefined
   let delegationServer:Awaited<ReturnType<typeof serveDelegation>>|undefined
   const onboarding=new Onboarding(()=>runtime,options.configurationPreview===true)
@@ -119,6 +123,28 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     try{requestOrigin=requestHostOrigin(req.headers.host,endpoint,runtime.config.http?.publicOrigin)}catch{send(res,403,{error:'Use this host’s local origin',code:'host_origin_required'});return}
     if(['POST','PATCH','DELETE'].includes(req.method??'')&&req.headers.origin&&req.headers.origin!==requestOrigin){send(res,403,{error:'Use this page’s own origin',code:'same_origin_required'});return}
     const browserOperator=account.configured?account.authorized(req):sessions.authorized(req)
+    if(path==='/terminal/pair' || path.startsWith('/api/terminal/pair/')){
+      const local=['::1','127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'') &&
+        ['localhost','127.0.0.1','[::1]'].includes(new URL(requestOrigin).hostname)
+      if(!local||options.configurationPreview){send(res,403,{code:'local_host_required'});return}
+      if(path==='/terminal/pair'&&req.method==='GET'){
+        res.writeHead(200,{'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"})
+        res.end(pairingPage);return
+      }
+      if(req.method==='POST'&&path==='/api/terminal/pair/approve'&&req.headers.origin===requestOrigin){
+        const {id}=z.object({id:z.string().regex(/^[a-f0-9]{32}$/)}).strict().parse(await body(req))
+        terminalPairs.approve(id,()=>account.issueTerminal(req));send(res,200,{ok:true});return
+      }
+      if(req.method==='POST'&&!req.headers.origin&&path==='/api/terminal/pair/start'){
+        if(!account.configured){send(res,409,{code:'account_setup_required',error:'Set up your local Roppo account first.'});return}
+        send(res,201,terminalPairs.start());return
+      }
+      if(req.method==='POST'&&!req.headers.origin&&path==='/api/terminal/pair/claim'){
+        const {id,secret}=z.object({id:z.string().length(32),secret:z.string().length(64)}).strict().parse(await body(req))
+        send(res,200,terminalPairs.claim(id,secret));return
+      }
+      send(res,403,{code:'pair_request_invalid'});return
+    }
     if((req.method==='GET'||req.method==='HEAD')&&path.startsWith('/chat-assets/')){
       const name=path.slice('/chat-assets/'.length),asset=chatAsset(name)
       if(!asset){send(res,404,{code:'not_found'});return}
@@ -210,6 +236,30 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       send(res,405,{error:'Method not allowed'});return
     }
     if (!operator) { send(res, 401, { error: 'Operator access required',code:'token_required' }); return }
+    if(req.method==='POST'&&path.startsWith('/api/terminal/')){
+      const owner=account.status(req).user?.id
+      if(!owner){send(res,401,{code:'account_login_required'});return}
+      const raw=await operatorBody(req)
+      if(path==='/api/terminal/logout'){account.revokeTerminal(req);send(res,200,{ok:true});return}
+      if(path==='/api/terminal/tasks'){
+        const input=z.object({conversation:z.string().uuid(),ticket:z.string().min(1).max(500),action:z.enum(['diff','stop','approvals','answer']),approval:z.string().uuid().optional(),answer:z.unknown().optional()}).strict().parse(raw)
+        send(res,200,await terminalTask(runtime,owner,input));return
+      }
+      if(path==='/api/terminal/projects'||path==='/api/terminal/conversations'){
+        const {cwd,trust}=z.object({cwd:z.string().min(1).max(4096),trust:z.boolean().optional()}).strict().parse(raw)
+        const project=await projectRoot(cwd)
+        requireCurrentOperator(req)
+        const {source,registered}=projectSource(runtime.config,project,id=>runtime.chat.acceptsProjectSource(id))
+        if(!registered&&trust&&path==='/api/terminal/projects'){
+          const plan=onboarding.sourcePlan(runtime.settings.current().revision,source)
+          changing=true
+          try{await onboarding.apply(plan.id,rebuild)}finally{changing=false}
+        }else if(!registered&&path==='/api/terminal/conversations'){send(res,409,{code:'project_not_registered'});return}
+        if(path==='/api/terminal/conversations'){send(res,201,runtime.chat.create(owner,{cwd:project.cwd,sourceId:source.id}));return}
+        send(res,200,{...project,registered:registered||trust===true,sandbox:source.sandbox});return
+      }
+      send(res,404,{code:'not_found'});return
+    }
     if(req.method==='GET'&&path==='/api-usage'){send(res,200,runtime.apiUsage.snapshot());return}
     if(req.method==='GET'&&path==='/api-usage/view'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(apiUsagePage(runtime.apiUsage.snapshot()));return}
     if(path==='/deployment/maintenance'&&req.method==='POST'){send(res,200,await deploymentMaintenance(runtime,await body(req)));return}
@@ -426,7 +476,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           const before=query.has('before')?z.coerce.number().int().positive().parse(query.get('before')):undefined
           const participant=query.has('participant')?z.string().min(1).max(300).parse(query.get('participant')):undefined
           const around=query.has('around')?z.string().min(1).max(500).parse(query.get('around')):undefined
-          send(res,200,runtime.chat.view(id,owner,before,participant,around));return
+          send(res,200,runtime.chat.view(id,owner,before,participant,around,query.get('run')||undefined));return
         }
         if(action==='files'&&req.method==='GET'){
           const input=z.object({ticket:z.string().min(1).optional(),path:z.string().max(1800).optional(),kind:z.enum(['directory','files']).optional(),offset:z.coerce.number().int().nonnegative().optional(),cursor:z.string().uuid().optional()}).strict().parse(Object.fromEntries(query))

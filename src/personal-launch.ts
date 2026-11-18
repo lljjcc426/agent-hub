@@ -37,7 +37,7 @@ export async function openLocalBrowser(
     !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
     url.username ||
     url.password ||
-    !['/configure', '/configure/', '/auth'].includes(url.pathname)
+    !['/configure', '/configure/', '/auth', '/terminal/pair', '/chat'].includes(url.pathname)
   ) {
     throw Error('The launcher requires a local Roppo entry URL')
   }

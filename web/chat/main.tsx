@@ -542,7 +542,8 @@ function App() {
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && read("roppo.chat.reset") !== space.cleanup.id){clearChatDrafts();write("roppo.chat.reset",space.cleanup.id)}
-    setId(space.conversation?.id??null);setDisplay(space.display);
+    const linked=location.pathname==="/chat" && /^#conversation\/([a-f0-9-]{36})$/.exec(location.hash);
+    setId((linked && linked[1]) || space.conversation?.id || null);setDisplay(space.display);
   }, []);
   useEffect(()=>{const change=()=>void refreshList();window.addEventListener('roppo:chat-space',change);return()=>window.removeEventListener('roppo:chat-space',change)},[refreshList]);
   const navigate = useCallback((next: string | null) => {
@@ -558,6 +559,7 @@ function App() {
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
+      if (location.pathname === "/chat" && previousHash !== location.hash) void refreshList();
       const next = location.pathname + location.search + location.hash;
       // Filtering and opening library items update the same page, including its live search input.
       if (isLibrary(previousHash) && isLibrary(location.hash)) setRoute(next);

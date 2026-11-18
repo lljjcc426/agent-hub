@@ -112,12 +112,18 @@ export class PersonalAccount {
     this.data = next
   }
   private token(request: IncomingMessage) {
+    const path = new URL(request.url ?? '/', 'http://localhost').pathname
+    const credential = /^Roppo-CLI ([a-zA-Z0-9_-]{43})$/.exec(request.headers.authorization ?? '')
+    if (credential && (/^\/api\/terminal\/(projects|conversations|tasks|logout)$/.test(path) ||
+      path === '/api/capability-library' || path === '/api/chat/readiness' ||
+      /^\/api\/chat\/conversations(?:\/[a-f0-9-]{36}(?:\/(?:messages|events|cancel|(?:attachments|deliveries)\/[a-f0-9-]{36}))?)?$/.test(path))) return 'terminal:' + credential[1]
     const prefix = this.cookieName + '='
-    return String(request.headers.cookie ?? '')
+    const cookie = String(request.headers.cookie ?? '')
       .split(';')
       .map((v) => v.trim())
       .find((v) => v.startsWith(prefix))
       ?.slice(prefix.length)
+    return cookie && /^[a-zA-Z0-9_-]{43}$/.test(cookie) ? cookie : undefined
   }
   private session(request: IncomingMessage) {
     const token = this.token(request)
@@ -158,19 +164,29 @@ export class PersonalAccount {
         (remember ? '; Max-Age=2592000' : '')
     )
   }
-  private issue(next: AccountData, response: ServerResponse, remember: boolean) {
+  private issue(next: AccountData, response: ServerResponse | undefined, remember: boolean) {
     const token = randomBytes(32).toString('base64url'),
       now = this.now()
     next.sessions = next.sessions.filter((s) => s.expiresAt > now).slice(-19)
     next.sessions.push({
-      hash: digest(token),
+      hash: digest(response ? token : 'terminal:' + token),
       createdAt: now,
       expiresAt: now + (remember ? 30 * 24 : 12) * 60 * 60 * 1000,
       remember
     })
     next.failures = []
     this.save(next)
-    this.cookie(response, token, remember)
+    if (response) this.cookie(response, token, remember)
+    return token
+  }
+  issueTerminal(request: IncomingMessage) {
+    if (!this.authorized(request)) throw new AccountError('account_login_required', 'Sign in to your Roppo account.', 401)
+    return this.issue({...this.data}, undefined, true)
+  }
+  revokeTerminal(request: IncomingMessage) {
+    const token = this.token(request)
+    if (!token?.startsWith('terminal:')) throw new AccountError('terminal_required', 'Sign in from Roppo CLI.', 401)
+    this.save({...this.data, sessions:this.data.sessions.filter(s => s.hash !== digest(token))})
   }
   private guard() {
     const failures = this.data.failures.filter((at) => at > this.now() - 15 * 60 * 1000)

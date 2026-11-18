@@ -80,14 +80,14 @@ export class Store implements Repositories {
             WHERE r.kind='router-goal' AND t.type='text'
           UNION ALL SELECT id,'trigger',json_extract(body,'$.triggerId') FROM records WHERE kind='router-goal'
           UNION ALL SELECT id,'trigger',json_extract(body,'$.contract.triggerId') FROM records WHERE kind='router-goal';
-        INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE ref IS NOT NULL;
+        INSERT OR IGNORE INTO goal_reference SELECT DISTINCT * FROM goal_reference_source WHERE ref IS NOT NULL;
         CREATE TRIGGER goal_reference_insert AFTER INSERT ON records WHEN NEW.kind='router-goal' BEGIN
           DELETE FROM goal_reference WHERE goal_id=NEW.id;
-          INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE goal_id=NEW.id AND ref IS NOT NULL;
+          INSERT OR IGNORE INTO goal_reference SELECT DISTINCT * FROM goal_reference_source WHERE goal_id=NEW.id AND ref IS NOT NULL;
         END;
         CREATE TRIGGER goal_reference_update AFTER UPDATE ON records WHEN OLD.kind='router-goal' OR NEW.kind='router-goal' BEGIN
           DELETE FROM goal_reference WHERE goal_id=OLD.id AND OLD.kind='router-goal';
-          INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE goal_id=NEW.id AND NEW.kind='router-goal' AND ref IS NOT NULL;
+          INSERT OR IGNORE INTO goal_reference SELECT DISTINCT * FROM goal_reference_source WHERE goal_id=NEW.id AND NEW.kind='router-goal' AND ref IS NOT NULL;
         END;
         CREATE TRIGGER goal_reference_delete AFTER DELETE ON records WHEN OLD.kind='router-goal' BEGIN
           DELETE FROM goal_reference WHERE goal_id=OLD.id;

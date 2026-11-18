@@ -650,3 +650,15 @@ it.each(['expiry','revision'] as const)('rejects consolidation when source %s ch
  expect(f.h.store.list<MemoryFact>('memory-fact')).toHaveLength(2)
  expect(f.h.store.list<MemoryFact>('memory-fact').every(x=>x.expiresAt===expiry&&x.state==='active')).toBe(true)
 })
+it('O25 limits live task metadata to management inspection, not model memory input',()=>{
+ const f=fixture(),c=f.send('记忆与任务分开');f.h.scopes.own('linked-task',c,'codex');
+ f.h.store.put('ticket','linked-task',{id:'linked-task',updatedAt:'2026-11-17T06:00:00Z',ended:{outcome:'completed'}});
+ const fact=f.remember(c,'Task is ongoing',{ticketId:'linked-task',category:'project_decision'});
+ f.h.store.put('memory-fact',fact.id,{...fact,createdAt:0});
+ const view=f.h.agentMemory.manage(c,{action:'inspect',id:fact.id}) as any;
+ expect(view.items[0].taskRecord).toMatchObject({state:'completed',newerThanMemory:true});
+ expect(view.detail.fact.taskRecord).toEqual(view.items[0].taskRecord);
+ const packet=f.h.memory.build(c,{},'test');
+ expect(JSON.stringify(JSON.parse(packet.input).memory)).not.toContain('taskRecord');
+ expect(f.h.agentMemory.applicable(c)[0]).not.toHaveProperty('taskRecord');
+});

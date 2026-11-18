@@ -6,6 +6,8 @@ import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatStatusTool} from './chat-status.ts'
+import {retainDeliveryReceipt} from './delivery-evidence.ts'
+import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
@@ -273,6 +275,7 @@ export class Runtime {
     this.merger=new Merger(this)
     this.setup=new Setup(this)
     this.reviews=new Reviews(this)
+    migrateBusinessDecisions(this)
     this.manager.restoreSubscriptions()
     this.store.recoverJobs()
     this.store.recoverDeliveries()
@@ -341,7 +344,7 @@ export class Runtime {
     try{await live.delivery}finally{live.delivery=undefined}
   }
   /** Keep reports and the messages requiring a person's attention in one durable transaction. */
-  private reportWork(ticketId:string,value:WorkerReport,reply?:string,accepted=false,files?:string[]):void {
+  private reportWork(ticketId:string,value:WorkerReport & {decision?:DecisionTerms|null},reply?:string,accepted=false,files?:string[]):void {
     this.store.atomic(()=>{
       if(value.state==='ready')this.delegation.captureExecution(ticketId)
       if(!accepted&&this.verification.capture(ticketId,value,reply,files))return
@@ -349,7 +352,8 @@ export class Runtime {
       const previous=this.store.tickets.get(ticketId)?.attention
       // The core keeps an unchanged question; a different asker needs a fresh routed attention.
       if(value.question&&previous?.question===value.question&&previous.triggerId!==value.askedBy)this.engine.report(ticketId,{state:value.state,summary:value.summary,question:null})
-      const ticket=this.engine.report(ticketId,value)
+      const {decision:decisionDetails,...coreReport}=value
+      const ticket=this.engine.report(ticketId,coreReport)
       if(value.question)this.engine.reply({purpose:'attention',ticketId,question:value.question,text:value.question})
       else if(reply&&value.state==='ready')this.engine.reply({purpose:value.answers?'answer':'result',ticketId,...(value.answers?{triggerId:value.answers}:{}),text:reply})
       else if(reply&&(value.state==='failed'||value.state==='blocked')){
@@ -359,6 +363,7 @@ export class Runtime {
           if(channel)this.store.outbox.send({id:'failure:'+bodyDigest([ticketId,latestAssignment(ticket)?.id,value.state,reply]),ticketId,channel,kind:'reply',text:reply})
         }
       }
+      captureBusinessDecision(this,ticket,value.decision)
       if(ticket.attention&&ticket.attention.id!==previous?.id){
         // Durable ordering fence for explicit business replies. Unlike optional
         // provenance, this is committed atomically with the question and reply.
@@ -378,6 +383,16 @@ export class Runtime {
     const event=this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId),task=ticketId?this.store.tickets.get(ticketId):undefined
     if(ref.ticketId!==ticketId||!task||event?.ticketId!==ticketId||event.attemptId!==ref.attemptId||!deliverableWorkerEvent(this,event)||task.ended?.by==='human'||task.assignments.at(-1)?.id!==event.assignmentId||this.store.get<{attemptId:string}>('async-worker-current',ticketId!)?.attemptId!==ref.attemptId)return false
     return {eventId:ref.eventId,attemptId:ref.attemptId}
+  }
+  renewBusinessQuestion(ticketId:string){
+    return this.store.atomic(()=>{
+      const ticket=this.store.tickets.get(ticketId),report=ticket?.assignments.at(-1)?.report
+      if(!ticket?.attention||ticket.ended||!report)throw Error('decision_unavailable')
+      const question=ticket.attention,terms=decisionTerms(this,ticketId)
+      this.engine.report(ticketId,{state:report.state,summary:report.summary,question:null})
+      this.reportWork(ticketId,{state:report.state,summary:report.summary,question:question.question,...(question.triggerId?{askedBy:question.triggerId}:{}),decision:terms})
+      return this.store.tickets.get(ticketId)!.attention!.id
+    })
   }
   previewPrompt(input:import('./execution-prompts.ts').PromptPreviewInput,config=this.config){return previewInstructions(config,input,this.scopes.enabled())}
   acceptGoalDelivery(delivery:GoalDelivery){this.store.atomic(()=>{if(this.store.get('goal-release',delivery.id))return;const before=new Set(this.store.deliveries().map(d=>d.id));this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true,delivery.files);const ref=this.store.get<{eventId:string}>('async-worker-delivery',delivery.id),event=ref?this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId):undefined;if(event?.ticketId===delivery.ticketId&&event.assignmentId===delivery.assignmentId)this.bindWorkerEventMessages(event,before);this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})})}
@@ -1324,7 +1339,7 @@ export class Runtime {
             run.phase='idle';run.threadId=result.threadId;persist(true);return
           }
         }
-        this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
+        this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
         run.phase = background?'background':'idle'; run.threadId = result.threadId; run.result = output.reply; persist(true)
         const updated = this.store.tickets.get(ticket.id)!
         if (pending&&(!handoff||superseded)) this.queueInputs(updated, latestAssignment(updated)!)
@@ -1426,10 +1441,12 @@ export class Runtime {
         continue
       }
       if(!this.store.deliveryStarted(message.id))continue
+      const deliveryRevision=this.settings.current().revision,deliveryFingerprint=stableDigest(source.config)
+      let receipt:unknown,externalDelivered=false
       try {
-        if(source.config.kind==='delegation')await this.delegation.deliver(message);else await source.deliver(message)
-        this.store.atomic(()=>{this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
-      catch (error) { this.store.deliveryFailed(message.id, message.attempts + 1, String(error).slice(0,300), error instanceof UncertainDelivery);if(!(error instanceof UncertainDelivery)&&message.attempts+1>=3)blocked.delete(channel);else blocked.add(channel) }
+        if(source.config.kind==='delegation')await this.delegation.deliver(message);else {receipt=await source.deliver(message);externalDelivered=true}
+        this.store.atomic(()=>{retainDeliveryReceipt(this.store,message,receipt,deliveryRevision,deliveryFingerprint);this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
+      catch (error) { const uncertain=externalDelivered||error instanceof UncertainDelivery;this.store.deliveryFailed(message.id, message.attempts + 1, String(error).slice(0,300), uncertain);if(!uncertain&&message.attempts+1>=3)blocked.delete(channel);else blocked.add(channel) }
     }
   }
   private holdLegacyTask(ticketId:string){

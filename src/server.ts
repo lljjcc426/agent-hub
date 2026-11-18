@@ -584,7 +584,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,runtime.chat.answerApproval(id,owner,input.id,input.value));return
         }
         if(action==='decisions'&&req.method==='POST'){
-          const input=z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional()}).strict().parse(await body(req))
+          const input=z.union([
+            z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional()}).strict(),
+            z.object({action:z.enum(['answer','renew']),id:z.string().min(1).max(1000),version:z.string().regex(/^[a-f0-9]{64}$/),requestId:z.string().uuid(),text:z.string().trim().min(1).max(10000).optional()}).strict()
+          ]).parse(await body(req))
+          if('action' in input){send(res,200,runtime.chat.decide(id,owner,input));return}
           send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale));return
         }
         if(action==='schedules'&&req.method==='PATCH'){

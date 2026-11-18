@@ -355,6 +355,13 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if(req.method==='GET'){send(res,200,{conversations:runtime.chat.list(owner,query.get('archived')==='true')});return}
         if(req.method==='POST'){send(res,201,runtime.chat.create(owner));return}
       }
+      const delivery=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/deliveries\/([a-f0-9-]{36})$/)
+      if(delivery&&(req.method==='GET'||req.method==='HEAD')){
+        const {item,bytes}=runtime.chat.delivery(delivery[1]!,owner,delivery[2]!)
+        const inline=query.get('preview')==='1'&&!!item.preview
+        res.writeHead(200,{'content-type':inline?item.mime:'application/octet-stream','content-length':item.size,'content-disposition':(inline?'inline':'attachment')+"; filename*=UTF-8''"+encodeURIComponent(item.name),'content-security-policy':"default-src 'none'; sandbox",'x-content-type-options':'nosniff','cache-control':'private, no-store'})
+        res.end(req.method==='HEAD'?undefined:bytes);return
+      }
       const attachment=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/attachments(?:\/([a-f0-9-]{36}))?$/)
       if(attachment){
         const conversationId=z.string().uuid().parse(attachment[1]),id=attachment[2]?z.string().uuid().parse(attachment[2]):undefined
@@ -372,9 +379,13 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules))?$/)
       if(match){
         const id=match[1]!,action=match[2]
+        if(action==='schedules'&&req.method==='PATCH'){
+          const input=z.object({id:z.string().min(1).max(300),active:z.boolean(),operationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(await body(req))
+          send(res,200,runtime.chat.changeSchedule(id,owner,input));return
+        }
         if(action==='memory'&&req.method==='GET'){send(res,200,runtime.chat.memory(id,owner));return}
         if(action==='memory'&&req.method==='POST'){
           const input=z.object({kind:z.enum(['manage','memory']),command:z.unknown()}).strict().parse(await body(req))

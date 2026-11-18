@@ -38,6 +38,13 @@ function attachmentName(value:unknown){
 }
 /** The resource grammar is shared by native tools, MCP, HTTP and the panel. */
 export class Resources {
+ workspacePath(cwd:string,relativePath:string){
+  if(relativePath.split('/').some(x=>['.git','.superagent','node_modules'].includes(x)))throw Error('Private local directory')
+  const root=realpathSync(cwd),path=realpathSync(resolve(root,relativePath)),state=realpathSync(this.host.config.stateDir)
+  if(isHostPrivateFile(path))throw Error('Host credentials are private')
+  if(!inside(root,path)||inside(state,path)&&!inside(state,root))throw Error('Path is outside this task directory')
+  return path
+ }
  constructor(private host:Runtime){}
  private ticket(principal:Principal,id?:string):Ticket{
   const ticket=this.host.store.tickets.get(id??principal.ticketId??'')
@@ -207,10 +214,7 @@ export class Resources {
   if(['files','directory','image'].includes(head!)){
    if(!p.ticketId)throw Error('Local filesystem resources require an explicit task scope')
    const t=this.ticket(p),run=store.get<Run>('run',t.id);if(!run)throw Error('Work directory is not prepared')
-   if(parts.slice(1).some(x=>['.git','.superagent','node_modules'].includes(x)))throw Error('Private local directory')
-   const root=realpathSync(run.cwd),path=realpathSync(resolve(root,parts.slice(1).join('/')))
-   if(isHostPrivateFile(path))throw Error('Host credentials are private')
-   if(!inside(root,path)||inside(realpathSync(this.host.config.stateDir),path)&&!inside(realpathSync(this.host.config.stateDir),root))throw Error('Path is outside this task directory')
+   const path=this.workspacePath(run.cwd,parts.slice(1).join('/'))
    if(head==='directory')return readdirSync(path,{withFileTypes:true}).filter(e=>!['.git','.superagent','node_modules'].includes(e.name)).map(e=>({name:e.name,directory:e.isDirectory()}))
    if(statSync(path).size>8000000)throw Error('File exceeds 8 MB resource limit')
    const data=readFileSync(path)

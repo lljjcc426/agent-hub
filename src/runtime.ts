@@ -1,6 +1,7 @@
 import {ApiUsage} from './api-usage.ts'
 
 import {workspaceBrowserSpec} from './browser-contract.ts'
+import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatStatusTool} from './chat-status.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
@@ -32,7 +33,7 @@ import {BackendRegistry} from './backends/registry.ts'
 import {validateBackendSelection} from './backend-config.ts'
 import {ProjectCode} from './project-code.ts'
 import { prepareWorkspace } from './workspace.ts'
-import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,validateRuleAssessment } from './schemas.ts'
+import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,validateRuleAssessment } from './schemas.ts'
 import {WorkManager,type WorkOwner,type WorkItem} from './work.ts'
 import {Resources,routerReadSpec} from './resources.ts'
 import {WorkerTools,workerSpecs} from './worker-tools.ts'
@@ -325,10 +326,11 @@ export class Runtime {
     try{await live.delivery}finally{live.delivery=undefined}
   }
   /** Keep reports and the messages requiring a person's attention in one durable transaction. */
-  private reportWork(ticketId:string,value:WorkerReport,reply?:string,accepted=false):void {
+  private reportWork(ticketId:string,value:WorkerReport,reply?:string,accepted=false,files?:string[]):void {
     this.store.atomic(()=>{
       if(value.state==='ready')this.delegation.captureExecution(ticketId)
-      if(!accepted&&this.verification.capture(ticketId,value,reply))return
+      if(!accepted&&this.verification.capture(ticketId,value,reply,files))return
+      if(files?.length)this.chat.publishFiles(ticketId,files)
       const previous=this.store.tickets.get(ticketId)?.attention
       // The core keeps an unchanged question; a different asker needs a fresh routed attention.
       if(value.question&&previous?.question===value.question&&previous.triggerId!==value.askedBy)this.engine.report(ticketId,{state:value.state,summary:value.summary,question:null})
@@ -345,7 +347,7 @@ export class Runtime {
     })
   }
   previewPrompt(input:import('./execution-prompts.ts').PromptPreviewInput,config=this.config){return previewInstructions(config,input,this.scopes.enabled())}
-  acceptGoalDelivery(delivery:GoalDelivery){this.store.atomic(()=>{if(this.store.get('goal-release',delivery.id))return;this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true);this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})})}
+  acceptGoalDelivery(delivery:GoalDelivery){this.store.atomic(()=>{if(this.store.get('goal-release',delivery.id))return;this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true,delivery.files);this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})})}
   goalEvidenceBudget(goal:RouterGoal){
     const scope=this.scopes.scope(goal.scopeId).contextBytes,id=this.config.execution.router?.backend??this.config.execution.roles.router??this.config.execution.backend,backend=this.config.backends[id]
     return backend&&backend.kind!=='codex'&&backend.kind!=='plugin'?Math.min(scope,backend.maxContextBytes):scope
@@ -778,7 +780,7 @@ export class Runtime {
       ? this.store.get<{conversationId:string}>('chat-run', triggerId) : undefined
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
-    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool])
+    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,...(workspaceTool?[workspaceTool]:[]),...(chatBinding?[routerFileTool]:[])])
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
     if(scoped&&!this.chat.isReactionInput(triggerId))this.memory.ingest(scoped)
     const controller=new AbortController(),key='router:'+discussion
@@ -837,8 +839,8 @@ export class Runtime {
       }
       const modelInput=continuity?.input??packet?.input??JSON.stringify({...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),...(chatBinding&&!threadId?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{})})
       const result=await this.runModel({role:'router',...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
-        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. The host publishes accepted files automatically. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'') + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
+        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec,routerFileTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
         onTool:async(name,args)=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -862,6 +864,7 @@ export class Runtime {
               const result = await this.browser.routerAction(browserOwner,browserRun.conversationId,triggerId,args,validateReplyContext)
               return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
             }
+            if(name==='chat_deliver_file'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.deliverText(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
               const result=await this.resources.read(args,{routerTriggerId:triggerId})
@@ -1109,6 +1112,9 @@ export class Runtime {
       const agentOptions=identityChanged||saved?.rebuild?saved?.agentOptions:profile?agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape))):undefined
       run.agentOptions=agentOptions
       const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text
+      const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
+      const chatFiles=builtInChat?this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])):[]
+      const schema=builtInChat?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const specs=this.availableWorkerSpecs().filter(s=>s.name!=='superagent_artifact'||!!delegatedTask),toolsDigest=digest(JSON.stringify(specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
@@ -1118,10 +1124,10 @@ export class Runtime {
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
         role:'worker',options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
-        title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...reportSchema,properties:{...reportSchema.properties,handbacks:{...reportSchema.properties.handbacks,maxItems:0}}}:reportSchema,archiveOnComplete:true,
-        instructions,
+        title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
+        instructions:builtInChat?instructions+'\nFor a requested file delivery, read the provided chatFiles paths for uploaded originals. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
         managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args),onCapabilities:cap=>this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap}),
-        input: JSON.stringify({...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
+        input: JSON.stringify({...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
         signal: controller.signal,
         onHumanRequest:request=>this.approvals.request(ticket.id,request),
         onActive:control=>{this.controls.set(ticket.id,control);this.controlRevisions.set(ticket.id,promptRevision);live.control=control;live.offered.clear();live.retryAt=0},
@@ -1137,7 +1143,7 @@ export class Runtime {
       await live.delivery
       let current = this.store.tickets.get(ticket.id)
       if (controller.signal.aborted || !current || current.ended || latestAssignment(current)?.id !== assignmentId) return
-      const output = report.parse(JSON.parse(result.text))
+      const output = (builtInChat?chatReport:report).parse(JSON.parse(result.text))
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
@@ -1192,7 +1198,27 @@ export class Runtime {
         const askedBy=output.askedBy===undefined&&humanInputs.length===1?humanInputs[0]!.triggerId:output.askedBy??undefined
         const question=pending&&!handoff?null:output.question
         const failed=['blocked','failed'].includes(output.state)
-        this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined)
+        let files:string[]|undefined
+        if(!background&&!pending&&output.state==='ready'&&'files' in output&&Array.isArray(output.files)&&output.files.length){
+          try{files=this.chat.captureFiles(ticket.id,run.cwd,output.files)}
+          catch(error){
+            const reason='File delivery failed: '+(error instanceof Error?error.message:String(error))
+            const key=ticket.id+':'+assignmentId,alreadyRetried=this.store.get('chat-file-correction',key)
+            if(!alreadyRetried){
+              this.store.put('chat-file-correction',key,{ticketId:ticket.id,assignmentId})
+              const prior=this.store.tickets.get(ticket.id)!.inputs.map(i=>i.id)
+              this.engine.note(ticket.id,reason+'. Check the task directory, repair the missing deliverables and report the verified relative paths. Reuse completed work.')
+              allowNewTaskInputs(this.store,ticket.id,prior)
+              run.phase='idle';run.threadId=result.threadId;persist()
+              const updated=this.store.tickets.get(ticket.id)!
+              this.queueInputs(updated,latestAssignment(updated)!)
+              return
+            }
+            this.reportWork(ticket.id,{state:'blocked',summary:reason,question:null},reason)
+            run.phase='idle';run.threadId=result.threadId;persist();return
+          }
+        }
+        this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
         run.phase = background?'background':'idle'; run.threadId = result.threadId; run.result = output.reply; persist()
         const updated = this.store.tickets.get(ticket.id)!
         if (pending&&(!handoff||superseded)) this.queueInputs(updated, latestAssignment(updated)!)

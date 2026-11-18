@@ -28,7 +28,18 @@ function boundedWorkbook(bytes){
 }
 
 function workbookObservation(bytes,checks){
-  const workbook=XLSX.read(boundedWorkbook(bytes),{type:'buffer',sheets:[...new Set(checks.map(c=>c.sheet))],cellFormula:false})
+  const archive=boundedWorkbook(bytes)
+  if(checks===null){
+    const names=XLSX.read(archive,{type:'buffer',bookSheets:true}).SheetNames
+    const workbook=XLSX.read(archive,{type:'buffer',sheets:names.slice(0,4),sheetRows:16,cellFormula:false})
+    return {sheetCount:names.length,sheets:names.slice(0,4).map(name=>{
+      const sheet=workbook.Sheets[name]
+      const cells=Object.entries(sheet).filter(([key])=>!key.startsWith('!')&&XLSX.utils.decode_cell(key).c<8)
+        .map(([address,cell])=>[address,String(cell.v??'').slice(0,200)])
+      return {name,range:sheet['!fullref']??sheet['!ref'],window:'A1:H16',cells}
+    })}
+  }
+  const workbook=XLSX.read(archive,{type:'buffer',sheets:[...new Set(checks.map(c=>c.sheet))],cellFormula:false})
   const cells=checks.map(check=>{
     const sheet=workbook.Sheets[check.sheet],cell=sheet?.[check.cell.replace(/\$/g,'').toUpperCase()]
     const value=cell&&['s','n','b'].includes(cell.t)?cell.v:null

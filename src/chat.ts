@@ -12,9 +12,11 @@ import type {ModelOutput} from './model.ts'
 import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
+import type {RouterGoal} from './router-goals.ts'
 import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attachments.ts'
+import {ChatDeliveries,routerFileInput,type ChatDelivery} from './chat-deliveries.ts'
 import {ChatError} from './chat-errors.ts'
 import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentReaction,type ChatQuote,type ChatQuoteView} from './chat-interactions.ts'
 export {ChatError} from './chat-errors.ts'
@@ -25,12 +27,22 @@ interface Conversation {
   nativeId?:string
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
-interface Message {id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
 interface ChatRun {id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
 type ChatCall=ExecutionCall&{conversationId:string;runId:string}
+function transcriptText(id:string,text:string){
+  if(!id.startsWith('delegated:')||!text.startsWith('{"objective":'))return text
+  try{
+    const {node,criteria}=JSON.parse(text)
+    if(typeof node?.instruction==='string'&&Array.isArray(criteria)){
+      return [node.title,node.instruction,...criteria.map((c:{description?:string})=>c.description)].filter(Boolean).join('\n\n')
+    }
+  }catch{/* A plain assignment can start with a JSON example. */}
+  return text
+}
 export type ChatRunState='queued'|'running'|'waiting'|'completed'|'failed'|'cancel_requested'|'cancelled'
 /** Narrow operation metadata, never arbitrary tool arguments, prompts or results. */
 export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'action'|'target'>{
@@ -42,11 +54,13 @@ export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'ac
 /** Browser conversations are a projection of the existing Router, never a second executor. */
 export class ChatSessions {
   readonly uploads:ChatAttachments
+  private readonly deliveries:ChatDeliveries
   private listeners=new Map<string,Set<()=>void>>()
   private notifications=new Set<string>()
   private streams=new Map<string,{runId:string;outputId:string;raw:string;authorize?:()=>void;timer?:ReturnType<typeof setTimeout>}>()
   private unsubscribe:()=>void
   constructor(private host:Runtime){
+    this.deliveries=new ChatDeliveries(host)
     this.uploads=new ChatAttachments(host,(id,owner)=>this.get(id,owner))
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_message_page ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message'")
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_call_conversation ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.startedAt')) WHERE kind='chat-call'")
@@ -63,7 +77,7 @@ export class ChatSessions {
   hasContext(context:ExecutionContext){
     const assignment=context.ticketId?this.host.store.get<Delegation>('worker-assignment',context.ticketId):undefined
     const triggerId=assignment?.parentTrigger??context.triggerId
-    return !!triggerId&&!!this.host.store.get<ChatRun>('chat-run',triggerId)
+    return !!triggerId&&!!this.originRun(triggerId)
   }
   personalManagement(context?:RouterContext){
     const trigger=context?.trigger,run=trigger&&this.host.store.get<ChatRun>('chat-run',trigger.id)
@@ -75,10 +89,10 @@ export class ChatSessions {
   }
   private recordCall(call:ExecutionCall){
     const assignment=call.ticketId?this.host.store.get<Delegation>('worker-assignment',call.ticketId):undefined
-    const triggerId=assignment?.parentTrigger??call.triggerId,run=triggerId?this.host.store.get<ChatRun>('chat-run',triggerId):undefined
+    const triggerId=assignment?.parentTrigger??call.triggerId,run=triggerId?this.originRun(triggerId):undefined
     if(!run)return
     const previous=this.host.store.get<{conversationId:string;runId:string}>('chat-call',call.id)
-    const saved={...call,conversationId:previous?.conversationId??run.conversationId,runId:previous?.runId??run.id}
+    const saved={...call,conversationId:previous?.conversationId??run.conversationId,runId:previous?.runId??triggerId!}
     this.host.store.put('chat-call',call.id,saved);this.changed(saved.conversationId)
   }
   output(jobId:string,runId:string,event:ModelOutput,authorize?:()=>void){
@@ -236,7 +250,7 @@ export class ChatSessions {
     if(h.config.execution.router?.mode!=='host')code='host_router_required'
     else if(!this.source())code='local_source_required'
     else if(h.store.get<boolean>('settings','paused'))code='host_paused'
-    return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
+    return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as {id:string;workerId:string;title:string;state:string;reviewing:boolean;updatedAt:number;question:string|undefined;summary:string|undefined}[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
   private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,backend,model}}
   private routerBinding(){
@@ -325,23 +339,87 @@ export class ChatSessions {
   }
   private worker(id:string):Speaker {return {id,label:workerProfiles(this.host.config).find(w=>w.id===id)?.label??id,kind:'worker'}}
   delegated(id:string,triggerId:string,ticketId:string,workerId:string,text:string){
-    const run=this.host.store.get<ChatRun>('chat-run',triggerId);if(!run||run.cancelRequested)return
+    const run=this.originRun(triggerId);if(!run||run.cancelRequested)return
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
-    this.message(c,{id:'delegated:'+id,runId:run.id,role:'assistant',text,status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
+    this.message(c,{id:'delegated:'+id,runId:run.id,role:'assistant',text:transcriptText('delegated:'+id,text),status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
+  }
+  private workerDestination(ticketId:string){
+    const assignment=this.host.store.get<Delegation>('worker-assignment',ticketId),authority=this.host.taskAuthority(ticketId)
+    const triggerId=authority?.parentTrigger,run=triggerId&&this.originRun(triggerId)
+    if(!assignment||!run||run.cancelRequested||run.cancelled||!triggerId)return
+    const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!c||this.host.memory.cleanup.blocked('chat-conversation',c.id,c))return
+    try{
+      const trigger=this.host.store.triggers.get(triggerId)!
+      this.host.routerIngress.authority(triggerId,authority!.discussion)
+      const context=this.host.scopes.context(trigger,authority!.discussion)
+      if(context){this.host.scopes.checkTask(ticketId,context);this.host.scopes.checkTaskEntry(this.host.scopes.ownership(ticketId)!,context.route.entryId,'result')}
+      const saved=this.host.store.get<{manifest:ContextManifest}>('task-context',ticketId);if(saved)this.host.memory.validate(saved.manifest)
+    }catch{return}
+    return {c,run,worker:this.worker(assignment.workerId)}
   }
   deliveredWorker(message:{id:string;ticketId?:string;text:string}){
-    if(!message.ticketId||this.host.store.get('chat-message','worker:'+message.id))return
-    const assignment=this.host.store.get<Delegation>('worker-assignment',message.ticketId),authority=this.host.taskAuthority(message.ticketId)
-    const run=authority?.parentTrigger?this.host.store.get<ChatRun>('chat-run',authority.parentTrigger):undefined
-    if(!assignment||!run||run.cancelRequested||!message.text.trim())return
+    if(!message.ticketId||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return
+    const dest=this.workerDestination(message.ticketId);if(!dest)return
+    this.message(dest.c,{id:'worker:'+message.id,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
+  }
+  deliverText(triggerId:string,value:unknown){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run||run.feedback||run.cancelRequested)throw new ChatError('delivery_unavailable','A current Chat request is required.')
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
+    this.get(c.id,c.owner);this.host.routerIngress.authority(triggerId,c.discussion)
+    const {name,content}=routerFileInput.parse(value),id='router-file:'+stableDigest([triggerId,name,content])
+    return this.host.store.atomic(()=>{
+      const existing=this.host.store.get<Message>('chat-message',id)?.deliveries?.[0]
+      const file=existing??this.deliveries.text(c.id,run.id,name,content)
+      if(!existing){this.message(c,{id,runId:run.id,role:'assistant',text:name,status:'complete',deliveries:[file]});this.changed(c.id)}
+      return {name:file.name,size:file.size,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id}
+    })
+  }
+  captureFiles(ticketId:string,cwd:string,paths:string[]){
+    const dest=this.workerDestination(ticketId)
+    return dest?this.deliveries.capture(dest.c.id,dest.run.id,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
+  }
+  fileEvidence(ticketId:string,id:string){return this.deliveries.evidence(ticketId,id)}
+  discardFiles(ids:string[]){this.deliveries.discard(ids)}
+  publishFiles(ticketId:string,ids:string[]){
+    const dest=this.workerDestination(ticketId),id='worker-files:'+ids[0]
+    if(!ids.length||!dest||this.host.store.get('chat-message',id))return
+    const deliveries=this.deliveries.publish(dest.c.id,ticketId,ids)
+    this.message(dest.c,{id,runId:dest.run.id,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
+    this.changed(dest.c.id)
+  }
+  delivery(id:string,owner:string,fileId:string){
+    this.get(id,owner)
+    return this.deliveries.read(id,fileId)
+  }
+  private originRun(triggerId:string){
+    const direct=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(direct||!triggerId.startsWith('scheduled:'))return direct
+    const scheduled=this.host.proactive.runForTrigger(triggerId)
+    if(scheduled&&scheduled.spec.notification!=='silent')return this.host.store.get<ChatRun>('chat-run',scheduled.spec.triggerId)
+  }
+  private schedules(c:Conversation){
+    const scopeId='@chat:'+stableDigest(c.owner)
+    return this.host.proactive.chatSchedules(scopeId,c.id,c.nativeId??'chat:'+c.id,c.sourceId,c.actor)
+  }
+  scheduledReceipts(triggerId:string){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId),c=run&&this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!c)return []
+    return this.schedules(c).filter(s=>s.triggerId===triggerId).map(({id,name,timing,notification,createdAt,active})=>({id,name,timing,notification,createdAt,active}))
+  }
+  changeSchedule(id:string,owner:string,input:{id:string;active:boolean;expectedRevision:number;operationId:string}){
+    const c=this.get(id,owner),plan=this.schedules(c).find(p=>p.id===input.id)
+    const trigger=plan&&this.host.store.triggers.get(plan.triggerId)
+    const context=trigger&&this.host.scopes.context(trigger,c.discussion)
+    if(!plan||!context)throw new ChatError('schedule_missing','Scheduled task unavailable.',404)
     try{
-      this.host.routerIngress.authority(run.triggerId,c.discussion)
-      const trigger=this.host.store.triggers.get(run.triggerId)!,context=this.host.scopes.context(trigger,c.discussion)
-      if(context){this.host.scopes.checkTask(message.ticketId,context);this.host.scopes.checkTaskEntry(this.host.scopes.ownership(message.ticketId)!,context.route.entryId,'result')}
-      const saved=this.host.store.get<{manifest:ContextManifest}>('task-context',message.ticketId);if(saved)this.host.memory.validate(saved.manifest)
-    }catch{return}
-    this.message(c,{id:'worker:'+message.id,runId:run.id,role:'assistant',text:message.text,status:'complete',speaker:this.worker(assignment.workerId),recipient:this.router(run.triggerId),ticketId:message.ticketId});this.changed(c.id)
+      this.host.proactive.command({action:input.active?'schedule.resume':'schedule.pause',scopeId:context.route.scopeId,id:plan.id,operationId:input.operationId,expectedRevision:input.expectedRevision},context)
+    }catch(error){throw new ChatError('schedule_change_failed',error instanceof Error?error.message:String(error))}
+    this.changed(id);return {schedules:this.publicSchedules(c)}
+  }
+  private publicSchedules(c:Conversation){
+    return this.schedules(c).map(({id,name,timing,active,nextAt,revision})=>({id,name,timing,active,nextAt,revision}))
   }
   locale(triggerId:string){return this.host.store.get<ChatRun>('chat-run',triggerId)?.locale}
   binding(triggerId:string){
@@ -364,10 +442,10 @@ export class ChatSessions {
   }
   reply(jobId:string,triggerId:string,text:string){
     const stream=this.streams.get(jobId);if(stream?.timer)clearTimeout(stream.timer);this.streams.delete(jobId)
-    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    const run=this.originRun(triggerId)
     if(!run||run.cancelRequested||!text.trim())return
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
-    this.message(c,{id:'reply:'+jobId,runId:run.id,role:'assistant',text,status:'complete'})
+    this.message(c,{id:'reply:'+jobId,runId:triggerId,role:'assistant',text,status:'complete'})
     this.changed(c.id)
   }
   deliveredClarification(message:{id:string;text:string}){
@@ -412,10 +490,12 @@ export class ChatSessions {
     })
   }
   private tasks(c:Conversation,run?:ChatRun){
-    return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>d.discussion===c.discussion&&(!run||d.parentTrigger===run.triggerId)).map(d=>{
+    const nodes=new Map(this.rows<RouterGoal>('router-goal','discussion',c.discussion).flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
+    return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>(d.discussion===c.discussion||!!d.parentTrigger?.startsWith('scheduled:')&&this.originRun(d.parentTrigger)?.conversationId===c.id)&&(!run||d.parentTrigger===run.triggerId)).map(d=>{
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
-      const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':['starting','running','background','delivering','merging'].includes(r?.phase??'')?'running':r?.phase==='uncertain'||r?.phase==='human'||t?.attention||['blocked','failed','waiting'].includes(report?.state??'')?'waiting':report?.state==='ready'?'completed':'queued'
-      return {id:d.ticketId,workerId:d.workerId,title:t?.title??'',state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
+      const node=nodes.get(d.ticketId),reviewing=!!node?.reviewing&&!t?.ended&&!t?.attention
+      const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':reviewing?'running':['starting','running','background','delivering','merging'].includes(r?.phase??'')?'running':r?.phase==='uncertain'||r?.phase==='human'||t?.attention||['blocked','failed','waiting'].includes(report?.state??'')?'waiting':report?.state==='ready'?'completed':'queued'
+      return {id:d.ticketId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
     })
   }
   async files(id:string,owner:string,input:{ticket?:string;path?:string;kind?:'directory'|'files';offset?:number;cursor?:string}={}){
@@ -455,19 +535,19 @@ export class ChatSessions {
     const router=this.router(last?.triggerId??'');participants.set(router.id,router)
     for(const worker of workers)participants.set(worker.id,this.worker(worker.id))
     const displaySpeaker=(speaker:Speaker)=>({...speaker,label:speaker.kind==='worker'?workers.find(w=>w.id===speaker.id)?.label??speaker.label:speaker.id===router.id?router.label:this.host.config.execution.router?.label??speaker.label})
-    const latestMessage=this.host.store.db.prepare("SELECT substr(json_extract(body,'$.text'),1,280) AS text,json_extract(body,'$.role') AS role,json_extract(body,'$.speaker') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?) ORDER BY json_extract(body,'$.sequence') DESC LIMIT 1")
+    const latestMessage=this.host.store.db.prepare("SELECT id,json_extract(body,'$.text') AS text,json_extract(body,'$.role') AS role,json_extract(body,'$.speaker') AS speaker FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?) ORDER BY json_extract(body,'$.sequence') DESC LIMIT 1")
     const agents=[router,...[...participants.values()].filter(p=>p.id!==router.id).sort((a,b)=>Number(b.kind==='router')-Number(a.kind==='router'))].map(agent=>{
       const target=agent.id===router.id?null:agent.id,row=latestMessage.get(id,target,target,target)
-      return {...displaySpeaker(agent),latestMessage:row?{text:String(row.text),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
+      return {...displaySpeaker(agent),latestMessage:row?{text:transcriptText(String(row.id),String(row.text)).slice(0,280),role:row.role as 'user'|'assistant',speaker:row.speaker?displaySpeaker(JSON.parse(String(row.speaker))).label:null}:null}
     })
-    const result={conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.status==='streaming')continue
       const files=screenshots.filter(a=>a.runId===message.runId&&(!participant||a.ticketId===message.ticketId))
       if(files.length){message.attachments=[...(message.attachments??[]),...files];for(const file of files)screenshots.splice(screenshots.indexOf(file),1)}
     }
-    return {...result,reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
+    return {...result,tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){

@@ -45,3 +45,6 @@ export const reportSchema = {
     handbacks: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { triggerId: { type: 'string' }, reason: { type: 'string' } }, required: ['triggerId', 'reason'] } },
   }, required: ['state', 'summary', 'reply', 'question', 'askedBy', 'handbacks'],
 }
+
+export const chatReport=report.extend({files:z.array(z.string().min(1).max(1800)).max(10).optional()})
+export const chatReportSchema={...reportSchema,properties:{...reportSchema.properties,files:{type:'array',maxItems:10,items:{type:'string'},description:'Final files for the Chat user, as paths relative to the task workspace. Use an empty array when there is no file to deliver.'}},required:[...reportSchema.required,'files']}

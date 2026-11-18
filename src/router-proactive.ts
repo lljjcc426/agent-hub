@@ -52,6 +52,13 @@ export class RouterProactive {
   return [...this.host.config.rules,...this.duties().filter(d=>d.mode!=='off'&&(!t||entry&&scopeId===d.scopeId&&d.entryIds.includes(entry.id))).map(d=>({id:this.ruleId(d),instruction:d.instruction}))]
  }
  controls(scopeId:string):Controls{return {...defaults,scopeId,...this.host.store.get<Controls>('router-proactive-settings',scopeId)}}
+ chatSchedules(scopeId:string,conversationId:string,nativeId:string,sourceId:string,actor:string){
+  const entry=this.host.scopes.bindings().find(e=>e.nativeId===nativeId&&e.scopeId===scopeId&&e.sourceId===sourceId&&e.privateActor===JSON.stringify([sourceId,actor]))
+  if(!entry)return []
+  return this.host.store.db.prepare(`SELECT p.body FROM records p JOIN records r ON r.kind='chat-run' AND r.id=json_extract(p.body,'$.triggerId')
+    WHERE p.kind='router-schedule' AND json_extract(p.body,'$.scopeId')=? AND json_extract(p.body,'$.entryId')=? AND json_extract(r.body,'$.conversationId')=? ORDER BY p.rowid DESC`)
+    .all(scopeId,entry.id,conversationId).map(row=>JSON.parse(String(row.body)) as Schedule)
+ }
  snapshot(scopeId:string,context?:ScopeContext){
   this.host.scopes.scope(scopeId)
   const inScope=(v:{scopeId:string})=>v.scopeId===scopeId

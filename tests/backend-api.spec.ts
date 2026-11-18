@@ -125,18 +125,25 @@ it.each(kinds)('%s recovers a reset connection in the same session without repea
  const fixture=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=chunk
   const b=JSON.parse(raw);bodies.push(b)
-  if(bodies.length===3){req.socket.destroy();return}
+  if(bodies.length===3){clock+=30000;req.socket.destroy();return}
   const answer=bodies.length===1?output(kind,JSON.stringify({action:'accept',title:'Read marker',scope:'Read marker.txt',reason:'Requested',rules:[],ruleAssessments:[],targetTicketId:null})):
    bodies.length===2?output(kind,'',[{id:'read-once',name:'superagent_read',args:{resource:'files/marker.txt'}}]):output(kind,JSON.stringify({state:'ready',summary:'Read',reply:'retained-tool-result',question:null,askedBy:null,handbacks:[],decision:null}))
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(answer))
  });servers.push(fixture);await new Promise<void>(r=>fixture.listen(0,'127.0.0.1',r))
  const url='http://127.0.0.1:'+(fixture.address() as any).port
  const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},execution:{backend:'test'},backends:{test:definition(kind,url)},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['alice']}]})
- const host=new Runtime(config);hosts.push(host)
+ let clock=Date.parse('2026-12-31T23:59:45Z')
+ const host=new Runtime(config,{clock:()=>clock});hosts.push(host)
  host.receive('local','alice',{id:'request',thread:'recovery',text:'Read marker.txt',addressed:true})
  for(let n=0;n<600;n++){await host.tick();await new Promise(r=>setTimeout(r,5));if(host.store.deliveries().some(d=>d.text==='retained-tool-result'&&d.status==='sent'))break}
  expect(host.store.deliveries().some(d=>d.text==='retained-tool-result'&&d.status==='sent')).toBe(true)
  expect(bodies).toHaveLength(4);expect(JSON.stringify(bodies[3])).toContain('retained-tool-result')
+ const envelope=(body:any)=>JSON.parse((body.messages??body.input).findLast((m:any)=>m.role==='user'&&typeof m.content==='string').content)
+ const initial=envelope(bodies[1]),retry=envelope(bodies[3])
+ expect(initial.runtimeContext).toMatchObject({role:'worker',channel:'local',timeZoneSource:'host'})
+ expect(Date.parse(retry.runtimeContext.localTime)-Date.parse(initial.runtimeContext.localTime)).toBe(30000)
+ expect(retry.runtimeContext.eventAt).toBe(initial.runtimeContext.eventAt)
+ expect(JSON.parse(retry.previousInput)).not.toHaveProperty('runtimeContext')
  const ticket=host.status().tickets[0]!,thread=host.store.get<any>('backend-thread',ticket.run!.threadId!)
  expect(Object.keys(thread.effects)).toEqual(['read-once'])
  expect(thread.turns.map((t:any)=>t.status)).toEqual(['failed','completed'])

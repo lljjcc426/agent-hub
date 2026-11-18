@@ -69,7 +69,8 @@ import {executionEvidenceNotice} from './execution-output.ts'
 import {GoalArtifacts} from './goal-artifacts.ts'
 import {WorkflowActions} from './workflow-actions.ts'
 import {SavedSkills,skillSpecs} from './saved-skills.ts'
-import {RouterProactive,proactiveSpecs,type Intervention} from './router-proactive.ts'
+import {turnContext,withTurnContext} from './turn-context.ts'
+import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
 import {RouterContinuity,journalSpecs} from './router-continuity.ts'
 import {RouterGoals,goalSpecs,type RouterGoal} from './router-goals.ts'
@@ -95,6 +96,11 @@ interface LiveInputs {
   failures:number
 }
 import {ChatSessions,chatToolDetails} from './chat.ts'
+
+function latestSourceTrigger(inputs: TicketInput[]) {
+  const latest=inputs.findLast((i): i is Extract<TicketInput,{kind:'trigger'}> => i.kind==='trigger'&&!i.context)
+  return latest?.triggerId
+}
 
 export class Runtime {
   readonly watchdog:HostWatchdog
@@ -161,10 +167,12 @@ export class Runtime {
   get schedulingPaused(){return this.paused}
   private timer?: ReturnType<typeof setInterval>
   private lock: string
+  private readonly clock: () => number
   private paused = false
   readonly startupSourceIds:readonly string[]
   static async create(config:Config,options:{model?:Model;sources?:Source[];clock?:()=>number;browserDriver?:BrowserDriver;pluginActivation?:string;startupSourceIds?:readonly string[]}={}){loadMarketConfig(config,options.pluginActivation);return new Runtime(config,{...options,sourceRegistry:await SourceRegistry.load(config)})}
   constructor(readonly config: Config, options: { model?: Model; sources?: Source[];sourceRegistry?:SourceRegistry;clock?:()=>number;browserDriver?:BrowserDriver;memoryEmbed?:EmbedMemory;memoryRerank?:import('./memory-rerank.ts').RerankMemory;pluginActivation?:string;startupSourceIds?:readonly string[] } = {}) {
+    this.clock=options.clock??Date.now
     this.startupSourceIds=Object.freeze([...(options.startupSourceIds??config.sources.map(s=>s.id))])
     if(config.sourcePlugins.length&&!options.sourceRegistry)throw Error('Use Runtime.create to load configured source plugins')
     this.sourceRegistry=options.sourceRegistry??new SourceRegistry()
@@ -329,7 +337,8 @@ export class Runtime {
     if(live.context)try{this.memory.validateWorkerTurn(ticketId,live.context)}catch{return}
     for(const input of inputs)live.offered.add(input.id)
     const ids=inputs.map(i=>i.id)
-    const text=JSON.stringify({kind:'source_inputs',ticketId,assignmentId:live.assignmentId,inputs:inputs.map(i=>i.kind==='trigger'?{...i,event:this.store.triggers.get(i.triggerId)}:i)})
+    const envelope={kind:'source_inputs',ticketId,assignmentId:live.assignmentId,inputs:inputs.map(i=>i.kind==='trigger'?{...i,event:this.store.triggers.get(i.triggerId)}:i)}
+    const text=withTurnContext(JSON.stringify(envelope),this.turnEnvironment('worker',latestSourceTrigger(inputs)??ticket.origin.triggerId))
     const consume=()=>{
       const current=this.store.tickets.get(ticketId)
       if(attempt&&!currentWorkerAttempt(this,attempt))return
@@ -465,7 +474,19 @@ export class Runtime {
       instructions:request.instructions+'\nYour opening has been delivered. Now carry out the user request from the preceding turn and report the actual results. Do not repeat the opening.',
     })
   }
-  private async runModel(request:ModelRequest):Promise<ModelResult>{
+  private turnEnvironment(role:NonNullable<ModelRequest['role']>, triggerId?:string, sourceId?:string) {
+    const trigger=triggerId?this.store.triggers.get(triggerId):undefined
+    const run=trigger?.id.startsWith('scheduled:')?this.store.get<ScheduledRun>('router-schedule-run',trigger.id.slice('scheduled:'.length)):undefined
+    const schedule=run&&run.triggerId===trigger?.id?run:undefined
+    const anchor=schedule?.spec.triggerId??triggerId
+    const client=anchor?this.chat.clientContext(anchor):undefined
+    const source=trigger?.source??sourceId
+    return turnContext(this.clock(),role,{
+      ...client,channel:client?'chat':source?this.sources.get(source)?.config.kind:undefined,
+      eventAt:trigger?.at,schedule:schedule?{timeZone:schedule.spec.timing.timezone,dueAt:schedule.scheduledAt}:undefined,
+    })
+  }
+  private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
     const project=()=>context.ticketId?this.goals.forTask(context.ticketId):context.triggerId?this.goals.forInput(context.triggerId):undefined
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
@@ -524,6 +545,7 @@ export class Runtime {
       try{
         this.delegation.beforeActivation(request)
         const activation:ModelRequest={...request,
+          input:withTurnContext(request.input,this.turnEnvironment(role,turnTriggerId,context.sourceId)),
           model:threadId?undefined:request.model??(role==='router'?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
           onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},
@@ -1310,7 +1332,7 @@ export class Runtime {
         onThread: id => { delete run.error;run.toolsVersion=5;run.toolsDigest=toolsDigest; run.waitingForWriter=false; run.threadId = id; persist() },
         onModel:model=>{run.model=model;persist()},
         onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
-      })
+      },latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId)
       live.accepting=false
       await live.delivery
       let current = this.store.tickets.get(ticket.id)
@@ -1554,7 +1576,8 @@ export class Runtime {
     if(!ticket||ticket.ended||!control||this.store.get<Run>('run',id)?.phase!=='running')throw Error('No active turn to steer')
     // Direct operator input is bounded by the existing mandate; source events continue through the durable queue.
     this.store.audit({type:'operator.steer',ticketId:id,text})
-    await control.steer(text)
+    const now=this.clock()
+    await control.steer(withTurnContext(JSON.stringify({kind:'operator_input',text}),turnContext(now,'worker',{channel:'operator',eventAt:new Date(now).toISOString()})))
   }
   updateSettings(revision:number,patch:unknown) {
     this.manager?.validateSettings(patch)

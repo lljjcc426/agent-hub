@@ -132,9 +132,12 @@ it('continues the same task and native thread, asks for ambiguity and never resu
 })
 it('schedules a real durable source event without impersonating a human and distinguishes delivery',async()=>{
  const f=fixture(),anchor=f.receive('Authorize daily check');await until(f.h,()=>f.calls.length===1)
- f.plan(anchor.triggerId);f.advance(1001)
+ f.plan(anchor.triggerId,{timing:{kind:'once',startAt:new Date(f.now()+1000).toISOString(),timezone:'America/St_Johns'}});f.advance(65000)
  await until(f.h,()=>runs(f.h)[0]?.state==='completed'&&runs(f.h)[0]?.delivery==='sent')
  const run=runs(f.h)[0]!,trigger=f.h.store.triggers.get(run.triggerId!)!
+ const turns=f.calls.map(r=>JSON.parse(r.input).runtimeContext).filter(t=>t.scheduledFor)
+ expect(turns.map(t=>t.role)).toEqual(expect.arrayContaining(['router','worker']))
+ for(const turn of turns){expect(turn).toMatchObject({timeZone:'America/St_Johns',timeZoneSource:'schedule',scheduledFor:new Date(run.scheduledAt).toISOString(),eventAt:trigger.at});expect(Date.parse(turn.localTime)-run.scheduledAt).toBe(64000)}
  expect(trigger.human).toBe(false);expect(trigger.meta.origin).toBe('scheduler');expect(f.h.store.list<any>('source-native-proof').some(p=>p.triggerId===trigger.id)).toBe(false)
  expect(run.taskIds).toHaveLength(1);expect(f.h.store.tickets.list()).toHaveLength(1)
  for(let i=0;i<4;i++)await f.h.tick();expect(runs(f.h)).toHaveLength(1)

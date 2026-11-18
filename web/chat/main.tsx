@@ -1010,6 +1010,7 @@ function Chat(p: ChatProps) {
           quote:sentQuote,
           clientMessageId: pending.current.id,
           locale: navigator.language || lang,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           openingLocale: lang,
         });
         accepted=true;
@@ -1197,7 +1198,7 @@ function Chat(p: ChatProps) {
     messagesRef.current=messagesRef.current.map(m=>m.id===messageId?{...m,reactions:update.reactions}:m);
     setSnapshot(s=>s?{...s,messages:messagesRef.current}:s);
     update.promise=(previous?.promise??Promise.resolve(message.reactions??[])).then(async confirmed=>{
-      try{confirmed=(await api<{reactions:string[]}>('/conversations/'+id+'/reactions',{messageId,emoji,active})).reactions}catch{if(alive.current)setError('reaction_failed')}
+      try{confirmed=(await api<{reactions:string[]}>('/conversations/'+id+'/reactions',{messageId,emoji,active,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})).reactions}catch{if(alive.current)setError('reaction_failed')}
       if(reactionWrites.current.get(messageId)===update){
         reactionWrites.current.delete(messageId);
         messagesRef.current=messagesRef.current.map(m=>m.id===messageId?{...m,reactions:confirmed}:m);
@@ -1221,7 +1222,7 @@ function Chat(p: ChatProps) {
       }}
     >
       <WorkflowProvider value={{L,blocks,readonly,actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
-        decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
+        decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
         reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state})}finally{await refresh()}},

@@ -30,6 +30,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import {validTimeZone} from './turn-context.ts'
 import { Runtime } from './runtime.ts'
 import { incomingSchema } from './sources.ts'
 import { deliverDraft } from './delivery.ts'
@@ -63,6 +64,7 @@ import {WebhookError} from './webhook-protocol.ts'
 import {enabledView,viewCatalog,viewArtifactReference,viewVersion} from './workspace-view-package.ts'
 import {viewQuerySchema,workspaceViewData} from './workspace-view-data.ts'
 
+const chatTimeZone = z.string().min(1).max(100).refine(validTimeZone, 'Use an IANA time zone').optional()
 const approvalIdSchema = z.union([z.string().uuid(),z.string().regex(/^permission:[a-f0-9]{64}$/)])
 
 export async function serve(runtime: Runtime,options:{configurationPreview?:boolean;createRuntime?:(config:Config,activationId?:string,startupSourceIds?:readonly string[])=>Runtime|Promise<Runtime>;pluginGitHub?:PluginGitHub;clientHome?:string;clientName?:string}={}) {
@@ -590,11 +592,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         }
         if(action==='decisions'&&req.method==='POST'){
           const input=z.union([
-            z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional()}).strict(),
+            z.object({messageId:z.string().min(1).max(500),answer:z.string().trim().min(1).max(8000),locale:z.string().max(100).optional(),timeZone:chatTimeZone}).strict(),
             z.object({action:z.enum(['answer','renew']),id:z.string().min(1).max(1000),version:z.string().regex(/^[a-f0-9]{64}$/),requestId:z.string().uuid(),text:z.string().trim().min(1).max(10000).optional()}).strict()
           ]).parse(await operatorBody(req))
           if('action' in input){send(res,200,runtime.chat.decide(id,owner,input));return}
-          send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale));return
+          send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale,input.timeZone));return
         }
         if(action==='schedules'&&req.method==='PATCH'){
           const input=z.object({id:z.string().min(1).max(300),active:z.boolean(),operationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(await body(req))
@@ -621,11 +623,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,await runtime.chat.files(id,owner,input));return
         }
         if(action==='reactions'&&req.method==='POST'){
-          const input=z.object({messageId:z.string().min(1).max(500),emoji:z.string().min(1).max(32),active:z.boolean()}).strict().parse(await body(req))
+          const input=z.object({messageId:z.string().min(1).max(500),emoji:z.string().min(1).max(32),active:z.boolean(),timeZone:chatTimeZone}).strict().parse(await body(req))
           send(res,200,runtime.chat.react(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().max(100000),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().max(100000),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(10).optional(),clientMessageId:z.string().uuid(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input));return
         }
         if(action==='cancel'&&req.method==='POST'){

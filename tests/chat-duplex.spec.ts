@@ -62,9 +62,10 @@ it('keeps its Worker running during further conversation and reports completion 
    return {reply:'Started the background task.'}
   }finally{active--}
  },true)
- f.send('Please fix the bug')
+ f.h.chat.send(f.c.id,'local-operator',{text:'Please fix the bug',clientMessageId:randomUUID(),locale:'en-GB',timeZone:'Asia/Kathmandu'})
  try{
   await settle(f.h,()=>!!worker&&f.view().messages.some(m=>m.status==='streaming'))
+  expect(JSON.parse(worker!.input).runtimeContext).toMatchObject({role:'worker',channel:'chat',timeZone:'Asia/Kathmandu',timeZoneSource:'browser',locale:'en-GB'})
   f.send('Keep talking')
   expect(worker!.signal!.aborted).toBe(false)
   expect(f.h.store.list('router-cancelled')).toEqual([])
@@ -88,11 +89,12 @@ it('accepts consecutive HTTP messages while preserving authentication and conver
  try{
   const headers={authorization:'Bearer '+readFileSync(join(f.root,'state/access-token'),'utf8').trim(),'content-type':'application/json'}
   const path=server.url+'/api/chat/conversations/'+f.c.id+'/messages'
-  const body=JSON.stringify({text:'First request',clientMessageId:randomUUID()})
+  const body=JSON.stringify({text:'First request',clientMessageId:randomUUID(),timeZone:'America/New_York'})
   expect((await fetch(path,{method:'POST',body})).status).toBe(401)
   expect((await fetch(path,{method:'POST',headers:{...headers,origin:'https://other.example'},body})).status).toBe(403)
   const other=f.h.chat.create('another-owner')
   expect((await fetch(server.url+'/api/chat/conversations/'+other.id+'/messages',{method:'POST',headers,body})).status).toBe(404)
+  expect((await fetch(path,{method:'POST',headers,body:JSON.stringify({...JSON.parse(body),timeZone:'Mars/Olympus'})})).status).toBe(400)
   expect((await fetch(path,{method:'POST',headers,body})).status).toBe(202)
   expect((await fetch(path,{method:'POST',headers,body:JSON.stringify({text:'Second request',clientMessageId:randomUUID()})})).status).toBe(202)
   expect(f.view().messages.filter(m=>m.role==='user')).toHaveLength(2)
@@ -101,12 +103,17 @@ it('accepts consecutive HTTP messages while preserving authentication and conver
 
 it('recovers queued messages after restart without duplicate admission or overlapping Router turns',async()=>{
  const f=fixture(async r=>({reply:'Reply to '+JSON.parse(r.input).trigger.text})),messageId=randomUUID()
- const sent=f.send('First request',messageId);f.send('Second request')
+ const sent=f.h.chat.send(f.c.id,'local-operator',{text:'First request',clientMessageId:messageId,timeZone:'Pacific/Auckland',locale:'en-GB'});f.send('Second request')
  await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
- const h=new Runtime(f.config,{model:f.model});hosts.push(h)
+ let now=Date.parse('2026-01-01T10:59:59Z')
+ const h=new Runtime(f.config,{model:f.model,clock:()=>{const at=now;now+=2000;return at}});hosts.push(h)
  expect(h.chat.send(f.c.id,'local-operator',{text:'First request',clientMessageId:messageId})).toEqual({runId:sent.runId,duplicate:true})
  await settle(h,()=>!h.chat.view(f.c.id,'local-operator').reply)
  expect(f.calls).toHaveLength(2)
+ const first=JSON.parse(f.calls[0]!.input).runtimeContext,second=JSON.parse(f.calls[1]!.input).runtimeContext
+ expect(first).toMatchObject({role:'router',localTime:expect.stringContaining('+13:00'),timeZone:'Pacific/Auckland',timeZoneSource:'browser',channel:'chat',locale:'en-GB',eventAt:h.store.triggers.get(sent.runId)!.at})
+ expect(second).toMatchObject({timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,timeZoneSource:'host'})
+ expect(Date.parse(second.localTime)).toBeGreaterThan(Date.parse(first.localTime))
  expect(h.chat.view(f.c.id,'local-operator').messages.map(m=>m.text)).toEqual(['First request','Second request','Reply to First request','Reply to Second request'])
 })
 

@@ -86,12 +86,13 @@ export class RouterProactive {
   return this.host.store.atomic(()=>{
    const old=this.host.store.get<any>('proactive-receipt',key)
    if(old){if(old.fingerprint!==fingerprint)throw Error('operationId reused with different content');return old.result}
-   const result=this.apply(x,context)
+   const timing=(value as z.input<typeof proactiveCommandSchema>).schedule?.timing
+   const result=this.apply(x,context,!!timing&&timing.timezone===undefined)
    this.host.store.put('proactive-receipt',key,{fingerprint,scopeId:x.scopeId,result});this.host.store.audit({type:'router.proactive.command',action:x.action,scopeId:x.scopeId,operationId:x.operationId});return result
   })
  }
  private revision(actual:number,expected:number|undefined){if(actual!==expected)throw Error('Revision conflict; refresh before retrying')}
- private apply(x:Command,context?:ScopeContext):unknown{
+ private apply(x:Command,context:ScopeContext|undefined,defaultTimeZone:boolean):unknown{
   const store=this.host.store
   if(x.action==='settings.put'){
    if(!x.settings)throw Error('settings required');const previous=this.controls(x.scopeId);this.revision(previous.revision,x.expectedRevision)
@@ -119,6 +120,7 @@ export class RouterProactive {
   if(x.action==='schedule.put'){
    if(!x.schedule)throw Error('schedule required')
    const spec=x.schedule,anchor=store.triggers.get(spec.triggerId)
+   if(defaultTimeZone)spec.timing.timezone=old?.timing.timezone??this.host.chat.clientContext(spec.triggerId)?.clientTimeZone??Intl.DateTimeFormat().resolvedOptions().timeZone
    if(!anchor||!anchor.human||this.runForTrigger(anchor.id))throw Error('Schedule needs an original human authorization')
    const a=this.host.routerIngress.get(anchor.id),c=a&&this.host.scopes.context(anchor,a.discussion)
    if(!c||c.route.scopeId!==x.scopeId||this.host.routerIngress.authority(anchor.id).strength!=='explicit'||!this.host.scopes.canManage(c))throw Error('Schedule anchor requires a current explicit scope manager')

@@ -47,6 +47,7 @@ export function composeExecutionPrompt(config:Config,input:ExecutionPrompt){
    part(input.managedGoal?'runtime/worker/goal':input.delegated?'runtime/worker/continuation':'runtime/worker/standalone')
   }
  }
+ add('turn-context','The current input includes host runtimeContext. Use localTime and timeZone for current calendar questions. Anchor relative requests to eventAt when available. An explicit time zone in the request takes precedence. For a scheduled run, scheduledFor is its intended instant and localTime is the actual dispatch time.','host:turn-context')
  if(config.prompts.personality)add('team-personality','Shared personality (communication style; preserve role and current task requirements):\n'+config.prompts.personality,'settings:prompts.personality')
  const persona=input.role==='router'?routerPersona(input.persona):input.persona
  const agentPrompt=input.agentPrompt??(input.role==='router'?routerWorkingRules:undefined)

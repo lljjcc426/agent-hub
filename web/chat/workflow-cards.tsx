@@ -14,7 +14,11 @@ type Plan = {
   steps: { id: string; title: string; state?: PublicPlan['steps'][number]['state']; workerId?: string }[]
   live: boolean
 }
-type Block = { plans: Plan[]; calls: Snapshot['calls']; approvals: Request[] }
+type FlowItem =
+  | {kind:'plan'; at:number; plan:Plan}
+  | {kind:'call'; at:number; call:Snapshot['calls'][number]}
+  | {kind:'approval'; at:number; approval:Request}
+type Block=FlowItem[]
 const internalTools = new Set([
   'chat_request_decision',
   'chat_preview_cards',
@@ -30,42 +34,40 @@ export function groupWorkflow(
 ) {
   const blocks = new Map<string, Block>()
   if (!snapshot) return blocks
-  const turns = new Map<string, string>(),
-    tickets = new Map<string, string>()
-  for (const m of messages) {
-    if (!turns.has(m.runId) || m.role === 'user') turns.set(m.runId, m.id)
-    if (m.ticketId && !tickets.has(m.ticketId)) tickets.set(m.ticketId, m.id)
+  const byRun=new Map<string,Snapshot['messages']>()
+  for(const message of messages){
+    const turn=byRun.get(message.runId)??[]
+    turn.push(message)
+    byRun.set(message.runId,turn)
   }
-  const find = (run: string, ticket?: string) => (ticket && tickets.get(ticket)) || turns.get(run)
-  function block(id: string) {
-    if (!blocks.has(id)) blocks.set(id, { plans: [], calls: [], approvals: [] })
-    return blocks.get(id)!
+  function add(runId:string,ticketId:string|undefined,item:FlowItem,active:boolean){
+    const turn=byRun.get(runId)??[]
+    // Place the event after the preceding visible message, also when the Worker transcript is filtered.
+    const before=turn.filter(m=>m.createdAt<=item.at)
+    const anchor=(ticketId&&before.findLast(m=>m.ticketId===ticketId)?.id)||before.at(-1)?.id||turn[0]?.id||(active?'pending':undefined)
+    if(!anchor)return
+    const block=blocks.get(anchor)??[]
+    block.push(item);blocks.set(anchor,block)
   }
-  const graphs = new Set<string>()
-  for (const goal of snapshot.plans) {
-    if (workerId) continue
-    const id = find(goal.runId) ?? (goal.state === 'active' ? 'pending' : undefined)
-    if (id) {
-      graphs.add(goal.runId)
-      block(id).plans.push({ ...goal, live: goal.state === 'active' })
-    }
+  const graphs=new Set<string>()
+  for(const goal of snapshot.plans){
+    if(workerId)continue
+    graphs.add(goal.runId)
+    add(goal.runId,undefined,{kind:'plan',at:goal.createdAt,plan:{...goal,live:goal.state==='active'}},goal.state==='active')
   }
-  for (const p of snapshot.publicPlans) {
-    if ((workerId && workerId !== p.workerId) || (!p.workerId && graphs.has(p.runId))) continue
-    const id = find(p.runId, p.ticketId) ?? (p.live ? 'pending' : undefined)
-    if (id) block(id).plans.push(p)
+  for(const p of snapshot.publicPlans){
+    if(workerId&&workerId!==p.workerId||!p.workerId&&graphs.has(p.runId))continue
+    add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
   }
-  for (const call of snapshot.calls) {
-    if (workerId && workerId !== call.workerId) continue
-    const id = find(call.runId, call.ticketId) ?? (call.state === 'running' ? 'pending' : undefined)
-    if (!id) continue
-    if (call.kind === 'tool' && !internalTools.has(call.name)) block(id).calls.push(call)
+  for(const call of snapshot.calls){
+    if(call.kind!=='tool'||internalTools.has(call.name)||workerId&&workerId!==call.workerId)continue
+    add(call.runId,call.ticketId,{kind:'call',at:call.startedAt,call},call.state==='running')
   }
-  for (const a of snapshot.approvals) {
-    if (workerId && a.workerId !== workerId) continue
-    const id = find(a.runId, a.ticketId) ?? (a.state === 'pending' ? 'pending' : undefined)
-    if (id) block(id).approvals.push(a)
+  for(const approval of snapshot.approvals){
+    if(workerId&&workerId!==approval.workerId)continue
+    add(approval.runId,approval.ticketId,{kind:'approval',at:approval.createdAt,approval},approval.state==='pending')
   }
+  for(const block of blocks.values())block.sort((a,b)=>a.at-b.at)
   return blocks
 }
 
@@ -73,6 +75,7 @@ type FlowProps = {
   L: Localize
   blocks: Map<string, Block>
   readonly: boolean
+  actor:(id:string)=>string
   decide: (id: string, answer: string) => Promise<void>
   readDraft: (id: string) => Promise<{ text: string }>
   reviewFile: (id: string, state: 'approved' | 'denied') => Promise<void>
@@ -155,7 +158,7 @@ export function RouterDecision({ id, decision }: { id: string; decision: ChatDec
         options={decision.options.map((o, i) => ({
           id: String(i),
           label: o.label,
-          detail: o.detail ?? '',
+          detail: [o.label===decision.defaultOption&&!decision.answer?L('Using this option','正按此选项进行'):null,o.detail].filter(Boolean).join(' · '),
         }))}
         answer={decision.answer ?? null}
         disabled={busy || readonly}
@@ -167,7 +170,7 @@ export function RouterDecision({ id, decision }: { id: string; decision: ChatDec
 }
 
 function NativeCard({ request: a }: { request: Request }) {
-  const { L, authorize, readonly } = useContext(Flow)!,
+  const { L, authorize, readonly, actor } = useContext(Flow)!,
     { busy, submit, error } = useSubmit(L)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const pending = a.state === 'pending',
@@ -223,6 +226,7 @@ function NativeCard({ request: a }: { request: Request }) {
     )
   }
   const labels: Record<string, string> = {
+    tool:L('Tool','工具'),action:L('Action','操作'),change:L('Change','变更'),target:L('Target','目标'),version:L('Version','版本'),branch:L('Branch','分支'),sha:L('Commit','提交'),connection:L('Connection','连接'),access:L('Access','访问权限'),
     command: L('Command', '命令'),
     commandActions: L('Command actions', '命令操作'),
     cwd: L('Directory', '工作目录'),
@@ -234,7 +238,15 @@ function NativeCard({ request: a }: { request: Request }) {
     proposedExecpolicyAmendment: L('Suggested command rule', '建议的命令规则'),
     proposedNetworkPolicyAmendments: L('Suggested network rules', '建议的网络规则'),
   }
+  const actionTitles:Record<string,string>={
+    superagent_shell:a.facts.target?L('Write to shared directory','写入共享目录'):a.facts.access==='network'?L('Run command with network access','联网运行命令'):L('Run command','运行命令'),
+    superagent_publish:L('Publish draft','发布草稿'),superagent_review:L('Submit review','提交评审'),
+    superagent_workflow:L('Change issue status','修改事项状态'),superagent_ack:L('Send reply','发送回复'),
+    superagent_browser:L('Interact with page','操作网页'),workspace_browser:L('Interact with page','操作网页'),
+    worker_manage:L('Change Worker','更改 Worker'),router_knowledge:L('Change document','更改文档'),
+  }
   const titles: Record<string, string> = {
+    'roppo/tool': actionTitles[a.facts.tool??'']??a.facts.tool??L('Run this action','执行本次操作'),
     'item/commandExecution/requestApproval': L('Run command', '执行命令'),
     'item/fileChange/requestApproval': L('Change files', '修改文件'),
     'item/permissions/requestApproval': L('Grant permissions', '授予权限'),
@@ -244,7 +256,8 @@ function NativeCard({ request: a }: { request: Request }) {
       <ApprovalCard
         L={L}
         title={titles[a.method] ?? L('Authorization request', '授权请求')}
-        risk={a.workerId}
+        risk={actor(a.workerId)}
+        statusLabel={'executionState' in a && typeof a.executionState==='string' ? ({uncertain:L('Outcome unconfirmed','结果待核对'),failed:L('Execution failed','执行失败'),cancelled:L('Cancelled','已取消')} as Record<string,string>)[a.executionState] : undefined}
         state={a.state === 'answered' ? 'resolved' : a.state}
         details={Object.entries(a.facts).map(([key, value]) => ({ label: labels[key] ?? key, value }))}
         disabled={disabled}
@@ -266,25 +279,28 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
     completed: L('Completed', '已完成'),
     blocked: L('Blocked', '受阻'),
   }
-  return (
-    <section className="roppo-ui workflow-block" aria-label={L('Run activity', '执行活动')}>
-      {b.plans.map((p) => (
-        <div className="workflow-plan" key={p.id}>
-          <AgentPlan
-            L={L}
-            title={p.title}
-            live={p.live}
-            steps={p.steps.map((s) => ({
-              ...s,
-              tool: [s.workerId, s.state && states[s.state]].filter(Boolean).join(' · '),
-            }))}
-          />
-        </div>
-      ))}
-      {!!b.calls.length && tools(b.calls)}
-      {b.approvals.map((a) => (
-        <NativeCard key={a.id} request={a} />
-      ))}
-    </section>
-  )
+  const rows:ReactNode[]=[]
+  let previous:Snapshot['calls']=[]
+  function flush(){
+    if(previous.length)rows.push(<div key={previous[0]!.id}>{tools(previous)}</div>)
+    previous=[]
+  }
+  for(const item of b){
+    if(item.kind==='call'){
+      const last=previous.at(-1)
+      if(last&&(last.parentId!==item.call.parentId||last.workerId!==item.call.workerId))flush()
+      previous.push(item.call)
+      continue
+    }
+    flush()
+    if(item.kind==='approval')rows.push(<NativeCard key={item.approval.id} request={item.approval}/>)
+    else {
+      const p=item.plan
+      rows.push(<div className="workflow-plan" key={p.id}>
+        <AgentPlan L={L} title={p.title} live={p.live} steps={p.steps.map(s=>({...s,tool:[s.workerId,s.state&&states[s.state]].filter(Boolean).join(' · ')}))}/>
+      </div>)
+    }
+  }
+  flush()
+  return <section className="roppo-ui workflow-block" aria-label={L('Run activity','执行活动')}>{rows}</section>
 }

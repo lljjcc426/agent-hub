@@ -75,7 +75,7 @@ export class WorkManager {
    this.put(item);this.store.put('work-request',key,item.id);return {item,fresh:true}
   })
  }
- async shell(owner:WorkOwner,command:string,requestId:string,yieldMs=5000){
+ async shell(owner:WorkOwner,command:string,requestId:string,yieldMs=5000,writablePaths?:string[]){
   if(this.config.work.sandboxDriver==='disabled')throw Error('Managed shell is disabled; configure a sandbox driver before requesting commands')
   if(this.config.work.sandboxDriver==='seatbelt'&&process.platform!=='darwin')throw Error('Seatbelt sandbox requires macOS')
   if(this.config.work.sandboxDriver==='bubblewrap'&&process.platform!=='linux')throw Error('Bubblewrap sandbox requires Linux')
@@ -84,7 +84,7 @@ export class WorkManager {
    const spec=join(this.directory,item.id+'.spec.json')
    const gitDirectory=owner.cwd===projectWorkspace(this.config.stateDir,owner.ticketId)?undefined:linkedGitDirectory(owner.cwd)
    const attachments=this.store.list<any>('asset').filter(a=>a.ticketId===owner.ticketId).map(a=>a.path)
-   writeFileSync(spec,JSON.stringify({id:item.id,command,cwd:owner.cwd,sandbox:owner.sandbox,codex:this.config.codex,sandboxDriver:this.config.work.sandboxDriver,network:this.config.work.network&&(owner.network??true),privateState:this.config.stateDir,privatePaths:hostPrivateFiles(),gitDirectory,attachments,hostPid:process.pid,hostLock:join(this.config.stateDir,'host.lock'),directory:this.directory,maxOutputBytes:this.config.work.maxOutputBytes}),{mode:0o600,flag:'wx'})
+   writeFileSync(spec,JSON.stringify({id:item.id,command,cwd:owner.cwd,sandbox:owner.sandbox,codex:this.config.codex,sandboxDriver:this.config.work.sandboxDriver,network:this.config.work.network&&(owner.network??true),privateState:this.config.stateDir,privatePaths:hostPrivateFiles(),gitDirectory,attachments,writablePaths,hostPid:process.pid,hostLock:join(this.config.stateDir,'host.lock'),directory:this.directory,maxOutputBytes:this.config.work.maxOutputBytes}),{mode:0o600,flag:'wx'})
    try{
     const child=startSandboxRunner(spec)
     this.runners.set(item.id,child)

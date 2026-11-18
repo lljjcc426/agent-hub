@@ -19,6 +19,7 @@ const steps = z
 export const publicPlanSchema = z.object({ title: label, steps }).strict()
 export type PublicPlan = z.infer<typeof publicPlanSchema>
 export interface ChatPlan extends PublicPlan {
+  createdAt?:number
   id: string
   conversationId: string
   runId: string
@@ -36,6 +37,7 @@ export const publicPlanTool: ToolSpec = {
 export const decisionSchema = z
   .object({
     question: z.string().trim().min(1).max(1000),
+    defaultOption: label.optional(),
     options: z
       .array(z.object({ label, detail: z.string().trim().max(500).optional() }).strict())
       .min(2)
@@ -52,7 +54,7 @@ export const decisionTool: ToolSpec = {
   type: 'function',
   name: 'chat_request_decision',
   description:
-    'When progress genuinely depends on a user preference, present one concrete question and distinct choices in their language. A custom reply is also possible. The selection arrives as a new quoted user message. After presenting it, end this turn without guessing or repeating the question. Do routine work autonomously. This is not a permission grant.',
+    "For a worthwhile preference, present one concrete question and distinct choices in the user's language. For a reversible choice, set defaultOption to an exact option label and continue using it immediately; the user can steer later. Omit the default when the user explicitly wants to decide or a consequential step genuinely needs their answer. A custom reply is also possible. The selection arrives as a new quoted user message. After presenting it, continue any independent steps. Leave only the work that needs the answer pending. Do not poll or repeat the question. This is not a permission grant.",
   inputSchema: z.toJSONSchema(decisionSchema, { target: 'draft-7', io: 'input' }),
 }
 export function goalPlan(goal: RouterGoal) {
@@ -68,7 +70,7 @@ export function goalPlan(goal: RouterGoal) {
   const steps = goal.nodes?.length
     ? goal.nodes.map((n) => ({ id: n.id, title: n.title, state: states[n.state], workerId: n.workerId }))
     : goal.plan.map((title, i) => ({ id: String(i), title, state: undefined, workerId: undefined }))
-  return { id: goal.id, runId: goal.triggerId, title: goal.title, state: goal.state, steps }
+  return { id: goal.id, runId: goal.triggerId, createdAt:goal.at,title: goal.title, state: goal.state, steps }
 }
 export interface NativeQuestion {
   id: string
@@ -77,6 +79,10 @@ export interface NativeQuestion {
   isOther?: boolean
   isSecret?: boolean
 }
+export function isApprovalPending(approval: { state: string; expiresAt: number | null }, now = Date.now()) {
+  return approval.state === 'pending' && (approval.expiresAt === null || approval.expiresAt > now)
+}
+
 export function publicApproval(a: Approval) {
   const { method, params } = a.native
   const facts: Record<string, string> = {}
@@ -113,7 +119,7 @@ export function publicApproval(a: Approval) {
     runId: a.chat!.runId,
     workerId: a.chat!.workerId,
     createdAt: a.createdAt,
-    expiresAt: a.expiresAt,
+    expiresAt: a.key ? null : a.expiresAt,
     state: a.status === 'resolved' ? (a.outcome ?? ('resolved' as const)) : a.status,
     method,
     facts,

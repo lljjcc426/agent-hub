@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { commands, pendingDecisions } from './commands.ts'
 import type { Snapshot } from './client.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 
 const exec = promisify(execFile)
 export interface Choice {
@@ -150,12 +151,11 @@ export function suggestions(
       .filter(
         (a) =>
           a.ticketId === approval[2] &&
-          a.state === 'pending' &&
-          a.expiresAt > Date.now() &&
+          isApprovalPending(a) &&
           (approval[1] === 'answer') === (a.method === 'item/tool/requestUserInput')
       )
       .map((a) => ({
-        label: a.facts.command ?? a.questions[0]?.question ?? a.method,
+        label: a.facts.command ?? a.questions[0]?.question ?? a.facts.tool ?? a.method,
         detail: a.facts.cwd ?? a.workerId,
         value:
           '/' + approval[1] + ' ' + a.ticketId + ' ' + a.id + (approval[1] === 'answer' ? ' ' : '')
@@ -174,16 +174,37 @@ export function suggestions(
     const name = match[1]!,
       q = match[2]!.toLowerCase(),
       needsId = ['approve', 'decline', 'answer'].includes(name)
-    const candidates = tasks.filter((t) =>
-      [t.id, t.title, t.workerId, t.state].join(' ').toLowerCase().includes(q)
+    const showRequests = needsId || name === 'approvals'
+    const candidates = new Map<string, { id: string; title: string; workerId: string; state: string }>(
+      tasks.map((task) => [task.id, task])
     )
-    const items = candidates.map((t) => ({
-      label: t.title || t.id,
-      detail: t.workerId + ' · ' + t.state,
-      value: '/' + name + ' ' + t.id + (needsId ? ' ' : ''),
-      submit: !needsId && name !== 'stop'
-    }))
-    return { title: 'Worker tasks', items, start: 0, end: cursor, empty: 'No matching tasks' }
+    if (showRequests && view) {
+      for (const a of view.approvals) {
+        if (!isApprovalPending(a) || candidates.has(a.ticketId)) continue
+        if (needsId && (name === 'answer') !== (a.method === 'item/tool/requestUserInput')) continue
+        candidates.set(a.ticketId, {
+          id: a.ticketId,
+          title: a.facts.tool ?? a.method,
+          workerId: a.workerId,
+          state: 'pending'
+        })
+      }
+    }
+    const items = [...candidates.values()]
+      .filter((t) => [t.id, t.title, t.workerId, t.state].join(' ').toLowerCase().includes(q))
+      .map((t) => ({
+        label: t.title || t.id,
+        detail: t.workerId + ' · ' + t.state,
+        value: '/' + name + ' ' + t.id + (needsId ? ' ' : ''),
+        submit: !needsId && name !== 'stop'
+      }))
+    return {
+      title: showRequests ? 'Tasks and requests' : 'Worker tasks',
+      items,
+      start: 0,
+      end: cursor,
+      empty: 'No matching tasks'
+    }
   }
   const mention = /(?:^|\s)@(?:"([^"\n]*)|([^\s"@]*))$/.exec(before)
   if (!mention) return

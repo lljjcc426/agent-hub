@@ -100,6 +100,13 @@ export class ToolConnections {
     }while(cursor)
     return result.filter(t=>config.allowedTools.includes(t.name))
   }
+  async permission(owner:WorkOwner,id:string,name:string){
+    const config=this.allowed(owner,id)
+    const tool=(await this.tools(owner,id,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs)]))).find(t=>t.name===name)
+    if(!tool)throw Error('Tool is not advertised by the configured connection')
+    return {readOnly:config.transport.kind==='plugin'||tool.annotations?.readOnlyHint===true&&tool.annotations.destructiveHint!==true,
+      version:stableDigest([config,tool.inputSchema])}
+  }
   async catalog(owner:WorkOwner,selection:{connection?:string;tool?:string}={}){
     const ids:string[]=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.toolConnections??[]
     const result=[]

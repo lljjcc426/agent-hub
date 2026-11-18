@@ -1,5 +1,21 @@
 const { app, BrowserWindow, dialog, Menu, shell } = require('electron')
 
+const path = require('node:path')
+const { serveFeed } = require('./update/feed.cjs')
+
+async function startUpdater() {
+  const sparkle = require(path.join(process.resourcesPath, 'roppo-sparkle.node'))
+  const directory = path.join(app.getPath('appData'), 'Roppo Updates', 'releases')
+  const { server, url } = await serveFeed(directory)
+  try {
+    sparkle.start(url)
+  } catch (error) {
+    server.close()
+    throw error
+  }
+  return sparkle
+}
+
 const workspace = new URL('http://127.0.0.1:4337/chat')
 let mainWindow
 let ready = false
@@ -89,8 +105,22 @@ if (!app.requestSingleInstanceLock()) {
   app.on('activate', openWorkspace)
   app.on('window-all-closed', () => { /* On macOS the Dock can reopen the window. */ })
   app.whenReady().then(() => {
+    const updater = startUpdater().catch(error => {
+      console.error('Unable to start Roppo updates:', error.message)
+      return null
+    })
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { role: 'appMenu' },
+      { label: app.name, submenu: [
+        { role: 'about' },
+        { label: '检查更新…', click: async () => {
+          const sparkle = await updater
+          if (sparkle) sparkle.check()
+          else void dialog.showMessageBox({ type: 'error', message: '更新组件未能启动，请重新打开 Roppo。' })
+        } },
+        { type: 'separator' }, { role: 'services' }, { type: 'separator' },
+        { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+        { type: 'separator' }, { role: 'quit' }
+      ] },
       { role: 'editMenu' },
       { label: '显示', submenu: [
         { role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' },

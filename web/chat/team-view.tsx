@@ -20,7 +20,9 @@ import type { ChatSessions } from '../../src/chat.ts'
 import type { ChatDelivery } from '../../src/chat-deliveries.ts'
 import type { Timing } from '../../src/schedule-time.ts'
 import { downloadUrl } from './delivery-links.ts'
-import { AgentAvatar } from './agent-avatar.tsx'
+import { AgentAvatar, teamName } from './agent-avatar.tsx'
+import {TeamContext,type LoadTeamContext} from './team-context.tsx'
+import type {Handoff} from './handoff-stage.tsx'
 import { taskActivities } from './task-activity.ts'
 
 const DeliveryMarkdown = lazy(() => import('./markdown.tsx').then((m) => ({ default: m.FileMarkdown })))
@@ -34,7 +36,7 @@ const tabs = [
   { id: 'agents', Icon: Users },
   { id: 'schedules', Icon: CalendarClock },
 ] as const
-export const teamName = (label: string) => (label.replace(/(?:^Router$| · Router$)/, '').trim() || 'Roppo')
+
 
 function fileSize(bytes: number) {
   return bytes < 1024
@@ -188,6 +190,10 @@ export function scheduleLabel(t: Timing, lang: string, L: Localize) {
 }
 
 interface TeamOverviewProps {
+  readiness?:View['readiness']|null
+  loadContext:LoadTeamContext
+  connected:boolean
+  replay:(events:Handoff[])=>void
   cards?: ReactNode
   focusOnOpen: boolean
   snapshot: View | null
@@ -204,6 +210,7 @@ interface TeamOverviewProps {
   changeSchedule: (plan: Schedule) => Promise<void>
 }
 export function TeamOverview({
+  readiness,loadContext,connected,replay,
   cards,
   focusOnOpen,
   snapshot,
@@ -348,6 +355,7 @@ export function TeamOverview({
                         {participants.find(p => p.id === ticket.workerId)?.label ?? ticket.workerId} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state)}
                         <ArrowUpRight size={13}/>
                       </button>
+                      {snapshot?.handoffs?.some(h=>h.ticketId===ticket.id)&&<button type="button" className="handoff-replay" onClick={()=>replay(snapshot.handoffs.filter(h=>h.ticketId===ticket.id))}><Play size={12}/>{L('Replay handoffs','回放任务交接')}</button>}
                       {(ticket.question || ticket.summary) && <p>{ticket.question || ticket.summary}</p>}
                     </div>)}
                   </div>
@@ -364,19 +372,7 @@ export function TeamOverview({
             )}
           </>
         ) : tab === 'agents' ? (
-          <>
-            <h3>Agents</h3>
-            {participants.map((a) => (
-              <button className="team-row" key={a.id} onClick={() => select(a.id)}>
-                <AgentAvatar id={a.id} kind={a.kind} size={34} />
-                <span>
-                  <strong>{a.kind === 'router' ? teamName(a.label) : a.label}</strong>
-                  <small>{a.latestMessage?.text || L('No messages yet', '暂无消息')}</small>
-                </span>
-                <ChevronRight size={15} />
-              </button>
-            ))}
-          </>
+          <TeamContext key={snapshot?.conversation.id} participants={participants} readiness={snapshot?.readiness??readiness} snapshot={snapshot} select={select} load={loadContext} L={L} lang={lang} connected={connected}/>
         ) : (
           <>
             <h3>{L('Scheduled tasks', '定时任务')}</h3>

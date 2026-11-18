@@ -190,3 +190,5 @@
 .rp-decision form .rp-input > input {
   min-width:0; min-height:36px; border:0; border-radius:inherit; box-shadow:none; background:transparent;
 }
+.rp-crew-usage{display:flex;align-items:baseline;justify-content:space-between;gap:4px;font-variant-numeric:tabular-nums}
+.rp-crew-usage b{font-weight:600}

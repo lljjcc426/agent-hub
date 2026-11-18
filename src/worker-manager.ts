@@ -154,7 +154,7 @@ export class WorkerManager {
    host.store.put('worker-assignment',decision.ticketId,assignment)
    if(context?.trigger)for(const ref of origin.threads)if(ref.source===source.id)host.engine.followForContext(decision.ticketId,ref)
    if(context?.scoped){const owner=host.scopes.own(decision.ticketId,context.scoped,worker.backend);if(context.manifest)host.store.put('task-context',decision.ticketId,{manifest:{...context.manifest,taskOwners:[...context.manifest.taskOwners,{id:decision.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1}]}})}
-   if(context?.trigger)host.chat.delegated(key,context.trigger.id,decision.ticketId,worker.id,input.text+(input.acceptance?'\n'+input.acceptance:''))
+   if(context?.trigger)host.chat.delegated(key,context.trigger.id,decision.ticketId,worker.id,input.text+(input.acceptance?'\n'+input.acceptance:''),true)
    return complete({...assignment,status:'queued',revision:host.settings.current().revision})
   })
   if(input.action==='send')return host.store.atomic(()=>{

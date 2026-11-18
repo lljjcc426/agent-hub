@@ -13,8 +13,11 @@ export interface TeamMember {
   model: string
   task: string
   working: boolean
-  tokens: number
-  capacity: number
+  portrait?: ReactNode
+  usageFallback?: string
+  statusLabel?: string
+  tokens: number | null
+  capacity: number | null
   tools: string[]
 }
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
@@ -39,22 +42,22 @@ function CrewNode({
       onClick={onClick}
     >
       <span className="rp-node-heading">
-        <AgentAvatar id={member.id} kind={member.kind} size={22} />
+        {member.portrait ?? <AgentAvatar id={member.id} kind={member.kind} size={22} />}
         <strong>{member.name}</strong>
         <i
           className="rp-live-dot"
           data-working={member.working}
-          aria-label={member.working ? '工作中' : '待命'}
+          aria-label={member.statusLabel ?? (member.working ? '工作中' : '待命')}
         />
       </span>
       <small>{member.model}</small>
       <span className="rp-node-task">{member.task}</span>
-      <span className="rp-meter">
-        <i style={{ width: Math.min(100, (100 * member.tokens) / member.capacity) + '%' }} />
-      </span>
-      <small>
-        {number(member.tokens)} / {number(member.capacity)}
-      </small>
+      {member.tokens !== null && member.capacity !== null && member.capacity > 0 ? <>
+        <span className="rp-meter"><i style={{width: Math.min(100,100*member.tokens/member.capacity)+'%'}}/></span>
+        <small className="rp-crew-usage">{number(member.tokens)} / {number(member.capacity)}
+          <b>{Math.round(100*member.tokens/member.capacity)}%</b>
+        </small>
+      </> : <small>{member.tokens !== null && number(member.tokens)+' · '}{member.usageFallback ?? '暂无读数'}</small>}
     </button>
   )
 }
@@ -75,7 +78,7 @@ export function AgentCrew({
     <CrewNode key={m.id} member={m} selected={m.id === current.id} onClick={() => onSelect(m.id)} />
   )
   return (
-    <div className="rp-crew">
+    <div className="rp-crew" data-many={workers.length>2 || undefined}>
       <div className="rp-crew-lead">{node(lead)}</div>
       {workers.length > 0 && (
         <>
@@ -102,12 +105,12 @@ export function AgentCrew({
           </div>
         </>
       )}
-      <SwitchView>
+      {current.tools.length > 0 && <SwitchView>
         <div className="rp-node-detail">
           <strong>{current.name}</strong>
           <span>{current.tools.join(' · ')}</span>
         </div>
-      </SwitchView>
+      </SwitchView>}
     </div>
   )
 }

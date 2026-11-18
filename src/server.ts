@@ -572,9 +572,10 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|approvals|decisions|file-reviews))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
+        if(action==='team-context'&&req.method==='GET'){send(res,200,runtime.chat.teamContext(id,owner));return}
         if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner,query.get('activity')??undefined));return}
         if(action==='file-reviews'){
           const messageId=z.string().min(1).max(500)

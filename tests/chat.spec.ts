@@ -810,7 +810,7 @@ it('keeps conversation owners isolated while following current Router options',a
 })
 it('projects real Router-to-Worker dialogue with distinct speakers and no extra external deliveries',async()=>{
   const {h,calls}=fixture(async r=>{
-    if(r.role==='worker')return report
+    if(r.role==='worker'){r.onModel?.('research-model');r.onUsage?.({id:'final',inputTokens:521,contextWindowTokens:2048});return report}
     if(JSON.parse(r.input).kind==='user_message'){
       const value=await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:'work',id:'research',text:'Check evidence'},'tool')
       expect(value.success).toBe(true);return {reply:'I have assigned the research.'}
@@ -820,6 +820,11 @@ it('projects real Router-to-Worker dialogue with distinct speakers and no extra 
   const c=h.chat.create('owner');h.chat.send(c.id,'owner',{text:'Check the evidence',clientMessageId:randomUUID(),locale:'en-GB'})
   await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='I reviewed the Worker result.'))
   const view=h.chat.view(c.id,'owner')
+  const live=h.chat.view(c.id,'owner',undefined,undefined,undefined,undefined,undefined,true)
+  expect(live.handoffs.map(e=>e.kind)).toEqual(['assignment','result'])
+  expect(live.handoffs.map(e=>[e.from.id,e.to.id])).toEqual([[view.routerId,'research'],['research',view.routerId]])
+  const readings=h.chat.teamContext(c.id,'owner').filter(r=>r.role==='worker')
+  expect(readings).toEqual([expect.objectContaining({ticketId:view.workers[0]!.tasks[0]!.id,workerId:'research',model:'research-model',inputTokens:521,capacity:2048,reportedAt:expect.any(Number),session:expect.any(String)})])
   expect(calls.map(r=>r.role)).toEqual(['router','worker','router'])
   for(const call of calls)expect(call.instructions).toContain('"replyLocale":"en-GB"')
   expect(calls[1]!.instructions).toContain('"agentName":"Research"')
@@ -830,6 +835,34 @@ it('projects real Router-to-Worker dialogue with distinct speakers and no extra 
   expect(view.messages.map(m=>m.id).length).toBe(new Set(view.messages.map(m=>m.id)).size)
   expect(h.store.deliveries().filter(d=>!d.channel.address.routerInbox).map(d=>d.text)).not.toContain('Worker result')
 })
+it('isolates task, model session and retry context without estimating missing provider readings',()=>{
+  const {h}=fixture(),chat=h.chat.create('owner'),other=h.chat.create('other')
+  function call(id:string,conversationId:string,workerId:string,ticketId:string,sessionKey:string,startedAt:number){
+    h.store.put('chat-call',id,{id,kind:'worker',workerId,ticketId,conversationId,startedAt,state:'running'})
+    h.usage.begin(id,'worker',{workerId,ticketId})
+    h.usage.update(id,{sessionKey})
+    h.usage.attempt(id,0,'running')
+  }
+  call('old',chat.id,'research','task1','session1',1)
+  h.usage.record('old',0,{id:'turn',inputTokens:90,contextWindowTokens:100})
+  call('current',chat.id,'research','task1','session1',2)
+  h.usage.record('current',0,{id:'first',inputTokens:20,contextWindowTokens:100})
+  h.usage.record('current',0,{id:'second',inputTokens:8})
+  call('second-session',chat.id,'research','task1','session2',3)
+  call('other-task',chat.id,'research','task2','session1',4)
+  call('other-worker',chat.id,'review','task3','session1',5)
+  call('private',other.id,'research','task1','session1',6)
+  const rows=h.chat.teamContext(chat.id,'owner')
+  expect(rows.map(r=>r.activity)).toEqual(['other-worker','other-task','second-session','current'])
+  expect(rows.at(-1)).toMatchObject({inputTokens:8,capacity:null,reportedAt:expect.any(Number)})
+  h.usage.attempt('current',1,'running')
+  expect(h.chat.teamContext(chat.id,'owner').at(-1)).toMatchObject({inputTokens:null,capacity:null,reportedAt:null})
+  h.usage.record('current',1,{id:'first',inputTokens:0,contextWindowTokens:512})
+  h.usage.record('current',0,{id:'late',inputTokens:99})
+  expect(h.chat.teamContext(chat.id,'owner').at(-1)).toMatchObject({inputTokens:0,capacity:512,reportedAt:expect.any(Number)})
+  expect(()=>h.chat.teamContext(chat.id,'other')).toThrow('not found')
+})
+
 it('cancels queued work without ever calling a model and permits a subsequent message',async()=>{
   const {h,calls}=fixture(),c=h.chat.create('owner'),run=send(h,c.id)
   await h.chat.cancel(c.id,'owner',run.runId);await h.tick()

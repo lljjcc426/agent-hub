@@ -187,6 +187,7 @@ export function scheduleLabel(t: Timing, lang: string, L: Localize) {
 }
 
 interface TeamDrawerProps {
+  hidden?: boolean
   snapshot: View | null
   participants: View['participants']
   routerLabel: string
@@ -201,6 +202,7 @@ interface TeamDrawerProps {
   changeSchedule: (plan: Schedule) => Promise<void>
 }
 export function TeamDrawer({
+  hidden,
   snapshot,
   participants,
   routerLabel,
@@ -246,7 +248,7 @@ export function TeamDrawer({
     }
   }
   return (
-    <aside id="session-panel" className="session-panel team-drawer" aria-label={L('Team panel', '团队面板')}>
+    <aside id={hidden ? undefined : 'session-panel'} hidden={hidden} className="session-panel chat-inspector team-drawer" aria-label={L('Team panel', '团队面板')}>
       <div className="team-drawer-head">
         <div className="team-profile">
           <span className="team-portrait">

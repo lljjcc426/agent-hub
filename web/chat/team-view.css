@@ -57,7 +57,7 @@
 .team-file strong,.team-row strong {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600}
 .team-file small,.team-row small {color:var(--team-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .team-file>svg,.team-row>svg:last-child {color:var(--team-muted)}
-.session-panel.team-drawer {width:min(360px,32vw);min-width:290px;flex:0 0 auto;padding:0 19px;display:flex;flex-direction:column;border-left:1px solid var(--team-line);background:var(--team-paper);animation:team-drawer-in .28s var(--team-ease)}
+.session-panel.chat-inspector {width:min(360px,32vw);min-width:290px;flex:0 0 auto;padding:0 19px;display:flex;flex-direction:column;border-left:1px solid var(--team-line);background:var(--team-paper);color:var(--team-ink);animation:team-drawer-in .28s var(--team-ease)}
 .team-drawer-head,.team-profile,.team-drawer-foot {display:flex;align-items:center}
 .team-drawer-head {justify-content:space-between;padding:24px 0 19px;gap:8px}
 .team-drawer-head>.icon-button {align-self:flex-start}
@@ -90,7 +90,7 @@
 .team-file-preview pre {white-space:pre-wrap;overflow-wrap:anywhere;margin:0;line-height:1.6}
 .team-file-dialog footer>span {font-size:12px;color:var(--team-muted)}
 .delivery-download {display:flex;align-items:center;gap:6px;background:var(--team-action);color:var(--team-on-action);border-radius:8px;padding:8px 14px}
-.panel-overlay .session-panel.team-drawer {position:absolute;inset:0 0 0 auto;z-index:10;width:min(100%,390px);min-width:0}
+.panel-overlay .session-panel.chat-inspector {position:absolute;inset:0 0 0 auto;z-index:10;width:min(100%,390px);min-width:0}
 @container chat-main (max-width:680px) {
   .conversation-body .thread {--chat-gutter:16px}
   .conversation-body .composer-area {padding:9px 12px max(10px,env(safe-area-inset-bottom))}
@@ -98,11 +98,11 @@
   .conversation-body .composer-input {font-size:16px}
   .conversation-body .composer .team-chip {display:none}
 }
-@media (max-width:700px) {.panel-overlay .session-panel.team-drawer {width:100%;border:0}}
+@media (max-width:700px) {.panel-overlay .session-panel.chat-inspector {width:100%;border:0}}
 @keyframes team-content-in {from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes team-drawer-in {from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce) {
-  .session-panel.team-drawer,.team-tab-content {animation:none}
+  .session-panel.chat-inspector,.team-tab-content {animation:none}
   .team-tabs::after,.team-file {transition:none}
 }
 

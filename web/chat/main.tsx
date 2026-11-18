@@ -49,7 +49,8 @@ import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamDrawer,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,groupWorkflow} from './workflow-cards.tsx';
-import {CommandInput} from './composer-commands.tsx';
+import {CommandInput, type ChatCommand} from './composer-commands.tsx';
+import {ContextDrawer} from './context-drawer.tsx';
 import {ToolCallCard} from '../ui/agent-team.tsx';
 import {SwitchView,switchView} from '../ui/transitions.tsx';
 import '../ui/theme.css';
@@ -693,9 +694,12 @@ function Chat(p: ChatProps) {
   const [resources, setResources] = useState(() =>
     initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
   );
-  const panel = resources.visible
+  const resource = resources.visible
     ? resources.tabs.find((tab) => tab.id === resources.active)?.kind ?? "new"
     : null;
+  const [command, setCommand] = useState<ChatCommand | null>(null);
+  const panel = command ?? resource;
+  useEffect(() => { if (configuring) setCommand(null); }, [configuring]);
   const [pendingWebsite, setPendingWebsite] = useState(() => {
     try { return sessionStorage.getItem("roppo.website." + id) || ""; } catch { return ""; }
   });
@@ -710,6 +714,7 @@ function Chat(p: ChatProps) {
     [pickerRequest, setPickerRequest] = useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
+    setCommand(null);
     if (next === "browser" && !id) {
       if (creating.current) return;
       creating.current = true;
@@ -726,7 +731,7 @@ function Chat(p: ChatProps) {
       return;
     }
     if (url) setPendingWebsite(url);
-    if(next&&!panel)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    if(next&&!resource)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
     setResources((state) => next ? openResource(state, next) : { ...state, visible: false });
     if (!next) setPanelExpanded(false);
   };
@@ -1154,14 +1159,13 @@ function Chat(p: ChatProps) {
         if (menu) {
           closeNavigation();
         } else if (panel) {
-          void choosePanel(null);
-          (panelOpener.current?.isConnected?panelOpener.current:teamButton.current)?.focus();
+          closePanel();
         }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, closeNavigation]);
+  }, [menu, panel, resource, panelOverlay, closeNavigation]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1169,8 +1173,21 @@ function Chat(p: ChatProps) {
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
-  const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId)};
-  const closePanel=()=>{void choosePanel(null);requestAnimationFrame(()=>(panelOpener.current?.isConnected?panelOpener.current:teamButton.current)?.focus())};
+  const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setCommand(null)};
+  function closePanel() {
+    if (command) {
+      setCommand(null);
+      requestAnimationFrame(() => {
+        const target = resource && panelOverlay
+          ? bodyRef.current?.querySelector<HTMLElement>('#session-panel button:not(:disabled)')
+          : threadRef.current?.querySelector<HTMLElement>('.composer-input');
+        target?.focus({preventScroll: true});
+      });
+    } else {
+      void choosePanel(null);
+      requestAnimationFrame(() => (panelOpener.current?.isConnected ? panelOpener.current : teamButton.current)?.focus({preventScroll: true}));
+    }
+  }
   const readAgent=(agentId:string)=>{selectAgent(agentId);void choosePanel(null);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
   const quoteMessage=(value:DraftQuote)=>{
     saveQuote(value);selectAgent(currentRouter.id);
@@ -1355,7 +1372,7 @@ function Chat(p: ChatProps) {
               <ThreadPrimitive.Root
                 ref={threadRef}
                 className="thread"
-                inert={panelExpanded || (panelOverlay && !!panel)}
+                inert={(!command && panelExpanded) || (panelOverlay && !!panel)}
               >
                 <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                   <div className="transcript-inner">
@@ -1409,7 +1426,7 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <CommandInput conversationId={id} visible={!configuring} L={L} load={loadContext} consume={commandAction}
+                    <CommandInput visible={!configuring} L={L} onCommand={setCommand} consume={commandAction}
                       className="composer-input"
                       placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
                       aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
@@ -1449,10 +1466,11 @@ function Chat(p: ChatProps) {
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                 </div>
               </ThreadPrimitive.Root>
-              {panel==='activity'?<TeamDrawer snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L} tab={teamTab} setTab={setTeamTab} close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
+              {resource==='activity'?<TeamDrawer hidden={!!command} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L} tab={teamTab} setTab={setTeamTab} close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                 changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}
-              />:panel ? (
+              />:resource ? (
                 <ResourceWorkspace
+                  hidden={!!command}
                   state={resources}
                   browser={id && !configuring ? {conversationId:id, requestedSession:browserRequest,
                     requestedUrl:pendingWebsite, onUrlConsumed:consumeWebsite} : undefined}
@@ -1463,11 +1481,15 @@ function Chat(p: ChatProps) {
                   onClose={closePanel}
                   L={L}
                 >
-                  {panel === "files" ? (
+                  {resource === "files" ? (
                     <FilesPanel conversationId={id} L={L} />
                   ) : null}
                 </ResourceWorkspace>
               ) : null}
+              {command === 'context' && !configuring && !readonly && (
+                <ContextDrawer key={JSON.stringify([current?.backend, current?.model])} conversationId={id}
+                  L={L} load={loadContext} overlay={panelOverlay} onClose={closePanel} />
+              )}
             </div>
             </div></SwitchView>
           </main>

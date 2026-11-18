@@ -4,13 +4,14 @@ import { closeResource, openResource, resourceUrl, type ResourceState, type Reso
 import { BrowserPanel, type BrowserPages, type BrowserPanelProps } from './browser.tsx';
 import './resource-workspace.css';
 type Props = {
+  hidden?: boolean;
   state: ResourceState; onChange: (state: ResourceState) => void;
   onOpen: (kind: ResourceKind, url?: string) => void;
   browser?: Pick<BrowserPanelProps, 'conversationId' | 'requestedSession' | 'requestedUrl' | 'onUrlConsumed'>;
   onClose: () => void; expanded: boolean; onExpand: () => void;
   L: (en:string,zh:string)=>string; children: ReactNode;
 };
-export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpand,L,children,browser}:Props) {
+export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpand,L,children,browser,hidden}:Props) {
   const [query,setQuery]=useState('');
   const tabsRef=useRef<HTMLDivElement>(null);
   const active=state.tabs.find(t=>t.id===state.active)!;
@@ -63,7 +64,7 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
       onOpen(kind);
       if (kind === 'browser' && pages?.canEdit) void pages.create();
     };
-    return <aside id="session-panel" className={'session-panel resource-workspace'+(expanded?' expanded':'')} aria-label={L('Session panel','会话面板')}>
+    return <aside id={hidden ? undefined : 'session-panel'} hidden={hidden} className={'session-panel resource-workspace'+(expanded?' expanded':'')} aria-label={L('Session panel','会话面板')}>
     <header className="resource-tabbar">
       <div className="resource-tabs" role="tablist" ref={tabsRef} aria-label={L('Workspace tabs','工作标签页')}
         onKeyDown={event=>{
@@ -113,6 +114,6 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
   </aside>;
   }
   if (browser && state.tabs.some(tab => tab.kind === 'browser'))
-    return <BrowserPanel {...browser} L={L} visible={active.kind==='browser'} renderWorkspace={renderWorkspace}/>;
+    return <BrowserPanel {...browser} L={L} visible={!hidden && active.kind==='browser'} renderWorkspace={renderWorkspace}/>;
   return renderWorkspace(undefined, null);
 }

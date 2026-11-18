@@ -10,6 +10,7 @@ import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
+import {measureChatInput} from '../src/chat-input.ts'
 import {createServer,type Server} from 'node:http'
 import {chatUploadLimits} from '../src/chat-attachments.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
@@ -24,6 +25,157 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+
+it('keeps a public plan through a decision and browses the Router inputs from the same conversation and model',async()=>{
+  const {h}=fixture(async r=>{
+    const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'
+    const stage=first?'running':'completed'
+    await r.onTool!('superagent_plan',{title:'Guide',steps:[{id:'draft',title:'Write the guide',state:stage}]},'plan')
+    if(first)await r.onTool!('chat_request_decision',{question:'Which language?',options:[{label:'English'},{label:'Chinese'}]},'ask')
+    r.onUsage?.({id:'earlier',inputTokens:600,outputTokens:40})
+    r.onUsage?.({id:'latest',inputTokens:123,outputTokens:12,contextWindowTokens:2048})
+    r.onBudget?.({basis:'native-protocol',phase:'turn',bytes:700,maxBytes:2000,reservedBytes:100,status:'within_budget'})
+    return {reply:first?'':'Guide ready.'}
+  }),c=h.chat.create('owner'),other=h.chat.create('another-owner')
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+  const first=send(h,c.id,'Prepare the guide')
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='waiting')
+  const m=h.chat.view(c.id,'owner').messages.find(m=>m.decision)!
+  expect(h.chat.view(c.id,'owner').publicPlans[0]?.steps[0]?.state).toBe('running')
+  expect(()=>h.chat.answerDecision(other.id,'another-owner',m.id,'English')).toThrow('no longer available')
+  const reply=h.chat.answerDecision(c.id,'owner',m.id,'English','en')
+  expect(h.chat.answerDecision(c.id,'owner',m.id,'English')).toEqual({...reply,duplicate:true})
+  expect(()=>h.chat.answerDecision(c.id,'owner',m.id,'Chinese')).toThrow('already has an answer')
+  await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='Guide ready.'))
+  const view=h.chat.view(c.id,'owner')
+  expect(view.publicPlans).toHaveLength(1)
+  expect(view.publicPlans[0]).toMatchObject({runId:first.runId,steps:[{state:'completed'}]})
+  expect(view.messages.filter(m=>m.role==='user')).toHaveLength(2)
+  expect(view.messages.find(m=>m.text==='English')?.quote?.messageId).toBe(m.id)
+  const latest=h.chat.contextUsage(c.id,'owner')
+  expect(latest).toMatchObject({inputTokens:123,modelInputs:[600,123],capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
+  expect(latest.composition!.system).toBeGreaterThan(0)
+  expect(latest.composition!.tools).toBeGreaterThan(0)
+  const prior=h.chat.contextUsage(c.id,'owner',latest.previous!)
+  expect(prior).toMatchObject({activity:latest.previous,previous:null,modelInputs:[600,123]})
+  expect(()=>h.chat.contextUsage(other.id,'another-owner',prior.activity!)).toThrow('not found')
+  h.store.db.prepare("DELETE FROM records WHERE kind='chat-context-input' AND id=?").run(prior.activity)
+  expect(h.chat.contextUsage(c.id,'owner',prior.activity!)).toMatchObject({composition:null,inputTokens:123})
+  expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
+  h.config.execution.router!.model='other-model'
+  expect(()=>h.chat.contextUsage(c.id,'owner',latest.activity!)).toThrow('not found')
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+})
+
+it('keeps a cancelled question closed when the user quotes it in a later turn',async()=>{
+  const {h}=fixture(),c=h.chat.create('owner'),run=send(h,c.id,'Choose a format')
+  const {messageId}=h.chat.requestDecision(run.runId,{question:'Format?',options:[{label:'CSV'},{label:'Markdown'}]})
+  await h.chat.cancel(c.id,'owner',run.runId)
+  expect(()=>h.chat.answerDecision(c.id,'owner',messageId,'CSV')).toThrow('no longer active')
+  h.chat.send(c.id,'owner',{text:'What was this question for?',clientMessageId:randomUUID(),quote:{messageId}})
+  const question=h.chat.view(c.id,'owner').messages.find(m=>m.id===messageId)!.decision!
+  expect(question.closed).toBe(true)
+  expect(question.replyRunId).toBeUndefined()
+})
+
+it('accounts for Router input in UTF-8 bytes and counts each included file reference, including on a retry',()=>{
+  const file={id:'asset/upload-1',name:'会“议”.md'}, memory={facts:[{text:'Use "brief" notes.'}]}
+  const input=JSON.stringify({trigger:{text:'好😀',meta:{attachments:[file]}},messages:[{meta:{attachments:[file]}}],memory})
+  const base={instructions:'系统😀',schema:{type:'object'},tools:[]}
+  for(const embedded of [false,true]){
+    const body=embedded?JSON.stringify({retry:1,previousInput:input}):input
+    const encoded=(data:object)=>{const raw=JSON.stringify(data);return Buffer.byteLength(embedded?JSON.stringify(raw).slice(1,-1):raw)}
+    const sizes=measureChatInput({...base,input:body})
+    expect(sizes).toMatchObject({tools:0,system:Buffer.byteLength(base.instructions)+Buffer.byteLength(JSON.stringify(base.schema)),memory:encoded(memory),
+      attachments:encoded(file)*2,files:[{id:'upload-1',name:file.name,bytes:encoded(file)*2}]})
+    expect(sizes.conversation+sizes.attachments+sizes.memory).toBe(Buffer.byteLength(body))
+    expect(JSON.stringify(sizes)).not.toContain('brief')
+  }
+  expect(measureChatInput({...base,input:'你好'})).toMatchObject({conversation:6,memory:0,attachments:0,files:[]})
+})
+
+it('holds exact draft bytes across restart and publishes them once on the owner’s approval',async()=>{
+  const draft={name:'验收.csv',content:'步骤,结果\r\n确认,可下载 ✅\r\n',requireApproval:true}
+  const f=fixture(async r=>{
+    expect(r.tools?.some(t=>t.name==='chat_preview_cards')).toBe(false)
+    const result=await r.onTool!('chat_deliver_file',draft,'draft')
+    expect(result.success).toBe(true)
+    return {reply:''}
+  }),c=f.h.chat.create('owner'),other=f.h.chat.create('other')
+  send(f.h,c.id,'Let me review before delivery')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='waiting')
+  const m=f.h.chat.view(c.id,'owner').messages.find(m=>m.fileReview)!
+  const id=m.fileReview!.fileId
+  expect(f.h.chat.view(c.id,'owner').deliveries).toEqual([])
+  expect(()=>f.h.chat.delivery(c.id,'owner',id)).toThrow('unavailable')
+  expect(()=>f.h.chat.fileReviewText(other.id,'other',m.id)).toThrow('no longer available')
+  expect(()=>f.h.chat.answerFileReview(c.id,'other',m.id,'approved')).toThrow('not found')
+  await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
+  const h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  expect(h.chat.fileReviewText(c.id,'owner',m.id)).toEqual({text:draft.content})
+  for(let i=0;i<2;i++)expect(h.chat.answerFileReview(c.id,'owner',m.id,'approved')).toEqual({state:'approved'})
+  expect(()=>h.chat.answerFileReview(c.id,'owner',m.id,'denied')).toThrow('closed')
+  expect(h.chat.view(c.id,'owner').deliveries.map(f=>f.id)).toEqual([id])
+  expect(Buffer.from(h.chat.delivery(c.id,'owner',id).bytes)).toEqual(Buffer.from(draft.content))
+})
+
+it('ties the decision to one version and keeps a declined revision out of deliveries',async()=>{
+  const {h}=fixture(),c=h.chat.create('owner')
+  const first=send(h,c.id,'Review the first draft')
+  const name='release.md'
+  h.chat.deliverText(first.runId,{name,content:'first',requireApproval:true})
+  const last=()=>h.chat.view(c.id,'owner').messages.filter(m=>m.fileReview).at(-1)!
+  const old=last()
+  const next=send(h,c.id,'Revise the draft')
+  const revision={name,content:'second'}
+  const result=h.chat.deliverText(next.runId,revision)
+  expect(result).toMatchObject({state:'pending'})
+  expect(h.chat.deliverText(next.runId,revision)).toEqual(result)
+  expect(()=>h.chat.answerFileReview(c.id,'owner',old.id,'approved')).toThrow('closed')
+  expect(()=>h.chat.delivery(c.id,'owner',old.fileReview!.fileId)).toThrow('unavailable')
+  const current=last()
+  for(let i=0;i<2;i++)h.chat.answerFileReview(c.id,'owner',current.id,'denied')
+  expect(()=>h.chat.answerFileReview(c.id,'owner',current.id,'approved')).toThrow('closed')
+  expect(h.chat.deliverText(next.runId,revision)).toMatchObject({state:'denied'})
+  expect(h.chat.view(c.id,'owner').deliveries).toEqual([])
+  expect(()=>h.chat.fileReviewText(c.id,'owner',current.id)).toThrow('closed')
+  h.chat.deliverText(next.runId,{name,content:'third'})
+  const third=last()
+  await h.chat.cancel(c.id,'owner',next.runId)
+  expect(last().fileReview?.state).toBe('cancelled')
+  expect(()=>h.chat.answerFileReview(c.id,'owner',third.id,'approved')).toThrow()
+  expect(h.chat.view(c.id,'owner').deliveries).toEqual([])
+})
+
+it('resumes only the requesting Worker when its Chat owner answers a native approval and a private question',async()=>{
+  const decisions:unknown[]=[]
+  const {h}=fixture(async r=>{
+    if(r.role==='worker'){
+      decisions.push(await r.onHumanRequest!({id:'a',method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:'/project'}}))
+      decisions.push(await r.onHumanRequest!({id:'b',method:'item/tool/requestUserInput',params:{questions:[{id:'word',question:'Check word?',isSecret:true}]}}))
+      return report
+    }
+    if(JSON.parse(r.input).kind==='user_message')await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:'native',id:'research',text:'Check the report'},'assign')
+    return {reply:'Received.'}
+  }),c=h.chat.create('owner'),other=h.chat.create('other')
+  send(h,c.id)
+  const requests=()=>h.chat.view(c.id,'owner').approvals
+  await settle(h,()=>requests().length===1)
+  const a=requests()[0]!
+  expect(a).toMatchObject({state:'pending',facts:{command:'pwd',cwd:'/project'},workerId:'research'})
+  expect(h.chat.view(c.id,'owner',undefined,'review').approvals).toEqual([])
+  expect(()=>h.chat.answerApproval(other.id,'other',a.id,'accept')).toThrow('not found')
+  h.chat.answerApproval(c.id,'owner',a.id,'accept')
+  expect(()=>h.chat.answerApproval(c.id,'owner',a.id,'accept')).toThrow('no longer active')
+  await settle(h,()=>requests().length===2)
+  const question=requests()[1]!
+  expect(()=>h.chat.answerApproval(c.id,'owner',question.id,{})).toThrow('could not accept')
+  h.chat.answerApproval(c.id,'owner',question.id,{word:{answers:['private-answer']}})
+  await settle(h,()=>h.chat.view(c.id,'owner').tasks.some(t=>t.state==='completed'))
+  expect(decisions).toEqual([{decision:'accept'},{answers:{word:{answers:['private-answer']}}}])
+  expect(requests().map(a=>a.state)).toEqual(['approved','answered'])
+  expect(JSON.stringify(h.store.get('approval',question.id))).not.toContain('private-answer')
+})
 async function settle(h:Runtime,done:()=>boolean){for(let i=0;i<500;i++){await h.tick();await new Promise(r=>setTimeout(r,2));if(done())return}throw Error('Chat did not settle')}
 function waitForAbort(r:ModelRequest){return new Promise<void>((resolve)=>{if(r.signal?.aborted)return resolve();r.signal?.addEventListener('abort',()=>resolve(),{once:true})})}
 function enableChatBatch(h:Runtime,id:string,settings:Record<string,number>={}){
@@ -155,11 +307,14 @@ it('admits built-in Chat when other entries already use scoped Routers without b
 })
 
 it('keeps automatically bound Chat memory private to its signed-in owner',async()=>{
- const {h}=fixture(),existing=h.chat.create('existing-owner');enableChatBatch(h,existing.id)
+ const {h,calls}=fixture(),existing=h.chat.create('existing-owner');enableChatBatch(h,existing.id)
  const first=h.chat.space('owner',true).conversation!,second=h.chat.space('another-owner',true).conversation!
  const sent=send(h,first.id,'Remember my reporting preference'),trigger=h.store.triggers.get(sent.runId)!,context=h.scopes.context(trigger,'local:chat:'+first.id)!,source=h.memory.ingest(context)
  h.memory.command(context,{action:'remember',operationId:'private-chat-memory',expectedRevision:0,subject:'Reporting preference',content:'Result before evidence',sourceIds:[source.id],visibility:'private',candidate:false},true)
  await settle(h,()=>h.chat.view(first.id,'owner').run?.state==='completed')
+ const memory=JSON.parse(calls.find(r=>r.activity?.triggerId===sent.runId&&r.role==='router')!.input).memory
+ expect(JSON.stringify(memory)).toContain('Result before evidence')
+ expect(h.chat.contextUsage(first.id,'owner').composition?.memory).toBe(Buffer.byteLength(JSON.stringify(memory)))
  const other=h.chat.send(second.id,'another-owner',{clientMessageId:randomUUID(),text:'What do you remember?'})
  await settle(h,()=>h.chat.view(second.id,'another-owner').run?.state==='completed')
  const otherContext=h.scopes.context(h.store.triggers.get(other.runId)!,'local:chat:'+second.id)!

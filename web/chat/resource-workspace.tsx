@@ -1,30 +1,32 @@
-import { SidebarSeparator } from "./sidebar-separator.tsx";
-import { useCallback, useRef, useState, type ReactNode } from 'react';
-import { Folder, Globe, Users, Plus, X, Maximize2, Minimize2, Search, ArrowUpRight } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Folder, Globe, Plus, X, Maximize2, Minimize2, Search, ArrowUpRight } from 'lucide-react';
 import { closeResource, openResource, resourceUrl, type ResourceState, type ResourceKind } from './resource-state.ts';
 import { BrowserPanel, type BrowserPages, type BrowserPanelProps } from './browser.tsx';
 import './resource-workspace.css';
 type Props = {
+  hidden?: boolean;
   state: ResourceState; onChange: (state: ResourceState) => void;
   onOpen: (kind: ResourceKind, url?: string) => void;
   browser?: Pick<BrowserPanelProps, 'conversationId' | 'requestedSession' | 'requestedUrl' | 'onUrlConsumed'>;
   onClose: () => void; expanded: boolean; onExpand: () => void;
   L: (en:string,zh:string)=>string; children: ReactNode;
 };
-export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpand,L,children,browser}:Props) {
+export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpand,L,children,browser,hidden}:Props) {
   const [query,setQuery]=useState('');
   const tabsRef=useRef<HTMLDivElement>(null);
   const active=state.tabs.find(t=>t.id===state.active)!;
   const entries=[
     {kind:'browser' as const,Icon:Globe,label:L('Browser','浏览器')},
     {kind:'files' as const,Icon:Folder,label:L('Files','文件')},
-    {kind:'activity' as const,Icon:Users,label:L('Team activity','团队动态')},
   ];
   const meta=(kind:ResourceKind)=>entries.find(e=>e.kind===kind)??{kind:'new',Icon:Plus,label:L('New tab','新标签页')};
   const revealSelected = useCallback((node: HTMLButtonElement | null) => {
     node?.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
   }, []);
   const selectedTab = () => tabsRef.current?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]');
+  useEffect(() => {
+    if (!hidden) selectedTab()?.focus({preventScroll:true});
+  }, [hidden]);
   const focusSelected = () => requestAnimationFrame(() => selectedTab()?.focus());
   const closeView = (id:string) => {onChange(closeResource(state,id));focusSelected();};
   const url=resourceUrl(query);
@@ -64,9 +66,10 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
       onOpen(kind);
       if (kind === 'browser' && pages?.canEdit) void pages.create();
     };
-    return <aside id="session-panel" className={'session-panel resource-workspace'+(expanded?' expanded':'')} aria-label={L('Session panel','会话面板')}>
-      <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel", "会话面板")} />
+    const backLabel = L('Back to conversation overview','返回会话概览');
+    return <div className="resource-surface" hidden={hidden}>
     <header className="resource-tabbar">
+      <button type="button" className="icon-button resource-back" onClick={()=>onOpen('activity')} aria-label={backLabel} title={backLabel}><ArrowLeft size={16}/></button>
       <div className="resource-tabs" role="tablist" ref={tabsRef} aria-label={L('Workspace tabs','工作标签页')}
         onKeyDown={event=>{
           if((event.target as HTMLElement).getAttribute('role')!=='tab')return;
@@ -83,7 +86,7 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
         {tabs.map(({id,Icon,label,selected,disabled,closeLabel,closeDisabled,page,select,close})=>
           <div className={'resource-tab'+(selected?' active':'')} key={id} data-webpage={page || undefined}>
             <button role="tab" id={'resource-tab-'+id} aria-selected={selected} aria-controls="resource-content"
-              ref={selected?revealSelected:undefined} tabIndex={selected?0:-1} onClick={select} title={label} disabled={disabled}>
+              ref={selected&&!hidden?revealSelected:undefined} tabIndex={selected?0:-1} onClick={select} title={label} disabled={disabled}>
               <Icon size={15}/><span>{label}</span>
             </button>
             <button className="resource-tab-close" tabIndex={selected?0:-1} aria-label={closeLabel}
@@ -110,11 +113,11 @@ export function ResourceWorkspace({state,onChange,onOpen,onClose,expanded,onExpa
             {state.recent.map(r=>{const {Icon,label}=meta(r.kind);return <button key={r.kind} onClick={()=>onOpen(r.kind)}><span className="resource-recent-icon"><Icon size={18}/></span><span>{label}</span><time dateTime={new Date(r.at).toISOString()}>{new Intl.DateTimeFormat(L('en','zh-CN'),{hour:'2-digit',minute:'2-digit'}).format(r.at)}</time></button>;})}
           </section>:null}
         </div>
-      </div>:active.kind==='browser'?browserContent:children}
+      </div>:active.kind==='browser'?(hidden?null:browserContent):children}
     </div>
-  </aside>;
+  </div>;
   }
   if (browser && state.tabs.some(tab => tab.kind === 'browser'))
-    return <BrowserPanel {...browser} L={L} visible={active.kind==='browser'} renderWorkspace={renderWorkspace}/>;
+    return <BrowserPanel {...browser} L={L} visibility={hidden ? 'hidden' : active.kind==='browser' ? 'page' : 'tabs'} renderWorkspace={renderWorkspace}/>;
   return renderWorkspace(undefined, null);
 }

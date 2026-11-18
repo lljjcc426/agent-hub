@@ -106,6 +106,9 @@ function languagePicker() {
   return language
 }
 function render(focusTitle = false) {
+  // The shell snapshots the outgoing page before committing the next route.
+  const stage = typeof configurationHost !== 'undefined' && configurationHost?.element?.closest('.workspace-page-stage')
+  if (stage && stage.dataset.route !== location.pathname + location.search + location.hash) return
   globalThis[Symbol.for('roppo.tab-motion')]?.capture()
   const motionSnapshot = WorkspaceMotion.capture()
   workflowStoryUnmount()

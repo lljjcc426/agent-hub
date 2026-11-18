@@ -7,6 +7,6 @@ export const accountPage = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark"><title>Roppo</title>
 <script>${asset('theme-init.js')}</script><link rel="icon" href="${roppoMark}">
-<style>:root{--roppo-mark:url('${roppoMark}')}\n${asset('typography.css')}\n${asset('auth-page.css')}</style></head>
+<style>:root{--roppo-mark:url('${roppoMark}')}\n${asset('typography.css')}\n${asset('page-motion.css')}\n${asset('auth-page.css')}</style></head>
 <body><div id="account-app"><p class="boot-message" role="status">Opening Roppo…</p></div><noscript>Enable JavaScript to open your workspace. 请启用 JavaScript 以进入工作区。</noscript>
 <script>(()=>{'use strict';\n${asset('auth-page.js')}\n})();</script></body></html>`

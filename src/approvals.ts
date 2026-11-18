@@ -3,15 +3,16 @@ import { z } from 'zod'
 import type { Store } from './store.ts'
 import type { NativeRequest } from './model.ts'
 
-export interface Approval { id:string; ticketId:string; native:NativeRequest; createdAt:number; expiresAt:number; status:'pending'|'resolved'|'expired' }
+export interface ApprovalOrigin {conversationId:string;runId:string;workerId:string}
+export interface Approval { chat?:ApprovalOrigin;outcome?:'approved'|'denied'|'answered'; id:string; ticketId:string; native:NativeRequest; createdAt:number; expiresAt:number; status:'pending'|'resolved'|'expired' }
 export class Approvals {
   private readonly pending=new Map<string,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   constructor(private readonly store:Store){
     for(const value of store.list<Approval>('approval'))if(value.status==='pending')store.put('approval',value.id,{...value,status:'expired'})
   }
-  request(ticketId:string,native:NativeRequest):Promise<unknown>{
+  request(ticketId:string,native:NativeRequest,chat?:ApprovalOrigin):Promise<unknown>{
     const id=randomUUID(),expiresAt=Date.now()+120000
-    this.store.put('approval',id,{id,ticketId,native,createdAt:Date.now(),expiresAt,status:'pending'})
+    this.store.put('approval',id,{id,ticketId,native,chat,createdAt:Date.now(),expiresAt,status:'pending'})
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>this.expire(id),120000)
       this.pending.set(id,{resolve,reject,timer})
@@ -31,7 +32,12 @@ export class Approvals {
       const decision=z.enum(['accept','decline']).parse(value)
       result={permissions:decision==='accept'?item.native.params.permissions??{}:{},scope:'turn'}
     }else result={decision:z.enum(['accept','decline']).parse(value)}
-    this.store.put('approval',id,{...item,status:'resolved',decision:result})
+    let stored=result
+    if(item.native.method==='item/tool/requestUserInput'){
+      const secret=new Set((item.native.params.questions??[]).filter((q:{isSecret?:boolean})=>q.isSecret).map((q:{id:string})=>q.id))
+      stored={answers:Object.fromEntries(Object.entries((result as {answers:Record<string,unknown>}).answers).filter(([id])=>!secret.has(id)))}
+    }
+    this.store.put('approval',id,{...item,status:'resolved',outcome:item.native.method==='item/tool/requestUserInput'?'answered':value==='accept'?'approved':'denied',decision:stored})
     clearTimeout(pending.timer);this.pending.delete(id);pending.resolve(result)
   }
   private expire(id:string){

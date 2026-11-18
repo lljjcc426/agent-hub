@@ -38,3 +38,5 @@
 @media(max-width:800px){.resource-start-scroll{padding:24px 20px}.resource-tabbar{padding-inline:6px;gap:2px}.resource-tab{max-width:160px}.resource-window-actions{gap:0;padding-left:0}.resource-window-actions .icon-button{width:25px}.resource-search{margin:12px}}
 @media(max-width:360px){.resource-start-scroll{padding:20px 16px}.resource-tool-grid{grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){.resource-tool-grid>button{transition:none}}
+.resource-surface{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+.resource-tabbar .resource-back{flex:none;width:30px;height:30px;margin-bottom:5px}

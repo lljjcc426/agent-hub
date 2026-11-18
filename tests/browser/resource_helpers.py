@@ -7,6 +7,9 @@ def open_resource(page, name):
         if name != 'Team activity':
             page.locator('.team-drawer-foot').get_by_role('button',name=name,exact=True).click()
         return
+    if name == 'Team activity':
+        page.get_by_role('button',name='Back to conversation overview').click()
+        return
     tab=page.locator('.resource-tabs').get_by_role('tab',name=name,exact=True)
     if tab.count():tab.click()
     else:
@@ -23,6 +26,9 @@ async def open_resource_async(page, name):
     if await page.locator('.team-drawer').count():
         if name != 'Team activity':
             await page.locator('.team-drawer-foot').get_by_role('button',name=name,exact=True).click()
+        return
+    if name == 'Team activity':
+        await page.get_by_role('button',name='Back to conversation overview').click()
         return
     tab=page.locator('.resource-tabs').get_by_role('tab',name=name,exact=True)
     if await tab.count():await tab.click()

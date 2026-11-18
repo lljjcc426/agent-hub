@@ -127,7 +127,8 @@ export class CodexModel implements Model {
       if(method==='thread/tokenUsage/updated'&&params?.threadId===client.threadId&&params?.turnId===client.turnId&&params.tokenUsage?.total){
         // Native total is thread-cumulative; last describes this provider step.
         const id='native:'+params.turnId+':'+createHash('sha256').update(JSON.stringify(usageFields.map(key=>params.tokenUsage.total[key]??null))).digest('hex').slice(0,24)
-        const usage=normalizeUsage({id,...params.tokenUsage.last});if(usage)request.onUsage?.(usage)
+        const window=params.tokenUsage.modelContextWindow
+        const usage=normalizeUsage({id,...params.tokenUsage.last,...(Number.isSafeInteger(window)&&window>0?{contextWindowTokens:window}:{})});if(usage)request.onUsage?.(usage)
       }
     })
     const abort = () => client.interrupt()

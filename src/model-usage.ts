@@ -4,7 +4,7 @@ export type {TokenCounts,UsageField} from './usage-contract.ts'
 
 const count=z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 /** Snapshots replace the same id. Cache is part of input; reasoning is part of output. */
-export const modelUsageSchema=z.object({id:z.string().min(1).max(200),inputTokens:count.optional(),cachedInputTokens:count.optional(),cacheWriteInputTokens:count.optional(),outputTokens:count.optional(),reasoningOutputTokens:count.optional(),totalTokens:count.optional()}).strict()
+export const modelUsageSchema=z.object({id:z.string().min(1).max(200),contextWindowTokens:count.positive().optional(),inputTokens:count.optional(),cachedInputTokens:count.optional(),cacheWriteInputTokens:count.optional(),outputTokens:count.optional(),reasoningOutputTokens:count.optional(),totalTokens:count.optional()}).strict()
 export type ModelUsage=z.infer<typeof modelUsageSchema>
 export const usageFields=['inputTokens','cachedInputTokens','cacheWriteInputTokens','outputTokens','reasoningOutputTokens','totalTokens'] as const
 const valid=(n:unknown):n is number=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0

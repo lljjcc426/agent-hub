@@ -364,20 +364,36 @@ export interface CallEntry {
   summary: string
   status: 'working' | 'paused' | 'done' | 'error'
   elapsed: string
-  args: Record<string, unknown>
-  result: unknown
+  args?: Record<string, unknown>
+  result?: unknown
+  details?: [string, string][]
+  timestamp?: string
+  arrival?: boolean
 }
-export function ToolCallCard({ calls, onRetry }: { calls: CallEntry[]; onRetry?: (id: string) => void }) {
+export function ToolCallCard({
+  calls,
+  onRetry,
+  L = zh,
+  showHeading = true,
+}: {
+  showHeading?: boolean
+  calls: CallEntry[]
+  onRetry?: (id: string) => void
+  L?: (en: string, zh: string) => string
+}) {
   const running = calls.filter((c) => c.status === 'working').length
   return (
     <div className="rp-call-group">
-      <div className="rp-card-kicker">
-        <span>工具调用</span>
-        <span>{running ? running + ' 项执行中' : calls.length + ' 次'}</span>
-      </div>
+      {showHeading && (
+        <div className="rp-card-kicker">
+          <span>{L('Tool calls', '工具调用')}</span>
+          <span>{running ? running + L(' running', ' 项执行中') : calls.length + L(' calls', ' 次')}</span>
+        </div>
+      )}
       {calls.map((c) => (
         <Disclosure
           key={c.id}
+          arrival={c.arrival}
           title={
             <span className="rp-call-heading">
               {c.status === 'done' ? (
@@ -393,26 +409,28 @@ export function ToolCallCard({ calls, onRetry }: { calls: CallEntry[]; onRetry?:
                 <b>{c.name}</b>
                 <small>{c.summary}</small>
               </span>
-              <time>{c.elapsed}</time>
+              <time>{[c.timestamp, c.elapsed].filter(Boolean).join(' · ')}</time>
             </span>
           }
         >
           <div className="rp-call-data">
-            {[
-              ['参数', JSON.stringify(c.args, null, 2)],
-              [
-                '结果',
-                c.status === 'working'
-                  ? '等待结果…'
-                  : typeof c.result === 'string'
-                    ? c.result
-                    : JSON.stringify(c.result, null, 2),
-              ],
-            ].map(([label, value]) => (
+            {(
+              c.details ?? [
+                [L('Arguments', '参数'), JSON.stringify(c.args, null, 2)],
+                [
+                  L('Result', '结果'),
+                  c.status === 'working'
+                    ? L('Waiting for result…', '等待结果…')
+                    : typeof c.result === 'string'
+                      ? c.result
+                      : JSON.stringify(c.result, null, 2),
+                ],
+              ]
+            ).map(([label, value]) => (
               <div key={label}>
                 <header>
                   <span>{label}</span>
-                  <CopyButton value={value ?? ''} L={zh} label={'复制' + label} />
+                  <CopyButton value={value ?? ''} L={L} label={L('Copy ', '复制') + label} />
                 </header>
                 <pre>{value}</pre>
               </div>
@@ -420,7 +438,7 @@ export function ToolCallCard({ calls, onRetry }: { calls: CallEntry[]; onRetry?:
             {c.status === 'error' && onRetry && (
               <Button onClick={() => onRetry(c.id)}>
                 <RotateCcw size={13} />
-                重试调用
+                {L('Retry', '重试调用')}
               </Button>
             )}
           </div>

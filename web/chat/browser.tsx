@@ -132,12 +132,13 @@ export type BrowserPanelProps = {
   onUrlConsumed?: () => void;
   requestedSession?: {id: string; takeover: boolean; key: number};
   settingsOnly?: boolean;
-  visible?: boolean;
+  visibility?: 'page' | 'tabs' | 'hidden';
   renderWorkspace?: (pages: BrowserPages | undefined, content: ReactNode) => ReactNode;
 };
 
 export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsumed, requestedSession,
-  settingsOnly=false, visible=true, renderWorkspace}: BrowserPanelProps) {
+  settingsOnly=false, visibility='page', renderWorkspace}: BrowserPanelProps) {
+  const workspaceVisible = visibility !== 'hidden';
   const client = browserClient;
   const [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
@@ -212,13 +213,13 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   };
   useEffect(() => {
     active.current = true;
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2000);
+    if (workspaceVisible) void refresh();
+    const timer = workspaceVisible ? setInterval(() => void refresh(), 2000) : undefined;
     return () => {
       active.current = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [workspaceVisible]);
   useEffect(() => {
     if (data && !data.sessions.some((s) => s.id === selected))
       setSelected(data.sessions[0]?.id ?? "");
@@ -228,7 +229,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   }, [session?.url, selected]);
   useEffect(() => {
     setConnected(false);
-    if (!selected || settingsOnly) return;
+    if (!workspaceVisible || !selected || settingsOnly) return;
     let current=true;
     let inspecting = false;
     const inspect = async () => {
@@ -253,9 +254,9 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
       current = false;
       clearInterval(timer);
     };
-  }, [selected]);
+  }, [selected, settingsOnly, workspaceVisible]);
   useEffect(() => {
-    if (!visible || !session?.controlledByYou) return;
+    if (visibility !== 'page' || !session?.controlledByYou) return;
     const timer = setInterval(
       () =>
         void request<Session>("/sessions/" + session.id + "/renew", {
@@ -267,7 +268,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
       20000,
     );
     return () => clearInterval(timer);
-  }, [visible, session?.id, session?.epoch, session?.controlledByYou]);
+  }, [visibility, session?.id, session?.epoch, session?.controlledByYou]);
   useEffect(() => {
     if (!dialog) return;
     triggerRef.current = document.activeElement as HTMLElement;

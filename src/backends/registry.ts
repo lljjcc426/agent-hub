@@ -116,7 +116,7 @@ export class BackendRegistry implements Model {
   return {...this.threadModel(threadId,false,id).describe!(),id,...(model?{model}:{})}
  }
  configured(){return [...new Set([...Object.keys(this.config.backends),this.selected('router'),this.selected('worker'),this.selected('subagent'),...(this.config.execution.workers??[]).map(w=>w.backend)])].map(id=>({...this.model(id).describe!(),id,...(this.definition(id).label?{label:this.definition(id).label}:{})}))}
- async run(r:ModelRequest):Promise<ModelResult>{
+ async run(r:ModelRequest,onPrepared?:(request:ModelRequest)=>void):Promise<ModelResult>{
   const id=r.threadId?this.forThread(r.threadId):r.backendId??this.selected(r.role??(r.ephemeral?'router':'worker'))
   const definition=structuredClone(this.definition(id)),role=r.role??(r.ephemeral?'router':'worker')
   const options=mergeOptions(definition.defaults,r.options??(role==='router'?this.config.execution.router:undefined))
@@ -169,7 +169,9 @@ export class BackendRegistry implements Model {
     runOptions={...options,parameters:{},effort:undefined,maxOutputTokens:undefined,maxSteps:d.maxSteps,maxToolCalls:d.maxToolCalls}
     executor=engine.model
    }else executor=this.model(id,options)
-   return await executor.run({...r,options:runOptions,compactBeforeTurn:!!compact,onContextReady:()=>{if(definition.kind==='codex'&&r.managed&&nativeThread&&(!legacyContext||compact))this.store.put('native-context',nativeThread,{version:nativeContextProfile,at:Date.now(),compacted:!!compact});r.onContextReady?.()},instructions:appendAgentPrompt(r.instructions,options.prompt,options.persona),model:r.model??(!r.threadId&&role==='router'?this.config.execution.router?.model:undefined),onThread:threadId=>{nativeThread=threadId;if(!locked){locked=threadId;this.writers.add(threadId)}this.store.put('backend-binding',threadId,binding);r.onThread?.(threadId)}})}
+   const prepared:ModelRequest={...r,options:runOptions,compactBeforeTurn:!!compact,onContextReady:()=>{if(definition.kind==='codex'&&r.managed&&nativeThread&&(!legacyContext||compact))this.store.put('native-context',nativeThread,{version:nativeContextProfile,at:Date.now(),compacted:!!compact});r.onContextReady?.()},instructions:appendAgentPrompt(r.instructions,options.prompt,options.persona),model:r.model??(!r.threadId&&role==='router'?this.config.execution.router?.model:undefined),onThread:threadId=>{nativeThread=threadId;if(!locked){locked=threadId;this.writers.add(threadId)}this.store.put('backend-binding',threadId,binding);r.onThread?.(threadId)}}
+   onPrepared?.(prepared)
+   return await executor.run(prepared)}
   catch(error){throw harnessProvider?.failure()??error}
   finally{if(locked)this.writers.delete(locked);await harnessProvider?.close()}
  }

@@ -63,19 +63,18 @@ export function Configuration({
   const pickerHandled = useRef(0);
   const latest = useRef({ visible, language });
   latest.current = { visible, language };
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!visible) {
       element
         ?.querySelectorAll<HTMLDialogElement>("dialog[open]")
         .forEach((dialog) => dialog.close());
-      if (!controller) return;
+      return;
     }
     let alive = true;
-    void prepare()
-      .then(() => {
+    const activate = () => {
         if (!alive) return;
         setError(false);
-        outlet.current?.append(element!);
+        if (element!.parentElement !== outlet.current) outlet.current?.append(element!);
         memoryElement!.classList.add("memory-mount");
         setMemoryTarget(memoryElement!);
         setChatTarget(chatElement!);
@@ -87,8 +86,9 @@ export function Configuration({
             void controller!.workspace();
           }
         }
-      })
-      .catch(() => {
+      };
+    if (controller) activate();
+    else void prepare().then(activate).catch(() => {
         if (alive) setError(true);
       });
     return () => {

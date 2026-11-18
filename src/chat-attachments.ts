@@ -66,6 +66,25 @@ export class ChatAttachments {
   }
   bind(ids:string[],triggerId:string){for(const id of ids){const row=this.host.store.get<Upload>('asset',id)!;this.host.store.put('asset',id,{...row,triggerId})}}
   private taskCopy(row:Upload,ticketId:string){const id=stableDigest(['chat-attachment',ticketId,row.id]);return {id,path:join(this.host.config.stateDir,'assets',id,'upload'+extname(row.path))}}
+  private materialize(row:Upload,ticketId:string){
+    const copy=this.taskCopy(row,ticketId)
+    if(!this.host.store.get('asset',copy.id)){
+      mkdirSync(dirname(copy.path),{recursive:true,mode:0o700});copyFileSync(row.path,copy.path)
+      this.host.store.put('asset',copy.id,{...this.public(row),...copy,ticketId,uploadId:row.id,resource:'asset/'+copy.id})
+    }
+    return copy
+  }
+  taskInputFiles(ticketId:string,triggerIds:string[]){
+    const parent=this.host.taskAuthority(ticketId)?.parentTrigger
+    if(!parent||!this.host.store.get('chat-run',parent))return []
+    return [...new Set([parent,...triggerIds])].flatMap(id=>{
+      const message=this.host.store.get<{attachments?:ChatAttachment[]}>('chat-message','user:'+id)
+      return (message?.attachments??[]).map(file=>{
+        const row=this.authorize(file.id,{ticketId}),copy=this.materialize(row,ticketId)
+        return {name:row.name,path:copy.path,resource:'asset/'+file.id}
+      })
+    })
+  }
   /** Declare the same exact paths to the model that managed shell grants on resource reads. */
   taskPaths(ticketId:string){
     const authority=this.host.taskAuthority(ticketId),run=authority?.parentTrigger?this.host.store.get<{conversationId:string}>('chat-run',authority.parentTrigger):undefined
@@ -90,11 +109,7 @@ export class ChatAttachments {
     const row=this.authorize(id,principal)
     let path:string|undefined,resource='asset/'+id
     if(principal.ticketId){
-      const copy=this.taskCopy(row,principal.ticketId)
-      if(!this.host.store.get('asset',copy.id)){
-        mkdirSync(dirname(copy.path),{recursive:true,mode:0o700});copyFileSync(row.path,copy.path)
-        this.host.store.put('asset',copy.id,{...this.public(row),...copy,ticketId:principal.ticketId,uploadId:id,resource:'asset/'+copy.id})
-      }
+      const copy=this.materialize(row,principal.ticketId)
       path=copy.path;resource='asset/'+copy.id
     }
     const bytes=readFileSync(row.path)

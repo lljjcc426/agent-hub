@@ -50,6 +50,7 @@ export function companionStatus(snapshot:Snapshot|null, L:Localize, options:{par
    return result('working',L('Working on your task','正在处理任务'));
  }
  if(reported)return result(reported.phase,reported.label);
+ if(tasks.some(t=>t.reviewing))return result('reviewing',L('Reviewing the delivery','正在验收交付'))
  if(busy.length>1)return result('working',L(busy.length+' agents are working',busy.length+' 位成员正在处理'));
  if(busy.length)return result('working',L('Working on your task','正在处理任务'));
  return result('thinking',run.state==='queued'?L('Preparing to start','正在准备任务'):L('Thinking through the task','正在思考'));

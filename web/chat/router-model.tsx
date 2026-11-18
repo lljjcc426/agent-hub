@@ -63,7 +63,7 @@ export function RouterModelControl({label,model,busy,visible,L,onSaved}:Props){
  };
  const labels:Record<string,string>={none:L('Off','关闭'),minimal:L('Minimal','最少'),low:L('Low','低'),medium:L('Medium','中'),high:L('High','高'),xhigh:L('Extra high','最高')};
  return <>
-  <button ref={trigger} type="button" className="model-link" popoverTarget="router-model-picker" aria-haspopup="dialog" aria-expanded={open} title={L('Choose model and reasoning','选择模型和思考强度')}><span className="composer-agent-name">{label}</span><span className="model-separator">·</span><span className="model-name">{model||L('Choose model','选择模型')}</span><SlidersHorizontal size={14}/></button>
+  <button ref={trigger} type="button" className="model-link" popoverTarget="router-model-picker" aria-haspopup="dialog" aria-expanded={open} aria-label={L("Choose model and reasoning","选择模型和思考强度")} title={L('Choose model and reasoning','选择模型和思考强度')}><span className="composer-agent-name">{label}</span><span className="model-separator">·</span><span className="model-name">{model||L('Choose model','选择模型')}</span><SlidersHorizontal size={14}/></button>
   {createPortal(<div ref={popover} id="router-model-picker" className="router-model-picker" popover="auto" role="dialog" aria-label={L('Router model','Router 模型')} onToggle={e=>{const shown=e.newState==='open';setOpen(shown);if(!shown)setConfig(null)}} style={position}>
    <div className="router-model-heading"><strong>{L('Router model','Router 模型')}</strong></div>
    {!config&&!error?<div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…','正在读取连接…')}</div>:null}

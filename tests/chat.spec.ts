@@ -4,6 +4,7 @@ import {Readable} from 'node:stream'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {randomUUID} from 'node:crypto'
+import {deliveryHref,downloadUrl} from '../web/chat/delivery-links.ts'
 import {memoryWorkspace} from '../src/memory-workspace.ts'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
@@ -80,6 +81,8 @@ it('materializes uploaded originals into the authorized Worker sandbox assets an
  const {h}=fixture(),c=h.chat.create('owner'),file=await upload(h,c.id,'paper.pdf',Buffer.from('%PDF-1.7\nOriginal document\0'))
  const draft=await upload(h,c.id,'draft.docx',Buffer.from('PK\0office')),run=h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text:'Review the PDF',attachments:[file.id]})
  const trigger=h.store.triggers.get(run.runId)!,task=await h.manager.call({action:'assign',revision:0,requestId:'uploaded-file',id:'research',text:'Read the uploaded PDF'},{trigger,discussion:'local:chat:'+c.id})
+ const [declared]=h.chat.uploads.taskInputFiles(task.ticketId,[])
+ expect(declared?.name).toBe('paper.pdf');expect(readFileSync(declared!.path)).toEqual(Buffer.from('%PDF-1.7\nOriginal document\0'))
  const result=await h.resources.read({resource:'asset/'+file.id},{ticketId:task.ticketId}),copy=JSON.parse(result.text)
  expect(readFileSync(copy.path)).toEqual(Buffer.from('%PDF-1.7\nOriginal document\0'))
  const asset=h.store.get<any>('asset',copy.resource.slice(6));expect(asset.ticketId).toBe(task.ticketId);expect(asset.uploadId).toBe(file.id)
@@ -907,4 +910,103 @@ it('removes deleted Workers from contacts after refresh and restart while preser
  const restored=new Runtime(f.config,{model:f.model});hosts.push(restored)
  expect(restored.chat.view(c.id,'owner').participants.map(p=>p.id)).not.toContain('research')
  expect(restored.chat.view(c.id,'owner').messages).toEqual(before)
+})
+
+it('publishes immutable Worker deliverables to their Chat and clears their bytes on reset',async()=>{
+  const bytes=Buffer.from([0,10,32,255])
+  let workspace=''
+  const {h}=fixture(async r=>{
+    if(r.role==='worker'){
+      workspace=r.cwd;writeFileSync(join(r.cwd,'results.bin'),bytes)
+      return {...report,files:['results.bin']}
+    }
+    if(JSON.parse(r.input).kind==='worker_result')return {reply:'The file is ready.'}
+    await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'deliver',text:'Prepare results.bin'},'assign')
+    return {reply:'Started'}
+  })
+  const c=h.chat.create('owner');send(h,c.id,'Make the file')
+  await settle(h,()=>h.chat.view(c.id,'owner').deliveries.length===1)
+  const view=h.chat.view(c.id,'owner'),[file]=view.deliveries
+  expect(file).toMatchObject({name:'results.bin',size:bytes.length,workerId:'research',preview:null})
+  expect(view.messages.filter(m=>m.deliveries?.length).map(m=>m.deliveries![0]!.id)).toEqual([file!.id])
+  expect(deliveryHref('results.bin',[file!])).toBe(downloadUrl(file!))
+  expect(deliveryHref('sandbox:/mnt/data/results.bin',[file!])).toBe(downloadUrl(file!))
+  expect(deliveryHref('https://example.org/results.bin',[file!])).toBe('https://example.org/results.bin')
+  expect(deliveryHref('missing.bin',[file!])).toBe('')
+  writeFileSync(join(workspace,'results.bin'),'changed')
+  expect(Buffer.from(h.chat.delivery(c.id,'owner',file!.id).bytes)).toEqual(bytes)
+  const other=h.chat.create('other')
+  expect(()=>h.chat.delivery(other.id,'other',file!.id)).toThrow('unavailable')
+  expect(()=>h.chat.delivery(c.id,'other',file!.id)).toThrow('not found')
+  const pending=h.chat.captureFiles(file!.ticketId!,workspace,['results.bin'])
+  expect(h.chat.view(c.id,'owner').deliveries).toHaveLength(1)
+  const evidence=JSON.parse(h.chat.fileEvidence(file!.ticketId!,pending[0]!).content)
+  expect(evidence).toMatchObject({name:'results.bin',bytes:7,sha256:expect.stringMatching(/^[0-9a-f]{64}$/)})
+  expect(()=>h.chat.fileEvidence('another-task',pending[0]!)).toThrow('unavailable')
+  expect(()=>h.chat.delivery(c.id,'owner',pending[0]!)).toThrow('unavailable')
+  h.store.put('goal-delivery',file!.ticketId!,{files:pending})
+  h.store.db.prepare("DELETE FROM records WHERE kind='goal-delivery' AND id=?").run(file!.ticketId!)
+  expect(h.store.get('chat-file-inspection',pending[0]!)).toBeUndefined()
+  expect(h.store.db.prepare('SELECT count(*) n FROM chat_delivery_bytes').get()!.n).toBe(1)
+  h.chat.reset('owner',randomUUID())
+  await h.memory.cleanup.process({run:async()=>{throw Error('no model')},purge:async()=>({local:'verified',provider:'not_managed'})},async()=>true)
+  expect(h.store.db.prepare('SELECT count(*) n FROM chat_delivery_bytes').get()!.n).toBe(0)
+})
+
+it('scopes schedules, commands and reminder delivery to the original private Chat',async()=>{
+  const {h}=fixture(async()=>({reply:'OK'}))
+  h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
+  const c=h.chat.create('owner'),other=h.chat.create('other')
+  const {runId}=send(h,c.id),trigger=h.store.triggers.get(runId)!,context=h.scopes.context(trigger,'local:chat:'+c.id)!
+  const startAt=new Date(Date.now()+3600000).toISOString()
+  const spec={id:'review',name:'Review checklist',triggerId:runId,prompt:'Review the checklist',mode:'standalone',notification:'always',timing:{kind:'once',startAt}}
+  h.proactive.command({action:'schedule.put',scopeId:context.route.scopeId,operationId:'create',expectedRevision:0,schedule:spec},context)
+  expect(h.chat.view(c.id,'owner').schedules).toMatchObject([{id:'review',active:true,revision:1}])
+  expect(h.chat.view(other.id,'other').schedules).toEqual([])
+  const change={id:'review',active:false,expectedRevision:1,operationId:randomUUID()}
+  expect(()=>h.chat.changeSchedule(other.id,'other',change)).toThrow('unavailable')
+  h.chat.changeSchedule(c.id,'owner',change);h.chat.changeSchedule(c.id,'owner',change)
+  expect(h.chat.view(c.id,'owner').schedules[0]).toMatchObject({active:false,revision:2})
+  expect(()=>h.chat.changeSchedule(c.id,'owner',{...change,operationId:randomUUID()})).toThrow('Revision')
+  h.chat.changeSchedule(c.id,'owner',{...change,active:true,expectedRevision:2,operationId:randomUUID()})
+  h.proactive.command({action:'schedule.run',scopeId:context.route.scopeId,id:'review',operationId:'run',expectedRevision:3},context)
+  const run=h.store.list<{triggerId:string}>('router-schedule-run')[0]!
+  h.chat.reply('reminder',run.triggerId,'Time to review.');h.chat.reply('reminder',run.triggerId,'Time to review.')
+  expect(h.chat.view(c.id,'owner').messages.filter(m=>m.text==='Time to review.')).toHaveLength(1)
+  expect(h.chat.view(other.id,'other').messages).toEqual([])
+})
+
+
+it('gives a direct Router text file a download receipt and reuses it on retry',async()=>{
+  const f=fixture(async r=>{
+    const args={name:'清单.md',content:'# 发布\n- [ ] 检查链接'}
+    const first=await r.onTool!('chat_deliver_file',args,'one'),again=await r.onTool!('chat_deliver_file',args,'two')
+    expect(first.success).toBe(true);expect(again).toEqual(first)
+    return {reply:'Attached'}
+  }),c=f.h.chat.create('owner')
+  send(f.h,c.id,'Make a checklist')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')
+  const v=f.h.chat.view(c.id,'owner')
+  expect(v.deliveries).toHaveLength(1);expect(v.messages.find(m=>m.deliveries?.length)?.speaker?.kind).toBe('router')
+  expect(Buffer.from(f.h.chat.delivery(c.id,'owner',v.deliveries[0]!.id).bytes).toString()).toBe('# 发布\n- [ ] 检查链接')
+})
+
+it('asks the same Worker to repair missing files without publishing a partial delivery',async()=>{
+  let attempts=0
+  const {h}=fixture(async r=>{
+    if(r.role==='worker'){
+      attempts++
+      writeFileSync(join(r.cwd,'notes.md'),'original')
+      if(attempts===2)writeFileSync(join(r.cwd,'summary.txt'),'repaired')
+      return {...report,files:['notes.md','summary.txt']}
+    }
+    if(JSON.parse(r.input).kind==='worker_result')return {reply:'Delivered'}
+    await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'file-task',text:'Prepare both files'},'assign')
+    return {reply:'Started'}
+  }),c=h.chat.create('owner')
+  send(h,c.id,'Please make the two files.')
+  await settle(h,()=>h.chat.view(c.id,'owner').deliveries.length===2)
+  expect(attempts).toBe(2)
+  expect(h.store.tickets.list()).toHaveLength(1)
+  expect(h.store.db.prepare('SELECT count(*) AS n FROM chat_delivery_bytes').get()!.n).toBe(2)
 })

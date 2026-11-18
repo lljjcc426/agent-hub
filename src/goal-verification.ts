@@ -13,12 +13,13 @@ import {inlineEvidenceBudget,evidenceAccess,type GoalEvidence as Evidence} from 
 import type {DelegationBinding} from './delegation/goals.ts'
 import {taskView} from './task-context.ts'
 
-export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;reply?:string;inputRevision:number;at:number}
+export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;reply?:string;files?:string[];inputRevision:number;at:number}
 interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
 export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];method:'program'|'agent'}
 export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
 const verdict=z.object({checks:z.array(z.object({criterionId:z.string(),verdict:z.enum(['passed','failed','insufficient']),explanation:z.string().min(1).max(8000),evidenceIds:z.array(z.string()).min(1)}).strict()).min(1)}).strict()
 const operational=(e:Evidence)=>e.kind==='execution'||e.kind==='report'&&e.key==='watchdog-observation'
+const requiredEvidence=(e:Evidence,criterionId:string)=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||operational(e)&&criterionId==='__goal__')&&(criterionId==='__goal__'||e.criterionIds.includes(criterionId))
 
 /** Read only declared, bounded artifacts within this task's actual workspace. */
 function readArtifact(cwd:string,path:string):{content:string;missing?:boolean} {
@@ -45,12 +46,14 @@ export class GoalVerification {
   }
   return {artifacts:evidence.map(({content,...meta})=>({...meta,bytes:meta.artifact?.size??Buffer.byteLength(content)})),checks:criteria.filter(c=>c.check).map(c=>this.program(c,{evidence}))}
  }
- capture(ticketId:string,report:WorkerReport,reply?:string):boolean {
+ capture(ticketId:string,report:WorkerReport,reply?:string,files?:string[]):boolean {
   if(report.state!=='ready')return false
   const g=this.host.goals.forTask(ticketId);if(!g)return false
   this.host.goals.context(g)
   const task=this.host.store.tickets.get(ticketId)!,owner=this.host.scopes.ownership(ticketId)!
-  const body={goalId:g.id,ticketId,triggerId:g.triggerId,scopeId:g.scopeId,assignmentId:task.assignments.at(-1)!.id,report,reply,inputRevision:owner.dataRevision??1}
+  const previous=this.host.store.get<GoalDelivery>('goal-delivery',ticketId)
+  if(previous?.files)this.host.chat.discardFiles(previous.files.filter(id=>!files?.includes(id)))
+  const body={...(files?.length?{files}:{}),goalId:g.id,ticketId,triggerId:g.triggerId,scopeId:g.scopeId,assignmentId:task.assignments.at(-1)!.id,report,reply,inputRevision:owner.dataRevision??1}
   this.host.store.put('goal-delivery',ticketId,{...body,id:stableDigest(body),at:this.now()} satisfies GoalDelivery)
   this.host.engine.report(ticketId,{state:'waiting',summary:'Delivery retained; independent acceptance is pending',question:null})
   return true
@@ -134,6 +137,8 @@ export class GoalVerification {
   })
   const tasks:Snapshot['tasks']=[],delegations:DelegationBinding[]=[],evidence:Evidence[]=[];let evidenceBytes=0,finalCommit:string|undefined
   const add=(value:Omit<Evidence,'id'|'hash'>)=>{const hash=stableDigest(value),id='evidence-'+hash,item={...value,id,hash};evidenceBytes+=Buffer.byteLength(JSON.stringify(item));if(evidenceBytes>512*1024)throw Error('Acceptance evidence exceeds 512 KiB; declare smaller artifacts');evidence.push(item)}
+  const schedules=this.host.chat.scheduledReceipts(g.triggerId)
+  if(schedules.length)add({kind:'execution',key:'chat-schedules',criterionIds:criteria.map(cr=>cr.id),content:JSON.stringify({basis:'Schedules registered by the host for this human request, with delivery to the original private Chat.',schedules})})
   if(nodes.some(n=>n.teamTargetId)){
    const receipt=this.host.store.db.prepare("SELECT body FROM records WHERE kind='goal-receipt' AND json_extract(body,'$.goalId')=? ORDER BY rowid LIMIT 1").get(g.id)
    const created=receipt&&JSON.parse(String(receipt.body))
@@ -171,12 +176,18 @@ export class GoalVerification {
     if(!node&&n.id===g.project.integration)finalCommit=code.head
     add({kind:'execution',ticketId:n.ticketId,key:'project-commit',content:JSON.stringify({base:g.project.base,head:code.head,parents:code.parents,test:code.test,diffStat:code.diffStat,diff:code.diff}),criterionIds:citeIds(ids)})
    }
-   add({kind:'execution',ticketId:n.ticketId,key:'host-execution',content:this.execution(n.ticketId),criterionIds:citeIds(ids)})
+   let execution=this.execution(n.ticketId)
+   if(proposal.files?.length){
+    const chatDeliveries=proposal.files.map(id=>JSON.parse(this.host.chat.fileEvidence(n.ticketId!,id).content))
+    execution=JSON.stringify({...JSON.parse(execution),chatDeliveries})
+   }
+   add({kind:'execution',ticketId:n.ticketId,key:'host-execution',content:execution,criterionIds:citeIds(ids)})
    // Final acceptance needs the same immutable failure observation the planner
    // received. Exclude mutable recovery status so resolving it cannot stale a review.
    for(const r of this.host.store.list<WatchdogRecovery>('watchdog-recovery').filter(r=>r.goalId===g.id&&r.ticketId===n.ticketId&&r.contractHash===stableDigest(g.contract)&&r.state!=='stale')){
     add({kind:'report',ticketId:n.ticketId,key:'watchdog-observation',criterionIds:citeIds(ids),content:JSON.stringify({id:r.id,assignmentId:r.assignmentId,contractHash:r.contractHash,at:r.at,judgment:r.judgment,observation:r.observation??null})})
    }
+
    add({kind:'report',ticketId:n.ticketId,key:'delivery',content:JSON.stringify({report:proposal.report,reply:proposal.reply}),criterionIds:citeIds(ids)})
    const followups=taskView(this.host.store,task).inputs.flatMap(input=>input.kind==='trigger'&&input.human&&!input.context?[{inputId:input.id,triggerId:input.triggerId,text:this.host.store.triggers.get(input.triggerId)?.text,note:input.note}]:[])
    if(followups.length)add({kind:'report',ticketId:n.ticketId,key:'admitted-followups',content:JSON.stringify({basis:'Human follow-ups admitted to this task. Evaluate clarifications within the immutable mandate; these do not grant wider authority.',followups}),criterionIds:citeIds(ids)})
@@ -257,7 +268,7 @@ export class GoalVerification {
     // Use short round-local references for every task. Ledger records retain the full evidence hashes.
     const presented=snapshot.evidence.map((e,i)=>({...e,id:'e'+(i+1)}))
     const toStored=new Map(presented.map((e,i)=>[e.id,snapshot.evidence[i]!.id])),toPresented=new Map([...toStored].map(([alias,stored])=>[stored,alias]))
-    const requested=semantic.map(cr=>({...cr,allowedEvidenceIds:presented.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
+    const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:presented.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:presented.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
     const previous=round.attempts>1?this.host.store.get<{error?:string}>('goal-verification-attempt',round.id+':'+(round.attempts-1))?.error:undefined
     const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),evidence:presented.map(({content,...meta})=>meta)}
     const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
@@ -277,7 +288,7 @@ export class GoalVerification {
     for(const ch of parsed.checks){
      ch.evidenceIds=ch.evidenceIds.map(id=>toStored.get(id)??'')
      if(ch.evidenceIds.some(id=>!read.has(id)||ch.criterionId!=='__goal__'&&!snapshot.evidence.find(e=>e.id===id)?.criterionIds.includes(ch.criterionId)))throw Error('Verification protocol: Verifier cited evidence it did not inspect for this criterion')
-     const required=snapshot.evidence.filter(e=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||operational(e)&&ch.criterionId==='__goal__')&&(ch.criterionId==='__goal__'||e.criterionIds.includes(ch.criterionId)))
+     const required=snapshot.evidence.filter(e=>requiredEvidence(e,ch.criterionId))
      if(ch.verdict==='passed'&&required.some(e=>e.missing||!read.has(e.id)||!ch.evidenceIds.includes(e.id)))throw Error('Verification protocol: Verifier skipped required artifact evidence')
      checks.push({...ch,method:'agent'})
     }

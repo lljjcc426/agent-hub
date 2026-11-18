@@ -41,7 +41,7 @@ export function evidenceBytes(cwd:string,path:string,limit:number):Buffer|undefi
 }
 
 /** Keep workbook parsing and its memory growth outside the host process. */
-function workbookObservation(bytes:Buffer,checks:CellCheck[]){
+export function workbookObservation(bytes:Buffer,checks:CellCheck[]|null){
   const result=spawnSync(process.execPath,['--max-old-space-size=256',fileURLToPath(new URL('./goal-workbook-reader.mjs',import.meta.url)),JSON.stringify(checks)],{input:bytes,timeout:5000,maxBuffer:512*1024,encoding:'utf8'})
   if(result.error||result.status!==0)throw Error('Workbook could not be read within the parsing limits')
   return JSON.parse(result.stdout)

@@ -94,7 +94,7 @@ export function FeatureNavigation({
         current: configuring && hash.startsWith("connections"),
       },
       {
-        href: "/configure#integrations/market",
+        href: "/configure#integrations/library",
         label: L("Tools and apps", "工具与应用"),
         Icon: Wrench,
         current: configuring && hash.startsWith("integrations"),

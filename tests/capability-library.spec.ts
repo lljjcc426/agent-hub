@@ -18,7 +18,7 @@ function setup(){
 afterEach(()=>{for(const dir of dirs.splice(0))rmSync(dir,{recursive:true,force:true})})
 it('enumerates configured CLI families, exact incoming bridges and installed plugin capabilities without leaking launch or credential values',()=>{
   const {home,write,source}=setup(),endpoint='http://127.0.0.1:4357',secret='fixture-private-value'
-  const config=configSchema.parse({stateDir:join(home,'state'),sources:[source],backends:Object.fromEntries(['claude-code','gemini-cli','opencode-cli'].map(id=>[id,{kind:'plugin',plugin:id}]))})
+  const config=configSchema.parse({stateDir:join(home,'state'),sources:[source],backends:{...Object.fromEntries(['claude-code','gemini-cli','opencode-cli'].map(id=>[id,{kind:'plugin',plugin:id}])),secondary:{kind:'plugin',plugin:'codex-cli'}}})
   write('.codex/config.toml','[mcp_servers.codex-docs]\ncommand="private-command"\n[mcp_servers.codex-docs.env]\nTOKEN="'+secret+'"\n')
   write('.agents/skills/report/SKILL.md','---\nname: Report\ndescription: Publish a report\n---\n# Read evidence')
   write('.claude.json',{mcpServers:{claudeDocs:{command:secret}}})
@@ -37,6 +37,10 @@ it('enumerates configured CLI families, exact incoming bridges and installed plu
   write('.qwen/settings.json',{mcpServers:{unrelated:{command:secret}}})
   const inventory=profileInventory(config,home,endpoint,{}),names=inventory.entries.map(v=>v.name)
   expect(names).toEqual(expect.arrayContaining(['codex-docs','Report','claudeDocs','projectDocs','geminiDocs','extra','extDocs','openDocs','@acme/tools','reading','notes','notesMcp','custom-alias']))
+  expect(inventory.sourceGroups.get('CLI · codex')).toBe('Codex')
+  expect(inventory.sourceGroups.get('CLI · secondary')).toBe('Codex')
+  expect(inventory.sourceGroups.get('Codex · secondary')).toBe('Codex')
+  expect(inventory.sourceGroups.get('CLI · gemini-cli')).toBe('Gemini CLI')
   expect(names).not.toContain('unrelated');expect(names).not.toContain('stale')
   expect(inventory.entries.find(x=>x.name==='geminiDocs')?.status).toBe('disabled')
   expect(inventory.entries.find(x=>x.name==='notes'&&x.kind==='app')?.status).toBe('declared')
@@ -91,9 +95,13 @@ it('serves workspace metadata only to the operator, resolves real content and ke
     expect(JSON.stringify(snapshot)).not.toMatch(/private-header|Use verified totals/)
     expect(snapshot.items.some((i:any)=>i.name==='AgentHub MCP'&&i.tools.some((t:any)=>t.name==='worker_manage'))).toBe(true)
     const skill=snapshot.items.find((i:any)=>i.name==='summary')
-    expect((await (await fetch(endpoint+'?id='+skill.id,{headers})).json()).body).toBe('Use verified totals.')
+    expect(skill.sourceGroup).toBe('Roppo')
+    expect(await (await fetch(endpoint+'?id='+skill.id,{headers})).json()).toMatchObject({body:'Use verified totals.',sourceGroup:skill.sourceGroup})
     expect((await fetch(endpoint+'?id=../../config.json',{headers})).status).toBe(404)
     const harness=snapshot.items.find((i:any)=>i.kind==='mcp'&&i.source==='OpenCode harness')
-    if((await import('../src/backends/bundled-opencode.ts')).bundledCLI)expect(harness.tools.map((t:any)=>t.name)).toEqual(['router_read'])
+    if((await import('../src/backends/bundled-opencode.ts')).bundledCLI){
+      expect(harness.sourceGroup).toBe('OpenCode harness')
+      expect(harness.tools.map((t:any)=>t.name)).toEqual(['router_read'])
+    }
   }finally{service.server.closeAllConnections();await new Promise<void>(r=>service.server.close(()=>r()));await service.closeRuntime()}
 })

@@ -24,11 +24,12 @@ function Drawer({title,close,children,restoreKey}:{title:string;close:()=>void;c
 }
 type MarketProps={route:string;language:'en'|'zh-CN'}
 export function PluginMarketplace(props:MarketProps){
-  return props.route.split('/')[1]==='library'?<CapabilityLibrary {...props}/>:<Marketplace {...props}/>
+  const section=props.route.split('/')[1]||'library'
+  return section==='library'?<CapabilityLibrary {...props}/>:<Marketplace {...props}/>
 }
 function Marketplace({route,language}:MarketProps){
   const L=(en:string,zh:string)=>language==='en'?en:zh
-  const tab=route==='integrations'||route==='integrations/tools'?'tools':route.split('/')[1]??'market'
+  const tab=route.split('/')[1]??'market'
   const [data,setData]=useState<Snapshot|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[query,setQuery]=useState(''),[category,setCategory]=useState<Category>('all')
   const [selection,setSelection]=useState<Selection|null>(null),[sources,setSources]=useState(false),[url,setURL]=useState(''),[tokenEnv,setTokenEnv]=useState('')
   const [version,setVersion]=useState(''),[plan,setPlan]=useState<(MarketPlan&{blockers?:Snapshot['blockers']})|null>(null),[notice,setNotice]=useState('')

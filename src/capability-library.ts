@@ -17,7 +17,7 @@ import {workspaceTools} from '../plugins/backend-opencode/workspace.ts'
 import {isApiBackend} from './backend-config.ts'
 import {nativeToolFor} from './cli-native-tools.ts'
 import {verifyCliMcpGrant} from './cli-mcp-profile.ts'
-import {profileInventory} from './capability-profiles.ts'
+import {clientGroup,profileInventory} from './capability-profiles.ts'
 import {codexInventory,withPreviousCatalog,type CodexInventory} from './capability-codex.ts'
 import {identifier,toolInfo,type Entry} from './capability-data.ts'
 import type {CapabilitySnapshot,CapabilityTool} from './capability-types.ts'
@@ -52,7 +52,7 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     const roles=workers.filter(w=>w.state!=='retiring'&&w.state!=='paused'&&assigned(w,w.backend,'toolConnections')?.includes(id)&&(t.kind!=='cli-mcp'||t.workers.includes(w.id))).map(w=>w.id)
     let valid=c.enabled
     if(valid&&t.kind==='cli-mcp')try{verifyCliMcpGrant(t,c.allowedTools)}catch{valid=false}
-    put('Roppo','connection/'+id,{kind:t.kind==='plugin'?'tool':'mcp',name:c.label??id,status:!c.enabled?'disabled':valid?'configured':'unavailable',tools:c.allowedTools.map(name=>({name})),facts:[id,t.kind,...(t.kind==='cli-mcp'?[t.cli,t.server]:[])],roles,inspectable:valid})
+    put('Roppo','connection/'+id,{kind:t.kind==='plugin'?'tool':'mcp',name:c.label??id,sourceGroup:t.kind==='cli-mcp'?clientGroup(t.cli==='claude'?'claude-code':t.cli):undefined,status:!c.enabled?'disabled':valid?'configured':'unavailable',tools:c.allowedTools.map(name=>({name})),facts:[id,t.kind,...(t.kind==='cli-mcp'?[t.cli,t.server]:[])],roles,inspectable:valid})
   }
   for(const p of promptStatus(config).filter(p=>p.id.startsWith('skill/'))){
     const text=p.override?.text??p.default
@@ -150,9 +150,11 @@ export class CapabilityLibrary {
       for(const e of catalog.entries)all.set(e.id,e)
       for(const warning of catalog.warnings)warnings.add(warning)
     }
+    const groupOf=(e:Entry)=>e.sourceGroup??external.profile.sourceGroups.get(e.source)??e.source
     if(opts.id){
       const entry=all.get(opts.id);if(!entry)return undefined
-      const {content,...item}=entry
+      const {content,...fields}=entry
+      const item={...fields,sourceGroup:groupOf(entry)}
       if(opts.inspect&&item.inspectable){
         const key=Object.keys(host.config.toolConnections).find(id=>identifier('Roppo',item.kind,'connection/'+id)===item.id)
         if(key)try{return {...item,tools:(await host.toolConnections.inspect(key)).map(toolInfo),status:'connected'}}catch{return {...item,status:'unavailable'}}
@@ -160,7 +162,7 @@ export class CapabilityLibrary {
       const body=content?.()
       return {...item,body,...(content&&body===undefined?{status:'unavailable'}:{})}
     }
-    const items=[...all.values()].map(({content,steps,criteria,inputs,...item})=>({...item,tools:item.tools?.map(({name})=>({name}))}))
+    const items=[...all.values()].map(({content,steps,criteria,inputs,...item})=>({...item,sourceGroup:groupOf(item),tools:item.tools?.map(({name})=>({name}))}))
     return {items,warnings:[...warnings],refreshing:external.pending} satisfies CapabilitySnapshot
   }
 }

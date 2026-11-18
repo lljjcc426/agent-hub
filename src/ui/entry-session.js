@@ -95,6 +95,7 @@ const workspacePages = {
 const advancedPages = ['host', 'chat', 'memory', 'browser', 'intake', 'runtime', 'delivery', 'json', 'revisions']
 function workspaceHash() {
   const { page, selected, source, creating, advancedPage, promptView } = entryState
+  if (page === 'integrations') return 'integrations/tools'
   if (page === 'advanced') return 'advanced/' + advancedPage
   if (page === 'execution' && executionView.mode === 'configuration') return 'execution/configuration'
   if (page === 'prompts' && promptView === 'templates') return 'prompts/templates'

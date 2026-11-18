@@ -53,7 +53,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     {
       name: L('Connections', '连接'),
       rows: [
-        row('integrations/market', L('Tools & MCP', '工具与 MCP'), Plug, (h) => h.startsWith('integrations')),
+        row('integrations/library', L('Tools & MCP', '工具与 MCP'), Plug, (h) => h.startsWith('integrations')),
         row('connections', L('Conversation entries', '会话入口'), Cable),
         row('automations', L('Automations', '自动化'), Workflow),
       ],

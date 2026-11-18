@@ -10,10 +10,13 @@ let pending: Promise<void> | undefined;
 let memoryElement: HTMLDivElement | undefined;
 let browserElement: HTMLDivElement | undefined;
 let chatElement: HTMLDivElement | undefined;
-const active = () =>
-  !['#general', '#team', '#workspace', ''].includes(location.hash) && location.hash !== '#automations' && location.hash !== '#prompts/memory' && !location.hash.startsWith('#plugin/') && (!location.hash.startsWith('#integrations/')||location.hash==='#integrations/tools') && (location.pathname === "/configure" ||
-  location.pathname === "/configure/" ||
-  location.pathname === "/");
+const active = () => {
+  const { pathname, hash } = location;
+  if (!["/configure", "/configure/", "/"].includes(pathname)) return false;
+  if (["", "#general", "#team", "#workspace", "#automations", "#prompts/memory"].includes(hash)) return false;
+  if (hash.startsWith("#plugin/")) return false;
+  return !/^#integrations(?:\/|$)/.test(hash) || hash === "#integrations/tools";
+};
 async function prepare() {
   if (!pending)
     pending = import("virtual:configuration-content")

@@ -11,6 +11,7 @@ import {codexInventory} from './capability-codex.ts'
 
 const pluginClient:Record<string,ClientId>={'codex-cli':'codex','claude-code':'claude-code','gemini-cli':'gemini','opencode-cli':'opencode'}
 const display:Partial<Record<ClientId,string>>={codex:'Codex',gemini:'Gemini CLI','claude-code':'Claude Code',opencode:'OpenCode'}
+export const clientGroup=(client:ClientId)=>display[client]??client
 const dirs=(path:string)=>{try{return readdirSync(path,{withFileTypes:true}).filter(e=>e.isDirectory()||e.isSymbolicLink()).map(e=>e.name)}catch{return []}}
 export function profileInventory(config:Config,home:string,endpoint:string,env:NodeJS.ProcessEnv){
   const rows=new Map<string,Entry>(),warnings=new Set<string>()
@@ -54,7 +55,10 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
   const standard=(id:ClientId)=>id==='codex'?paths.codex:id==='opencode'?paths.opencode:id==='gemini'?paths.gemini:id==='claude-code'?paths.claude:join(home,clientInfo[id].file)
   interface Profile {client:ClientId;path:string;source:string;backend?:string}
   const profiles=new Map<string,Profile>()
-  function register(client:ClientId,path=standard(client),source=display[client]??client,backend?:string){
+  const sourceGroups=new Map<string,string>()
+  function register(client:ClientId,path=standard(client),source=clientGroup(client),backend?:string){
+    sourceGroups.set(source,clientGroup(client))
+    if(backend)sourceGroups.set('CLI · '+backend,clientGroup(client))
     profiles.set(source+'\n'+path,{client,path,source,backend})
   }
   const ids=new Set([...Object.keys(config.backends),config.execution.backend,...Object.values(config.execution.roles),config.execution.router?.backend,...workerProfiles(config).map(w=>w.backend)])
@@ -64,11 +68,11 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
     if(!client)continue
     const mapped={...env};if(d?.kind==='plugin'||d?.kind==='codex')for(const [k,ref] of Object.entries(d.env??{}))mapped[k]=env[ref]
     const p=cliProfilePaths(home,mapped)
-    register(client,client==='claude-code'?p.claude:client==='codex'?p.codex:client==='gemini'?p.gemini:p.opencode,(display[client]??client)+(id===client?'':' · '+id),id)
+    register(client,client==='claude-code'?p.claude:client==='codex'?p.codex:client==='gemini'?p.gemini:p.opencode,clientGroup(client)+(id===client?'':' · '+id),id)
   }
   for(const {transport:t} of Object.values(config.toolConnections))if(t.kind==='cli-mcp'){
     const client=t.cli==='claude'?'claude-code':t.cli
-    if(![...profiles.values()].some(p=>p.path===t.profile&&p.client===client))register(client,t.profile,(display[client]??client)+(t.profile===standard(client)?'':' · '+basename(dirname(t.profile))))
+    if(![...profiles.values()].some(p=>p.path===t.profile&&p.client===client))register(client,t.profile,clientGroup(client)+(t.profile===standard(client)?'':' · '+basename(dirname(t.profile))))
   }
   for(const client of clientIds){
     const path=standard(client)
@@ -161,5 +165,5 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
       }
     }
   }
-  return {entries:[...rows.values()],warnings:[...warnings],native:[...native.values()]}
+  return {entries:[...rows.values()],warnings:[...warnings],native:[...native.values()],sourceGroups}
 }

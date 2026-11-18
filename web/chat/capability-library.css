@@ -5,15 +5,17 @@
 .cap-actions label{width:clamp(210px,26vw,340px);margin:0}
 .cap-actions kbd{border:1px solid var(--cap-line);border-radius:4px;padding:0 5px;color:var(--c-muted);font-size:12px}
 .cap-notice{gap:8px;color:var(--c-muted);margin-bottom:10px}
-.cap-filters{gap:5px;padding-bottom:16px;overflow:auto}
+.cap-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.cap-toolbar select{flex:none;max-width:180px;min-height:36px;border:1px solid var(--cap-line);border-radius:7px;background:var(--c-bg);color:var(--c-text);padding:5px 9px;font:inherit}
+.cap-filters{gap:5px;min-width:0;overflow:auto}
 .cap-filters button{white-space:nowrap;color:var(--c-muted)}
 .cap-filters button[aria-pressed=true]{background:var(--c-soft);color:var(--c-text);font-weight:600}
 .cap-filters span,.cap-section h3 span,.cap-list h3 span{color:var(--c-muted);font-size:var(--roppo-font-meta);font-variant-numeric:tabular-nums;font-weight:400}
 .cap-workspace{display:grid;grid-template-columns:minmax(218px,30%) minmax(0,1fr);border:1px solid var(--cap-line);border-radius:12px;overflow:hidden;height:clamp(445px,calc(100dvh - 305px),840px)}
 .cap-list,.cap-detail{min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .cap-list{padding:12px 10px;background:var(--c-soft);border-right:1px solid var(--cap-line)}
-.cap-list section+section{margin-top:16px}
-.cap-list h3{font-size:var(--roppo-font-meta);color:var(--c-muted);font-weight:550;margin:0;padding:5px 10px 8px}
+.cap-list section+section{border-top:1px solid var(--cap-line);margin-top:14px;padding-top:6px}
+.cap-list h3{position:sticky;top:0;z-index:1;display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:var(--roppo-font-body);color:var(--c-text);background:var(--c-soft);font-weight:600;margin:0;padding:9px 10px}
 .cap-list h3 span{margin-left:3px}
 .cap-list button{display:flex;width:100%;justify-content:flex-start;text-align:left;gap:10px;padding:9px 10px;color:var(--c-text);border:1px solid transparent}
 .cap-list button[aria-current=true]{background:var(--c-bg);border-color:var(--cap-line);box-shadow:0 1px 2px #00000008}
@@ -66,5 +68,6 @@
 .cap-detail{padding:16px}
 .cap-detail .cap-back{display:inline-flex;margin:0 0 14px;padding-left:0}
 .cap-facts div{grid-template-columns:76px 1fr}
-.cap-filters{padding-bottom:10px}
+.cap-toolbar{flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.cap-filters{width:100%}
 .cap-param{grid-template-columns:minmax(0,1fr) auto auto}}

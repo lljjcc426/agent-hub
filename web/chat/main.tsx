@@ -70,8 +70,7 @@ import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
 
-import {HandoffStage,useHandoffPlayer,type HandoffCursor} from './handoff-stage.tsx';
-import './team-context.css';
+import {useHandoffPlayer,type HandoffCursor} from './use-handoff.ts';
 import {ChatCompanion} from "./companion.tsx";
 import {companionStatus,pendingWaitLabel} from "./companion-state.ts";
 import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
@@ -163,7 +162,6 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
-const loadTeamContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["teamContext"]>>("/conversations/"+id+"/team-context",undefined,"GET",signal);
 const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
@@ -801,6 +799,8 @@ function Chat(p: ChatProps) {
   const readonly = selected.kind === "worker";
   const participantFilter = readonly ? selected.id : undefined;
   const handoff=useHandoffPlayer(p.handoffCursor,id,snapshot,!configuring&&!around,participantFilter);
+  const companionActor=handoff.event?.to??handoff.holder??selected;
+  const companionWorker=companionActor.kind==="worker"?companionActor.id:undefined;
   const viewKey=JSON.stringify([id,participantFilter,around]),viewRef=useRef(viewKey);viewRef.current=viewKey;
   const ready = snapshot?.readiness ?? boot,
     run = snapshot?.run,
@@ -1339,7 +1339,8 @@ function Chat(p: ChatProps) {
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
                 <div className="chat-float chat-float-center">
-                  <ChatCompanion workerId={readonly?selected.id:undefined} status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
+                  <ChatCompanion actor={companionActor} event={handoff.event} onFinish={handoff.finish}
+                    status={companionStatus(snapshot,L,{participantId:companionWorker,connected,sending:sending&&!companionWorker,loading})} L={L}
                     onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
                 </div>
                 <div className="chat-float chat-float-end">
@@ -1404,8 +1405,6 @@ function Chat(p: ChatProps) {
                       </div>:null}
                     </div>
                   </ThreadPrimitive.Viewport>
-                  {handoff.event && <HandoffStage key={handoff.event.id+handoff.generation} event={handoff.event}
-                    taskTitle={snapshot?.tasks.find(t=>t.id===handoff.event?.ticketId)?.title} finish={handoff.finish} close={handoff.close} L={L}/>}
                   <div className="composer-area">
                     <button type="button" className="scroll-bottom" data-visible={!motion.atBottom||!!around} tabIndex={!motion.atBottom||around?0:-1} aria-hidden={motion.atBottom&&!around} aria-label={L("Scroll to latest", "回到最新消息")} onClick={latestMessages}>
                       <ArrowDown size={16}/>{motion.unread?<span>{L('New messages','有新消息')}</span>:around?<span>{L('Back to latest','回到最新')}</span>:null}
@@ -1449,7 +1448,7 @@ function Chat(p: ChatProps) {
               {panel && <aside id="session-panel" aria-label={L('Session panel', '会话面板')}
                 className={'session-panel '+(overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(panelExpanded?' expanded':''))}>
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>
-                {overview && <TeamOverview readiness={boot} loadContext={loadTeamContext} connected={connected} replay={events=>{if(panelOverlay)closePanel();handoff.replay(events)}} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                {overview && <TeamOverview snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
                   tab={sidebarCards.revealing ? 'activity' : teamTab} focusOnOpen={!sidebarCards.revealing}
                   setTab={tab => {
                     if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');

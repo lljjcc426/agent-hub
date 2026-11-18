@@ -17,8 +17,6 @@ import { deliveryFile } from './delivery-links.ts'
 import { DeliveryFileCard } from '../ui/delivery-files.tsx'
 import { TaskActivityRow } from '../ui/task-activity.tsx'
 import { AgentAvatar, teamName } from './agent-avatar.tsx'
-import {TeamContext,type LoadTeamContext} from './team-context.tsx'
-import type {Handoff} from './handoff-stage.tsx'
 import { taskActivities } from './task-activity.ts'
 
 type View = ReturnType<ChatSessions['view']>
@@ -32,10 +30,6 @@ const tabs = [
 
 
 interface TeamOverviewProps {
-  readiness?:View['readiness']|null
-  loadContext:LoadTeamContext
-  connected:boolean
-  replay:(events:Handoff[])=>void
   cards?: ReactNode
   focusOnOpen: boolean
   snapshot: View | null
@@ -53,7 +47,6 @@ interface TeamOverviewProps {
   changeSchedule: (id: string, revision: number, change: ScheduleEdit) => Promise<void>
 }
 export function TeamOverview({
-  readiness,loadContext,connected,replay,
   cards,
   focusOnOpen,
   snapshot,
@@ -150,7 +143,6 @@ export function TeamOverview({
             {activities.length ? (
               activities.map(activity => (
                 <TaskActivityRow key={activity.id} activity={activity} L={L} onAgent={select}
-                  replayTicket={ticketId=>{const events=snapshot?.handoffs?.filter(h=>h.ticketId===ticketId);return events?.length?()=>replay(events):undefined}}
                   agentName={id => participants.find(p => p.id === id)?.label ?? id}/>
               ))
             ) : (
@@ -164,7 +156,19 @@ export function TeamOverview({
             )}
           </>
         ) : tab === 'agents' ? (
-          <TeamContext key={snapshot?.conversation.id} participants={participants} readiness={snapshot?.readiness??readiness} snapshot={snapshot} select={select} load={loadContext} L={L} lang={lang} connected={connected}/>
+          <>
+            <h3>Agents</h3>
+            {participants.map((a) => (
+              <button className="team-row" key={a.id} onClick={() => select(a.id)}>
+                <AgentAvatar id={a.id} kind={a.kind} size={34} />
+                <span>
+                  <strong>{a.kind === 'router' ? teamName(a.label) : a.label}</strong>
+                  <small>{a.latestMessage?.text || L('No messages yet', '暂无消息')}</small>
+                </span>
+                <ChevronRight size={15} />
+              </button>
+            ))}
+          </>
         ) : (
           <>
             <h3>{L('Scheduled tasks', '定时任务')}</h3>

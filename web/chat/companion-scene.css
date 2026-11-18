@@ -1,0 +1,45 @@
+.chat-float-center .companion-lens {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 46px;
+  max-width: 100%;
+  height: 42px;
+  overflow: visible;
+  transition: width 320ms cubic-bezier(.22,.8,.24,1);
+}
+.chat-float-center [data-handoff] .companion-lens { width: 188px; overflow: hidden; }
+.chat-float-center .chat-companion[data-handoff] .companion-label {
+  display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.companion-actor {
+  position: absolute; left: 50%; bottom: 0;
+  width: 46px; height: 42px; margin-left: -23px;
+}
+.companion-actor[data-place=giver] {transform: translateX(var(--giver-x,0px)); opacity: var(--giver-opacity,1)}
+.companion-actor[data-place=taker] {transform: translateX(var(--taker-x,176px)); opacity: var(--taker-opacity,1)}
+.companion-stride {position: relative; display: block; transform-origin: 50% 90%}
+[data-place=giver] .companion-stride {transform: translateY(var(--hop,0px)) rotate(var(--sway,0deg))}
+.companion-hand {
+  position: absolute; bottom: 9px; width: 8px; height: 7px; border-radius: 60%;
+  background: var(--c-muted); opacity: var(--reach,0);
+}
+[data-place=giver] .companion-hand {right: 3px}
+[data-place=taker] .companion-hand {left: 3px}
+[data-place=taker] .roppo-eyes {translate: calc(-2px * var(--reach,0)) 0}
+.companion-ground {
+  position: absolute; bottom: 1px; left: -18px; right: -18px; height: 2px;
+  background: radial-gradient(ellipse at center,var(--c-muted) 1px,transparent 2px) 0 50% / 18px 2px repeat-x;
+  opacity: calc(var(--ground-opacity,0) * .38); transform: translateX(var(--ground-x,0px));
+}
+.companion-document {
+  position: absolute; left: 50%; bottom: 6px; width: 16px; height: 12px; margin-left: -8px;
+  border-radius: 2px; background: #aa824a; box-shadow: 0 1px 2px #49300e25;
+  transform: translate(var(--document-x,0px),var(--document-y,0px)); opacity: var(--document-opacity,0);
+}
+.companion-document::before {content:'';position:absolute;left:0;top:-2px;width:8px;height:4px;background:#aa824a;border-radius:2px}
+.companion-document i {position:absolute;inset:0 1px 2px;border-radius:1px;background:#fffaed;transform:rotate(4deg)}
+.companion-document::after {content:'';position:absolute;inset:3px 0 0;border-radius:1px 2px 2px 2px;background:linear-gradient(145deg,#efd39b,#c3995d);border:1px solid #bc965a}
+@media (prefers-reduced-motion:reduce) {
+  .chat-float-center .companion-lens {transition:none}
+}

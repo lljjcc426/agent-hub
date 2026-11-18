@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -186,8 +186,9 @@ export function scheduleLabel(t: Timing, lang: string, L: Localize) {
   return (t.kind === 'weekly' ? days.join('、') : L('Daily', '每天')) + ' ' + t.time + ' · ' + t.timezone
 }
 
-interface TeamDrawerProps {
-  hidden?: boolean
+interface TeamOverviewProps {
+  cards?: ReactNode
+  focusOnOpen: boolean
   snapshot: View | null
   participants: View['participants']
   routerLabel: string
@@ -201,8 +202,9 @@ interface TeamDrawerProps {
   resource: (kind: 'browser' | 'files') => void
   changeSchedule: (plan: Schedule) => Promise<void>
 }
-export function TeamDrawer({
-  hidden,
+export function TeamOverview({
+  cards,
+  focusOnOpen,
   snapshot,
   participants,
   routerLabel,
@@ -215,14 +217,10 @@ export function TeamDrawer({
   openFile,
   resource,
   changeSchedule,
-}: TeamDrawerProps) {
+}: TeamOverviewProps) {
   const [busy, setBusy] = useState<string[]>([]),
-    [error, setError] = useState(''),
-    closeButton = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    closeButton.current?.focus({ preventScroll: true })
-  }, [])
-  const titles = { activity: L('Activity', '动态'), agents: 'Agents', schedules: L('Schedules', '定时') }
+    [error, setError] = useState('')
+  const titles = { activity: L('Overview', '概览'), agents: 'Agents', schedules: L('Schedules', '定时') }
   const tasks = [...(snapshot?.tasks ?? [])].sort((a, b) => b.updatedAt - a.updatedAt)
   const files = snapshot?.deliveries ?? [],
     plans = snapshot?.schedules ?? []
@@ -248,7 +246,7 @@ export function TeamDrawer({
     }
   }
   return (
-    <aside id={hidden ? undefined : 'session-panel'} hidden={hidden} className="session-panel chat-inspector team-drawer" aria-label={L('Team panel', '团队面板')}>
+    <>
       <div className="team-drawer-head">
         <div className="team-profile">
           <span className="team-portrait">
@@ -271,8 +269,8 @@ export function TeamDrawer({
         </div>
         <button
           className="icon-button"
-          ref={closeButton}
-          aria-label={L('Close team panel', '关闭团队面板')}
+          autoFocus={focusOnOpen}
+          aria-label={L('Close panel', '收起面板')}
           onClick={close}
         >
           <X size={18} />
@@ -320,6 +318,7 @@ export function TeamDrawer({
       >
         {tab === 'activity' ? (
           <>
+            {cards && <div className="roppo-ui team-card-stack">{cards}</div>}
             <h3>{L('Tasks', '任务动态')}</h3>
             {tasks.length ? (
               tasks.map((t) => (
@@ -417,6 +416,6 @@ export function TeamDrawer({
           {L('Browser', '浏览器')}
         </button>
       </footer>
-    </aside>
+    </>
   )
 }

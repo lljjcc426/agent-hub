@@ -46,11 +46,11 @@ import {
   Hand,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
-import {DeliveryCard,FileViewer,TeamDrawer,type TeamTab} from './team-view.tsx';
+import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,groupWorkflow} from './workflow-cards.tsx';
 import {CommandInput, type ChatCommand} from './composer-commands.tsx';
-import {ContextDrawer} from './context-drawer.tsx';
+import {ContextCard} from './context-card.tsx';
 import {ToolCallCard} from '../ui/agent-team.tsx';
 import {SwitchView,switchView} from '../ui/transitions.tsx';
 import '../ui/theme.css';
@@ -674,6 +674,7 @@ type ChatProps = {
   refreshList: () => Promise<void>;
   setLang: (v: Language) => void;
 };
+const emptySidebarCards: { items: ChatCommand[]; revealing: boolean } = { items: [], revealing: false };
 function Chat(p: ChatProps) {
   const {
     id,
@@ -694,12 +695,13 @@ function Chat(p: ChatProps) {
   const [resources, setResources] = useState(() =>
     initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
   );
-  const resource = resources.visible
-    ? resources.tabs.find((tab) => tab.id === resources.active)?.kind ?? "new"
-    : null;
-  const [command, setCommand] = useState<ChatCommand | null>(null);
-  const panel = command ?? resource;
-  useEffect(() => { if (configuring) setCommand(null); }, [configuring]);
+  const activeTool = resources.tabs.find(tab => tab.id === resources.active)!.kind;
+  const lastView = resources.view === 'team' ? 'activity' : activeTool;
+  const resource = resources.visible ? lastView : null;
+  const [sidebarCards, setSidebarCards] = useState(emptySidebarCards);
+  const panel = sidebarCards.revealing ? 'activity' : resource;
+  const overview = panel === 'activity';
+  useEffect(() => { if (configuring) setSidebarCards(emptySidebarCards); }, [configuring]);
   const [pendingWebsite, setPendingWebsite] = useState(() => {
     try { return sessionStorage.getItem("roppo.website." + id) || ""; } catch { return ""; }
   });
@@ -714,7 +716,6 @@ function Chat(p: ChatProps) {
     [pickerRequest, setPickerRequest] = useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
-    setCommand(null);
     if (next === "browser" && !id) {
       if (creating.current) return;
       creating.current = true;
@@ -731,9 +732,13 @@ function Chat(p: ChatProps) {
       return;
     }
     if (url) setPendingWebsite(url);
-    if(next&&!resource)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    if(next&&!panel)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    setSidebarCards(state => {
+      if (!next) return emptySidebarCards;
+      return state.revealing ? {...state, revealing:false} : state;
+    });
     setResources((state) => next ? openResource(state, next) : { ...state, visible: false });
-    if (!next) setPanelExpanded(false);
+    if (!next || next === 'activity') setPanelExpanded(false);
   };
   const hash = route.split("#")[1] ?? "tasks";
   const automationRoute=configuring&&hash==='automations';
@@ -1158,6 +1163,8 @@ function Chat(p: ChatProps) {
       if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
         if (menu) {
           closeNavigation();
+        } else if (sidebarCards.revealing) {
+          dismissCard(sidebarCards.items[0]!);
         } else if (panel) {
           closePanel();
         }
@@ -1165,7 +1172,7 @@ function Chat(p: ChatProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, resource, panelOverlay, closeNavigation]);
+  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1173,20 +1180,26 @@ function Chat(p: ChatProps) {
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
-  const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setCommand(null)};
+  const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setSidebarCards(emptySidebarCards)};
+  function revealCard(card: ChatCommand) {
+    if (!panel) panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
+    setSidebarCards(state => ({items:[card, ...state.items.filter(item => item !== card)], revealing:true}));
+    requestAnimationFrame(() => bodyRef.current?.querySelector('.team-tab-content')?.scrollTo({top:0, behavior:'instant'}));
+  }
+  function dismissCard(card: ChatCommand) {
+    const items = sidebarCards.items.filter(item => item !== card);
+    const revealing = sidebarCards.revealing && items.length > 0;
+    setSidebarCards({items, revealing});
+    requestAnimationFrame(() => {
+      const target = panelOverlay && (resource || revealing)
+        ? bodyRef.current?.querySelector<HTMLElement>('#session-panel [role=tab][aria-selected=true]:not([tabindex="-1"])')
+        : threadRef.current?.querySelector<HTMLElement>('.composer-input');
+      target?.focus({preventScroll:true});
+    });
+  }
   function closePanel() {
-    if (command) {
-      setCommand(null);
-      requestAnimationFrame(() => {
-        const target = resource && panelOverlay
-          ? bodyRef.current?.querySelector<HTMLElement>('#session-panel button:not(:disabled)')
-          : threadRef.current?.querySelector<HTMLElement>('.composer-input');
-        target?.focus({preventScroll: true});
-      });
-    } else {
-      void choosePanel(null);
-      requestAnimationFrame(() => (panelOpener.current?.isConnected ? panelOpener.current : teamButton.current)?.focus({preventScroll: true}));
-    }
+    void choosePanel(null);
+    requestAnimationFrame(() => (panelOpener.current?.isConnected ? panelOpener.current : teamButton.current)?.focus({preventScroll: true}));
   }
   const readAgent=(agentId:string)=>{selectAgent(agentId);void choosePanel(null);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
   const quoteMessage=(value:DraftQuote)=>{
@@ -1324,7 +1337,7 @@ function Chat(p: ChatProps) {
                   <button
                     ref={teamButton}
                     className={"icon-button" + (panel ? " selected" : "")}
-                    onClick={() => void choosePanel(panel ? null : resources.tabs.find(t=>t.id===resources.active&&t.kind!=="new")?.kind??"activity")}
+                    onClick={() => void choosePanel(panel ? null : lastView)}
                     aria-label={L("Session panel", "会话面板")}
                     title={L("Session panel", "会话面板")}
                     aria-expanded={!!panel}
@@ -1372,7 +1385,7 @@ function Chat(p: ChatProps) {
               <ThreadPrimitive.Root
                 ref={threadRef}
                 className="thread"
-                inert={(!command && panelExpanded) || (panelOverlay && !!panel)}
+                inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
               >
                 <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                   <div className="transcript-inner">
@@ -1426,7 +1439,7 @@ function Chat(p: ChatProps) {
                   {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Please talk to Router", "请与 Router 对话")} placeholder={L("Please talk to Router", "请与 Router 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Go to Router", "前往 Router")}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                     <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                     <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <CommandInput visible={!configuring} L={L} onCommand={setCommand} consume={commandAction}
+                    <CommandInput visible={!configuring} L={L} onCommand={revealCard} consume={commandAction}
                       className="composer-input"
                       placeholder={L("Message " + currentRouter.label + "…", "向 " + currentRouter.label + " 发送消息…")}
                       aria-label={L("Message " + currentRouter.label, "向 " + currentRouter.label + " 发送消息")}
@@ -1466,30 +1479,42 @@ function Chat(p: ChatProps) {
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                 </div>
               </ThreadPrimitive.Root>
-              {resource==='activity'?<TeamDrawer hidden={!!command} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L} tab={teamTab} setTab={setTeamTab} close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
-                changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}
-              />:resource ? (
+              {panel && <aside id="session-panel" aria-label={L('Session panel', '会话面板')}
+                className={'session-panel '+(overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(panelExpanded?' expanded':''))}>
+                {overview && <TeamOverview snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                  tab={sidebarCards.revealing ? 'activity' : teamTab} focusOnOpen={!sidebarCards.revealing}
+                  setTab={tab => {
+                    if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');
+                    setTeamTab(tab);
+                  }}
+                  close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
+                  cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
+                    card === 'context' && <ContextCard key={JSON.stringify([card, current?.backend, current?.model])}
+                      conversationId={id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
+                      onClose={()=>dismissCard(card)} />
+                  )}
+                  changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}
+                />}
                 <ResourceWorkspace
-                  hidden={!!command}
+                  hidden={overview}
                   state={resources}
                   browser={id && !configuring ? {conversationId:id, requestedSession:browserRequest,
                     requestedUrl:pendingWebsite, onUrlConsumed:consumeWebsite} : undefined}
                   onChange={setResources}
-                  onOpen={(kind, url) => void choosePanel(kind, url)}
+                  onOpen={(kind, url) => {
+                    if (kind === 'activity') setTeamTab('activity');
+                    void choosePanel(kind, url);
+                  }}
                   expanded={panelExpanded}
                   onExpand={() => setPanelExpanded(!panelExpanded)}
                   onClose={closePanel}
                   L={L}
                 >
-                  {resource === "files" ? (
+                  {activeTool === "files" ? (
                     <FilesPanel conversationId={id} L={L} />
                   ) : null}
                 </ResourceWorkspace>
-              ) : null}
-              {command === 'context' && !configuring && !readonly && (
-                <ContextDrawer key={JSON.stringify([current?.backend, current?.model])} conversationId={id}
-                  L={L} load={loadContext} overlay={panelOverlay} onClose={closePanel} />
-              )}
+              </aside>}
             </div>
             </div></SwitchView>
           </main>

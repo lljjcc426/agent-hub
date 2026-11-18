@@ -181,3 +181,7 @@ body:has(.rp-dialog[open]) { overflow: hidden; }
   .rp-message-actions :is(.rp-icon-button,.copy-button), .rp-popover .rp-icon-button { min-width: 36px; min-height: 36px; }
   .rp-send, .rp-composer .rp-icon-button { min-width: 38px; min-height: 38px; }
 }
+.rp-inspector-card { min-width: 0; padding: 14px; background: var(--rp-panel); border: 1px solid var(--rp-line); border-radius: 16px; }
+.rp-inspector-card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.rp-inspector-card > header h3 { margin: 0; font-size: 14px; line-height: 1.5; font-weight: 650; }
+.rp-inspector-card > header .rp-icon-button { flex: none; width: 28px; height: 28px; margin: -3px -6px -3px 0; }

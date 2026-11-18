@@ -16,15 +16,26 @@ describe('conversation resource tabs',()=>{
   it('retires saved memory tabs while preserving other tools and their history',()=>{
     const saved={tabs:[{id:'browser',kind:'browser'},{id:'memory',kind:'memory'}],active:'memory',visible:true,recent:[{kind:'memory',at:20},{kind:'browser',at:10}]};
     const migrated=initialResources(JSON.stringify(saved));
-    expect(migrated).toEqual({tabs:[{id:'browser',kind:'browser'}],active:'browser',visible:false,recent:[{kind:'browser',at:10}]});
+    expect(migrated).toEqual({tabs:[{id:'browser',kind:'browser'}],active:'browser',visible:false,view:'tools',recent:[{kind:'browser',at:10}]});
     expect(initialResources(JSON.stringify({...saved,active:'browser'})).visible).toBe(true);
     expect(initialResources(JSON.stringify({...saved,tabs:[saved.tabs[1]]})).tabs[0]?.kind).toBe('new');
   });
   it('closing a view preserves its recent record and chooses an adjacent tab',()=>{
-    let s=openResource(initialResources(''),'files',1);const file=s.active;s=openResource(s,'activity',2);
-    s=closeResource(s,s.active);expect(s.active).toBe(file);expect(s.recent[0]?.kind).toBe('activity');
+    let s=openResource(initialResources(''),'files',1);const file=s.active;s=openResource(s,'browser',2);
+    s=closeResource(s,s.active);expect(s.active).toBe(file);expect(s.recent[0]?.kind).toBe('browser');
     for(const t of [...s.tabs]) s=closeResource(s,t.id);
     expect(s.tabs).toHaveLength(1);expect(s.tabs[0]?.kind).toBe('new');expect(s.visible).toBe(true);
+  });
+  it('keeps the active tool when returning to the overview and migrates the old team tab',()=>{
+    const legacy = {tabs:[{id:'new',kind:'new'},{id:'file',kind:'files'},{id:'team',kind:'activity'}],active:'team',visible:true,
+      recent:[{kind:'activity',at:3},{kind:'files',at:2}]};
+    const home=initialResources(JSON.stringify(legacy));
+    expect(home).toEqual({tabs:legacy.tabs.slice(0,2),active:'file',visible:true,view:'team',recent:[{kind:'files',at:2}]});
+    expect(initialResources(JSON.stringify({...legacy,recent:[{kind:'browser',at:4},...legacy.recent]})).active).toBe('file');
+    const tool=openResource(home,'browser',4),back=openResource(tool,'activity');
+    expect(back).toEqual({...tool,view:'team'});
+    expect(initialResources(JSON.stringify(back))).toEqual(back);
+    expect(initialResources('', 'activity')).toMatchObject({visible:true,view:'team'});
   });
   it('rejects malformed saved tabs and removes invalid recent timestamps',()=>{
     for(const tabs of [[{kind:'files'}],[{id:'x',kind:'files'},{id:'x',kind:'browser'}],[{id:'x',kind:'bad'}]]){

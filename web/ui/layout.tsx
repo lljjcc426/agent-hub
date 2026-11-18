@@ -1,7 +1,17 @@
-import type { AnchorHTMLAttributes, ReactNode } from 'react'
+import { useId, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 import mark from '../../src/ui/assets/roppo-mark.png'
 import { SelectionIndicator } from './transitions.tsx'
+
+export function InspectorCard({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  const heading = useId()
+  return (
+    <section className="rp-inspector-card" aria-labelledby={heading}>
+      <header><h3 id={heading}>{title}</h3>{action}</header>
+      {children}
+    </section>
+  )
+}
 
 export function Brand() {
   return (

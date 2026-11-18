@@ -27,7 +27,7 @@ with sync_playwright() as p:
   if button('result.md').count():
    button('result.md').click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers')
   open_resource(page,'Team activity');expect(drawer.get_by_role('tablist')).to_be_visible();drawer.get_by_role('button',name='Files',exact=True).click()
-  button('New workspace tab').click();expect(page.locator('.resource-recent>button')).to_have_count(2);shot('recent-light')
+  button('New workspace tab').click();expect(page.locator('.resource-recent>button')).to_have_count(1);shot('recent-light')
   page.locator('.resource-recent').get_by_role('button',name=__import__('re').compile('Files')).click();expect(files).to_be_visible()
   button('Close Files view').click();expect(tab('Files')).to_have_count(0)
   open_resource(page,'Files');expect(files).to_be_visible();expect(tab('Files')).to_have_count(1)
@@ -41,6 +41,14 @@ with sync_playwright() as p:
   sid=page.get_by_label('Browser session',exact=True).input_value()
   tabs_before=next(s for s in state()['sessions'] if s['id']==sid)['tabs'];assert sum(t['url']==website for t in tabs_before)==1
   expect(webpages).to_have_count(len(tabs_before));expect(page.locator('#session-panel [role=tablist]')).to_have_count(1)
+  browser_reads=[];page.on('request',lambda r:browser_reads.append(r.url) if r.method=='GET' and r.url==base+'/api/browser' else None)
+  button('Back to conversation overview').click()
+  expect(drawer.get_by_role('tab',name='Overview')).to_have_attribute('aria-selected','true')
+  expect(page.locator('.browser-viewport')).to_have_count(0)
+  reads=len(browser_reads);page.wait_for_timeout(2300);assert len(browser_reads)==reads
+  drawer.get_by_role('button',name='Browser',exact=True).click()
+  expect(current).to_have_attribute('id',page_id);expect(address).to_have_value(website)
+  expect(page.get_by_label('Browser session',exact=True)).to_have_value(sid)
   button('Switch to dark mode').click();expect(page.locator('html')).to_have_attribute('data-theme','dark');shot('browser-dark')
   tab('Files').click();expect(page.locator('.browser-viewport')).to_have_count(0)
   for _ in range(40):
@@ -57,7 +65,7 @@ with sync_playwright() as p:
   checks.append('real webpages share the resource row with Files, stop streaming when hidden and close independently')
   # A malformed address is a search, never an executable navigation.
   button('New workspace tab').click();search.fill('javascript:alert(1)');search.press('Enter');expect(tab('New tab')).to_have_attribute('aria-selected','true');expect(page.locator('.resource-no-results')).to_be_visible();search.fill('')
-  if tab('Team activity').count():button('Close Team activity view').click()
+  expect(tab('Team activity')).to_have_count(0)
   tab('New tab').focus();page.keyboard.press('End');expect(page.locator('.resource-tabs [role=tab]').last).to_be_focused();page.keyboard.press('Home');expect(tab('New tab')).to_be_focused();page.keyboard.press('Delete');expect(tab('New tab')).to_have_count(0);expect(page.locator('.resource-tabs [aria-selected=true]')).to_be_focused();button('New workspace tab').click()
   button('Switch to Chinese').click();page.wait_for_timeout(200);shot('recent-dark-zh')
   for width in [820,390,320]:

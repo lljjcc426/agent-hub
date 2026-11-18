@@ -17,6 +17,7 @@ const count = (n: number) =>
   new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 export function ContextWindow({
   capacity,
+  label,
   unit = 'tokens',
   L = chinese,
   parts,
@@ -25,6 +26,7 @@ export function ContextWindow({
   onRemoveFile,
 }: {
   capacity: number | null
+  label?: string
   unit?: string
   L?: Localize
   parts: ContextPart[]
@@ -35,6 +37,10 @@ export function ContextWindow({
   const [active, setActive] = useState<string | null>(null)
   const total = parts.reduce((s, p) => s + p.tokens, 0),
     cellCount = 100
+  const locale = L('en', 'zh-CN')
+  const percent = capacity != null && capacity > 0
+    ? new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 }).format(total / capacity)
+    : null
   let idx = 0,
     limit = parts[0]?.tokens ?? 0
   const fields = Array.from({ length: cellCount }, (_, i) => {
@@ -54,21 +60,24 @@ export function ContextWindow({
   return (
     <div className="rp-context">
       <div className="rp-capacity">
-        <strong title={total.toLocaleString()}>{total.toLocaleString()}</strong>
+        <strong title={total.toLocaleString(locale)}>{total.toLocaleString(locale)}</strong>
         <span>
-          {capacity ? '/ ' + capacity.toLocaleString() + ' ' : ''}
+          {capacity ? '/ ' + capacity.toLocaleString(locale) + ' ' : ''}
           {unit}
         </span>
-        {capacity && <b>{Math.round((total * 100) / capacity)}%</b>}
+        {percent !== null && <b>{percent}</b>}
       </div>
-      <div
+      {capacity != null && capacity > 0 && <div
         className="rp-cells"
-        hidden={!capacity}
-        role="img"
-        aria-label={total + ' / ' + capacity + ' ' + unit}
+        role="meter"
+        aria-label={label ?? L('Context usage', '上下文用量')}
+        aria-valuemin={0}
+        aria-valuemax={capacity}
+        aria-valuenow={Math.min(total, capacity)}
+        aria-valuetext={percent ?? undefined}
       >
         {fields}
-      </div>
+      </div>}
       <div className="rp-context-legend" onMouseLeave={() => setActive(null)}>
         {parts.map((part, i) => (
           <div key={part.id}>

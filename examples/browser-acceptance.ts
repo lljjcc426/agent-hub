@@ -1,4 +1,5 @@
 /** Isolated acceptance: real Chromium and local login site; choose fixture or native Codex models. */
+import {desktopChatFixture} from './chat-fixture-model.ts'
 import { createServer } from "node:http";
 import {
   mkdirSync,
@@ -207,7 +208,7 @@ const fixture = {
     };
   },
 };
-const runtime = new Runtime(config, native ? {} : { model: fixture }),
+const runtime = new Runtime(config, native ? {} : { model: desktopChatFixture(fixture, 'I’ll inspect the requested browser task.') }),
   host = await serve(runtime);
 runtime.start();
 const token = readFileSync(

@@ -686,14 +686,22 @@ export class ChatSessions {
     try{this.host.memory.validate(owner.manifest);for(const id of owner.inputs)this.host.routerIngress.authority(id)}catch{return}
     this.host.store.atomic(()=>this.reply(message.id,owner.triggerId,message.text))
   }
-  introduce(triggerId:string,sentence:string){
+  opening(triggerId:string){
+    const message=this.host.store.get<Message>('chat-message','opening:'+triggerId)
+    return message?.opening==='introduced'?message.text:undefined
+  }
+  introduce(triggerId:string,text:string){
     this.host.store.atomic(()=>{
-      const message=this.host.store.get<Message>('chat-message','opening:'+triggerId)
       const run=this.host.store.get<ChatRun>('chat-run',triggerId)
-      if(message?.opening!=='received'||!run||run.cancelRequested||run.cancelled)return
-      const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
-      if(!c||c.archived||c.sequence!==message.sequence||this.host.memory.cleanup.blocked('chat-message',message.id,message))return
-      this.host.store.put('chat-message',message.id,{...message,opening:'introduced',text:message.text+' '+sentence})
+      const c=run&&this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+      const id='opening:'+triggerId
+      const existing=this.host.store.get<Message>('chat-message',id)
+      if(!run||run.cancelRequested||run.cancelled||!c||c.archived||this.host.memory.cleanup.blocked('chat-conversation',c.id,c)||
+        (existing&&this.host.memory.cleanup.blocked('chat-message',id,existing)))throw Error('Chat is no longer available for this turn')
+      if(existing?.opening==='introduced')return
+      // A queued turn from an older host may already have a receipt at this ID.
+      if(existing)this.host.store.put('chat-message',id,{...existing,opening:'introduced',text})
+      else this.message(c,{id,runId:triggerId,role:'assistant',text,status:'complete',opening:'introduced'})
       this.changed(c.id)
     })
   }
@@ -725,12 +733,6 @@ export class ChatSessions {
       this.host.store.put('chat-run',run.id,run)
       this.uploads.bind(attachments.map(a=>a.id),run.id)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),...(attachments.length?{attachments}:{})})
-      if(input.openingLocale){
-        const zh=input.openingLocale==='zh-CN'
-        const receipt=attachments.length?(zh?'文件收到了。':'I’ve received the files.'):
-          input.quote?(zh?'看到你引用的消息了。':'I see the message you quoted.'):(zh?'收到。':'Got it.')
-        this.message(c,{id:'opening:'+run.id,runId:run.id,role:'assistant',text:receipt,status:'complete',opening:'received'})
-      }
       if(text&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
         const questionRun=this.host.store.get<ChatRun>('chat-run',sourceMessage.runId)
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)

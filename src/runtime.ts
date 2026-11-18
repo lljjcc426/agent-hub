@@ -5,7 +5,7 @@ import {workspaceBrowserSpec} from './browser-contract.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
-import {chatStatusTool,openingForAction,openingStatusSchema,openingStatusTool} from './chat-status.ts'
+import {chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
@@ -443,7 +443,29 @@ export class Runtime {
     catch(error){if(this.closing)throw new ReplanningInterrupted('Host stopped during read-only replanning');throw error}
     finally{this.controllers.delete(key)}
   }
-  private async runModel(request:ModelRequest,introduction?:{locale:'zh-CN'|'en';publish:(sentence:string)=>void}):Promise<ModelResult>{
+  private async desktopRouterTurn(request:ModelRequest,triggerId:string,validate:()=>void):Promise<ModelResult>{
+    const previous=this.chat.opening(triggerId)
+    if(previous){
+      // Crash recovery can rebuild the thread from history. Keep its full authorized input.
+      validate()
+      return this.runModel({...request,instructions:request.instructions+'\nThe opening for this request was already delivered. Continue the work without repeating it.'})
+    }
+    const first=await this.runModel({...request,
+      instructions:request.instructions+'\n'+firstReplyInstructions,schema:firstReplySchema,
+      tools:[],options:{...request.options,tools:[],toolConnections:[]},onTool:undefined,
+    })
+    validate()
+    const choice=JSON.parse(first.text)
+    if(typeof choice.reply!=='string'||typeof choice.opening!=='string'||
+      Boolean(choice.reply.trim())===Boolean(choice.opening.trim()))throw Error('Expected a direct reply or a task opening')
+    if(choice.reply.trim())return first
+    this.chat.introduce(triggerId,choice.opening.trim())
+    return this.runModel({...request,threadId:first.threadId,
+      input:JSON.stringify({kind:'continue_after_opening',triggerId}),
+      instructions:request.instructions+'\nYour opening has been delivered. Now carry out the user request from the preceding turn and report the actual results. Do not repeat the opening.',
+    })
+  }
+  private async runModel(request:ModelRequest):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
     const project=()=>context.ticketId?this.goals.forTask(context.ticketId):context.triggerId?this.goals.forInput(context.triggerId):undefined
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
@@ -458,26 +480,9 @@ export class Runtime {
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:options})}
     if(request.onTool&&(role==='router'||role==='worker')&&this.chat.hasContext(context)){
       const invoke=request.onTool
-      let firstTool=true
-      const statusTool=introduction?openingStatusTool:chatStatusTool
-      request={...request,tools:[...(request.tools??[]),statusTool,publicPlanTool],onTool:async(name,args,callId)=>{
-        const first=firstTool
-        firstTool=false
-        if(name!==chatStatusTool.name&&name!==publicPlanTool.name){
-          if(first&&introduction&&!request.signal?.aborted){
-            const opening=openingForAction(name,args,introduction.locale)
-            if(opening)introduction.publish(opening)
-          }
-          return invoke(name,args,callId)
-        }
-        let opening:string|undefined
-        if(introduction&&name===chatStatusTool.name){
-          const {opening:sentence,...status}=openingStatusSchema.parse(args)
-          opening=sentence
-          args=status
-        }
+      request={...request,tools:[...(request.tools??[]),chatStatusTool,publicPlanTool],onTool:async(name,args,callId)=>{
+        if(name!==chatStatusTool.name&&name!==publicPlanTool.name)return invoke(name,args,callId)
         const ok=!request.signal?.aborted&&(name===publicPlanTool.name?this.chat.publishPlan(activity,args):this.activity.status(activity,args))
-        if(ok&&first&&opening)introduction?.publish(opening)
         return {success:ok,contentItems:[{type:'inputText',text:JSON.stringify({ok})}]}
       }}
     }
@@ -486,10 +491,7 @@ export class Runtime {
     const onActive=request.onActive
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt,options.persona))}:{})})
     request=this.delegation.restrict(request)
-    if(request.tools?.some(tool=>tool.name===chatStatusTool.name)){
-      const opening=introduction?' Chat has already acknowledged the message. Before the first action or delegation for a substantial task, call superagent_status with an opening: one sentence in the reply language describing your concrete first step. For a simple question, answer directly.':''
-      request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'+opening}
-    }
+    if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     let usingOpenCode=false
@@ -1015,7 +1017,7 @@ export class Runtime {
         this.proactive.toolAllowed(triggerId,name,args);this.goals.toolAllowed(triggerId,name,args)
         return this.permissions.run(actor,name,input,risk,()=>callRouterTool(name,args),expectedId)
       }
-      const {permissionId,fileReviewId}=job.payload as {permissionId?:string;fileReviewId?:string}
+      const {permissionId,fileReviewId,teamResultId}=job.payload as {permissionId?:string;fileReviewId?:string;teamResultId?:string}
       const fileReviewReceipt=fileReviewId?this.chat.fileReviewOutcome(triggerId,fileReviewId):undefined
       const action=permissionId&&this.permissions.get(permissionId)
       let permissionReceipt:unknown
@@ -1024,7 +1026,7 @@ export class Runtime {
         if(!actor||actor.runId!==action.actor.runId||actor.conversationId!==action.actor.conversationId||action.actor.ticketId)throw Error('The original Chat authority ended')
         permissionReceipt=action.phase==='approved'?await checkedRouterTool(action.tool,action.args,action.id):{tool:action.tool,state:action.phase,receipt:action.receipt}
       }
-      const result=await this.runModel({role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
+      const request:ModelRequest={role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. The approval card holds the exact draft. On a fileReviewReceipt the host already applied the decision. Continue remaining work; if the card completes the task, an empty reply is enough. If the user wants to try Chat actions, use a concrete task and carry their choice through it. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
           + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
         input:auxiliaryDecision||permissionReceipt||fileReviewReceipt?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec,routerFileTool,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
@@ -1036,10 +1038,9 @@ export class Runtime {
           catch(error){controller.abort(error);return}
           this.chat.output(job.id,triggerId,event,validateReplyContext)
         }}:{}),
-        onThread:id=>this.store.put('router-session',sessionKey,{...previous,backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})},browserRun?.openingLocale&&!permissionId&&!fileReviewId?{locale:browserRun.openingLocale,publish:sentence=>{
-          validateReplyContext()
-          this.chat.introduce(triggerId,sentence)
-        }}:undefined)
+        onThread:id=>this.store.put('router-session',sessionKey,{...previous,backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
+      const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
+      const result=desktop?await this.desktopRouterTurn(request,triggerId,validateReplyContext):await this.runModel(request)
       controller.signal.throwIfAborted();candidates?.check()
       const quiet=followups?!followups.replied:!!candidates&&this.routerIngress.get(triggerId)?.state!=='accepted'
       if(candidates&&!quiet)for(const id of candidates.batch.triggerIds)authorityInputs.add(id)

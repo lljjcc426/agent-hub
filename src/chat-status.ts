@@ -12,25 +12,13 @@ export const chatStatusTool={
  inputSchema:{type:'object',additionalProperties:false,properties:{phase:{type:'string',enum:['thinking','working','reviewing']},label:{type:'string',minLength:1,maxLength:48}},required:['phase','label']},
 } satisfies ToolSpec
 
-export const openingStatusSchema=chatStatusSchema.extend({
- opening:z.string().trim().min(1).max(240).regex(/^[^\r\n\x00-\x1f]+$/).optional(),
-})
-export const openingStatusTool:ToolSpec={
- ...chatStatusTool,
- description:'Update the public Chat status in the user’s language. Before starting substantial work, include one short opening sentence telling the user the specific first step you intend to take. Chat already acknowledged receipt. Skip greetings, internal reasoning and claims of results. Later calls only need the phase and label.',
- inputSchema:{...chatStatusTool.inputSchema,properties:{...chatStatusTool.inputSchema.properties,opening:{type:'string',maxLength:240}}},
+export const firstReplySchema={
+ type:'object',additionalProperties:false,required:['reply','opening'],
+ properties:{reply:{type:'string'},opening:{type:'string'}},
 }
-
-// Use only recognized public operations when a model goes straight to its first tool.
-export function openingForAction(name:string,args:unknown,locale:'zh-CN'|'en'){
- const action=typeof args==='object'&&args!==null&&'action' in args?args.action:undefined
- const zh=locale==='zh-CN'
- if(name==='worker_manage'){
-   if(action==='list')return zh?'我先核对一下团队成员。':'I’ll check who’s on the team.'
-   if(action==='assign')return zh?'我先把这项工作交给负责的同事。':'I’ll hand this task to the teammate who will handle it.'
-   if(action==='inspect'||action==='result')return zh?'我先查看这项任务的最新记录。':'I’ll check the latest record for this task.'
- }
- if(name==='router_read')return zh?'我先查看相关资料。':'I’ll look through the relevant material.'
- if(name==='workspace_browser')return zh?'我先查看工作区的浏览器。':'I’ll check the workspace browser.'
- if(name==='chat_deliver_file')return zh?'我先准备要交付的文件。':'I’ll prepare the file for you.'
-}
+export const firstReplyInstructions=[
+ 'Speak to the user in your usual voice and reply language. This is your first turn for this message. No tools or execution are available yet.',
+ 'When you can fully answer from the conversation and your knowledge, put the answer in reply and leave opening empty. This includes greetings and clarifying questions.',
+ 'When the request needs a lookup, files, a tool, delegation, or verification of current state, leave reply empty. Write a short, original opening in the first person. Name what you will actually check or do first and, where it matters, how you will verify the result. Respect the exact scope the user gave you.',
+ 'The opening is shown verbatim to the user before you receive tools. Go straight to the concrete step. Omit stock acknowledgements, private reasoning, and claims that you already did the work.',
+].join(' ')

@@ -1,4 +1,5 @@
 /** Isolated chat acceptance host. `native` uses the signed-in Codex CLI; default uses a model fixture. */
+import {desktopChatFixture} from './chat-fixture-model.ts'
 import {mkdirSync,writeFileSync,readFileSync} from 'node:fs'
 import {resolve,join} from 'node:path'
 import {randomUUID} from 'node:crypto'
@@ -30,7 +31,7 @@ const model={async run(r:ModelRequest){
   }
   return reply('The review is complete. Atlas checked the implementation and regression coverage.\n\nThe result is ready for your review.')
 }}
-const runtime=new Runtime(config,native?{}:{model}),host=await serve(runtime)
+const runtime=new Runtime(config,native?{}:{model:desktopChatFixture(model,'I’ll check the team for a reviewer.')}),host=await serve(runtime)
 runtime.start()
 const token=readFileSync(join(config.stateDir,'access-token'),'utf8').trim()
 const username='chat-preview',password='Roppo-preview-2026!'

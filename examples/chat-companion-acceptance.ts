@@ -1,4 +1,5 @@
 /** Isolated, deterministic companion acceptance host; no external model calls. */
+import {desktopChatFixture} from './chat-fixture-model.ts'
 import {mkdirSync,writeFileSync,readFileSync} from 'node:fs'
 import {resolve,join} from 'node:path'
 import {randomUUID} from 'node:crypto'
@@ -35,7 +36,7 @@ const model={async run(r:ModelRequest){
   await state('reviewing','正在审查输入组件');await wait(5000)
   return reply('已完成聊天界面的布局检查。\n\n### 本次调整\n\n1. 消息正文与输入栏共用中心轴。\n2. 头像放在正文左侧。\n3. 输入区域保留当前字号。\n\n| 检查项 | 结果 |\n| --- | --- |\n| 中文输入法 | 已检查 |\n| 窄屏排版 | 已检查 |\n\n```typescript\nconst alignment = { content: 800, avatar: "outside" };\n```\n\n'+Array.from({length:12},(_,i)=>'段落 '+(i+1)+'：这是一段用于检查长消息滚动的测试内容。用户向上阅读时应停留在当前位置，新的输出可以通过回到最新按钮查看。').join('\n\n'))
 }}
-const runtime=new Runtime(config,native?{}:{model}),host=await serve(runtime)
+const runtime=new Runtime(config,native?{}:{model:desktopChatFixture(model,'我先查看聊天布局和输入组件。')}),host=await serve(runtime)
 runtime.start()
 const token=readFileSync(join(config.stateDir,'access-token'),'utf8').trim()
 const username='chat-preview',password='Roppo-preview-2026!'

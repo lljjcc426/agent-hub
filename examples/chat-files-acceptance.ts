@@ -1,4 +1,5 @@
 /** Isolated chat acceptance host. `native` uses the signed-in Codex CLI; default uses a model fixture. */
+import {desktopChatFixture} from './chat-fixture-model.ts'
 import {mkdirSync,writeFileSync,readFileSync} from 'node:fs'
 import {resolve,join} from 'node:path'
 import {randomUUID} from 'node:crypto'
@@ -51,7 +52,7 @@ print("A😀B")
 
 This reply is a UI fixture; real model acceptance runs separately.`)
 }}
-const runtime=new Runtime(config,native?{}:{model}),host=await serve(runtime)
+const runtime=new Runtime(config,native?{}:{model:desktopChatFixture(model,'I’ll check which files the request needs.')}),host=await serve(runtime)
 runtime.start()
 const token=readFileSync(join(config.stateDir,'access-token'),'utf8').trim()
 const username='chat-preview',password='Roppo-preview-2026!'

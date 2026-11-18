@@ -11,7 +11,8 @@ with sync_playwright() as p:
  expect(page.get_by_role('button',name='新建会话',exact=True)).to_have_count(0);expect(page.locator('.conversation-sidebar')).to_have_count(0)
  composer=page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True);composer.fill('论文摘要遇到 emoji 会被截坏，帮我修复并验证一下。');page.get_by_role('button',name='发送消息',exact=True).click()
  if os.environ.get('CHAT_BROWSER_WAIT_FOR_HANDOFF')=='1':
-  expect(page.get_by_text('收到。 我先核对摘要的截断规则，再请开发同事验证。',exact=True)).to_be_visible(timeout=20000)
+  expect(page.get_by_text('我先核对摘要的截断规则，再请开发同事验证。',exact=True)).to_be_visible(timeout=20000)
+  expect(page.get_by_text('收到。',exact=True)).to_have_count(0)
   expect(page.locator('.chat-mention')).to_have_count(0)
   expect(page.get_by_text('处理中',exact=True)).to_have_count(0)
   (root/'allow-handoff').touch()

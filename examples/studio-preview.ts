@@ -3,6 +3,7 @@
  * Run npm run build:chat, then tsx examples/studio-preview.ts [private directory].
  * Open the address in that directory's url.txt. It signs into this preview workspace.
  */
+import {desktopChatFixture} from './chat-fixture-model.ts'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -143,7 +144,7 @@ const model: Model = {
     return { threadId, turnId, text: raw };
   },
 };
-const createRuntime = (c: Config) => new Runtime(c, { model });
+const createRuntime = (c: Config) => new Runtime(c, { model: desktopChatFixture(model, '我先查看这次协作需要的材料。') });
 const runtime = createRuntime(config);
 // The local preview uses the same private Chat memory path as a configured workspace.
 // A preview with older tickets requires the normal ownership migration.

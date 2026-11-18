@@ -8,6 +8,7 @@ import type { CodeReceipt } from '../project-code.ts'
 import type { Run } from '../store.ts'
 import type { Approval } from '../approvals.ts'
 import { ChatError } from '../chat-errors.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 
 const exec = promisify(execFile)
 export async function terminalTask(
@@ -23,29 +24,46 @@ export async function terminalTask(
 ) {
   const { conversation, ticket } = input
   const view = host.chat.view(conversation, owner)
-  if (!view.tasks.some((t) => t.id === ticket))
+  const hasTask = view.tasks.some((t) => t.id === ticket)
+  if (input.action === 'approvals' || input.action === 'answer') {
+    const requests = view.approvals.filter((a) => a.ticketId === ticket)
+    if (!hasTask && !requests.length)
+      throw new ChatError('task_missing', 'Task not found in this conversation.', 404)
+    const legacy = hasTask
+      ? host.store.list<Approval>('approval').filter(
+          (a) => !a.chat && a.ticketId === ticket && a.status === 'pending' && a.expiresAt > Date.now()
+        )
+      : []
+    if (input.action === 'approvals')
+      return {
+        pending: [
+          ...requests.filter((a) => isApprovalPending(a)).map((a) => ({
+            id: a.id,
+            method: a.method,
+            params: { ...a.facts, ...(a.questions.length ? { questions: a.questions } : {}) },
+            expiresAt: a.expiresAt
+          })),
+          ...legacy.map((a) => ({
+            id: a.id,
+            method: a.native.method,
+            params: a.native.params,
+            expiresAt: a.expiresAt
+          }))
+        ]
+      }
+    if (input.approval && requests.some((a) => a.id === input.approval))
+      host.chat.answerApproval(conversation, owner, input.approval, input.answer)
+    else if (input.approval && legacy.some((a) => a.id === input.approval))
+      host.approvals.answer(input.approval, input.answer)
+    else
+      throw new ChatError('approval_missing', 'No matching request.', 404)
+    return { answered: input.approval }
+  }
+  if (!hasTask)
     throw new ChatError('task_missing', 'Task not found in this conversation.', 404)
   if (input.action === 'stop') {
     await host.stop(ticket)
     return { stopped: ticket }
-  }
-  const pending = host.store
-    .list<Approval>('approval')
-    .filter((a) => a.ticketId === ticket && a.status === 'pending' && a.expiresAt > Date.now())
-  if (input.action === 'approvals')
-    return {
-      pending: pending.map((a) => ({
-        id: a.id,
-        method: a.native.method,
-        params: a.native.params,
-        expiresAt: a.expiresAt
-      }))
-    }
-  if (input.action === 'answer') {
-    if (!input.approval || !pending.some((a) => a.id === input.approval))
-      throw new ChatError('approval_missing', 'No matching pending request.', 404)
-    host.approvals.answer(input.approval, input.answer)
-    return { answered: input.approval }
   }
   const receipt = host.store
     .list<CodeReceipt>('project-commit')

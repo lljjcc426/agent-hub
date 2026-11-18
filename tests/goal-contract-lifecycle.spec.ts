@@ -140,6 +140,7 @@ it('recovers orphan dispatch from its committed receipt, not an unverified task 
  const assigned=await f.host.manager.call({action:'assign',id:'one',revision:0,requestId,text:'Original dispatch committed before its pointer'},{discussion:'local:topic',trigger:f.original.trigger,scoped:f.original})
  expect(f.host.goals.get(f.old.id)?.taskIds).toEqual([])
  expect(f.host.goals.taskIdsForGoal(f.old)).toEqual([assigned.ticketId])
+ expect(f.host.goals.goalsForTask(assigned.ticketId).map(g=>g.id)).toEqual([f.old.id])
  const key=bodyDigest(['local:topic',requestId]),receipt=f.host.store.get<any>('worker-command',key)
  f.host.store.put('worker-command',key,{...receipt,scopeId:'unrelated'});expect(f.host.goals.taskIdsForGoal(f.old)).toEqual([])
  f.host.store.put('worker-command',key,receipt)
@@ -162,8 +163,10 @@ it('recovers an orphan from a prior resumed anchor only with its retained goal-c
  const assigned=await f.host.manager.call({action:'assign',id:'one',revision:0,requestId,text:'Persisted assignment from first resume'},{discussion:'local:topic',trigger:r1.trigger,scoped:r1})
  const r2=f.context('Resume this goal again'),again=f.host.goals.command({action:'resume',id:f.old.id,operationId:'resume-2',expectedRevision:resumed.revision},r2)as RouterGoal
  expect(again.taskIds).toEqual([]);expect(f.host.goals.taskIdsForGoal(again)).toContain(assigned.ticketId)
+ expect(f.host.goals.goalsForTask(assigned.ticketId).map(g=>g.id)).toEqual([again.id])
  const key=stableDigest([r1.route.scopeId,r1.route.entryId,r1.actor,'resume-1']),receipt=f.host.store.get<any>('goal-receipt',key)
  f.host.store.put('goal-receipt',key,{...receipt,entryId:'unrelated'});expect(f.host.goals.taskIdsForGoal(again)).toEqual([])
+ expect(f.host.goals.goalsForTask(assigned.ticketId)).toEqual([])
  f.host.store.put('goal-receipt',key,receipt)
  f.host.goals.command({...f.replacement,supersedes:{goalId:again.id,expectedRevision:again.revision}},f.corrected)
  expect(f.host.store.tickets.get(assigned.ticketId)?.ended?.by).toBe('human')

@@ -18,16 +18,27 @@ const model={async run(r:ModelRequest){
   const reply=async(text:string)=>{const raw=JSON.stringify({reply:text});r.onOutput?.({id:turnId,type:'start',phase:'answer'});for(let i=0;i<raw.length;i+=9){r.onOutput?.({id:turnId,type:'delta',phase:'answer',text:raw.slice(i,i+9)});await wait(120)}return {threadId,turnId,text:raw}}
   if(workflow){
     if(r.role==='worker'){
-      const approval=await r.onHumanRequest!({id:'command',method:'item/commandExecution/requestApproval',params:{command:'pwd',reason:'Inspect the working directory'}})
-      if((approval as {decision:string}).decision!=='accept')return {threadId,turnId,text:JSON.stringify({state:'blocked',summary:'Access declined',reply:'Access declined.',question:null,askedBy:null,handbacks:[]})}
+      const answered=JSON.parse(r.input).inputs?.some((i:{text?:string})=>i.text?.includes('native_question_answer'))
+      if(!answered){
+        const approval=await r.onHumanRequest!({id:'command',method:'item/commandExecution/requestApproval',params:{command:'pwd',reason:'Inspect the working directory'}})
+        if((approval as {decision:string}).decision!=='accept')return {threadId,turnId,text:JSON.stringify({state:'waiting',summary:'Awaiting the command decision',reply:'',question:null,askedBy:null,handbacks:[]})}
+      }
       const answers=await r.onHumanRequest!({id:'style',method:'item/tool/requestUserInput',params:{questions:[{id:'style',question:'Which layout?',options:[{label:'List'},{label:'Table'}]}]}}) as {answers:Record<string,{answers:string[]}>}
+      if(!answers.answers.style)return {threadId,turnId,text:JSON.stringify({state:'waiting',summary:'Awaiting layout',reply:'',question:null,askedBy:null,handbacks:[]})}
       const summary='Verified layout: '+answers.answers.style!.answers[0]
       return {threadId,turnId,text:JSON.stringify({state:'ready',summary,reply:summary,question:null,askedBy:null,handbacks:[]})}
     }
     const data=JSON.parse(r.input),text=data.trigger?.text
     r.onUsage?.({id:'preflight',inputTokens:3000})
     r.onUsage?.({id:'latest',inputTokens:137,contextWindowTokens:8192})
+    if(data.fileReviewReceipt)return {threadId,turnId,text:JSON.stringify({reply:''})}
     if(data.kind!=='user_message')return reply('The Worker verified the layout.')
+    if(text==='Draft a checklist; pick the layout.'){
+      await r.onTool!('chat_request_decision',{question:'Checklist layout?',options:[{label:'List'},{label:'Table'}],defaultOption:'List'},'layout')
+      await r.onTool!('chat_deliver_file',{name:'checklist.md',content:'- Review the release'},'checklist')
+      return reply('Checklist ready.')
+    }
+    if(text==='Table')return reply('Switched to table.')
     if(text==='English'){
       await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'completed'},{id:'review',title:'Delegate review',state:'running'}]},'continue')
       await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:turnId,text:'Verify the layout'},'assign')

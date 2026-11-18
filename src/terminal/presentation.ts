@@ -6,6 +6,7 @@ import wrapAnsi from 'wrap-ansi'
 const version = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
   .version as string
 import { clean, type Snapshot } from './client.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 
 const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const oneLine = (value: string) => clean(value).replace(/\s+/g, ' ').trim()
@@ -431,9 +432,9 @@ export class TerminalLayout {
     lines.push(this.margin + this.ink('╰', 'rule') + rim + this.ink('╯', 'rule'))
     if (menu) lines.push(...this.menuLines(menu, maxRows - lines.length - 2))
     const pending = view?.messages.some(
-      (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId
+      (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId && !m.decision.defaultOption
     )
-    const needsApproval = view?.approvals.some((a) => a.state === 'pending' && a.expiresAt > now)
+    const needsApproval = view?.approvals.some((a) => isApprovalPending(a, now))
     const actions = menu
       ? options.picker
         ? '↑↓ select    Enter resume'

@@ -21,7 +21,8 @@ import { Store, type Run, type Job } from './store.ts'
 import { makePolicy, makeScope } from './policy.ts'
 import { UncertainDelivery, incomingSchema, bodyDigest,stableDigest, type Source, type Incoming, type SourceChange } from './sources.ts'
 import type { Config } from './config.ts'
-import { Approvals } from './approvals.ts'
+import {ChatPermissions,routerRisk,permissionInstructions,type ToolResult} from './chat-permissions.ts'
+import { Approvals,withinNativeTask } from './approvals.ts'
 import type { NativeControl } from './model.ts'
 import {TransientModelError} from './model.ts'
 import { Settings } from './settings.ts'
@@ -110,6 +111,7 @@ export class Runtime {
   readonly apiUsage:import('./api-usage.ts').ApiUsage
   readonly model: Model
   readonly settings: Settings
+  readonly permissions:ChatPermissions
   readonly approvals: Approvals
   readonly work:WorkManager
   readonly resources:Resources
@@ -190,6 +192,7 @@ export class Runtime {
     this.activity = new ExecutionActivity(this.store)
     this.usage = new UsageLedger(this.store,join(this.config.stateDir,'watchdog','state.sqlite'))
     this.approvals = new Approvals(this.store)
+    this.permissions=new ChatPermissions(this.store)
     try{
       const initial=this.store.atomic(()=>{
         const previous=this.store.get<any>('settings','current')?.config as Config|undefined
@@ -288,6 +291,11 @@ export class Runtime {
       if (run.phase === 'running' || run.phase === 'starting' || run.phase === 'background' || run.phase==='interrupted' || run.phase === 'uncertain' || run.phase === 'delivering' || run.phase==='merging') {
         this.store.put('run', run.ticketId, { ...run, phase: 'uncertain', error: run.phase==='uncertain'&&run.error?run.error:'Host stopped during execution; inspect native history and workspace before retry' })
         const ticket = this.store.tickets.get(run.ticketId)
+        if(ticket&&!ticket.ended&&this.approvals.waiting(ticket.id)&&runningAssignment(ticket)){
+          this.store.put('run',ticket.id,{...run,phase:'idle',error:undefined})
+          this.engine.report(ticket.id,{state:'waiting',summary:'Waiting for the saved permission decision',question:null})
+          continue
+        }
         const recover=!this.watchdog.recovering(run.ticketId)&&config.work.autoRecover&&['running','starting','background','interrupted'].includes(run.phase)&&ticket&&!ticket.ended
         if (ticket && !ticket.ended && runningAssignment(ticket)) {
           if(recover)this.engine.report(ticket.id,{state:'blocked',summary:'Execution interrupted; resuming with retained history',question:null})
@@ -919,11 +927,7 @@ export class Runtime {
         }else void pending.catch(()=>{})
       }
       const modelInput=continuity?.input??packet?.input??JSON.stringify({...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),...(chatBinding&&!threadId?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{})})
-      const result=await this.runModel({role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval and wait for the host receipt. The approval card holds the exact draft. If the user wants to try Chat actions, use a concrete task and carry their choice through it. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
-          + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
-        input:auxiliaryDecision?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec,routerFileTool,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
-        onTool:async(name,args)=>{
+      const callRouterTool=async(name:string,args:unknown):Promise<ToolResult>=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
             if(scoped)this.scopes.assertCurrent(scoped)
@@ -979,7 +983,32 @@ export class Runtime {
             if(['result','inspect'].includes((args as any).action)&&ticketId)for(const m of this.store.list<any>('router-inbox'))if(m.ticketId===ticketId&&m.channel.address.routerInbox===discussion)readMessages.add(m.id)
             return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
           }catch(error){return {success:false,contentItems:[{type:'inputText',text:String(error)}]}}
-        },
+      }
+      const permissionActor=()=>this.chat.permissionActor(triggerId)
+      const checkedRouterTool=async(name:string,args:unknown,expectedId?:string)=>{
+        const actor=permissionActor(),input=(args??{}) as Record<string,unknown>
+        const risk=routerRisk(name,input)
+        if(risk&&!actor&&chatBinding)throw Error('The original Chat authority ended')
+        if(expectedId&&(!actor||!risk))throw Error('The approved Router action is no longer available')
+        if(!actor||!risk)return callRouterTool(name,args)
+        validateReplyContext()
+        this.proactive.toolAllowed(triggerId,name,args);this.goals.toolAllowed(triggerId,name,args)
+        return this.permissions.run(actor,name,input,risk,()=>callRouterTool(name,args),expectedId)
+      }
+      const {permissionId,fileReviewId}=job.payload as {permissionId?:string;fileReviewId?:string}
+      const fileReviewReceipt=fileReviewId?this.chat.fileReviewOutcome(triggerId,fileReviewId):undefined
+      const action=permissionId&&this.permissions.get(permissionId)
+      let permissionReceipt:unknown
+      if(action){
+        const actor=permissionActor()
+        if(!actor||actor.runId!==action.actor.runId||actor.conversationId!==action.actor.conversationId||action.actor.ticketId)throw Error('The original Chat authority ended')
+        permissionReceipt=action.phase==='approved'?await checkedRouterTool(action.tool,action.args,action.id):{tool:action.tool,state:action.phase,receipt:action.receipt}
+      }
+      const result=await this.runModel({role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. The approval card holds the exact draft. On a fileReviewReceipt the host already applied the decision. Continue remaining work; if the card completes the task, an empty reply is enough. If the user wants to try Chat actions, use a concrete task and carry their choice through it. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
+          + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
+        input:auxiliaryDecision||permissionReceipt||fileReviewReceipt?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...(chatBinding?[chatReactionSpec,routerFileTool,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])],
+        onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted)return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
@@ -1225,16 +1254,28 @@ export class Runtime {
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')
       this.work.turnStarted(ticket.id,assignmentId)
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
+      const permissionReceipts:ToolResult[]=[]
+      for(const action of this.permissions.forWorker(ticket.id)){
+        if(action.phase==='approved'&&!action.actor.agentId)
+          permissionReceipts.push(await this.workerTools.call(owner,action.tool,action.args,action.id,attempt))
+      }
       const result = await this.runModel({
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
         role:'worker',allowNativeTools:!delegatedTask,options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
-        instructions:builtInChat?instructions+'\nFor a requested file delivery, read the provided chatFiles paths for uploaded originals. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
-        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args,attempt),onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
+        instructions:builtInChat?instructions+'\n'+permissionInstructions+' Effective mode: '+(this.chat.permissionActor(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId,ticket.id)?.mode??'ask')+'. Native permission requests defer the current attempt while the inline card is pending; the provider withholds that attempt. Continue independent work. On a native_permission_decision input, repeat the exact native operation once if approved, or leave it undone if declined. Native questions likewise return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Only a recorded decline is a user refusal. Never retry a declined action.\nFor a requested file delivery, read the provided chatFiles paths for uploaded originals. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
+        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,attempt),onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
+        input: JSON.stringify({...(permissionReceipts.length?{permissionReceipts}:{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
         signal: controller.signal,
-        onHumanRequest:request=>{if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'));return this.approvals.request(ticket.id,request,this.chat.approvalOrigin(ticket.id))},
+        onHumanRequest:request=>{
+          if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))
+          const actor=this.chat.permissionActor(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId,ticket.id)
+          if((builtInChat||actor)&&(!actor||!withinNativeTask(request,owner.cwd,owner.sandbox==='workspace-write',owner.network===true,this.config.stateDir))){
+            return Promise.resolve(request.method==='item/permissions/requestApproval'?{permissions:{},scope:'turn'}:{decision:'decline'})
+          }
+          return this.approvals.request(ticket.id,request,this.chat.approvalOrigin(ticket.id),actor?.mode==='full')
+        },
         onActive:control=>{if(!currentWorkerAttempt(this,attempt))return;this.controls.set(ticket.id,control);this.controlRevisions.set(ticket.id,promptRevision);live.control=control;live.offered.clear();live.retryAt=0},
         onProgress:event=>{
           // Liveness belongs to each genuine callback, not the deduplicated envelope.
@@ -1283,6 +1324,11 @@ export class Runtime {
         current=this.store.tickets.get(ticket.id)
         if(controller.signal.aborted||!current||current.ended||latestAssignment(current)?.id!==assignmentId||!currentWorkerAttempt(this,attempt)){observeWorkerEvent(this,attempt,{kind:'result',payload:result.text,nativeTurnId:result.turnId},()=>{});continueChangedInput();return}
         if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
+      }
+      if(this.permissions.forWorker(ticket.id).length||this.approvals.waiting(ticket.id)){
+        if(output.state!=='waiting')output.reply=''
+        output.state='waiting';output.question=null;output.handbacks=[]
+        // Permission cards carry the request. Preserve independently completed work and progress.
       }
       if(output.state==='ready'&&this.workflows.unsettled(ticket.id)){
         output.state='waiting';output.summary='Waiting for the external change to be approved or reconciled';output.reply='';output.question=null
@@ -1350,6 +1396,12 @@ export class Runtime {
       const current = this.store.tickets.get(ticket.id)
       if (!controller.signal.aborted && current && !current.ended && latestAssignment(current)?.id === assignmentId) {
         if(eventAttempt&&!currentWorkerAttempt(this,eventAttempt)){observeWorkerEvent(this,eventAttempt,{kind:'blocked',payload:String(error).slice(0,500),nativeTurnId:run.turnId??null},()=>{});continueChangedInput();return}
+        if(this.approvals.waiting(ticket.id)){
+          this.approvals.release(ticket.id)
+          run.phase='idle';persist()
+          this.engine.report(ticket.id,{state:'waiting',summary:'Waiting for the saved permission decision',question:null})
+          return
+        }
         await this.work.handoff(ticket.id,assignmentId)
         run.phase = 'uncertain'; run.error = String(error).slice(0, 500)
         persist()
@@ -1363,7 +1415,7 @@ export class Runtime {
       this.liveInputs.delete(ticket.id)
       this.controls.delete(ticket.id)
       this.controlRevisions.delete(ticket.id)
-      this.approvals.cancel(ticket.id)
+      this.approvals.release(ticket.id)
       this.controllers.delete(ticket.id)
       if (controller.signal.aborted && this.store.get<Run>('run', ticket.id)?.phase !== 'human') {
         run.phase = this.closing ? 'interrupted' : 'idle';

@@ -35,8 +35,8 @@ const model={async run(r:ModelRequest){
       return reply('Research is reviewing the guide.')
     }
     if(text==='Keep going')return reply('Still here.')
-    if(text==='Show me examples of the Chat cards.'){
-      await r.onTool!('chat_preview_cards',{cards:['approval','decision','plan','tools']},'preview')
+    if(text==='Let me review the release notes before delivery.'){
+      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true},'file')
       return {threadId,turnId,text:JSON.stringify({reply:''})}
     }
     await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'running'},{id:'review',title:'Delegate review',state:'pending'}]},'start')

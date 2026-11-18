@@ -143,23 +143,37 @@
 .rp-memory-row small,.rp-undo { font-size:11px; color:var(--rp-muted); }
 .rp-memory-row .rp-input,.rp-decision form .rp-input { flex:1; }
 .rp-feature-icon { width:31px; height:31px; display:grid; place-items:center; background:var(--rp-soft); border-radius:9px; }
-.rp-approval-line { justify-content:flex-start; }
-.rp-approval-line > :last-child { margin-left:auto; font-size:11px; }
-.rp-approval[data-resolved="true"] { background:var(--rp-soft); }
-.rp-approval .rp-card-foot { justify-content:flex-end; }
-.rp-fact-list { display:grid; gap:4px; margin:10px 0 0; padding-top:9px; border-top:1px solid var(--rp-line); font-size:12px; }
+.rp-approval,.rp-decision { box-sizing:border-box; max-width:100%; min-width:0; padding:12px 14px; }
+.rp-approval-line,.rp-decision-head { display:flex; align-items:baseline; gap:10px; }
+.rp-approval-line { align-items:center; justify-content:flex-start; }
+.rp-decision-head > strong,.rp-approval-line > strong { min-width:0; font-size:14px; font-weight:600; line-height:1.45; overflow-wrap:anywhere; }
+.rp-decision-head .rp-text-control,.rp-approval-line > :last-child { flex:none; margin-inline-start:auto; color:var(--rp-muted); font-size:12px; }
+.rp-approval .rp-feature-icon { width:25px; height:25px; border-radius:7px; flex:none; }
+.rp-approval .rp-feature-icon svg { width:15px; height:15px; }
+.rp-approval .rp-card-foot { justify-content:flex-start; gap:4px; padding-top:9px; }
+.rp-approval .rp-button,.rp-decision .rp-button { min-height:29px; padding:3px 9px; border-radius:8px; font-size:12px; line-height:20px; }
+.rp-fact-list { display:grid; gap:4px; margin:8px 0 0; font-size:12px; line-height:1.5; }
+.rp-fact-list > div { display:grid; grid-template-columns:minmax(4em,auto) minmax(0,1fr); align-items:baseline; gap:10px; }
 .rp-fact-list dt { color:var(--rp-muted); }
-.rp-fact-list dd { margin:0; }
-.rp-approval kbd { opacity:.72; font:inherit; font-size:10px; }
-.rp-decision-options { display:grid; gap:6px; padding-top:10px; }
-.rp-decision-options > .rp-button { justify-self:start; }
-.rp-decision-option { display:flex; align-items:center; gap:8px; border:1px solid var(--rp-line); border-radius:9px; background:var(--rp-panel); padding:7px 8px; text-align:start; cursor:pointer; }
+.rp-fact-list dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.rp-decision-options { display:flex; flex-wrap:wrap; align-items:center; gap:5px; padding:8px 2px 2px; margin-inline:-2px; }
+.rp-decision-choice { display:flex; min-width:0; max-width:100%; }
+.rp-decision-options[data-detailed="true"] { display:grid; grid-template-columns:fit-content(48%) minmax(0,1fr); column-gap:9px; }
+.rp-decision-options[data-detailed="true"] > * { grid-column:1/-1; }
+.rp-decision-options[data-detailed="true"] .rp-decision-choice { display:grid; grid-template-columns:subgrid; align-items:center; }
+.rp-decision-choice > button,.rp-decision-options > .rp-button { justify-self:start; }
+.rp-decision-choice > small { min-width:0; color:var(--rp-muted); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.rp-decision-options form { flex-basis:100%; align-self:stretch; }
+.rp-decision-option { display:inline-flex; max-width:100%; align-items:center; gap:6px; min-height:29px; border:1px solid var(--rp-line); border-radius:8px; background:var(--rp-panel); color:inherit; padding:3px 9px; text-align:start; cursor:pointer; transition:background .15s,border-color .15s; }
+.rp-decision-option kbd { min-width:0; height:auto; padding:0; background:transparent; font:inherit; font-size:11px; font-variant-numeric:tabular-nums; }
 .rp-decision-option:hover { background:var(--rp-soft); }
-.rp-decision-option > span { display:grid; min-width:0; }
-.rp-decision-option strong { font-size:13px; }
-.rp-decision-option small,.rp-decision-option em { color:var(--rp-muted); font-size:11px; }
+.rp-decision-option strong { min-width:0; font-size:12px; font-weight:550; line-height:1.5; overflow-wrap:anywhere; }
+.rp-decision-option em { color:var(--rp-muted); font-size:11px; }
 .rp-decision-option em { font-style:normal; margin-left:auto; white-space:nowrap; }
 .rp-chosen { display:flex; gap:5px; align-items:center; margin:6px 0 0; font-size:13px; }
+@media (pointer:coarse) {
+  .rp-approval .rp-button,.rp-decision .rp-button,.rp-decision-option,.rp-decision-head .rp-text-control { min-height:44px; }
+}
 @media (max-width:430px) {
   .rp-crew { padding-inline:7px; }
   .rp-crew-node, .rp-tool-node { padding:7px; }

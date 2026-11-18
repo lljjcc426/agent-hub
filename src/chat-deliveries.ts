@@ -54,17 +54,18 @@ export const routerFileInput = z
       .regex(/^[^/\\\x00-\x1f\x7f]+$/)
       .refine((n) => textFiles.has(extname(n).toLowerCase()), 'Choose a text file format'),
     content: z.string().max(128 * 1024),
+    requireApproval: z.boolean().optional(),
   })
   .strict()
 export const routerFileTool: ToolSpec = {
   type: 'function',
   name: 'chat_deliver_file',
   description:
-    'Publish a finished text file you authored directly to this Chat. Supply the filename and its actual UTF-8 contents. The user receives a downloadable file card. For a binary file or work requiring execution, assign a Worker and let it return its final files.',
+    'Deliver a finished text file you authored in this Chat. Supply its filename and actual UTF-8 contents. When the user asks to review or approve before delivery, set requireApproval to true: the host holds those exact contents for their decision. End the turn after staging it. Otherwise deliver directly. For a binary file or work requiring execution, assign a Worker.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
-    properties: { name: { type: 'string' }, content: { type: 'string' } },
+    properties: { name: { type: 'string' }, content: { type: 'string' }, requireApproval: { type: 'boolean' } },
     required: ['name', 'content'],
   },
 }
@@ -107,8 +108,8 @@ export class ChatDeliveries {
     this.host.store.db.prepare('INSERT INTO chat_delivery_bytes VALUES(?,?)').run(item.id, bytes)
     return item
   }
-  text(conversationId: string, runId: string, name: string, content: string) {
-    return this.save(conversationId, name, Buffer.from(content), true, { runId })
+  text(conversationId: string, runId: string, name: string, content: string, published = true) {
+    return this.save(conversationId, name, Buffer.from(content), published, { runId })
   }
   capture(
     conversationId: string,
@@ -132,10 +133,11 @@ export class ChatDeliveries {
       throw error
     }
   }
-  publish(conversationId: string, ticketId: string, ids: string[]) {
+  publish(conversationId: string, origin: {ticketId: string} | {runId: string}, ids: string[]) {
     return ids.map((id) => {
       const row = this.host.store.get<ChatDelivery & { published: boolean }>('chat-delivery', id)
-      if (!row?.mime || row.ticketId !== ticketId || row.conversationId !== conversationId)
+      if (!row?.mime || row.conversationId !== conversationId ||
+          ('ticketId' in origin ? row.ticketId !== origin.ticketId : !!row.ticketId || row.runId !== origin.runId))
         throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)
       const { published, ...item } = row
       this.host.store.put('chat-delivery', id, { ...item, published: true })
@@ -187,12 +189,13 @@ export class ChatDeliveries {
       .all(conversationId)
       .map((row) => JSON.parse(String(row.body)) as ChatDelivery)
   }
-  read(conversationId: string, id: string) {
+  read(conversationId: string, id: string, draftRunId?: string) {
     const item = this.host.store.get<ChatDelivery & { published: boolean }>('chat-delivery', id)
     if (
-      !item?.published ||
+      !item ||
       !item.mime ||
       item.conversationId !== conversationId ||
+      (draftRunId === undefined ? !item.published : item.published || !!item.ticketId || item.runId !== draftRunId) ||
       this.host.memory.cleanup.blocked('chat-delivery', id, item)
     )
       throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)

@@ -1,9 +1,9 @@
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
-import type { ChatSessions } from '../../src/chat.ts'
-import type { ChatDecision, PreviewCard, PublicPlan } from '../../src/chat-workflow.ts'
+import type { ChatSessions, FileReview } from '../../src/chat.ts'
+import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
 import { AgentPlan } from '../ui/agent-run.tsx'
 import { ApprovalCard, DecisionCard } from '../ui/agent-decisions.tsx'
-import { ToolCallCard } from '../ui/agent-team.tsx'
+import { ChevronDown } from 'lucide-react'
 
 type Snapshot = ReturnType<ChatSessions['view']>
 type Request = Snapshot['approvals'][number]
@@ -74,6 +74,8 @@ type FlowProps = {
   blocks: Map<string, Block>
   readonly: boolean
   decide: (id: string, answer: string) => Promise<void>
+  readDraft: (id: string) => Promise<{ text: string }>
+  reviewFile: (id: string, state: 'approved' | 'denied') => Promise<void>
   authorize: (id: string, value: unknown) => Promise<void>
   tools: (calls: Snapshot['calls']) => ReactNode
 }
@@ -110,30 +112,34 @@ function useSubmit(L: Localize) {
     ) : null,
   }
 }
-export function CardPreview({ cards }: { cards: PreviewCard[] }) {
-  const { L } = useContext(Flow)!
-  const [approval, setApproval] = useState<'pending'|'approved'|'denied'>('pending')
-  const [answer, setAnswer] = useState<string|null>(null)
-  const filename = 'notes.md'
+export function FileReviewCard({ id, name, review }: { id: string; name: string; review: FileReview }) {
+  const { L, readonly, readDraft, reviewFile } = useContext(Flow)!
+  const { busy, submit, error } = useSubmit(L)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [readError, setReadError] = useState(false)
+  async function openDraft() {
+    if (draft !== null) return
+    setReadError(false)
+    try { setDraft((await readDraft(id)).text) }
+    catch { setReadError(true) }
+  }
+  const pending = review.state === 'pending'
   return (
-    <section className="roppo-ui workflow-block card-preview" aria-label={L('Card preview', '卡片示例')}>
-      <h4>{L('Interactive preview', '交互示例')}</h4>
-      {cards.map(card => {
-        switch (card) {
-          case 'approval': return <ApprovalCard key={card} L={L} title={L('Read a file', '读取文件')}
-            risk={L('Preview', '示例')} state={approval} onDecision={setApproval} onReset={() => setApproval('pending')}
-            details={[{label:L('File', '文件'),value:filename}]} />
-          case 'decision': return <DecisionCard key={card} L={L} question={L('How should the notes be arranged?', '你希望如何整理笔记？')}
-            options={[{id:'list', label:L('List', '列表'),detail:''},{id:'table',label:L('Table', '表格'),detail:''}]}
-            answer={answer} onAnswer={setAnswer} onReset={() => setAnswer(null)} />
-          case 'plan': return <AgentPlan key={card} L={L} title={L('Organize the notes', '整理笔记')} live={false}
-            steps={[{id:'read',title:L('Read the notes', '阅读笔记'),tool:'',state:'completed'},
-              {id:'group',title:L('Group by topic', '按主题整理'),tool:'',state:'pending'}]} />
-          case 'tools': return <ToolCallCard key={card} L={L} calls={[{id:'example',name:'router_read',
-            summary:filename,status:'done',elapsed:'',details:[[L('File', '文件'),filename],[L('Result','结果'),L('Example note','示例笔记')]]}]} />
-        }
-      })}
-    </section>
+    <div className="roppo-ui workflow-card">
+      <ApprovalCard L={L} title={name} risk={L('File delivery', '文件交付')} details={[]}
+        state={review.state === 'superseded' || review.state === 'cancelled' ? 'resolved' : review.state}
+        statusLabel={review.state === 'superseded' ? L('Replaced', '已替换') : review.state === 'cancelled' ? L('Cancelled', '已取消') : undefined}
+        actionLabels={{approve: L('Deliver file', '确认交付'), deny: L('Decline', '拒绝交付')}}
+        disabled={readonly || busy}
+        onDecision={(state) => void submit(() => reviewFile(id, state))}>
+        {pending && <details className="workflow-draft" onToggle={e => { if(e.currentTarget.open) void openDraft() }}>
+          <summary>{L('Read draft', '查看原文')}<ChevronDown size={13} aria-hidden="true" /></summary>
+          {draft !== null ? <pre tabIndex={0}>{draft}</pre>
+            : <span role="status">{readError ? L('Could not load. Reopen to retry.', '读取失败，请重新展开。') : L('Loading…', '读取中…')}</span>}
+        </details>}
+      </ApprovalCard>
+      {error}
+    </div>
   )
 }
 

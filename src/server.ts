@@ -382,10 +382,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|approvals|decisions))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
         if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner,query.get('activity')??undefined));return}
+        if(action==='file-reviews'){
+          const messageId=z.string().min(1).max(500)
+          if(req.method==='GET'){send(res,200,runtime.chat.fileReviewText(id,owner,messageId.parse(query.get('message'))));return}
+          if(req.method==='POST'){
+            const input=z.object({messageId,state:z.enum(['approved','denied'])}).strict().parse(await body(req))
+            send(res,200,runtime.chat.answerFileReview(id,owner,input.messageId,input.state));return
+          }
+        }
         if(action==='approvals'&&req.method==='POST'){
           const input=z.object({id:z.string().uuid(),value:z.union([z.enum(['accept','decline']),z.record(z.string(),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(10)}).strict())])}).strict().parse(await body(req))
           send(res,200,runtime.chat.answerApproval(id,owner,input.id,input.value));return

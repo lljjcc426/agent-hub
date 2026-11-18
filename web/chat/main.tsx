@@ -48,7 +48,7 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryCard,FileViewer,TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,RouterDecision,CardPreview,groupWorkflow} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,groupWorkflow} from './workflow-cards.tsx';
 import {CommandInput, type ChatCommand} from './composer-commands.tsx';
 import {ContextCard} from './context-card.tsx';
 import {ToolCallCard} from '../ui/agent-team.tsx';
@@ -284,7 +284,7 @@ function AssistantMessage() {
   const { L, run, runMessageId, routerLabel, openFile,openWorker,workerView,workers } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
-    previewCards=useAuiState(s=>s.message.metadata.custom?.previewCards) as Snapshot["messages"][number]["previewCards"],
+    fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
     ticketId=useAuiState(s=>s.message.metadata.custom?.ticketId) as string|undefined,
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
@@ -305,6 +305,16 @@ function AssistantMessage() {
       <strong>{assignee.label}</strong><span>{task.title}</span><ChevronRight size={14}/></button>
     <Timestamp at={createdAt}/>
   </MessagePrimitive.Root><WorkflowCards anchor={id}/></>;
+  let body: ReactNode;
+  if (deliveries?.length) {
+    body = deliveries.map(file => <DeliveryCard key={file.id} L={L} file={file} open={openFile}/>);
+  } else if (fileReview) {
+    body = <FileReviewCard key={id} id={id} name={fileReview.name} review={fileReview}/>;
+  } else if (decision) {
+    body = <RouterDecision id={id} decision={decision}/>;
+  } else {
+    body = <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }}/></div>;
+  }
   return (
     <><MessagePrimitive.Root
       className="message assistant-message"
@@ -325,7 +335,7 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        {previewCards?<CardPreview cards={previewCards}/>:decision?<RouterDecision id={id} decision={decision}/>:deliveries?.length?deliveries.map(f=><DeliveryCard key={f.id} L={L} file={f} open={openFile}/>):<div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }} /></div>}
+        {body}
         <MessageAttachments files={attachments??[]} L={L}/>
         <Reactions id={id}/>
         <div className="message-footer">
@@ -1000,7 +1010,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
-        ticketId: m.ticketId, decision:m.decision, previewCards:m.previewCards, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
+        ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1258,6 +1268,8 @@ function Chat(p: ChatProps) {
     >
       <WorkflowProvider value={{L,blocks,readonly,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
+        readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
+        reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state})}finally{await refresh()}},
         authorize:async(request,value)=>{try{await api('/conversations/'+id+'/approvals',{id:request,value})}finally{await refresh()}}
       }}><AssistantRuntimeProvider runtime={runtime}>
         <InteractionProvider L={L} messages={snapshot?.messages??[]} reply={quoteMessage} react={reactMessage} locate={messageId=>void locateMessage(messageId)}>

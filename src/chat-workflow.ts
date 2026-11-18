@@ -54,16 +54,6 @@ export const decisionTool: ToolSpec = {
     'When progress genuinely depends on a user preference, present one concrete question and distinct choices in their language. A custom reply is also possible. The selection arrives as a new quoted user message. After presenting it, end this turn without guessing or repeating the question. Do routine work autonomously. This is not a permission grant.',
   inputSchema: z.toJSONSchema(decisionSchema, { target: 'draft-7', io: 'input' }),
 }
-export const cardPreviewSchema = z.object({
-  cards: z.array(z.enum(['approval', 'decision', 'plan', 'tools'])).min(1).max(4),
-}).strict()
-export type PreviewCard = z.infer<typeof cardPreviewSchema>['cards'][number]
-export const cardPreviewTool: ToolSpec = {
-  type: 'function',
-  name: 'chat_preview_cards',
-  description: 'When the user asks to see, test or try Chat cards, call this tool to display interactive examples in their conversation. Include the requested kinds, or all four for a general tour. Preview buttons only change the example. For a real preference use chat_request_decision. Real approvals come from the runtime.',
-  inputSchema: z.toJSONSchema(cardPreviewSchema, {target:'draft-7',io:'input'}),
-}
 export function goalPlan(goal: RouterGoal) {
   const states = {
     passed: 'completed',

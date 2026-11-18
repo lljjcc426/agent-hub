@@ -83,25 +83,57 @@ it('accounts for Router input in UTF-8 bytes and counts each included file refer
   expect(measureChatInput({...base,input:'你好'})).toMatchObject({conversation:6,memory:0,attachments:0,files:[]})
 })
 
-it('publishes requested examples once and keeps example decisions outside real approvals and replies',async()=>{
-  const {h}=fixture(async r=>{
-    expect(r.tools?.some(t=>t.name==='chat_preview_cards')).toBe(true)
-    for(const cards of [['decision','approval'],['approval','decision']]){
-      const result=await r.onTool!('chat_preview_cards',{cards},randomUUID())
-      expect(result.success).toBe(true)
-    }
+it('holds exact draft bytes across restart and publishes them once on the owner’s approval',async()=>{
+  const draft={name:'验收.csv',content:'步骤,结果\r\n确认,可下载 ✅\r\n',requireApproval:true}
+  const f=fixture(async r=>{
+    expect(r.tools?.some(t=>t.name==='chat_preview_cards')).toBe(false)
+    const result=await r.onTool!('chat_deliver_file',draft,'draft')
+    expect(result.success).toBe(true)
     return {reply:''}
-  })
-  const c=h.chat.create('owner')
-  send(h,c.id,'Show me the approval and choice cards.')
-  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
-  const view=h.chat.view(c.id,'owner')
-  const previews=view.messages.filter(m=>m.previewCards)
-  expect(previews).toHaveLength(1)
-  expect(previews[0]!.previewCards).toEqual(['decision','approval'])
-  expect(view.approvals).toEqual([])
-  expect(()=>h.chat.answerDecision(c.id,'owner',previews[0]!.id,'Allow')).toThrow('Decision not found')
-  expect(view.messages.filter(m=>m.role==='user')).toHaveLength(1)
+  }),c=f.h.chat.create('owner'),other=f.h.chat.create('other')
+  send(f.h,c.id,'Let me review before delivery')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='waiting')
+  const m=f.h.chat.view(c.id,'owner').messages.find(m=>m.fileReview)!
+  const id=m.fileReview!.fileId
+  expect(f.h.chat.view(c.id,'owner').deliveries).toEqual([])
+  expect(()=>f.h.chat.delivery(c.id,'owner',id)).toThrow('unavailable')
+  expect(()=>f.h.chat.fileReviewText(other.id,'other',m.id)).toThrow('no longer available')
+  expect(()=>f.h.chat.answerFileReview(c.id,'other',m.id,'approved')).toThrow('not found')
+  await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
+  const h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  expect(h.chat.fileReviewText(c.id,'owner',m.id)).toEqual({text:draft.content})
+  for(let i=0;i<2;i++)expect(h.chat.answerFileReview(c.id,'owner',m.id,'approved')).toEqual({state:'approved'})
+  expect(()=>h.chat.answerFileReview(c.id,'owner',m.id,'denied')).toThrow('closed')
+  expect(h.chat.view(c.id,'owner').deliveries.map(f=>f.id)).toEqual([id])
+  expect(Buffer.from(h.chat.delivery(c.id,'owner',id).bytes)).toEqual(Buffer.from(draft.content))
+})
+
+it('ties the decision to one version and keeps a declined revision out of deliveries',async()=>{
+  const {h}=fixture(),c=h.chat.create('owner')
+  const first=send(h,c.id,'Review the first draft')
+  const name='release.md'
+  h.chat.deliverText(first.runId,{name,content:'first',requireApproval:true})
+  const last=()=>h.chat.view(c.id,'owner').messages.filter(m=>m.fileReview).at(-1)!
+  const old=last()
+  const next=send(h,c.id,'Revise the draft')
+  const revision={name,content:'second'}
+  const result=h.chat.deliverText(next.runId,revision)
+  expect(result).toMatchObject({state:'pending'})
+  expect(h.chat.deliverText(next.runId,revision)).toEqual(result)
+  expect(()=>h.chat.answerFileReview(c.id,'owner',old.id,'approved')).toThrow('closed')
+  expect(()=>h.chat.delivery(c.id,'owner',old.fileReview!.fileId)).toThrow('unavailable')
+  const current=last()
+  for(let i=0;i<2;i++)h.chat.answerFileReview(c.id,'owner',current.id,'denied')
+  expect(()=>h.chat.answerFileReview(c.id,'owner',current.id,'approved')).toThrow('closed')
+  expect(h.chat.deliverText(next.runId,revision)).toMatchObject({state:'denied'})
+  expect(h.chat.view(c.id,'owner').deliveries).toEqual([])
+  expect(()=>h.chat.fileReviewText(c.id,'owner',current.id)).toThrow('closed')
+  h.chat.deliverText(next.runId,{name,content:'third'})
+  const third=last()
+  await h.chat.cancel(c.id,'owner',next.runId)
+  expect(last().fileReview?.state).toBe('cancelled')
+  expect(()=>h.chat.answerFileReview(c.id,'owner',third.id,'approved')).toThrow()
+  expect(h.chat.view(c.id,'owner').deliveries).toEqual([])
 })
 
 it('resumes only the requesting Worker when its Chat owner answers a native approval and a private question',async()=>{

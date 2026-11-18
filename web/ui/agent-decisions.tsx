@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Check, CornerDownLeft, FileText, Pencil, ShieldCheck, Trash2, X } from 'lucide-react'
 import { Button, ChoiceGroup, IconButton, TextField } from './controls.tsx'
 import { Disclosure } from './overlays.tsx'
@@ -243,12 +243,18 @@ export function ApprovalCard({
   state,
   onDecision,
   onReset,
+  children,
+  actionLabels,
+  statusLabel,
   L = chinese,
   disabled = false,
 }: {
   title: string
   risk: string
   details: { label: string; value: string }[]
+  children?: ReactNode
+  actionLabels?: { approve: string; deny: string }
+  statusLabel?: string
   state: Approval
   onDecision: (decision: 'approved' | 'denied') => void
   onReset?: () => void
@@ -306,25 +312,26 @@ export function ApprovalCard({
           <small>{risk}</small>
         ) : (
           <span role="status">
-            {state === 'approved'
+            {statusLabel ?? (state === 'approved'
               ? L('Approved', '已批准')
               : state === 'denied'
                 ? L('Denied', '已拒绝')
                 : state === 'expired'
                   ? L('Expired', '已过期')
-                  : L('Resolved', '已处理')}
+                  : L('Resolved', '已处理'))}
           </span>
         )}
       </div>
       <div className="rp-fold" data-expanded={pending} inert={!pending}>
         <div>
-          {facts}
+          {details.length > 0 && facts}
+          {children}
           <div className="rp-card-foot">
-            <Button disabled={disabled} onClick={() => decide('denied')}>
-              {L('Deny', '拒绝')} <kbd>Esc</kbd>
+            <Button tone="quiet" disabled={disabled} aria-keyshortcuts="Escape" onClick={() => decide('denied')}>
+              {actionLabels?.deny ?? L('Deny', '拒绝')}
             </Button>
-            <Button disabled={disabled} tone="primary" onClick={() => decide('approved')}>
-              {L('Allow once', '允许一次')} <kbd>⌘ ↵</kbd>
+            <Button disabled={disabled} tone="primary" aria-keyshortcuts="Meta+Enter Control+Enter" onClick={() => decide('approved')}>
+              {actionLabels?.approve ?? L('Allow once', '允许一次')}
             </Button>
           </div>
         </div>
@@ -394,10 +401,10 @@ export function DecisionCard({
     if (option) {
       e.preventDefault()
       choose(option.label)
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    } else if (['ArrowDown','ArrowUp','ArrowRight','ArrowLeft'].includes(e.key)) {
       const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('.rp-decision-option'))
       const index = rows.indexOf(document.activeElement as HTMLButtonElement),
-        offset = e.key === 'ArrowDown' ? 1 : -1
+        offset = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1
       if (rows.length) {
         e.preventDefault()
         rows[(index + offset + rows.length) % rows.length]?.focus()
@@ -413,8 +420,8 @@ export function DecisionCard({
       aria-labelledby={titleId}
       onKeyDown={key}
     >
-      <div className="rp-card-kicker">
-        <span>{answer ? L('Decision', '决策') : L('Your decision', '待你决定')}</span>
+      <div className="rp-decision-head">
+        <strong id={titleId}>{question}</strong>
         {(!answer || onReset) && (
           <button
             type="button"
@@ -430,7 +437,6 @@ export function DecisionCard({
           </button>
         )}
       </div>
-      <strong id={titleId}>{question}</strong>
       {answer && (
         <p className="rp-chosen" role="status">
           <Check size={15} />
@@ -439,22 +445,23 @@ export function DecisionCard({
       )}
       <div className="rp-fold" data-expanded={expanded} inert={!expanded}>
         <div>
-          <div className="rp-decision-options">
+          <div className="rp-decision-options" data-detailed={options.some(o=>o.detail)}>
             {options.map((o, i) => (
-              <button
-                disabled={disabled}
-                type="button"
-                key={o.id}
-                className="rp-decision-option"
-                onClick={() => choose(o.label)}
-              >
-                <kbd>{i + 1}</kbd>
-                <span>
+              <div className="rp-decision-choice" key={o.id}>
+                <button
+                  disabled={disabled}
+                  type="button"
+                  className="rp-decision-option"
+                  aria-keyshortcuts={String(i + 1)}
+                  aria-describedby={o.detail ? titleId+'-option-'+i : undefined}
+                  onClick={() => choose(o.label)}
+                >
+                  <kbd aria-hidden="true">{i + 1}</kbd>
                   <strong>{o.label}</strong>
-                  {o.detail && <small>{o.detail}</small>}
-                </span>
-                {o.recommended && <em>{L('Recommended', '推荐')}</em>}
-              </button>
+                  {o.recommended && <em>{L('Recommended', '推荐')}</em>}
+                </button>
+                {o.detail && <small id={titleId+'-option-'+i}>{o.detail}</small>}
+              </div>
             ))}
             {allowCustom &&
               (custom || !options.length ? (

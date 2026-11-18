@@ -57,8 +57,11 @@ export class WorkerTools {
   const plan=isWorkflowPlan(name,value)
   const read=<T>(fn:()=>T):T=>plan?this.host.scopes.readOnly(()=>this.host.memory.readOnly(fn)):fn()
   read(()=>this.host.delegation.guardWorker(owner.ticketId,name))
-  if(attempt&&!read(()=>currentWorkerAttempt(this.host,attempt)))throw Error('Worker attempt has ended')
-  if(!read(()=>this.host.validWork(owner)))throw Error('Assignment capability has ended')
+  const checkAuthority=()=>read(()=>{
+   if(attempt&&!currentWorkerAttempt(this.host,attempt))throw Error('Worker attempt has ended')
+   if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
+  })
+  checkAuthority()
   const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
   const definition=workerDefinitions.find(d=>d.name===name);if(!definition)throw Error('Unknown worker tool')
@@ -133,7 +136,7 @@ export class WorkerTools {
     workflowRevision=String(view.revision)
     risk={target:String(view.issue),account:String(view.account),change:args.stateId,version:workflowRevision}
   }
-  const execute=(receiptId?:string)=>this.execute(owner,name,name==='superagent_shell'&&receiptId?{...args,requestId:receiptId}:args,continuation,writePaths,publication,workflowRevision)
+  const execute=(receiptId?:string)=>this.execute({checkAuthority,plan,attempt},owner,name,name==='superagent_shell'&&receiptId?{...args,requestId:receiptId}:args,continuation,writePaths,publication,workflowRevision)
   if(expectedId&&(!actor||!risk))throw Error('The approved Worker action is no longer available')
   if(!actor&&this.host.chat.hasContext({ticketId:owner.ticketId,triggerId:trigger})&&(workerRisk(name,args)||['superagent_shell','superagent_tool'].includes(name)))throw Error('The task no longer owns its Chat permissions')
   if(actor&&risk){
@@ -145,7 +148,9 @@ export class WorkerTools {
   }
   return execute()
  }
- private async execute(owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{
+ private async execute(fence:{checkAuthority:()=>void;plan:boolean;attempt?:WorkerAttempt},owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{
+  const {checkAuthority,plan,attempt}=fence
+  checkAuthority()
   let result:any
   if(name==='superagent_workflow'){
    result=await this.host.workflows.request(owner,args,workflowRevision)
@@ -198,7 +203,7 @@ export class WorkerTools {
    result={ok:true}
   }
   if(continuation&&result?.id&&continuation.priorJobs.includes(result.id))result={id:result.id,state:result.state,exitCode:result.exitCode,body:'quarantined',replayed:false}
-  if(!read(()=>this.host.validWork(owner)))throw Error('Assignment capability ended while the tool was running')
+  checkAuthority()
   if(!plan)await this.host.refreshWork(owner)
   if(name==='superagent_browser'&&args.action==='screenshot'&&result.screenshot.bytes<=8000000){
    const image=await this.host.resources.read({resource:result.screenshot.resource},owner)

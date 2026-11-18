@@ -32,6 +32,8 @@ Type normally to talk to the Router. Use a trailing backslash to continue on the
 
 `/tools` lists workspace capabilities by source. For example, `/tools Codex` filters the list. `/open` opens the same conversation in the browser. Use `/exit` to leave it running, `/stop` to cancel the current run, or `/stop TICKET` to stop one Worker task.
 
+The status beside the input shows what Roppo is doing. A running Worker updates in place while you type. Completed tasks and replies stay in the terminal history. [Worker in progress](images/product/terminal-working.png) · [Completed reply](images/product/terminal-reply.png).
+
 ## Use in scripts
 
 ```sh

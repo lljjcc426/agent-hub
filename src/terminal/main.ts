@@ -1,8 +1,11 @@
+import { Writable } from 'node:stream'
+import { TerminalLayout } from './presentation.ts'
+import { SessionDisplay } from './session-display.ts'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { createInterface, clearLine, cursorTo } from 'node:readline'
+import { createInterface } from 'node:readline'
 import { createInterface as promptInterface } from 'node:readline/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { TerminalClient, CliError, clean, type Snapshot, type Conversation } from './client.ts'
@@ -104,10 +107,15 @@ async function selectConversation(client: TerminalClient, o: Options, project: s
     throw new CliError('Conversation not found in this project.')
   }
   if (!tty) throw new CliError('Pass a conversation ID with -r when running a script.', 'usage', 2)
-  for (const [i, c] of list.entries())
-    process.stderr.write(
-      clean(String(i + 1) + '. ' + (c.title || 'New conversation') + '  ' + c.id) + '\n'
-    )
+  const layout = new TerminalLayout(
+    process.stderr.columns || 80,
+    !!process.stderr.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
+  )
+  const choices = [...layout.result('Resume a conversation · ' + basename(project))]
+  for (const [i, c] of list.entries()) {
+    choices.push(...layout.message(String(i + 1) + '. ' + (c.title || 'New conversation'), c.id, true))
+  }
+  process.stderr.write(choices.join('\n') + '\n\n')
   const n = Number(await ask('Resume number › '))
   if (!Number.isInteger(n) || !list[n - 1]) throw new CliError('Invalid selection.')
   return list[n - 1]!
@@ -167,91 +175,55 @@ async function printRun(client: TerminalClient, c: Conversation, o: Options) {
   }
 }
 async function interactive(client: TerminalClient, c: Conversation, o: Options) {
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
-    prompt: '› '
-  })
+  const plain = process.env.TERM === 'dumb'
+  const output = plain
+    ? process.stdout
+    : new Writable({
+        write(_chunk, _encoding, done) {
+          done()
+        }
+      })
+  const rl = createInterface({ input: process.stdin, output, terminal: !plain, prompt: '› ' })
   const lines = rl[Symbol.asyncIterator]()
-  const seen = new Map<string, string>()
+  const display = new SessionDisplay(process.stdout, rl, plain)
+  const stream = new AbortController()
   let stopped = false,
-    reading = false,
     buffer = '',
-    lastState = '',
-    preview = ''
-  const say = (value: string) => {
-    if (stopped) return
-    clearLine(process.stdout, 0)
-    cursorTo(process.stdout, 0)
-    process.stdout.write(clean(value) + '\n')
-    if (reading) rl.prompt(true)
-  }
-  function render(view: Snapshot) {
-    for (const m of view.messages) {
-      if (m.recipient || !m.text || m.status === 'streaming' || seen.has(m.id)) continue
-      seen.set(m.id, m.text)
-      if (m.role === 'assistant') say((m.speaker?.label ?? 'Roppo') + ' › ' + m.text)
-      else if (!reading) say('You › ' + m.text)
-    }
-    for (const t of view.tasks) {
-      const key = 'task/' + t.id,
-        description = [t.workerId, t.state, t.title, t.question].filter(Boolean).join(' · ')
-      if (seen.get(key) !== description) {
-        seen.set(key, description)
-        say(description)
-      }
-    }
-    for (const call of view.calls) {
-      if (call.kind !== 'tool') continue
-      const key = 'tool/' + call.id
-      if (seen.get(key) === call.state) continue
-      seen.set(key, call.state)
-      if (!reading && call.state !== 'running') continue
-      say([call.name, call.action, call.target, call.state].filter(Boolean).join(' · '))
-    }
-    const stream = view.messages.findLast(
-      (m) => m.role === 'assistant' && !m.recipient && m.status === 'streaming'
-    )
-    const sample = stream
-      ? clean(stream.text)
-          .replace(/\s+/g, ' ')
-          .slice(-Math.max(12, Math.min(70, (process.stdout.columns || 80) - 16)))
-      : ''
-    if (sample !== preview) {
-      preview = sample
-      rl.setPrompt(sample ? 'Roppo … ' + sample + '  › ' : '› ')
-      rl.prompt(true)
-    }
-    const state = view.run?.state ?? ''
-    if (state && lastState !== state) say('Roppo · ' + state)
-    lastState = state
+    lastError = ''
+  let redraw: NodeJS.Immediate | undefined
+  const requestDraw = () => {
+    if (stopped || redraw) return
+    redraw = setImmediate(() => {
+      redraw = undefined
+      if (!stopped) display.paint()
+    })
   }
   const refresh = async () => {
-    const view = await client.view(c.id)
-    if (!stopped) render(view)
+    const view = await client.view(c.id, undefined, stream.signal)
+    if (!stopped) display.update(view)
   }
-  process.stdout.write(
-    clean('Roppo  ' + c.project + '\n' + (c.title || 'New conversation') + '  ·  /help for commands') +
-      '\n'
-  )
+  const say = (value: string, error = false) => {
+    if (!stopped) display.paint(display.layout.result(value, error))
+  }
   const send = async (text: string, files: string[] = []) =>
     client.send(c.id, text, [...files, ...mentionedFiles(text, o.cwd)], locale())
-  let lastError = ''
   rl.on('SIGINT', () => {
-    if (rl.line) {
+    if (rl.line || buffer) {
+      buffer = ''
+      display.continuation = false
       rl.write(null, { ctrl: true, name: 'u' })
-      rl.prompt()
+      requestDraw()
     } else rl.close()
   })
   rl.on('close', () => {
     stopped = true
+    stream.abort()
   })
-  const stream = new AbortController()
+  process.stdin.on('data', requestDraw)
+  process.stdout.on('resize', requestDraw)
   let watch: Promise<void> | undefined
   try {
     await refresh()
-    reading = true
     if (o.prompt || o.files.length)
       await send(
         o.prompt,
@@ -267,17 +239,20 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
       (message) => {
         if (message !== lastError) {
           lastError = message
-          say(message)
+          say(message, true)
         }
       }
     )
-    rl.prompt()
+    if (plain) rl.prompt()
     for await (const line of lines) {
       if (line.endsWith('\\')) {
         buffer += line.slice(0, -1) + '\n'
-        rl.prompt()
+        display.continuation = true
+        display.paint()
+        if (plain) rl.prompt()
         continue
       }
+      display.continuation = false
       const text = (buffer + line).trim()
       buffer = ''
       if (text === '/exit' || text === '/quit') {
@@ -286,19 +261,22 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
       }
       try {
         if (text.startsWith('/')) {
+          display.paint(display.layout.message('You', text, true))
           say(await command(client, c.id, text))
-          continue
-        }
-        if (text) await send(text)
+        } else if (text) await send(text)
       } catch (e) {
-        say((e as Error).message)
-        continue
+        say((e as Error).message, true)
       }
-      rl.prompt()
+      display.paint()
+      if (plain) rl.prompt()
     }
   } finally {
     stopped = true
     stream.abort()
+    clearImmediate(redraw)
+    process.stdin.off('data', requestDraw)
+    process.stdout.off('resize', requestDraw)
+    display.close()
     rl.close()
     process.stdin.pause()
     await watch

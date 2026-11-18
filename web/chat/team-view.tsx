@@ -21,6 +21,7 @@ import type { ChatDelivery } from '../../src/chat-deliveries.ts'
 import type { Timing } from '../../src/schedule-time.ts'
 import { downloadUrl } from './delivery-links.ts'
 import { AgentAvatar } from './agent-avatar.tsx'
+import { TaskActivityRow } from '../ui/task-activity.tsx'
 import { taskActivities } from './task-activity.ts'
 
 const DeliveryMarkdown = lazy(() => import('./markdown.tsx').then((m) => ({ default: m.FileMarkdown })))
@@ -225,22 +226,6 @@ export function TeamOverview({
   const activities = snapshot ? taskActivities(snapshot) : []
   const files = snapshot?.deliveries ?? [],
     plans = snapshot?.schedules ?? []
-  const taskStatus = (state: string) =>
-    ({
-      pending: L('Pending', '待开始'),
-      planned: L('Planned', '已计划'),
-      active: L('Working', '进行中'),
-      reviewing: L('In review', '验收中'),
-      needs_input: L('Needs input', '待补充'),
-      paused: L('Paused', '已暂停'),
-      blocked: L('Blocked', '受阻'),
-      held: L('On hold', '已搁置'),
-      queued: L('Queued', '排队中'),
-      running: L('Working', '进行中'),
-      completed: L('Complete', '已完成'),
-      waiting: L('Waiting', '待处理'),
-      cancelled: L('Cancelled', '已取消'),
-    })[state] ?? state
   const toggle = async (plan: Schedule) => {
     setBusy((ids) => [...ids, plan.id])
     setError('')
@@ -330,28 +315,8 @@ export function TeamOverview({
             <h3>{L('Tasks', '任务动态')}</h3>
             {activities.length ? (
               activities.map(activity => (
-                <details key={activity.id} className="task-activity" data-activity-id={activity.id}>
-                  <summary className="team-row">
-                    <List size={19} aria-hidden="true"/>
-                    <span><strong>{activity.title}</strong><small>{taskStatus(activity.state)}</small></span>
-                    <ChevronRight size={15} aria-hidden="true"/>
-                  </summary>
-                  <div className="task-activity-detail">
-                    {activity.objective && activity.objective !== activity.title && <p>{activity.objective}</p>}
-                    {activity.nextAction && !activity.steps.length && <p>{activity.nextAction}</p>}
-                    {activity.steps.length > 0 && <ol>{activity.steps.map(step =>
-                      <li key={step.id}>{step.title}{step.state && <small>{taskStatus(step.state)}</small>}</li>
-                    )}</ol>}
-                    {activity.tickets.map(ticket => <div key={ticket.id}>
-                      {ticket.title !== activity.title && <strong>{ticket.title}</strong>}
-                      <button type="button" onClick={() => select(ticket.workerId)}>
-                        {participants.find(p => p.id === ticket.workerId)?.label ?? ticket.workerId} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state)}
-                        <ArrowUpRight size={13}/>
-                      </button>
-                      {(ticket.question || ticket.summary) && <p>{ticket.question || ticket.summary}</p>}
-                    </div>)}
-                  </div>
-                </details>
+                <TaskActivityRow key={activity.id} activity={activity} L={L} onAgent={select}
+                  agentName={id => participants.find(p => p.id === id)?.label ?? id}/>
               ))
             ) : (
               <p>{L('No tasks yet', '暂无任务')}</p>

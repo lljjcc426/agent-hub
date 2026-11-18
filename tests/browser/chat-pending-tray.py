@@ -15,7 +15,7 @@ with sync_playwright() as pw:
     page = ctx.new_page()
     errors = []
     page.on('pageerror', lambda e: errors.append(str(e)))
-    page.goto(info['url'], wait_until='networkidle')
+    page.goto(info['url'], wait_until='domcontentloaded')
     expect(page.locator('.chat-header, .studio-rail, .studio-brandbar')).to_have_count(0)
     controls = page.locator('.chat-float')
     expect(controls).to_have_count(3)
@@ -111,7 +111,7 @@ with sync_playwright() as pw:
     page.screenshot(path=str(out / 'pending-mobile.png'))
     page.set_viewport_size({'width':1440,'height':960})
     other=ctx.new_page()
-    other.goto(info['url'],wait_until='networkidle')
+    other.goto(info['url'],wait_until='domcontentloaded')
     other_tray=other.locator('#pending-tray')
     other_file=other_tray.locator('.rp-approval').filter(has_text='release-notes.md')
     other_file.get_by_text('Read draft',exact=True).click()

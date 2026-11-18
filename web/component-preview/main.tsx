@@ -28,6 +28,7 @@ import {
   Message,
   NavLink,
   ScheduleRow,
+  TaskActivityRow,
   Sidebar,
   Toast,
   Topbar,
@@ -391,6 +392,14 @@ function App() {
             {page === 'work' && (
               <div className="dedicated">
                 <Specimen title="任务列表">{openTaskList()}</Specimen>
+                <Specimen title="任务动态">
+                  <TaskActivityRow L={(_en, zh) => zh} agentName={() => tasks[0]!.agent}
+                    activity={{id: 'release', title: tasks[0]!.title, state: 'completed', updatedAt: 0,
+                      steps: [{id: 'owners', title: '按负责人分组', state: 'completed'}],
+                      tickets: [{id: 'check', workerId: 'doc', title: '核对交付文件', state: 'completed',
+                        reviewing: false, updatedAt: 0, summary: '已交付发布清单.xlsx'}]}}
+                    onAgent={() => {setMode('agents'); setSpeaker('worker'); location.hash = 'chat'}}/>
+                </Specimen>
                 <Specimen title="交付文件">
                   <SampleFile open={openFile} />
                 </Specimen>

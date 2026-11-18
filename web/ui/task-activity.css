@@ -1,0 +1,13 @@
+.task-activity > summary { list-style: none; cursor: pointer; }
+.task-activity > summary::-webkit-details-marker { display: none; }
+.task-activity > summary:hover { background: var(--team-fill, var(--rp-soft)); }
+.task-activity[open] > summary > svg:last-child { transform: rotate(90deg); }
+.task-activity[open] > summary strong { white-space: normal; overflow-wrap: anywhere; }
+.task-activity-detail { padding: 0 8px 8px 36px; font-size: 13px; overflow-wrap: anywhere; }
+.task-activity-detail ol { margin: 3px 0 8px; padding-inline-start: 17px; }
+.task-activity-detail li { padding-block: 2px; }
+.task-activity-detail small { margin-inline-start: 6px; color: var(--team-muted, var(--rp-muted)); }
+.task-activity-detail strong { display: block; }
+.task-activity-detail button { display: inline-flex; align-items: center; gap: 4px; color: var(--team-muted, var(--rp-muted)); }
+.task-activity-detail button:hover { color: var(--team-ink, var(--rp-ink)); text-decoration: underline; }
+.task-activity-detail p { margin: 3px 0 8px; }

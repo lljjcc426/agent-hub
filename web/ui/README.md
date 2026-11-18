@@ -18,7 +18,7 @@ import { Button, FileCard } from '../ui'
 - 任务与文件提供状态、任务行、时间线、定时任务和文件卡。任务行底色表示当前项，状态独立传入。
 - 浮层与反馈提供锚定气泡、侧面板、对话框、可折叠内容、空态和操作提示。弹窗使用浏览器原生焦点管理和 Escape。
 
-对话页的 `ChatComposer` 复用正式 Chat 的加号、斜杠菜单、推理强度滑杆、审批策略和上下文圆环。宿主提供发送、附件及设置回调，预览使用内存中的模型连接。`MessageActions` 与 `Reactions` 通过 `InteractionProvider` 获取对应消息。`PendingRequests` 与对话内的决策卡共用答复状态，并可定位原消息。
+对话页的 `ChatComposer` 复用正式 Chat 的加号、斜杠菜单、推理强度滑杆、审批策略和上下文圆环。宿主提供发送、附件及设置回调，预览使用内存中的模型连接。`MessageActions` 与 `Reactions` 通过 `InteractionProvider` 获取对应消息。`PendingRequests` 与对话内的决策卡共用答复状态，并可定位原消息。任务页复用会话面板的 `TaskActivityRow`，展开后可查看步骤并进入对应 Worker 的协作记录。
 
 在仓库根目录运行 `npm run dev:ui` 打开交互展示页，`npm run build:ui` 生成独立静态预览。
 

@@ -204,7 +204,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           else onEnter(event.currentTarget.value)
         }}/>
     </div>
-    <div className="composer-toolbar">
+    <div className="composer-toolbar" onKeyDown={event => {
+      if (open && !closing && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
+    }}>
       <button type="button" data-menu-trigger className="composer-plus icon-button" aria-label={L('Chat actions','对话操作')}
         title={L('Chat actions','对话操作')} aria-haspopup="menu" aria-expanded={!closing && source === 'plus'} aria-controls={source === 'plus' ? paletteId : undefined}
         onClick={e => shortcut('plus', e.currentTarget)}><Plus size={19}/></button>

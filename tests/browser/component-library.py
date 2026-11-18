@@ -62,7 +62,7 @@ def check_composer(page):
     tray.get_by_role("button", name="表格", exact=True).click()
     expect(tray.get_by_text("暂无待处理事项")).to_be_visible()
     tray.get_by_role("button", name="隐藏待处理事项").click()
-    expect(page.locator(".sample-question").get_by_text("表格", exact=True)).to_be_visible()
+    expect(page.locator(".sample-question").get_by_role("status")).to_have_text("表格")
 
 
 def check_dialogs(page):
@@ -76,6 +76,40 @@ def check_dialogs(page):
     expect(open_file).to_be_focused()
     page.keyboard.press("Escape")
     expect(row).to_be_focused()
+    activity = page.locator('[data-activity-id="release"]')
+    activity.locator('summary').click()
+    expect(activity).to_contain_text('按负责人分组')
+    activity.get_by_role('button', name='文档助手', exact=False).click()
+    expect(page.get_by_role('textbox', name='请和 Router 对话')).to_be_visible()
+
+
+def check_mobile(page, base):
+    page.add_init_script("localStorage.setItem('roppo-component-theme', 'dark')")
+    page.goto(base + "/#chat")
+    expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
+    form = page.locator(".sample-composer")
+    form.scroll_into_view_if_needed()
+    for source in ["model", "plus", "slash"]:
+        if source == "model":
+            form.get_by_role("button", name="模型连接 · gpt-6.1-terra").tap()
+        elif source == "plus":
+            form.get_by_role("button", name="对话操作").tap()
+            page.get_by_role("menuitem", name="模型连接").tap()
+        else:
+            form.get_by_role("textbox").fill("/model")
+            page.get_by_role("option", name="模型连接").tap()
+        picker = page.get_by_role("dialog", name="对话模型")
+        expect(picker.get_by_role("slider")).to_be_visible()
+        expect(picker).to_have_css("opacity", "1")
+        bounds, anchor = picker.bounding_box(), form.bounding_box()
+        assert abs(bounds["x"] - anchor["x"]) < 2
+        assert bounds["x"] + bounds["width"] <= page.viewport_size["width"]
+        form.get_by_role("textbox").tap()
+        expect(picker).to_have_count(0)
+    form.get_by_role("textbox").fill("手机消息")
+    form.get_by_role("button", name="发送消息").tap()
+    expect(page.get_by_role("region", name="示例对话记录").get_by_text("手机消息")).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
 if __name__ == "__main__":
@@ -87,4 +121,6 @@ if __name__ == "__main__":
         check_composer(page)
         page.goto(base + "/#work")
         check_dialogs(page)
+        mobile = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True, color_scheme="dark")
+        check_mobile(mobile, base)
         browser.close()

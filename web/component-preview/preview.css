@@ -193,3 +193,8 @@ html[data-theme="dark"] { background: #171717; }
   .gallery-workspace > .rp-topbar .rp-breadcrumb li:first-child,
   .gallery-workspace > .rp-topbar .rp-breadcrumb li:nth-child(2) > svg { display: none; }
 }
+
+.specimen .task-activity .team-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; }
+.specimen .task-activity .team-row span { display: grid; flex: 1; }
+.specimen .task-activity small { color: var(--rp-muted); }
+.specimen .task-activity-detail button { padding: 0; border: 0; background: transparent; cursor: pointer; }

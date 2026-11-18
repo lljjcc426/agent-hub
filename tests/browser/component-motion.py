@@ -116,13 +116,13 @@ def check_layers(page, base):
     page.keyboard.press("Escape")
     exit_frames = result(page)
     faded = [
-        r for r in exit_frames if r.get("display") != "none" and 0.02 < float(r["opacity"]) < 0.98
+        r for r in exit_frames if r.get("opacity") is not None and r.get("display") != "none" and 0.02 < float(r["opacity"]) < 0.98
     ]
     assert len(faded) > 1 and len(intermediate(faded, "x")) > 1, "drawer close snapped"
     expect(row).to_be_focused()
     page.goto(base + "/#chat")
     radio(page, "群聊").click()
-    trigger = page.get_by_role("button", name="模型连接 · gpt-6.1-terra")
+    trigger = page.locator('.sample-composer').get_by_role('button', name='模型连接 · gpt-6.1-terra')
     sel = ".composer-palette"
     trigger.click()
     popup = page.get_by_role("dialog", name="对话模型")
@@ -132,7 +132,7 @@ def check_layers(page, base):
     frames(page, sel)
     page.keyboard.press("Escape")
     faded = [
-        r for r in result(page) if r.get("display") != "none" and 0.02 < float(r["opacity"]) < 0.98
+        r for r in result(page) if r.get("opacity") is not None and r.get("display") != "none" and 0.02 < float(r["opacity"]) < 0.98
     ]
     assert len(faded) > 1, "popover close snapped"
     trigger.click()

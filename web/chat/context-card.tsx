@@ -48,7 +48,7 @@ export function ContextCard({ conversationId, turnId, load, L, focusOnReveal, on
   const count = usage?.inputTokens
   const budget = usage?.budget
   const composition = usage?.composition
-  const breakdown = L('Router input composition', 'Router 输入构成')
+  const breakdown = L('Chat input composition', '对话输入构成')
   const units = L('bytes','字节')
   let status = ''
   if (current?.failed) status = usage

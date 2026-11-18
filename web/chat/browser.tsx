@@ -479,7 +479,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
               )}{" "}
               {session.controlledByYou
                 ? L("You have control", "由你控制")
-                : session.control === "router" ? L("Router has control","由 Router 控制") : session.control === "worker"
+                : session.control === "router" ? L("Your assistant has control","助手正在操作") : session.control === "worker"
                   ? L("Worker has control", "由 Worker 控制")
                   : session.control === "handoff"
                     ? L("Handing over…", "正在交接…")
@@ -504,7 +504,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 }
               >
                 <Play size={14} />
-                {session.workspace ? L("Return to Router","交还 Router") : session.personal || session.ended
+                {session.workspace ? L("Return to assistant","交还助手") : session.personal || session.ended
                   ? L("Release control", "结束操作")
                   : L("Continue task", "继续任务")}
               </button>

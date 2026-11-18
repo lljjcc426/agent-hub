@@ -33,7 +33,7 @@ const tabs = [
   { id: 'agents', Icon: Users },
   { id: 'schedules', Icon: CalendarClock },
 ] as const
-export const teamName = (label: string) => (label === 'Router' ? 'Roppo' : label)
+export const teamName = (label: string) => (label.replace(/(?:^Router$| · Router$)/, '').trim() || 'Roppo')
 
 function fileSize(bytes: number) {
   return bytes < 1024
@@ -258,13 +258,12 @@ export function TeamOverview({
               <a
                 className="icon-button"
                 href="/configure#execution/configuration/router"
-                aria-label={L('Edit Router profile', '编辑 Router 资料')}
-                title={L('Edit Router profile', '编辑 Router 资料')}
+                aria-label={L('Edit profile', '编辑资料')}
+                title={L('Edit profile', '编辑资料')}
               >
                 <Pencil size={13} />
               </a>
             </div>
-            <small>Router</small>
           </div>
         </div>
         <button

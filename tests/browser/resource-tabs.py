@@ -10,7 +10,7 @@ with sync_playwright() as p:
  def button(name):return page.get_by_role('button',name=name,exact=True)
  def tab(name):return page.locator('.resource-tabs').get_by_role('tab',name=name,exact=True)
  def preference(label):
-  page.locator('a.footer-settings').click()
+  page.locator('.chat-float-start a[href="/configure#general"]').click()
   page.get_by_role('radio',name=label,exact=True).check()
   page.locator('a.return-chat').click()
  def shot(name):page.screenshot(path=str(out/(name+'.png')),animations='disabled')
@@ -19,7 +19,7 @@ with sync_playwright() as p:
  try:
   cs=page.request.get(base+'/api/chat/conversations').json()['conversations'];original=next((c['id'] for c in cs if c['title']),None)
   page.goto(base+('/chat?conversation='+original if original else '/chat'));expect(page.locator('.composer-input')).to_be_visible()
-  page.locator('a.footer-settings').click()
+  page.locator('.chat-float-start a[href="/configure#general"]').click()
   button('Choose workspace').click()
   page.get_by_role('dialog',name='Switch workspace').get_by_role('button',name='Close',exact=True).click()
   expect(page.locator('.configuration-outlet #main h1').first).to_be_visible()

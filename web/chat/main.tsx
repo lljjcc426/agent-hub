@@ -30,6 +30,7 @@ import {
   PanelRight,
   Inbox,
   Menu,
+  Settings,
   X,
   ChevronRight,
   Check,
@@ -54,7 +55,7 @@ import '../ui/transitions.css';
 import './workflow.css';
 import { ResourceWorkspace } from "./resource-workspace.tsx";
 import { initialResources, openResource, resourceKey, type ResourceKind } from "./resource-state.ts";
-import { StudioRail, General, TeamSettings } from "./studio-navigation.tsx";
+import { ChatMemberPicker, StudioRail, General, TeamSettings } from "./studio-navigation.tsx";
 import { SwitchView, switchView } from "../ui";
 import { SidebarSeparator } from "./sidebar-separator.tsx";
 import {lazy,Suspense} from "react";
@@ -66,7 +67,7 @@ import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
 
-import {ChatCompanion,RoppoCharacter} from "./companion.tsx";
+import {ChatCompanion} from "./companion.tsx";
 import {companionStatus} from "./companion-state.ts";
 import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
 import {useChatMotion} from './chat-motion.ts';
@@ -86,6 +87,7 @@ import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";
 import "./pending-tray.css";
+import "./floating-chat.css";
 import { WorkspaceSettings, workspaceGroups } from "./workspace-settings.tsx";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
@@ -736,7 +738,6 @@ function Chat(p: ChatProps) {
     if(!thread||!transcript)return;
     const measure=()=>{
       if(!thread.clientWidth)return;
-      thread.closest<HTMLElement>('.chat-main')?.style.setProperty('--chat-lane-width',thread.clientWidth+'px');
       thread.style.setProperty('--chat-scrollbar-gutter',(transcript.offsetWidth-transcript.clientWidth)/2+'px');
     };
     const observer=new ResizeObserver(measure);observer.observe(thread);observer.observe(transcript);measure();
@@ -1229,8 +1230,8 @@ function Chat(p: ChatProps) {
             "chat-shell studio-shell" +
             (menu ? " menu-open" : "") +
             (panel ? " team-open" : "") +
-            (navExpanded ? " functions-expanded" : "") +
-            (configuring ? " management-mode" : "") +
+            (configuring && navExpanded ? " functions-expanded" : "") +
+            (configuring ? " management-mode" : " floating-chat") +
             (display === "group" ? " conversation-list-hidden" : "")
           }
         >
@@ -1239,11 +1240,11 @@ function Chat(p: ChatProps) {
               ? L("Skip to content", "跳转到内容")
               : L("Skip to conversation", "跳转到对话")}
           </a>
-          <StudioRail L={L} configuring={configuring} hash={hash} expanded={navExpanded} expand={setNavExpanded}
-            mobile={narrow} open={menu} close={closeNavigation} participants={participants} selected={selected.id}
-            select={selectAgent} display={display} views={views.map(v=>({id:v.id,label:v.label[lang]}))}
-            user={boot?.user?.displayName || L("Local account","本地账户")}/>
-          {menu ? (
+          {configuring && <StudioRail L={L} hash={hash} expanded={navExpanded} expand={setNavExpanded}
+            mobile={narrow} open={menu} close={closeNavigation}
+            views={views.map(v=>({id:v.id,label:v.label[lang]}))}
+            user={boot?.user?.displayName || L("Local account","本地账户")}/>}
+          {configuring && menu ? (
             <button
               className="nav-scrim"
               aria-label={L("Close navigation", "关闭导航")}
@@ -1255,9 +1256,9 @@ function Chat(p: ChatProps) {
             data-settings-view={configuring ? hash : undefined}
             id="conversation"
             tabIndex={-1}
-            inert={narrow && menu}
+            inert={configuring && narrow && menu}
           >
-            <header className="chat-header" data-chat={!configuring||undefined}>
+            {configuring ? <header className="chat-header">
               <button
                 className="icon-button mobile-menu"
                 ref={menuButton}
@@ -1269,31 +1270,36 @@ function Chat(p: ChatProps) {
                 <Menu size={20} />
               </button>
               <div className="studio-breadcrumb">
-                {configuring?<><span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong></>:
-                  <strong>{readonly ? selected.label : L("Workspace chat","工作区对话")}</strong>}
+                <span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong>
               </div>
-              {!configuring && (snapshot?.messages.length || running) ? <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/> : null}
-              <div className="header-actions">
-                {!configuring && <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
+            </header> : <>
+              <div className="chat-float chat-float-start roppo-ui">
+                <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
+                {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
+              </div>
+              <div className="chat-float chat-float-center">
+                <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
+                  onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
+              </div>
+              <div className="chat-float chat-float-end">
+                <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
                   aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
                   title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
                   <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
-                </button>}
-                {!configuring ? (
-                  <button
-                    ref={teamButton}
-                    className={"icon-button" + (panel ? " selected" : "")}
-                    onClick={() => void choosePanel(panel ? null : lastView)}
-                    aria-label={L("Session panel", "会话面板")}
-                    title={L("Session panel", "会话面板")}
-                    aria-expanded={!!panel}
-                    aria-controls="session-panel"
-                  >
-                    <PanelRight size={19} />
-                  </button>
-                ) : null}
+                </button>
+                <button
+                  ref={teamButton}
+                  className={"icon-button" + (panel ? " selected" : "")}
+                  onClick={() => void choosePanel(panel ? null : lastView)}
+                  aria-label={L("Session panel", "会话面板")}
+                  title={L("Session panel", "会话面板")}
+                  aria-expanded={!!panel}
+                  aria-controls="session-panel"
+                >
+                  <PanelRight size={19} />
+                </button>
               </div>
-            </header>
+            </>}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
             {teamSettings?<TeamSettings L={L} members={participants.map(member=>({...member,model:member.kind==='router'?ready?.model:workers.find(w=>w.id===member.id)?.model}))}/>:null}
@@ -1314,17 +1320,18 @@ function Chat(p: ChatProps) {
               }
               hidden={configuring}
             >
+              {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
+                changeTray(false);
+                if(panel)void choosePanel(null);
+                if('messageId' in card)void locateMessage(card.messageId,card.id);
+                else void locateMessage(card.id);
+              }}/>}
               <ThreadPrimitive.Root
                 ref={threadRef}
                 className="thread"
                 data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
                 inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
               >
-                {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
-                  changeTray(false);
-                  if('messageId' in card)void locateMessage(card.messageId,card.id);
-                  else void locateMessage(card.id);
-                }}/>}
                 <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                   <div className="transcript-inner">
                     <ThreadPrimitive.LoadEarlier className="load-earlier">
@@ -1338,7 +1345,7 @@ function Chat(p: ChatProps) {
                     ) : null}
                     <ThreadPrimitive.Empty>
                       <div className="empty-state">
-                        {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:<RoppoCharacter phase="idle"/>}
+                        {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:null}
                         <h1>
                           {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
                         </h1>

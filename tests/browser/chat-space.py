@@ -38,8 +38,10 @@ with sync_playwright() as p:
   page.get_by_role('link',name='返回对话',exact=True).click();expect(page.locator('.conversation-body')).to_be_visible()
  settings();page.get_by_role('radio',name='Agents 列表',exact=False).check();expect(page.get_by_role('radio',name='Agents 列表',exact=False)).to_be_checked();expect(page.get_by_role('button',name='清空所有记忆和上下文',exact=True)).to_be_enabled();page.screenshot(path=str(root/'settings-light.png'),full_page=True);chat()
  expect(page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True)).to_have_value('保留这份未发送的草稿')
- expect(page.locator('.members .member')).to_have_count(2)
- expect(page.get_by_role('heading',name='协作记录',exact=True)).to_be_visible()
+ picker=page.get_by_role('button',name='切换对话',exact=True)
+ picker.click()
+ expect(page.locator('.members .member')).to_have_count(3)
+ expect(page.get_by_role('dialog',name='切换对话')).to_be_visible()
  assert page.locator('.members .agent-portrait[data-agent-id="developer"]').get_attribute('src')==worker_portrait
  page.get_by_role('button',name='开发 Worker',exact=True).click()
  expect(page.get_by_role('textbox',name='请与 Roppo 对话',exact=True)).to_be_disabled();expect(page.get_by_role('button',name='发送消息',exact=True)).to_have_count(0)
@@ -48,14 +50,14 @@ with sync_playwright() as p:
  passed('Worker contact is read-only and shows only the actual Router/Worker exchange')
  page.screenshot(path=str(root/'worker-light.png'),full_page=True)
  page.get_by_role('button',name='前往 Roppo',exact=True).click();expect(page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True)).to_have_value('保留这份未发送的草稿')
- page.reload();page.wait_for_load_state('networkidle');expect(page.locator('.members .member')).to_have_count(2);expect(page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True)).to_have_value('保留这份未发送的草稿')
+ page.reload();page.wait_for_load_state('networkidle');expect(page.locator('.members .member')).to_have_count(3);expect(page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True)).to_have_value('保留这份未发送的草稿')
  assert page.locator('.members .agent-portrait[data-agent-id="developer"]').get_attribute('src')==worker_portrait
  assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==original
  passed('display switching, selecting a Worker, navigation and reload preserve the same chat and Router draft')
- page.goto(f['url']+'/configure#general');page.locator('label:has(input[value="dark"])').click();chat();page.get_by_role('button',name='开发 Worker',exact=True).click();expect(page.locator('.message')).to_have_count(2);page.screenshot(path=str(root/'worker-dark.png'),full_page=True)
+ page.goto(f['url']+'/configure#general');page.locator('label:has(input[value="dark"])').click();chat();picker.click();page.get_by_role('button',name='开发 Worker',exact=True).click();expect(page.locator('.message')).to_have_count(2);page.screenshot(path=str(root/'worker-dark.png'),full_page=True)
  assert page.locator('.assistant-identity .agent-portrait[data-kind="router"]').first.evaluate('(img)=>getComputedStyle(img).filter')=='invert(1)'
  assert page.locator('.members .agent-portrait[data-agent-id="developer"]').evaluate('(img)=>getComputedStyle(img).filter')=='none'
- page.set_viewport_size({'width':390,'height':844});page.get_by_role('button',name='打开导航',exact=True).click();member=page.get_by_role('button',name='复核 Worker',exact=True);expect(member).to_be_visible();member.click();expect(page.get_by_role('heading',name='暂无协作消息',exact=True)).to_be_visible();expect(page.get_by_role('textbox',name='请与 Roppo 对话',exact=True)).to_be_disabled()
+ page.set_viewport_size({'width':390,'height':844});picker.click();member=page.get_by_role('button',name='复核 Worker',exact=True);expect(member).to_be_visible();member.click();expect(page.get_by_role('heading',name='暂无协作消息',exact=True)).to_be_visible();expect(page.get_by_role('textbox',name='请与 Roppo 对话',exact=True)).to_be_disabled()
  assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
  page.screenshot(path=str(root/'worker-mobile.png'),full_page=True);passed('dark mode and 390px navigation/read-only empty state have no horizontal overflow')
  page.set_viewport_size({'width':1440,'height':960});settings();page.get_by_role('button',name='清空所有记忆和上下文',exact=True).click();page.get_by_role('button',name='取消',exact=True).click();assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==original

@@ -30,9 +30,9 @@ with sync_playwright() as p:
     def expect_chat_fills_space():
         page.wait_for_function("""() => {
             const rect = s => document.querySelector(s).getBoundingClientRect()
-            const main = rect('#conversation'), rail = rect('#function-navigation')
+            const main = rect('#conversation')
             return Math.abs(main.right - rect('.chat-shell').right) <= 1
-                && Math.abs(main.left - (innerWidth > 800 ? rail.right : 0)) <= 1
+                && main.left === 0 && !document.querySelector('#function-navigation, .chat-header')
         }""", timeout=3500)
 
     def expect_writing_line():
@@ -51,6 +51,7 @@ with sync_playwright() as p:
     def drag(selector, dx):
         handle = page.locator(selector + ' > [role=separator]')
         expect(handle).to_be_visible()
+        handle.evaluate("el => Promise.all(el.parentElement.getAnimations().map(a => a.finished))")
         box = handle.bounding_box()
         x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
         page.mouse.move(x, y)
@@ -59,26 +60,27 @@ with sync_playwright() as p:
         page.mouse.up()
 
     nav, panel = '#function-navigation', '#session-panel'
-    expect(page.locator('.member')).to_have_count(4)
+    picker = page.get_by_role('button', name='Switch conversation')
+    picker.click()
+    expect(page.locator('.member')).to_have_count(5)
+    page.get_by_role('button', name='Research', exact=True).click()
+    expect(page.locator('.worker-readonly')).to_be_visible()
+    page.locator('.worker-readonly button').click()
     expect_chat_fills_space()
     expect_writing_line()
-    expect(page.locator('.member a, .member button')).to_have_count(0)
-    page.locator('.member').first.click()
-    expect(page.locator('.worker-readonly')).to_be_visible()
-    page.locator('.chat-destination').click()
+    settings = page.get_by_role('link', name='Settings', exact=True)
+    settings.click()
     page.get_by_role('button', name='Collapse sidebar').click()
     expect_width(nav, 64)
-    expect_chat_fills_space()
-    expect_writing_line()
     page.reload()
     expect_width(nav, 64)
-    expect_chat_fills_space()
     nav_size = 224
     drag(nav, nav_size - 64)
     expect_width(nav, nav_size)
     page.locator(nav + ' > [role=separator]').press('ArrowRight')
     nav_size += 16
     expect_width(nav, nav_size)
+    page.get_by_role('link',name='Back to chat').click()
     page.get_by_role('button', name='Session panel', exact=True).click()
     expect_chat_fills_space()
     expect_writing_line()
@@ -93,17 +95,16 @@ with sync_playwright() as p:
     expect(page.locator(panel + ' > [role=separator]')).to_be_hidden()
     page.get_by_role('button', name='Collapse panel').click()
     page.reload()
-    expect_width(nav, nav_size)
+    expect_chat_fills_space()
     expect_width(panel, team_size - 40)
     page.set_viewport_size({'width': 805, 'height': 900})
-    page.locator(nav + ' > [role=separator]').press('End')
-    assert width('#conversation') >= 359
-    expect(page.locator(panel + ' > [role=separator]')).to_be_hidden()
+    expect_chat_fills_space()
     page.set_viewport_size({'width': 390, 'height': 844})
     expect(page.locator('[role=separator]:visible')).to_have_count(0)
-    page.get_by_role('button', name='Open navigation').click()
-    page.locator('.member').first.click()
-    expect(page.get_by_role('button', name='Open navigation')).to_have_attribute('aria-expanded', 'false')
+    page.get_by_role('button', name='Session panel', exact=True).click()
+    picker.click()
+    page.get_by_role('button', name='Research', exact=True).click()
+    expect(picker).to_have_attribute('aria-expanded', 'false')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert context.request.patch(base + '/api/chat/space', data={'display': 'group'}).ok
     page.reload()
@@ -115,4 +116,4 @@ with sync_playwright() as p:
     expect_writing_line()
     assert not errors, errors
     browser.close()
-    print('Passed: conversation rail, both resizable edges, keyboard, persistence, expanded and mobile layouts.')
+    print('Passed: floating member picker, settings and floating panel resize, keyboard, persistence, expanded and mobile layouts.')

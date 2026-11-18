@@ -228,12 +228,6 @@
   height: 65px;
   padding: 0 clamp(16px, 3vw, 44px);
 }
-.studio-shell .chat-header .header-actions {
-  margin-left: auto;
-}
-.studio-shell .chat-header .chat-companion {
-  max-width: 220px;
-}
 .studio-shell .thread {
   --chat-measure: 780px;
 }
@@ -492,18 +486,6 @@
   }
   .thread[data-welcome] .empty-state {
     padding-bottom: 19px;
-  }
-  .studio-shell .chat-header[data-chat='true'] > .chat-companion {
-    position: static;
-    transform: none;
-    margin-left: auto;
-    margin-right: 0;
-  }
-  .studio-shell .chat-header:has(.chat-companion) .studio-breadcrumb {
-    display: none;
-  }
-  .studio-shell .chat-header:has(.chat-companion) .header-actions {
-    margin-left: 0;
   }
   .general {
     padding: 27px 18px;

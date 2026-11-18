@@ -91,6 +91,6 @@ export function ChatCompanion({status:current,onOpen,L}:{status:CompanionStatus;
  return <button type="button" className="chat-companion" onClick={onOpen}
    data-phase={status.phase} title={status.label} aria-label={L('View current activity','查看当前任务进展')}>
    <RoppoCharacter phase={phase} paused={hidden}/>
-   <span className="companion-copy"><strong>Roppo</strong><span className="companion-label" role="status" aria-live="polite" aria-atomic="true">{status.label}</span></span>
+   <span className="companion-copy"><span className="companion-label" role="status" aria-live="polite" aria-atomic="true">{status.label}</span></span>
  </button>;
 }

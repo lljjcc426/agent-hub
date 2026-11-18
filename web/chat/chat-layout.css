@@ -21,17 +21,8 @@
 .send-button{transition:background 150ms,opacity 150ms,transform 150ms}
 .send-button>svg{animation:composer-action-in 160ms ease-out}
 .composer .draft-attachment{animation:composer-action-in 160ms ease-out}
-.chat-header[data-chat=true]{position:relative}
-.chat-header[data-chat=true]>.chat-companion{position:absolute;left:calc(var(--chat-lane-width,100%) / 2);transform:translateX(-50%)}
-.chat-header[data-chat=true] .chat-breadcrumb{max-width:210px}
-.chat-header[data-chat=true] .header-actions{margin-left:auto}
 @keyframes composer-action-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
-@container chat-main (max-width:1100px){.chat-header[data-chat=true] .chat-breadcrumb{visibility:hidden;max-width:1px;overflow:hidden}}
 @container chat-main (max-width:650px){
- .chat-header[data-chat=true]{padding-inline:12px;gap:4px}
- .chat-header[data-chat=true] .chat-breadcrumb{display:none}
- .chat-header[data-chat=true]>.chat-companion{position:static;transform:none;margin-right:auto;max-width:calc(100% - 112px);gap:3px}
- .chat-header[data-chat=true]>.mobile-menu{margin-right:2px}
  .roppo-character{width:50px;height:50px}
  .roppo-body{width:50px;height:50px;inset:0}
  .roppo-laptop{width:33px;height:23px}

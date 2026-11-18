@@ -294,7 +294,7 @@ with sync_playwright() as pw:
         page.wait_for_timeout(410)
         assert {'rp-page-in','rp-content-out'}.issubset(set(page.evaluate('window.qaFrames'))), (href, page.evaluate('window.qaFrames'))
 
-    check_route(page.locator('a.footer-settings'), '/configure#general')
+    check_route(page.get_by_role('link',name='Settings',exact=True), '/configure#general')
     links = page.locator('.studio-settings-links a')
     routes = links.evaluate_all("xs=>xs.map(a=>a.getAttribute('href')).filter(h=>h!='/configure#general')")
     assert '/configure#workspace' in routes and '/configure#models' in routes
@@ -306,7 +306,7 @@ with sync_playwright() as pw:
     expect(panel).to_have_count(0)
     page.emulate_media(reduced_motion='reduce')
     page.evaluate('window.qaFrames=[]')
-    page.locator('a.footer-settings').click()
+    page.get_by_role('link',name='Settings',exact=True).click()
     page.go_back()
     expect(box).to_be_visible()
     assert 'rp-page-in' not in page.evaluate('window.qaFrames')

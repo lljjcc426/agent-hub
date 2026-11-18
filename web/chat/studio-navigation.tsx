@@ -1,5 +1,5 @@
 import { InputControl } from '../ui/controls.tsx'
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Activity,
   ArrowLeft,
@@ -11,20 +11,18 @@ import {
   FileSliders,
   Layers,
   LayoutGrid,
-  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
   Search,
   Server,
-  Settings,
   SlidersHorizontal,
   Users,
   Workflow,
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { Brand, ChoiceGroup, IconButton, NavLink, SelectionIndicator, SwitchView } from '../ui';
+import { Brand, ChoiceGroup, IconButton, NavLink, Popover, SelectionIndicator, SwitchView } from '../ui';
 import { AgentAvatar } from './agent-avatar.tsx';
 import { SidebarSeparator } from './sidebar-separator.tsx';
 import { workspaceGroups } from './workspace-settings.tsx';
@@ -82,56 +80,59 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     },
   ];
 }
+export function ChatMemberPicker({ L, participants, selected, select }: {
+  L: L;
+  participants: Agent[];
+  selected: string;
+  select: (id: string) => void;
+}) {
+  return <Popover label={L('Switch conversation', '切换对话')} trigger={<Users size={19} />}>
+    {dismiss => <div className="members">
+      <h3>{L('Conversations', '对话')}</h3>
+      {participants.map(person => (
+        <button type="button" className="member" key={person.id} title={person.label}
+          aria-label={person.label} aria-pressed={selected === person.id}
+          onClick={() => { dismiss(); select(person.id); }}>
+          <AgentAvatar id={person.id} kind={person.kind} size={28} />
+          <span>{person.label}</span>
+        </button>
+      ))}
+    </div>}
+  </Popover>;
+}
+
 export function StudioRail({
   L,
-  configuring,
   hash,
   expanded,
   expand,
   mobile,
   open,
   close,
-  participants,
-  selected,
-  select,
-  display,
   views,
   user,
 }: {
   L: L;
-  configuring: boolean;
   hash: string;
   expanded: boolean;
   expand: (value: boolean) => void;
   mobile: boolean;
   open: boolean;
   close: () => void;
-  participants: Agent[];
-  selected: string;
-  select: (id: string) => void;
-  display: 'group' | 'agents';
   views: { id: string; label: string }[];
   user: string;
 }) {
   const [search, setSearch] = useState('');
-  useEffect(() => {
-    setSearch('');
-  }, [configuring]);
   const query = search.trim().toLowerCase();
-  const groups = configuring ? sections(L, views, query)
+  const groups = sections(L, views, query)
     .map(group => ({...group, rows: group.rows.filter(item => item.name.toLowerCase().includes(query))}))
-    .filter(group => group.rows.length) : [];
-  const router = participants.find((p) => p.kind === 'router');
-  function choose(id: string) {
-    select(id);
-    if (mobile) close();
-  }
+    .filter(group => group.rows.length);
   return (
     <aside
       id="function-navigation"
       className="studio-rail roppo-ui"
       inert={mobile && !open}
-      aria-label={configuring ? L('Settings navigation', '设置导航') : L('Chat navigation', '对话导航')}
+      aria-label={L('Settings navigation', '设置导航')}
     >
       <div className="studio-brandbar">
         <a href="/chat" aria-label="Roppo">
@@ -151,107 +152,54 @@ export function StudioRail({
         </IconButton>
       </div>
       <SwitchView scope="panel">
-        <div className="rail-body" key={configuring ? 'settings' : 'chat'}>
-          {configuring ? (
-            <>
-              <a className="return-chat" href="/chat">
-                <ArrowLeft size={17} />
-                <span>{L('Back to chat', '返回对话')}</span>
-              </a>
-              <h2 className="rail-title">{L('Settings', '设置')}</h2>
-              <label className="settings-find">
-                <Search size={16} />
-                <InputControl
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={L('Find settings', '查找设置')}
-                  aria-label={L('Find settings', '查找设置')}
-                />
-              </label>
-              <nav className="studio-settings-links" aria-label={L('Settings', '设置')}>
-                {groups.map((group) => (
-                    <section key={group.name}>
-                      <h3>{group.name}</h3>
-                      <div className="nav-track">
-                        <SelectionIndicator selector="a[aria-current]" selection={hash + search} />
-                        {group.rows.map(({ key, name, icon: Icon, match }) => (
-                          <NavLink
-                            key={key}
-                            href={'/configure#' + key}
-                            onClick={() => {
-                              if (mobile) close();
-                            }}
-                            icon={<Icon size={17} />}
-                            title={name}
-                            aria-label={name}
-                            current={match ? match(hash) : hash === key || hash.startsWith(key + '/')}
-                          >
-                            {name}
-                          </NavLink>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                {query && !groups.length && <p role="status">{L('No matches', '没有匹配的设置')}</p>}
-              </nav>
-            </>
-          ) : (
-            <>
-              <h2 className="rail-title">{L('Chats', '对话')}</h2>
-              {router && (
-                <button
-                  className="chat-destination"
-                  aria-pressed={selected === router.id}
-                  onClick={() => choose(router.id)}
-                  title={L('Workspace chat', '工作区对话')}
-                >
-                  <span className="chat-destination-icon">
-                    <MessagesSquare size={21} />
-                  </span>
-                  <span>
-                    <strong>{L('Workspace chat', '工作区对话')}</strong>
-                    <span>{router.label}</span>
-                  </span>
-                </button>
-              )}
-              {display === 'agents' && (
-                <section className="members">
-                  <h3>{L('Collaboration', '协作记录')}</h3>
-                  {participants
-                    .filter((p) => p.kind === 'worker')
-                    .map((p) => (
-                      <button
-                        key={p.id}
-                        title={p.label}
-                        aria-label={p.label}
-                        className="member"
-                        aria-pressed={selected === p.id}
-                        onClick={() => choose(p.id)}
+        <div className="rail-body">
+          <a className="return-chat" href="/chat">
+            <ArrowLeft size={17} />
+            <span>{L('Back to chat', '返回对话')}</span>
+          </a>
+          <h2 className="rail-title">{L('Settings', '设置')}</h2>
+          <label className="settings-find">
+            <Search size={16} />
+            <InputControl
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={L('Find settings', '查找设置')}
+              aria-label={L('Find settings', '查找设置')}
+            />
+          </label>
+          <nav className="studio-settings-links" aria-label={L('Settings', '设置')}>
+            {groups.map((group) => (
+                <section key={group.name}>
+                  <h3>{group.name}</h3>
+                  <div className="nav-track">
+                    <SelectionIndicator selector="a[aria-current]" selection={hash + search} />
+                    {group.rows.map(({ key, name, icon: Icon, match }) => (
+                      <NavLink
+                        key={key}
+                        href={'/configure#' + key}
+                        onClick={() => {
+                          if (mobile) close();
+                        }}
+                        icon={<Icon size={17} />}
+                        title={name}
+                        aria-label={name}
+                        current={match ? match(hash) : hash === key || hash.startsWith(key + '/')}
                       >
-                        <AgentAvatar id={p.id} kind="worker" size={30} />
-                        <span>{p.label}</span>
-                      </button>
+                        {name}
+                      </NavLink>
                     ))}
+                  </div>
                 </section>
-              )}
-            </>
-          )}
+              ))}
+            {query && !groups.length && <p role="status">{L('No matches', '没有匹配的设置')}</p>}
+          </nav>
         </div>
       </SwitchView>
       <footer className="studio-footer">
-        {!configuring && (
-          <a className="footer-settings" href="/configure#general" aria-label={L('Settings', '设置')}>
-            <Settings size={18} />
-            <span>{L('Settings', '设置')}</span>
-            <ChevronRight size={15} />
-          </a>
-        )}
-        {configuring && (
-          <a href="/account" className="account-link" title={L('Account', '账户')}>
-            <span className="account-initial">{Array.from(user)[0]?.toUpperCase() || 'R'}</span>
-            <span>{user}</span>
-          </a>
-        )}
+        <a href="/account" className="account-link" title={L('Account', '账户')}>
+          <span className="account-initial">{Array.from(user)[0]?.toUpperCase() || 'R'}</span>
+          <span>{user}</span>
+        </a>
       </footer>
       <SidebarSeparator
         pane="navigation"

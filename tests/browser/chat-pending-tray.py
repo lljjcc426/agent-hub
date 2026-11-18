@@ -16,6 +16,16 @@ with sync_playwright() as pw:
     errors = []
     page.on('pageerror', lambda e: errors.append(str(e)))
     page.goto(info['url'], wait_until='networkidle')
+    expect(page.locator('.chat-header, .studio-rail, .studio-brandbar')).to_have_count(0)
+    controls = page.locator('.chat-float')
+    expect(controls).to_have_count(3)
+    for width in (320, 390, 800, 1440):
+        page.set_viewport_size({'width': width, 'height': 960})
+        regions = [el.bounding_box() for el in controls.all()]
+        left, center, right = regions
+        assert 0 <= left['x'] and left['x'] + left['width'] < center['x']
+        assert abs(center['x'] + center['width'] / 2 - width / 2) < 1
+        assert center['x'] + center['width'] < right['x'] and right['x'] + right['width'] <= width
     trigger = page.locator('.pending-trigger')
     tray = page.get_by_role('complementary', name='Pending requests')
     trigger.click()
@@ -38,10 +48,16 @@ with sync_playwright() as pw:
     expect(trigger).to_have_accessible_name('Pending requests · 2')
     page.screenshot(path=str(out / 'pending-desktop.png'))
     panel_button=page.get_by_role('button',name='Session panel',exact=True)
+    composer_left=page.locator('.composer').bounding_box()['x']
     panel_button.click()
     panel=page.get_by_role('complementary',name='Session panel')
     expect(panel).to_be_visible()
     expect(tray).to_be_visible()
+    assert abs(page.locator('.composer').bounding_box()['x'] - composer_left) < 1
+    assert panel.bounding_box()['y'] > panel_button.bounding_box()['y'] + panel_button.bounding_box()['height']
+    transcript=page.locator('.transcript').bounding_box()
+    mascot=page.locator('.chat-companion').bounding_box()
+    assert transcript['y'] >= mascot['y'] + mascot['height']
     assert tray.bounding_box()['x']+tray.bounding_box()['width']<=panel.bounding_box()['x']+1
     panel_button.click()
     tray.get_by_role('button', name='Hide pending requests').click()

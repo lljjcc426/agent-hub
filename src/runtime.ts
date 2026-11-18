@@ -418,6 +418,17 @@ export class Runtime {
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     request.onConfiguration=value=>{this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
+    if(profile?.harness){
+      const progress=request.onProgress
+      request.onProgress=event=>{
+        const match=/^opencode\/(completed|failed)\/(read|glob|grep|edit)$/.exec(event)
+        if(match){
+          const call=this.activity.begin('tool','opencode/'+match[2],context,activity)
+          this.activity.finish(call,match[1]==='completed'?'completed':'failed')
+        }
+        progress?.(event)
+      }
+    }
     this.usage.begin(activity,role,context)
     const originalBudget=request.onBudget
     request.onBudget=receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,at:Date.now()});originalBudget?.(receipt)}

@@ -51,10 +51,10 @@ export type BackendDefinition=z.infer<typeof backendDefinition>
 export type ApiDefinition=Exclude<BackendDefinition,{kind:'codex'|'plugin'}>
 export const backendsSchema=z.record(name,backendDefinition).prefault({})
 const nativeTool=z.enum(['cached-web-search','task-list']).optional()
-export const workerProfileSchema=agentOptionsSchema.extend({nativeTool,id:name,label:z.string().trim().min(1).max(100).optional(),backend:name,model:z.string().trim().min(1).max(300).optional(),state:z.enum(['enabled','paused','retiring']).optional()}).strict()
+export const workerProfileSchema=agentOptionsSchema.extend({harness:name.optional(),nativeTool,id:name,label:z.string().trim().min(1).max(100).optional(),backend:name,model:z.string().trim().min(1).max(300).optional(),state:z.enum(['enabled','paused','retiring']).optional()}).strict()
 export type WorkerProfile=z.infer<typeof workerProfileSchema>
 export const executionSchema=z.object({backend:name.default('codex'),roles:z.object({router:name.optional(),worker:name.optional(),subagent:name.optional()}).strict().prefault({}),
- router:agentOptionsSchema.extend({nativeTool,label:z.string().trim().min(1).max(100).optional(),backend:name.optional(),model:z.string().min(1).optional(),mode:z.enum(['assessment','host','client']).optional()}).optional(),
+ router:agentOptionsSchema.extend({harness:name.optional(),nativeTool,label:z.string().trim().min(1).max(100).optional(),backend:name.optional(),model:z.string().min(1).optional(),mode:z.enum(['assessment','host','client']).optional()}).optional(),
  management:z.object({enabled:z.boolean().default(false),maxWorkers:z.number().int().min(1).default(10),backends:z.array(name).optional()}).strict().optional(),
  workers:z.array(workerProfileSchema).optional(),teamTargets:z.array(teamTargetSchema).max(16).optional()}).strict().prefault({})
 export function validateBackendSelection(c:{execution:z.infer<typeof executionSchema>;backends:Record<string,BackendDefinition>;toolConnections?:Record<string,unknown>;decision?:DecisionConfig}){
@@ -63,9 +63,16 @@ export function validateBackendSelection(c:{execution:z.infer<typeof executionSc
  if(c.backends.codex&&c.backends.codex.kind!=='codex')throw Error('The backend ID codex is reserved for native Codex conversations')
  for(const id of [c.execution.backend,c.execution.router?.backend,...Object.values(c.execution.roles),...(c.execution.workers??[]).map(w=>w.backend),...(c.execution.management?.backends??[])])if(id&&id!=='codex'&&!c.backends[id])throw Error('Unknown execution backend: '+id)
  for(const d of Object.values(c.backends))if(d.kind!=='codex'&&d.kind!=='plugin'&&d.subscription&&(d.kind!=='openai-responses'||d.baseUrl.replace(/\/+$/,'')!=='https://api.openai.com/v1'||d.apiKeyEnv))throw Error('ChatGPT subscription requires the public Responses API and its own OAuth account')
+ for(const d of Object.values(c.backends))if(d.kind==='plugin'&&d.plugin==='opencode-cli'&&'apiProtocol' in d.config)throw Error('Choose the API model connection and execution engine in the role settings')
  if(c.execution.workers&&new Set(c.execution.workers.map(w=>w.id)).size!==c.execution.workers.length)throw Error('Duplicate worker id')
  for(const profile of [c.execution.router,...(c.execution.workers??[])]){
-  if(!profile?.nativeTool)continue
+  if(!profile)continue
+  if(profile.harness){
+   const source=c.backends[profile.backend??c.execution.roles.router??c.execution.backend]
+   const engine=c.backends[profile.harness]
+   if(!source||!isApiBackend(source)||engine?.kind!=='plugin'||engine.plugin!=='opencode-cli'||profile.nativeTool||profile===c.execution.router&&c.execution.router.mode!=='host')throw Error('OpenCode harness requires an API model connection and a hosted role')
+  }
+  if(!profile.nativeTool)continue
   const backend=profile.backend??c.execution.roles.router??c.execution.backend
   if(nativeToolFor(c.backends[backend])!==profile.nativeTool||profile===c.execution.router&&c.execution.router.mode!=='host')throw Error('Selected CLI native tool is unavailable for this role or connection')
  }

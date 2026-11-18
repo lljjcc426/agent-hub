@@ -17,6 +17,7 @@ export class SubscriptionAccounts {
  private file(account:string){if(!/^[a-z][a-z0-9_-]{0,63}$/.test(account))throw Error('Invalid account name');return join(this.directory,account+'.json')}
  private read(account:string):Account|undefined{const path=this.file(account);return existsSync(path)?JSON.parse(readFileSync(path,'utf8')):undefined}
  private write(account:string,value:Account){mkdirSync(this.directory,{recursive:true,mode:0o700});atomicPrivateFile(this.file(account),JSON.stringify(value)+'\n')}
+ signedInSubject(account:string){const a=this.read(account);return a?.access_token?a.subject:undefined}
  list(){return existsSync(this.directory)?readdirSync(this.directory).filter(f=>f.endsWith('.json')).map(f=>{const id=f.slice(0,-5),a=this.read(id)!;return {id,email:a.email,subject:a.subject,signedIn:!!a.access_token,expiresAt:a.expires_at,usage:'unknown'}}):[]}
  private async json(url:string,init:RequestInit={}){const r=await this.request(url,{...init,redirect:'error',signal:AbortSignal.timeout(20000)});if(!r.ok)throw Error('Subscription authorization HTTP '+r.status);return r.json() as Promise<any>}
  async begin(account:string){

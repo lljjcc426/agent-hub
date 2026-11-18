@@ -11,7 +11,7 @@ import {cliFailure} from './errors.ts'
  * This relay owns neither credentials nor inference; the actual CLI constructs
  * and authenticates every request. Nothing is logged or persisted here.
  */
-export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest,fatal:(e:unknown)=>void,beforeRequest:()=>void=()=>{}){
+export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest,fatal:(e:unknown)=>void,beforeRequest:(withTools:boolean)=>void=()=>{}){
  const prefix='/'+randomBytes(32).toString('hex'),target=new URL(upstream)
  const httpAgent=new HttpAgent({proxyEnv:process.env}),httpsAgent=new HttpsAgent({proxyEnv:process.env})
  const pending=new Set<ReturnType<typeof httpRequest>>()
@@ -25,18 +25,24 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
    if(req.headers['content-encoding'])throw new BackendAdapterError('unsupported')
    const chunks:Buffer[]=[];let size=0
    for await(const chunk of req){size+=chunk.length;if(size>16_000_000)throw new BackendAdapterError('unsupported');chunks.push(chunk)}
-   const bytes=Buffer.concat(chunks),body=bytes.length?JSON.parse(bytes.toString('utf8')):{}
+   let bytes=Buffer.concat(chunks)
+   const body=bytes.length?JSON.parse(bytes.toString('utf8')):{}
    const payload=body.request??body
    // Opaque provider-side histories cannot prove the complete host budget.
    if(payload.previous_response_id||payload.cachedContent||payload.conversation)throw new BackendAdapterError('unsupported')
+   // OpenCode groups write with edit. Only expose the operation the role actually grants.
+   if(r.harnessWorkspace==='edit'&&driver.id==='opencode-cli'&&Array.isArray(payload.tools)){
+    payload.tools=payload.tools.filter((tool:any)=>(tool.name??tool.function?.name)!=='write')
+    bytes=Buffer.from(JSON.stringify(body))
+   }
    const nativeTools=payload.tools??[]
    if(!Array.isArray(nativeTools))throw new BackendAdapterError('unsupported')
    for(const tool of nativeTools){
     const names=Array.isArray(tool.functionDeclarations)?tool.functionDeclarations.map((f:any)=>f.name):[tool.name??tool.function?.name]
-    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!(driver.id==='claude-code'&&name==='EndConversation')&&!(r.nativeTool==='task-list'&&name===driver.taskListTool)&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
+    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!(driver.id==='claude-code'&&name==='EndConversation')&&!driver.workspaceTools?.(r.harnessWorkspace).includes(name)&&!(r.nativeTool==='task-list'&&name===driver.taskListTool)&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
    }
    checkBudget(body,r.contextBudget,'api-wire','before-native-request',r.onBudget,true)
-   beforeRequest()
+   beforeRequest(nativeTools.length>0)
    latest=body;additions=[]
    if(!active||r.signal?.aborted)throw new BackendAdapterError('cancelled')
    const suffix=req.url.slice(prefix.length),url=new URL(target.href.replace(/\/$/,'')+suffix)

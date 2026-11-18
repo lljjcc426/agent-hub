@@ -87,7 +87,7 @@ try{
  const first=await adapter.run(runRequest)
  let upgraded:Awaited<ReturnType<typeof buildBackendPackage>>|undefined
  if(config){
-  upgraded=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...manifest,version:'1.0.2'},join(root,'upgraded'))
+  upgraded=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...manifest,version:manifest.version.replace(/\d+$/, (n:string)=>String(Number(n)+1))},join(root,'upgraded'))
   config.backendPlugins=[{directory:upgraded.directory,digest:upgraded.digest}];activateBackendPackages(store!,config)
   store!.close();store=new Store(join(config.stateDir,'state.sqlite'))
  }

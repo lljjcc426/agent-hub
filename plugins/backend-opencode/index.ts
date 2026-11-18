@@ -1,3 +1,4 @@
+import {workspaceTools,workspaceGuard} from './workspace.ts'
 import {join} from 'node:path'
 import {existsSync,realpathSync} from 'node:fs'
 import {DatabaseSync} from 'node:sqlite'
@@ -7,6 +8,7 @@ import {privateFile,readJson,digest,endpoint} from '../cli-shared/files.ts'
 import {isolatedEnvironment} from '../cli-shared/environment.ts'
 import type {CliDriver} from '../cli-shared/contract.ts'
 export const opencodeDriver:CliDriver={
+ workspaceTools,workspaceGuard,
  taskListTool:'todowrite',
  id:'opencode-cli',version:'1.19.5',credentialEnvs:['ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','OPENCODE_API_KEY'],
  anonymous:config=>config.authMode==='anonymous'&&!config.baseUrl&&/^opencode\/(?:[a-z0-9.-]+-free|big-pickle)$/.test(config.model??''),
@@ -32,22 +34,34 @@ export const opencodeDriver:CliDriver={
   if(!account?.key&&!account?.refresh)return
   return {identity:digest(JSON.stringify([provider,account.type,account.key??account.accountId??account.refresh])),files:[{source,target:'data/opencode/auth.json'}]}
  },
- prepare({config,root,nativeId,request,mcp,prompt}){
+ prepare({config,root,cwd,nativeId,request,mcp,prompt,guardPlugin}){
   if(request.options?.effort)throw new BackendAdapterError('unsupported')
-  const model=request.model??config.model;if(!model||!model.includes('/'))throw new BackendAdapterError('configuration_invalid')
-  const provider=config.provider??config.model?.split('/')[0]??model.split('/')[0]!
-  if(provider!==model.split('/')[0])throw new BackendAdapterError('configuration_invalid')
-  const taskList=request.nativeTool==='task-list'
-  const settings={model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission:{'*':'deny','roppo_*':'allow',...(taskList?{todowrite:'allow'}:{})},agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??64,tools:{'*':false,'roppo_*':true,...(taskList?{todowrite:true}:{})},permission:{'*':'deny','roppo_*':'allow',...(taskList?{todowrite:'allow'}:{})}}},mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},...(config.baseUrl?{provider:{[provider]:{options:{baseURL:endpoint(config.baseUrl)}}}}:{})}
-  privateFile(join(root,'opencode.json'),JSON.stringify(settings))
-  const env={...isolatedEnvironment(root),OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}
-  const args=['run','--pure','--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]
+  const selected=request.model??config.model
+  if(!selected)throw new BackendAdapterError('configuration_invalid')
+  const model=config.apiProtocol?'roppo-api/'+selected:selected
+  const provider=config.apiProtocol?'roppo-api':config.provider??config.model?.split('/')[0]??model.split('/')[0]!
+  if(!model.includes('/')||provider!==model.split('/')[0])throw new BackendAdapterError('configuration_invalid')
+  const allowed=[...workspaceTools(request.harnessWorkspace),...(request.nativeTool==='task-list'?['todowrite']:[])]
+  const permission={'*':'deny','roppo_*':'allow',...Object.fromEntries(allowed.map(tool=>[tool,'allow'])),
+   ...(guardPlugin?{external_directory:{'*':'deny',[cwd]:'allow',[join(cwd,'**')]:'allow'}}:{})}
+  const tools={'*':false,'roppo_*':true,...Object.fromEntries(allowed.map(tool=>[tool,true]))}
+  const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
+  const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},
+   options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
+  const settings={...(config.apiProtocol?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
+   agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??64,tools,permission}},
+   mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},
+   ...(config.baseUrl?{provider:{[provider]:providerOptions}}:{})}
+  privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))
+  const env={...isolatedEnvironment(root),...(config.apiProtocol?{OPENCODE_DISABLE_DEFAULT_PLUGINS:'1',npm_config_offline:'true',npm_config_fetch_retries:'0',npm_config_registry:'http://127.0.0.1:1/',OPENCODE_DISABLE_MODELS_FETCH:'1',OPENCODE_DISABLE_LSP_DOWNLOAD:'1'}:{}),...(config.apiProtocol?{}:{OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings)}),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}
+  const args=['run',...(guardPlugin?[]:['--pure']),'--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]
   const variant=request.options?.parameters?.variant;if(variant)args.push('--variant',String(variant))
   return {args,env,stdin:prompt}
  },
  event(value){
   if(value.type==='error')return {error:JSON.stringify(value.error)}
-  return {session:value.sessionID,...(value.type==='text'?{text:value.part?.text}:{}),...(value.type==='tool_use'?{tool:value.part?.tool}:{}),...(value.type==='step_finish'&&value.part?.reason==='stop'?{done:true}:{})}
+  return {session:value.sessionID,...(value.type==='text'?{text:value.part?.text}:{}),...(value.type==='tool_use'?{tool:value.part?.tool,callId:value.part?.callID,toolError:value.part?.state?.status==='error'}:{}),
+   ...(value.type==='step_finish'&&value.part?.tokens?{usage:{id:value.part.id,inputTokens:value.part.tokens.input+(value.part.tokens.cache?.read??0)+(value.part.tokens.cache?.write??0),outputTokens:value.part.tokens.output,reasoningOutputTokens:value.part.tokens.reasoning,cachedInputTokens:value.part.tokens.cache?.read}}:{}),...(value.type==='step_finish'&&value.part?.reason==='stop'?{done:true}:{})}
  },
  toolName:name=>name.startsWith('roppo_')?name.slice('roppo_'.length):undefined,
 }

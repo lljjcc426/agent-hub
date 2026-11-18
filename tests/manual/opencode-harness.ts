@@ -1,0 +1,188 @@
+/** Exercise the real pinned CLI with a deterministic, local OpenAI-compatible endpoint. */
+import assert from 'node:assert/strict'
+import {createServer} from 'node:http'
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join,resolve} from 'node:path'
+import {Runtime} from '../../src/runtime.ts'
+import {configSchema} from '../../src/config.ts'
+import {Store} from '../../src/store.ts'
+import {BackendRegistry} from '../../src/backends/registry.ts'
+import {activateBackendPackages,buildBackendPackage} from '../../src/backends/plugin-package.ts'
+import type {ModelRequest} from '../../src/model.ts'
+
+const prefix=resolve(process.argv[2]!),root=mkdtempSync(join(tmpdir(),'roppo-harness-'))
+const cwd=join(root,'task'),file=join(cwd,'endpoint.txt')
+mkdirSync(cwd);writeFileSync(file,'old-address\n')
+let step=0,router=false,writes=0,runtimeTask=false,subscription=false,hostRouter=false,direct=false
+const protocols=new Set<string>()
+const events:string[]=[],errors:string[]=[]
+const sequence=[['glob',{pattern:'*.txt'}],['grep',{pattern:'old-address'}],['read',{filePath:'endpoint.txt'}],['edit',{filePath:'endpoint.txt',oldString:'old-address',newString:'new-address'}],['roppo_superagent_shell',{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]] as const
+const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,handbacks:[]})
+const server=createServer(async(req,res)=>{
+ try{
+  let raw='';for await(const chunk of req)raw+=chunk
+  const input=JSON.parse(raw)
+  if(input.model==='assessment'){
+   const text=JSON.stringify({action:'accept',title:'Update endpoint',scope:'Edit and verify the file',reason:'Direct request',rules:[],ruleAssessments:[],targetTicketId:null})
+   res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:text}}]}));return
+  }
+  assert.equal(input.model,'sample')
+  const path=req.url!.split('?')[0]
+  protocols.add(path!)
+  const answer=JSON.stringify({answer:'done'})
+  if(path==='/v1/messages'||path==='/v1/responses'){
+   const anthropic=path.endsWith('/messages')
+   if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
+   else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
+   if(input.tools?.length){assert(input.tools.some((t:any)=>t.name==='read'));assert(!input.tools.some((t:any)=>t.name==='edit'))}
+   res.writeHead(200,{'content-type':'text/event-stream'})
+   let n=0
+   const event=(type:string,data:any)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data,...(anthropic?{}:{sequence_number:n++})})+'\n\n')
+   if(anthropic){
+    event('message_start',{message:{id:'msg_sample',type:'message',role:'assistant',model:'sample',content:[],stop_reason:null,usage:{input_tokens:10,output_tokens:0}}})
+    event('content_block_start',{index:0,content_block:{type:'text',text:''}});event('content_block_delta',{index:0,delta:{type:'text_delta',text:answer}})
+    event('content_block_stop',{index:0});event('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:5}});event('message_stop',{})
+   }else{
+    const item={type:'message',id:'msg_sample',role:'assistant',status:'completed',content:[{type:'output_text',text:answer,annotations:[]}]}
+    const response={id:'resp_sample',object:'response',model:'sample',created_at:1,status:'completed',output:[item],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+    event('response.created',{response:{...response,status:'in_progress',output:[]}})
+    event('response.output_item.added',{output_index:0,item:{...item,status:'in_progress',content:[]}})
+    event('response.output_text.delta',{item_id:item.id,output_index:0,content_index:0,delta:answer})
+    event('response.output_item.done',{output_index:0,item});event('response.completed',{response})
+   }
+   res.end();return
+  }
+  assert.equal(path,'/v1/chat/completions')
+  assert.equal(req.headers.authorization,'Bearer fixture-api-key')
+  assert.equal(input.max_completion_tokens,1024)
+  const names=(input.tools??[]).map((t:any)=>t.function.name)
+  if(direct){
+   assert(names.includes('superagent_shell'));assert(!names.includes('edit'))
+   const commands=[{command:"grep -Fx old-address endpoint.txt && printf 'new-address\\n' > endpoint.txt",requestId:'edit-endpoint'},{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]
+   const command=commands[step++]
+   const message=command?{role:'assistant',content:null,tool_calls:[{id:'call-'+step,type:'function',function:{name:'superagent_shell',arguments:JSON.stringify(command)}}]}:{role:'assistant',content:report}
+   res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message}]}));return
+  }
+  const hasTools=names.length>0
+  if(hasTools){
+   assert(names.includes('read'));assert.equal(names.includes('edit'),!router)
+   assert(!names.includes('bash'));assert(!names.includes('task'))
+   const previous=input.messages.at(-1)
+   if(previous?.role==='tool'){
+    if((previous.tool_call_id==='call-1'||previous.tool_call_id==='call-2')&&!router)assert(JSON.stringify(previous.content).includes('endpoint.txt'))
+    if(hostRouter)assert(JSON.stringify(previous.content).includes('new-address'))
+    assert(!/Tool unavailable|Outside the task|permission.*denied|file not found|Error:/i.test(JSON.stringify(previous.content)),JSON.stringify(previous.content))
+   }
+  }
+  let next:readonly [string,Record<string,unknown>]|undefined
+  if(hasTools&&hostRouter&&step++===0)next=['read',{filePath:'endpoint.txt'}]
+  else if(hasTools&&!router)next=sequence[step++]
+  if(next)assert(names.includes(next[0]),next[0]+' missing from '+names)
+  const id='answer-'+step
+  res.writeHead(200,{'content-type':'text/event-stream'})
+  const send=(delta:unknown,finish_reason:string|null)=>res.write('data: '+JSON.stringify({id,object:'chat.completion.chunk',created:1,model:input.model,choices:[{index:0,delta,finish_reason}]})+'\n\n')
+  if(next)send({role:'assistant',tool_calls:[{index:0,id:'call-'+step,type:'function',function:{name:next[0],arguments:JSON.stringify(next[1])}}]},null)
+  else send({role:'assistant',content:hostRouter?JSON.stringify({reply:'The file contains new-address.'}):runtimeTask?report:answer},null)
+  send({},next?'tool_calls':'stop');res.end('data: [DONE]\n\n')
+ }catch(error){errors.push(String(error));res.writeHead(400).end()}
+})
+await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok))
+const url='http://127.0.0.1:'+(server.address() as {port:number}).port+'/v1'
+const manifest=JSON.parse(readFileSync('plugins/backend-opencode/manifest.json','utf8'))
+const pkg=await buildBackendPackage(resolve('plugins/backend-opencode/index.ts'),manifest,join(root,'package'))
+process.env.ROPPO_FIXTURE_HARNESS_KEY='fixture-api-key'
+const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',cwd,allowedActors:['alice']}],work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
+ backendPlugins:[{directory:pkg.directory,digest:pkg.digest}],backends:{
+ api:{kind:'openai-chat',model:'sample',baseUrl:url,apiKeyEnv:'ROPPO_FIXTURE_HARNESS_KEY',maxOutputTokens:1024},
+ engine:{kind:'plugin',plugin:'opencode-cli',config:{command:join(prefix,'node_modules/.bin/opencode'),cliVersion:'1.19.5'},readPaths:[prefix]}},
+ execution:{backend:'api',router:{mode:'host',backend:'api',harness:'engine'},workers:[{id:'one',backend:'api',harness:'engine'}]}})
+let store=new Store(join(config.stateDir,'state.sqlite'))
+activateBackendPackages(store,config)
+const request:ModelRequest={role:'worker',activity:{workerId:'one',ticketId:'sample'},backendId:'api',managed:true,allowNativeTools:true,sandbox:'workspace-write',cwd,
+ instructions:'Use the task workspace and finish the requested change.',input:'Update the endpoint and verify it.',schema:{type:'object',properties:{answer:{type:'string'}},required:['answer']},
+ tools:['router_read','superagent_read','superagent_shell'].map(name=>({type:'function',name,description:name,inputSchema:{type:'object',properties:{}}})),
+ onTool:async(name)=>{assert.equal(name,'superagent_shell');assert.equal(readFileSync(file,'utf8'),'new-address\n');writes++;return {success:true,contentItems:[{type:'inputText',text:'verified'}]}},
+ onProgress:e=>events.push(e),signal:AbortSignal.timeout(60000)}
+try{
+ let registry=new BackendRegistry(config,store)
+ const quiet=await registry.run({...request,tools:[],onTool:undefined,input:'Respond with the requested JSON.'})
+ assert.equal(store.get<{harness?:string}>('backend-binding',quiet.threadId)?.harness,'engine')
+ await registry.purge(quiet.threadId,cwd)
+ const result=await registry.run(request)
+ assert.deepEqual(JSON.parse(result.text),{answer:'done'});assert.equal(writes,1)
+ assert.deepEqual(events.filter(e=>e.startsWith('opencode/')),['opencode/completed/glob','opencode/completed/grep','opencode/completed/read','opencode/completed/edit'])
+ store.close();store=new Store(join(config.stateDir,'state.sqlite'));registry=new BackendRegistry(config,store)
+ assert.equal((await registry.run({...request,threadId:result.threadId,input:'Confirm the previous result.'})).threadId,result.threadId)
+ assert.equal(writes,1);assert((await registry.history(result.threadId,cwd)).turns[0].items.some((i:any)=>i.name==='opencode/edit'))
+ delete config.execution.workers![0]!.harness
+ await assert.rejects(registry.run({...request,threadId:result.threadId}),/Role harness changed/)
+ config.execution.workers![0]!.harness='engine'
+ writes=0;step=0;writeFileSync(file,'old-address\n')
+ const stop=new AbortController();let interrupted=''
+ await assert.rejects(registry.run({...request,signal:stop.signal,onThread:id=>{interrupted=id},onProgress:e=>{if(e==='opencode/completed/edit')stop.abort()}}))
+ assert(interrupted);assert.equal(readFileSync(file,'utf8'),'new-address\n')
+ await assert.rejects(registry.run({...request,threadId:interrupted}),/outcome_unknown/)
+ assert.equal(writes,0)
+ await registry.purge(interrupted,cwd)
+ router=true
+ await registry.run({...request,role:'router',sandbox:'read-only',activity:{sourceId:'local'},input:'Inspect the result.'})
+ await registry.purge(result.threadId,cwd)
+ for(const kind of ['anthropic','openai-responses'] as const){
+  const api=config.backends.api!;assert(api.kind==='openai-chat');config.backends[kind]={...api,kind}
+  config.execution.router!.backend=kind
+  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.'})
+  assert.deepEqual(JSON.parse(response.text),{answer:'done'})
+ }
+ const api=config.backends['openai-responses'];assert(api?.kind==='openai-responses')
+ config.backends.plan={...api,baseUrl:'https://api.openai.com/v1',apiKeyEnv:undefined,subscription:{provider:'chatgpt',account:'sample',owner:{source:'local',actor:'alice'},backgroundAuthorized:true}}
+ config.execution.router!.backend='plan'
+ const accounts=join(config.stateDir,'subscription-accounts');mkdirSync(accounts,{recursive:true})
+ writeFileSync(join(accounts,'sample.json'),JSON.stringify({subject:'fixture-account',access_token:'fixture-plan-token',expires_at:Date.now()+3600000}),{mode:0o600})
+ const originalFetch=globalThis.fetch
+ subscription=true
+ globalThis.fetch=(target,options)=>originalFetch(String(target)==='https://api.openai.com/v1/responses'?url+'/responses':target,options)
+ try{
+  const response=await registry.run({...request,role:'router',backendId:'plan',sandbox:'read-only',principal:{source:'local',actor:'alice'}})
+  assert.deepEqual(JSON.parse(response.text),{answer:'done'})
+ }finally{globalThis.fetch=originalFetch;subscription=false}
+ assert.deepEqual([...protocols].sort(),['/v1/chat/completions','/v1/messages','/v1/responses'])
+ runtimeTask=true;router=false;step=0;writeFileSync(file,'old-address\n')
+ const normalConfig=configSchema.parse({...config,stateDir:join(root,'runtime-state'),models:{router:'assessment'},execution:{backend:'api',roles:{router:'api'},workers:[{id:'one',backend:'api',harness:'engine'}]},sources:[{id:'local',kind:'local',cwd,allowedActors:['alice'],sandbox:'workspace-write',workspace:{mode:'source'}}]})
+ for(const engine of ['opencode','direct']){
+  direct=engine==='direct';step=0;writeFileSync(file,'old-address\n')
+  const trial=structuredClone(normalConfig)
+  trial.stateDir=join(root,'runtime-'+engine)
+  if(direct)delete trial.execution.workers![0]!.harness
+  const host=await Runtime.create(trial)
+  const start=Date.now()
+  try{
+   host.receive('local','alice',{id:'update-endpoint',thread:'original-discussion',text:'Update the endpoint and verify it.',addressed:true})
+   const deadline=Date.now()+90000
+   while(Date.now()<deadline&&!host.store.deliveries().some(d=>d.kind==='reply'&&d.status==='sent')){await host.tick();await new Promise(ok=>setTimeout(ok,100))}
+   const delivery=host.store.deliveries().find(d=>d.kind==='reply'&&d.status==='sent')
+   assert(delivery,JSON.stringify(host.status().tickets).slice(-2000))
+   assert.equal(readFileSync(file,'utf8'),'new-address\n')
+   assert(JSON.stringify(delivery).includes('Verified the endpoint change.'));assert(JSON.stringify(delivery).includes('original-discussion'))
+   const jobs=host.work.list().filter(job=>job.kind==='shell'&&job.command==='grep -Fx new-address endpoint.txt')
+   assert.equal(jobs.length,1);assert.equal(jobs[0]!.state,'completed');assert.equal(jobs[0]!.exitCode,0)
+   const calls=host.activity.list().filter(c=>c.kind==='tool'&&c.state==='completed').map(c=>c.name)
+   for(const tool of direct?['superagent_shell']:['opencode/glob','opencode/grep','opencode/read','opencode/edit','superagent_shell'])assert(calls.includes(tool),JSON.stringify(calls))
+   console.log(JSON.stringify({engine,elapsedMs:Date.now()-start,tools:calls,verified:true}))
+  }finally{await host.close()}
+ }
+ direct=false
+ hostRouter=true;router=true;step=0
+ const coordinator=await Runtime.create(configSchema.parse({...normalConfig,stateDir:join(root,'router-state'),execution:{...normalConfig.execution,router:{mode:'host',backend:'api',model:'sample',harness:'engine'}}}))
+ try{
+  coordinator.receive('local','alice',{id:'inspect-endpoint',thread:'router-discussion',text:'Read endpoint.txt and tell me its contents.',addressed:true})
+  const deadline=Date.now()+60000
+  while(Date.now()<deadline&&!coordinator.store.deliveries().some(d=>d.status==='sent'&&JSON.stringify(d).includes('The file contains new-address.'))){await coordinator.tick();await new Promise(ok=>setTimeout(ok,100))}
+  const reply=coordinator.store.deliveries().find(d=>d.status==='sent'&&JSON.stringify(d).includes('The file contains new-address.'))
+  assert(reply,JSON.stringify(coordinator.store.deliveries()).slice(-1200));assert(JSON.stringify(reply).includes('router-discussion'))
+  assert(coordinator.activity.list().some(c=>c.name==='opencode/read'&&c.state==='completed'))
+ }finally{await coordinator.close()}
+ assert.deepEqual(errors,[]);console.log('PASS: native file tools, read-only Router, grant revocation, restart, interruption after edit, purge, three protocols, synthetic subscription, Runtime-managed shell and delivery')
+}catch(error){console.error({root,step,events,errors});throw error}
+finally{store.close();server.closeAllConnections();server.close();delete process.env.ROPPO_FIXTURE_HARNESS_KEY}
+rmSync(root,{recursive:true,force:true})

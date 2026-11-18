@@ -35,6 +35,10 @@ export interface ModelRequest {
   workerMcp?:{command:string;args:string[]}
   /** Set only on foreground coordination and assigned Worker turns. */
   allowNativeTools?:boolean
+  /** Ephemeral host transport, only supplied to the selected OpenCode adapter. */
+  harnessProviderUrl?:string
+  harnessWorkspace?:'read'|'edit'
+  harnessPrivateFiles?:string[]
   nativeTool?:import('./cli-native-tools.ts').CliNativeTool
   managed?:boolean
   /** Host-owned migration of legacy native context; never replaces the thread. */

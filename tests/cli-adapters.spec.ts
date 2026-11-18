@@ -53,7 +53,7 @@ for(const kind of ['claude','gemini','opencode']){
   const request={...f.request,input:'tool',onTool:async()=>{calls++;return {success:true,contentItems:[{type:'inputText' as const,text:'done'}]}}}
   const first=await f.registry.run(request),native=f.store.get<any>('backend-plugin-thread',first.threadId).nativeId
   expect(calls).toBe(1)
-  const next=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...f.manifest,version:'1.0.2'},join(f.root,'v2'))
+  const next=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),{...f.manifest,version:f.manifest.version.replace(/\d+$/, (n:string)=>String(Number(n)+1))},join(f.root,'v2'))
   f.config.backendPlugins=[{directory:next.directory,digest:next.digest}];activateBackendPackages(f.store,f.config);f.restart()
   const resumed=await f.registry.run({...request,input:'second',threadId:first.threadId})
   expect(JSON.parse(resumed.text).inputs).toEqual(['tool','second']);expect(f.store.get<any>('backend-plugin-thread',first.threadId).nativeId).toBe(native)

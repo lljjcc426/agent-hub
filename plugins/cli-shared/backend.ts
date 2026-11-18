@@ -23,6 +23,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
  endpoint(config.baseUrl)
  mkdirSync(dataDirectory,{recursive:true,mode:0o700})
  const auth=()=>{
+  if(config.apiProtocol&&driver.id==='opencode-cli')return {identity:digest(JSON.stringify(['roppo-provider',config.apiProtocol])),files:[]}
   if(config.authMode==='anonymous')return undefined
   const keys=(driver.credentialKeys?.(config)??driver.credentialEnvs).filter(k=>process.env[k]?.trim())
   if(keys.length)return {identity:digest(JSON.stringify([driver.id,config.baseUrl,keys.map(k=>[k,process.env[k]])])),files:[]}
@@ -60,6 +61,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    return {available:true,authenticated:account?true:driver.anonymous?.(config)?'unknown' as const:false,remoteVerified:false as const,version,...(account?{accountIdentity:account.identity}:{})}
   },
   async run(request){
+   if(config.apiProtocol&&!request.harnessProviderUrl||request.harnessProviderUrl&&!config.apiProtocol)throw new BackendAdapterError('configuration_invalid')
    if(request.workerMcp&&!request.tools?.length||request.compactBeforeTurn||request.ephemeral&&request.threadId)throw new BackendAdapterError('unsupported')
    if(request.options?.maxOutputTokens!==undefined)throw new BackendAdapterError('unsupported')
    const account=auth();if(!account&&(!driver.anonymous?.(config)||request.managed))throw new BackendAdapterError('auth_required')
@@ -71,13 +73,14 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    // A completed host receipt does not prove the native CLI durably consumed it.
    // Replaying an interrupted tool turn with fresh MCP IDs could duplicate an
    // external write. Preserve it for reconciliation instead of guessing.
-   if(session.turns.some(t=>t.state!=='completed'&&t.tools.length)){unlock();throw new BackendAdapterError('outcome_unknown')}
+   if(session.turns.some(t=>t.state!=='completed'&&(t.tools.length||existsSync(join(root,t.id+'.operations'))))){unlock();throw new BackendAdapterError('outcome_unknown')}
    const turn:Turn={id:randomUUID(),input:request.input,instructions:request.instructions,state:'running',text:'',protocolBytes:0,tools:[]}
    // A killed CLI leaves its exact native session and an explicitly incomplete turn.
    for(const old of session.turns)if(old.state==='running')old.state='interrupted'
    session.turns.push(turn)
    const save=()=>privateFile(join(root,'session.json'),JSON.stringify(session))
    let child:ReturnType<typeof spawn>|undefined,bridge:Awaited<ReturnType<typeof toolBridge>>|undefined,failure:unknown,done=false,buffer='',stderr='',outputBytes=0
+   const guard=config.apiProtocol&&request.harnessWorkspace?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
    const decoder=new StringDecoder('utf8'),errorDecoder=new StringDecoder('utf8')
    let wire:Awaited<ReturnType<typeof wireBridge>>|undefined
    const fail=(error:unknown)=>{failure??=error;child?.kill('SIGKILL')}
@@ -114,15 +117,16 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      call.result=result;save();budget('cli-tool-result');wire?.check('native-tool-result',{id,result})
      return call.result as Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
     },fail)
-    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences. Use only the supplied Roppo tools for external actions.'+(request.nativeTool==='task-list'?' You may use '+driver.taskListTool+' to organize this session.':'')
-    wire=await wireBridge(endpoint(driver.upstream(config,request.model))!,driver,request,fail,()=>{
+    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences. Use only the supplied Roppo tools for external actions.'+(request.harnessWorkspace?' Use the native file tools with paths relative to the assigned task workspace.':'')+(request.nativeTool==='task-list'?' You may use '+driver.taskListTool+' to organize this session.':'')
+    wire=await wireBridge(endpoint(request.harnessProviderUrl??driver.upstream(config,request.model))!,driver,request,fail,withTools=>{
      if(failure)throw failure
+     if(withTools&&guard&&!guard.ready())throw new BackendAdapterError('configuration_invalid')
      if(!session.nativeId){const id=driver.discoverSession?.(root);if(id)bind(id)}
      if(!session.nativeId)throw new BackendAdapterError('invalid_output')
     })
-    const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,prompt})
-    request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion}})
-    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
+    const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,guardPlugin:guard?.url,prompt})
+    request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion,...(config.apiProtocol?{harness:'opencode',protocol:config.apiProtocol,workspaceTools:driver.workspaceTools?.(request.harnessWorkspace)}:{})}})
+    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool||request.harnessWorkspace?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
     request.onContextReady?.()
     request.onActive?.({interrupt:async()=>abort(),steer:async()=>{throw new BackendAdapterError('unsupported')}})
     if(failure)throw failure
@@ -133,9 +137,17 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      const value=JSON.parse(line),event=driver.event(value)
      turn.protocolBytes+=Buffer.byteLength(line);if(event.session)bind(event.session)
      if(event.error)throw new BackendAdapterError(cliFailure(event.error))
+     const workspaceTool=!!event.tool&&driver.workspaceTools?.(request.harnessWorkspace).includes(event.tool)
+     if(workspaceTool){
+      const op=guard?.operations().find(o=>o.id===event.callId&&o.tool===event.tool)
+      if(!event.callId||!op&&!event.toolError)throw new BackendAdapterError('invalid_output')
+      turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?{path:op.path}:{},result:{success:!event.toolError}})
+      request.onProgress?.('opencode/'+(event.toolError?'failed/':'completed/')+event.tool)
+     }
+     if(event.usage)request.onUsage?.(event.usage)
      const nativeTask=event.tool===driver.taskListTool&&request.nativeTool==='task-list'
      if(nativeTask)request.onProgress?.('cli/tool/'+driver.taskListTool)
-     if(event.tool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
+     if(event.tool&&!workspaceTool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
      if(event.tool)turn.text=''
      if(event.model)request.onModel?.(event.model)
      if(event.text)turn.text+=event.text

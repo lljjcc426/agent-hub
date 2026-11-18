@@ -5,6 +5,7 @@ const jsonObject=z.record(z.string(),z.unknown())
 export const backendWorkerActivitySchema=z.object({ticketId:z.string().min(1).max(1000)}).strict()
 export const backendPackageReferences=z.array(z.object({directory:z.string().min(1),digest:z.string().regex(/^[a-f0-9]{64}$/)}).strict()).default([])
 export const backendCapabilitiesSchema=z.object({
+ harnessProtocols:z.array(z.enum(['openai-chat','openai-responses','anthropic'])).optional(),
  nativeTools:z.array(z.enum(['task-list','cached-web-search'])).optional(),
  resume:z.boolean(),tools:z.boolean(),managed:z.boolean(),contextBudget:z.boolean(),
  steering:z.boolean(),promptRefresh:z.boolean(),images:z.boolean(),nativeTakeover:z.boolean(),

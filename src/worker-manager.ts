@@ -103,6 +103,7 @@ export class WorkerManager {
     if(profiles.some(w=>w.id===candidate.id))throw Error('Duplicate Worker id')
     if(profiles.length>=policy.maxWorkers)throw Error('Worker limit reached')
     if(host.store.get('retired-worker',candidate.id))throw Error('Retired Worker identity cannot be reused')
+    if(candidate.harness)throw Error('Select the execution engine for the new Worker in Agent team settings')
     if(candidate.nativeTool)throw Error('Grant native CLI tools to the new Worker in Agent team settings')
     verifyBackend(candidate.backend);profiles.push(candidate);if(context?.scoped)host.scopes.addWorker(context.scoped.route.scopeId,candidate.id)
    }else{
@@ -113,6 +114,7 @@ export class WorkerManager {
     if(input.action==='set_prompt'){if(input.prompt===undefined)throw Error('prompt required');candidate.prompt=input.prompt}
     if(['pause','resume','retire'].includes(input.action))candidate.state=input.action==='pause'?'paused':input.action==='retire'?'retiring':'enabled'
     candidate=workerProfileSchema.parse(candidate);verifyBackend(candidate.backend)
+    if(candidate.harness!==worker.harness||candidate.harness&&candidate.backend!==worker.backend)throw Error('Change the Worker execution engine in Agent team settings')
     if(candidate.nativeTool&&(candidate.nativeTool!==worker.nativeTool||candidate.backend!==worker.backend))throw Error('Change native CLI grants in Agent team settings')
     profiles=profiles.map(w=>w.id===worker.id?candidate:w)
    }

@@ -1,3 +1,4 @@
+import {apiHeaders,apiOutputFormat} from './api-request.ts'
 import {randomUUID,createHash} from 'node:crypto'
 import {resolve} from 'node:path'
 import {Ajv} from 'ajv'
@@ -33,9 +34,7 @@ export class ApiModel implements Model {
  private async http(path:string,signal:AbortSignal,body?:unknown,onOutput?:ModelRequest['onOutput'],onUsage?:(value:any)=>void):Promise<any>{
   const d=this.definition,credential=this.credential?await this.credential():d.apiKeyEnv?process.env[d.apiKeyEnv]:undefined
   if(d.apiKeyEnv&&!credential?.trim())throw Error('Backend '+this.id+' requires environment variable '+d.apiKeyEnv)
-  const headers:Record<string,string>={...d.headers,...Object.fromEntries(Object.entries(d.headerEnv??{}).map(([key,env])=>{const value=process.env[env];if(!value)throw Error('Missing header environment variable '+env);return [key,value]})),'content-type':'application/json'}
-  if(d.kind==='anthropic'){headers['anthropic-version']='2023-06-01';if(credential)headers['x-api-key']=credential}
-  else if(credential)headers.authorization='Bearer '+credential
+  const headers=apiHeaders(d,credential)
   let response:Response
   try{response=await fetch(this.endpoint(path),{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined,signal:AbortSignal.any([signal,AbortSignal.timeout(d.requestTimeoutMs)]),redirect:'error'})}
   catch(error){signal.throwIfAborted();throw new ApiConnectionError(error instanceof Error&&(error.name==='TimeoutError'||(error.cause as any)?.code==='UND_ERR_CONNECT_TIMEOUT')?'connection_timeout':'connection_unreachable')}
@@ -84,9 +83,9 @@ export class ApiModel implements Model {
   const context=tools.some(t=>t.name===recallSpec.name)?contextProjection(t,Math.min(128000,Math.floor(d.maxContextBytes/2))):{messages:t.messages,notice:''}
   t={...t,messages:context.messages}
   const finalInstructions=instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
-  if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...(d.outputFormat==='json-schema'?{output_config:{...(d.parameters.output_config as object??{}),format:{type:'json_schema',schema:r.schema}}}:{}),...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
-  if(d.kind==='openai-responses')return {...d.parameters,model:t.model,max_output_tokens:d.maxOutputTokens,instructions:finalInstructions,input:t.messages,store:false,...(d.subscription||r.onOutput?{stream:true}:{}),include:['reasoning.encrypted_content'],...(tools.length?{tools:tools.map(s=>({type:'function',name:s.name,description:s.description,parameters:s.inputSchema,strict:false}))}:{}),...(d.outputFormat==='prompt'?{}:{text:{...(d.parameters.text as object??{}),format:d.outputFormat==='json-object'?{type:'json_object'}:{type:'json_schema',name:'agent_result',strict:true,schema:r.schema}}})}
-  return {[d.chatTokenField]:d.maxOutputTokens,...d.parameters,...(r.onOutput?{stream:true,stream_options:{...(d.parameters.stream_options as object??{}),include_usage:true}}:{}),model:t.model,messages:[{role:'system',content:finalInstructions},...t.messages],...(tools.length?{tools:tools.map(s=>({type:'function',function:{name:s.name,description:s.description,parameters:s.inputSchema,strict:false}}))}:{}),...(d.outputFormat==='prompt'?{}:{response_format:d.outputFormat==='json-object'?{type:'json_object'}:{type:'json_schema',json_schema:{name:'agent_result',strict:true,schema:r.schema}}})}
+  if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...apiOutputFormat(d,r.schema),...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
+  if(d.kind==='openai-responses')return {...d.parameters,model:t.model,max_output_tokens:d.maxOutputTokens,instructions:finalInstructions,input:t.messages,store:false,...(d.subscription||r.onOutput?{stream:true}:{}),include:['reasoning.encrypted_content'],...(tools.length?{tools:tools.map(s=>({type:'function',name:s.name,description:s.description,parameters:s.inputSchema,strict:false}))}:{}),...apiOutputFormat(d,r.schema)}
+  return {[d.chatTokenField]:d.maxOutputTokens,...d.parameters,...(r.onOutput?{stream:true,stream_options:{...(d.parameters.stream_options as object??{}),include_usage:true}}:{}),model:t.model,messages:[{role:'system',content:finalInstructions},...t.messages],...(tools.length?{tools:tools.map(s=>({type:'function',function:{name:s.name,description:s.description,parameters:s.inputSchema,strict:false}}))}:{}),...apiOutputFormat(d,r.schema)}
  }
  private accept(response:any,t:ApiThread):{calls:Call[];text:string;wire:any[]}{
   const kind=this.definition.kind

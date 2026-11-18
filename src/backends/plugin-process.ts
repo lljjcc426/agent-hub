@@ -32,7 +32,8 @@ export const pluginIdentity=(definition:PluginBackendDefinition,pkg:BackendPacka
 
 /** Native IDs never escape this adapter. Host thread bindings retain an immutable package digest. */
 export class ProcessBackend implements Model {
- constructor(readonly id:string,readonly definition:PluginBackendDefinition,readonly pkg:BackendPackage,private config:Pick<Config,'stateDir'|'codex'|'work'|'turnTimeoutMs'>,private store:ThreadStore){
+ constructor(readonly id:string,readonly definition:PluginBackendDefinition,readonly pkg:BackendPackage,private config:Pick<Config,'stateDir'|'codex'|'work'|'turnTimeoutMs'>,private store:ThreadStore,private readonly hostHarness=false){
+  if(pkg.manifest.id==='opencode-cli'&&definition.config.apiProtocol&&!hostHarness)throw Error('API protocol is supplied by the selected model connection')
   validatePluginValue(pkg.manifest.configSchema,definition.config,'configuration')
   if(Object.keys(definition.env).some(k=>!pkg.manifest.environment.includes(k)||['HOME','PATH','NODE_OPTIONS','NODE_PATH','TMPDIR','TMP','TEMP'].includes(k)))throw Error('Execution backend environment is not declared or is host-owned')
  }
@@ -45,6 +46,10 @@ export class ProcessBackend implements Model {
  private pinned(record?:Thread){return record?readBackendPackage(join(backendObjects(this.config.stateDir),record.digest),record.digest):installBackendPackage(this.pkg.directory,this.config.stateDir,this.pkg.digest)}
  private save(record:Thread){this.store.put('backend-plugin-thread',record.id,record)}
  async run(request:ModelRequest):Promise<ModelResult>{
+  const hasHarnessTransport=Boolean(request.harnessProviderUrl)
+  if(this.hostHarness!==hasHarnessTransport||!this.hostHarness&&(request.harnessWorkspace||request.harnessPrivateFiles)){
+   throw new BackendPluginError('configuration_invalid',this.id)
+  }
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
   if(request.nativeTool&&!caps.nativeTools?.includes(request.nativeTool))throw new BackendPluginError('unsupported',this.id)
   if(old&&!caps.resume)throw new BackendPluginError('unsupported',this.id)
@@ -188,7 +193,7 @@ export class ProcessBackend implements Model {
    const state=canonical(this.config.stateDir)
    for(const path of this.definition.writePaths)if(inside(canonical(path),state)||inside(state,canonical(path)))throw Error('Execution plugin cannot request writes to host state')
    const workDirectory=record?cwd:scratch
-   const command=sandboxCommand({sandboxDriver:this.config.work.sandboxDriver,codex:this.config.codex,cwd:workDirectory,scratch,sandbox:'read-only',network:pkg.manifest.network,privateState:state,privatePaths:hostPrivateFiles(),attachments:[runner,process.execPath,join(pkg.directory,'plugin.mjs'),...this.definition.readPaths],writablePaths:[dataDirectory,...this.definition.writePaths],command:'exec '+[process.execPath,runner].map(quote).join(' ')})
+   const command=sandboxCommand({sandboxDriver:this.config.work.sandboxDriver,codex:this.config.codex,cwd:workDirectory,scratch,sandbox:this.hostHarness&&request?.harnessProviderUrl&&request.harnessWorkspace==='edit'&&request.sandbox==='workspace-write'&&request.role==='worker'?'workspace-write':'read-only',network:pkg.manifest.network,privateState:state,privatePaths:hostPrivateFiles(),attachments:[runner,process.execPath,join(pkg.directory,'plugin.mjs'),...this.definition.readPaths],writablePaths:[dataDirectory,...this.definition.writePaths],command:'exec '+[process.execPath,runner].map(quote).join(' ')})
    child=spawn(command.command,command.args,{cwd:workDirectory,env,stdio:['pipe','pipe','pipe'],detached:true})
    exited=new Promise<void>(done=>child!.once('close',()=>done()))
    child.stderr.resume();child.stdin.on('error',()=>fail(new BackendPluginError('process_failed',this.id)))

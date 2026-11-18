@@ -3,7 +3,7 @@ function connectionProvider(service) {
   const definition = service.definition || S.base?.config.backends?.[service.id] || { kind: service.kind }
   if (definition.subscription) return 'openai'
   if (definition.kind === 'codex') return 'codex'
-  if (definition.kind === 'plugin') return ({ 'claude-code': 'anthropic', 'gemini-cli': 'gemini', opencode: 'opencode' })[definition.plugin] || definition.plugin
+  if (definition.kind === 'plugin') return ({ 'claude-code': 'anthropic', 'gemini-cli': 'gemini', 'opencode-cli': 'opencode' })[definition.plugin] || definition.plugin
   let host = ''; try { host = new URL(definition.baseUrl).hostname } catch {}
   return host === 'api.deepseek.com' ? 'deepseek' : host === 'api.openai.com' ? 'openai' : host === 'api.anthropic.com' ? 'anthropic' : 'custom'
 }
@@ -15,6 +15,8 @@ function connectionUses(id, config = S.base.config) {
   if ((route.router?.backend ?? route.roles?.router ?? fallback) === id) uses.push(route.router?.label || 'Router')
   const workers = route.workers ?? Array.from({ length: config.concurrency }, (_, i) => ({ id: 'worker-' + (i + 1), backend: route.roles?.worker ?? fallback }))
   for (const worker of workers) if (worker.backend === id) uses.push(worker.label || worker.id)
+  if (route.router?.harness === id) uses.push((route.router.label || 'Router') + L(' engine', ' 执行引擎'))
+  for (const worker of workers) if (worker.harness === id) uses.push((worker.label || worker.id) + L(' engine', ' 执行引擎'))
   if ((route.roles?.subagent ?? fallback) === id) uses.push(L('Subagent default', '子代理默认'))
   if (config.decision?.provider?.kind === 'backend' && config.decision.provider.id === id) uses.push(L('Router decision layer', 'Router 决策层'))
   if (route.management?.backends?.includes(id)) uses.push(L('External Router access', '外部 Router 授权'))

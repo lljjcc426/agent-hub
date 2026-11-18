@@ -2,6 +2,7 @@ import {builtins} from './prompts.ts'
 import { z } from 'zod'
 import { configSchema, type Config } from './config.ts'
 import type { Store } from './store.ts'
+import {validateHarnessPackages} from './backends/plugin-package.ts'
 import {validateBackendSelection} from './backend-config.ts'
 import {normalizeWorkerCount} from './worker-pool.ts'
 import {sourceDeployment} from './connector-config.ts'
@@ -41,7 +42,7 @@ export class Settings {
         const keys=['allowedActors','allowedBots','enabled','admission','listenScopes','pollSeconds','memberSync']
         return {...source,...Object.fromEntries(keys.filter(k=>k in previous).map(k=>[k,(previous as any)[k]]))}
       })
-      Object.assign(config,configSchema.parse({...config,...dynamic,sources}));validateBackendSelection(config);normalizeWorkerCount(config)
+      Object.assign(config,configSchema.parse({...config,...dynamic,sources}));validateBackendSelection(config);validateHarnessPackages(config);normalizeWorkerCount(config)
       store.put('settings','current',{...saved,config})
     }
     else store.put('settings','current',{revision:0,at:new Date().toISOString(),config})
@@ -55,6 +56,7 @@ export class Settings {
       if(previous.revision!==expected)throw new SettingsError('settings_conflict','Settings conflict. Read current revision before saving.',409)
       const config=configSchema.parse({...this.config,...update})
       validateBackendSelection(config)
+      validateHarnessPackages(config)
       normalizeWorkerCount(config)
       const pluginDeployment=(backends:Config['backends'])=>Object.fromEntries(Object.entries(backends).filter(([,b])=>b.kind==='plugin').map(([id,b])=>{const {label,model,defaults,...deployment}=b;return [id,deployment]}))
       if(update.backends&&JSON.stringify(pluginDeployment(config.backends))!==JSON.stringify(pluginDeployment(this.config.backends)))throw new SettingsError('restart_required','Execution backend deployment changes require a controlled restart')

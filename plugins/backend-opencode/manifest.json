@@ -1,7 +1,7 @@
 {
   "id": "opencode-cli",
   "label": "OpenCode",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "stateVersion": 1,
   "configSchema": {
     "type": "object",
@@ -27,6 +27,7 @@
         "type": "string",
         "minLength": 1
       },
+      "apiProtocol": {"enum":["openai-responses","openai-chat","anthropic"]},
       "baseUrl": {
         "type": "string",
         "minLength": 1
@@ -59,6 +60,7 @@
     "additionalProperties": false
   },
   "capabilities": {
+    "harnessProtocols": ["openai-chat", "openai-responses", "anthropic"],
     "nativeTools": ["task-list"],
     "resume": true,
     "tools": true,

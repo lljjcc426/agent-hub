@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os'
 import {dirname,join} from 'node:path'
 import {configSchema} from '../src/config.ts'
 import {profileInventory} from '../src/capability-profiles.ts'
-import {codexInventory} from '../src/capability-codex.ts'
+import {codexInventory,withPreviousCatalog} from '../src/capability-codex.ts'
 import {clientConfig} from '../src/clients.ts'
 import {skillText} from '../src/capability-data.ts'
 
@@ -55,17 +55,24 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   if(m.method==='initialize')result={}
   if(m.method==='plugin/list')result={marketplaces:[{name:'local',plugins:[{id:'one',name:'One',installed:true,enabled:true},{id:'x',name:'uninstalled',installed:false}]}]}
   if(m.method==='skills/list')result={data:[{skills:[{name:'guide',path:${JSON.stringify(path)},enabled:true}]}]}
-  if(m.method==='mcpServerStatus/list')result={data:[{name:next?'second':'first',runtimeStatus:'connected',tools:{fetch:{name:'fetch',inputSchema:{properties:{id:{type:'string',default:'private default'}},required:['id']}}}}],nextCursor:next?null:'page-2'}
-  if(m.method==='app/list'){process.stdout.write(JSON.stringify({id:m.id,error:{code:1,message:'credential hidden'}})+'\\n');return}
+  if(m.method==='mcpServerStatus/list')result={data:[{name:next?'codex_apps':'first',toolListMeta:{'openai/apps':[{connectorId:'no-tools'}]},runtimeStatus:'connected',tools:{fetch:{name:'fetch',_meta:{connector_id:'tracked',connector_name:'App',link_id:'private-link'},inputSchema:{properties:{id:{type:'string',default:'private default'}},required:['id']}}}}],nextCursor:next?null:'page-2'}
+  if(m.method==='app/list'){
+    if(!global.retry){global.retry=true;process.stdout.write(JSON.stringify({id:m.id,error:{code:-32603,message:'temporary upstream failure'}})+'\\n');return}
+    result={data:[{id:'tracked',name:'App',isAccessible:true,isEnabled:true}],nextCursor:null}
+  }
   process.stdout.write(JSON.stringify({id:m.id,result})+'\\n')
 })
 `)
   const r=await codexInventory({command:process.execPath,args:[script],cwd:home,projects:[home],source:'Codex test'})
-  expect(r.entries.map(e=>e.name).sort()).toEqual(['One','first','guide','second'])
+  expect(r.entries.map(e=>e.name).sort()).toEqual(['App','One','codex_apps','first','guide','no-tools'])
   expect(r.entries.find(e=>e.name==='guide')?.content?.()).toBe('# Real instructions')
-  expect(r.entries.find(e=>e.name==='second')?.tools?.[0]?.inputs).toEqual([{name:'id',required:true,type:'string'}])
-  expect(r.warnings).toEqual(['Codex test · Apps'])
-  expect(JSON.stringify(r)).not.toMatch(/credential hidden|private default/)
+  expect(r.entries.find(e=>e.name==='codex_apps')?.tools?.[0]?.inputs).toEqual([{name:'id',required:true,type:'string'}])
+  expect(r.entries.find(e=>e.name==='App')?.tools?.map(t=>t.name)).toEqual(['fetch'])
+  expect(r.warnings).toEqual([])
+  const failed={entries:[],warnings:['Codex test · Apps'],complete:[]}
+  expect(withPreviousCatalog(failed,r).entries.find(e=>e.name==='App')?.status).toBe('cached')
+  expect(withPreviousCatalog({...failed,complete:['app']},r).entries.some(e=>e.name==='App')).toBe(false)
+  expect(JSON.stringify(r)).not.toMatch(/credential hidden|private default|private-link/)
 })
 
 it('serves workspace metadata only to the operator, resolves real content and keeps role restrictions on harness bridges',async()=>{

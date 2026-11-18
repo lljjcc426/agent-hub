@@ -18,7 +18,7 @@ import {isApiBackend} from './backend-config.ts'
 import {nativeToolFor} from './cli-native-tools.ts'
 import {verifyCliMcpGrant} from './cli-mcp-profile.ts'
 import {profileInventory} from './capability-profiles.ts'
-import {codexInventory,type CodexInventory} from './capability-codex.ts'
+import {codexInventory,withPreviousCatalog,type CodexInventory} from './capability-codex.ts'
 import {identifier,toolInfo,type Entry} from './capability-data.ts'
 import type {CapabilitySnapshot,CapabilityTool} from './capability-types.ts'
 
@@ -133,8 +133,10 @@ export class CapabilityLibrary {
     const cache:ExternalCache={controller:new AbortController(),revision:rev,started:now,pending:!!profile.native.length,profile,native:new Map()}
     this.external.set(host,cache)
     void Promise.all(profile.native.map(async p=>{
-      const update=(v:CodexInventory)=>cache.native.set(p.source,v)
-      try{update(await codexInventory({...p,signal:cache.controller.signal},update))}catch{update({entries:[],warnings:[p.source]})}
+      const previous=old?.revision===rev?old.native.get(p.source):undefined
+      const update=(v:CodexInventory)=>cache.native.set(p.source,withPreviousCatalog(v,previous))
+      if(previous)update({entries:[],warnings:[],complete:[]})
+      try{update(await codexInventory({...p,signal:cache.controller.signal},update))}catch{update({entries:[],warnings:[p.source],complete:[]})}
     })).finally(()=>{cache.pending=false})
     return cache
   }

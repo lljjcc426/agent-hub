@@ -21,7 +21,7 @@ export function PendingRequests({items, loading, close, L, selectedId, id = 'pen
       <button type="button" className="icon-button" aria-label={L('Hide pending requests','隐藏待处理事项')} onClick={close}><X size={16}/></button>
     </header>
     {selectedId && !loading && !found && <p role="status" className="pending-empty">{L('This item is no longer pending.', '这个事项已处理或已失效。')}</p>}
-    {items.length ? <ol className="pending-list">{items.map(({id, content, locate}) => <li key={id} onClick={event => {
+    {items.length ? <ol className="pending-list">{items.map(({id, content, locate}) => <li key={id} ref={id===selectedId?focused:undefined} tabIndex={-1} data-pending-id={id} onClick={event => {
       if (event.target instanceof Element && !event.target.closest('button, a, input, textarea, select, label, summary, [contenteditable=true]') && window.getSelection()?.isCollapsed !== false) locate()
     }}>
       <div className="pending-card-content">{content}</div>

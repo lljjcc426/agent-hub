@@ -85,11 +85,14 @@ export class RouterProactive {
   const key=stableDigest([x.scopeId,context?.actor??'operator',context?.route.entryId??'operator',x.operationId])
   return this.host.store.atomic(()=>{
    const old=this.host.store.get<any>('proactive-receipt',key)
-   if(x.action==='schedule.put'&&x.schedule&&(value as z.input<typeof proactiveCommandSchema>).schedule?.timing.timezone===undefined){
-    const saved=this.host.store.get<Schedule>('router-schedule',stableDigest([x.scopeId,x.schedule.id]))
+   const supplied=value as z.input<typeof proactiveCommandSchema>
+   const scheduleId=x.action==='schedule.put'?x.schedule?.id:x.action==='schedule.retime'?x.id:undefined
+   const timing=x.action==='schedule.put'?x.schedule?.timing:x.timing
+   if(scheduleId&&timing&&(x.action==='schedule.put'?supplied.schedule?.timing:supplied.timing)?.timezone===undefined){
+    const saved=this.host.store.get<Schedule>('router-schedule',stableDigest([x.scopeId,scheduleId]))
     // Replay uses the zone recorded for this operation, even after edits or a host move.
-    x.schedule.timing.timezone=old?.result?.timing?.timezone??saved?.timing.timezone
-      ??this.host.chat.clientContext(x.schedule.triggerId)?.clientTimeZone??Intl.DateTimeFormat().resolvedOptions().timeZone
+    timing.timezone=old?.result?.timing?.timezone??saved?.timing.timezone
+      ??(x.schedule?this.host.chat.clientContext(x.schedule.triggerId)?.clientTimeZone:undefined)??Intl.DateTimeFormat().resolvedOptions().timeZone
    }
    const fingerprint=stableDigest(x)
    if(old){if(old.fingerprint!==fingerprint)throw Error('operationId reused with different content');return old.result}

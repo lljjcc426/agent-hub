@@ -120,6 +120,7 @@ with sync_playwright() as playwright:
     dialog.get_by_role('button', name='The scheduled release digest is ready.').click()
     expect(page.locator('#session-panel')).not_to_be_visible()
     expect(target).to_be_in_viewport()
+    expect(target).to_be_focused()
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert not failures, failures
     browser.close()

@@ -19,6 +19,7 @@ export function Dialog({
   title,
   closeLabel,
   onClose,
+  onAfterClose,
   placement = 'center',
   role = 'dialog',
   children,
@@ -28,6 +29,7 @@ export function Dialog({
   title: string
   closeLabel: string
   onClose: () => void
+  onAfterClose?: () => void
   placement?: 'center' | 'side' | 'start'
   role?: 'dialog' | 'alertdialog'
   children: ReactNode
@@ -53,6 +55,7 @@ export function Dialog({
       data-closing={open ? undefined : ''}
       data-placement={placement}
       aria-labelledby={heading}
+      onClose={onAfterClose}
       onCancel={(event) => {
         event.preventDefault()
         onClose()

@@ -40,7 +40,7 @@ interface Conversation {
   nativeId?:string
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
-export interface FileReview {fileId:string;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
+export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
 interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
@@ -610,7 +610,7 @@ export class ChatSessions {
     const review=m.fileReview!
     const files=state==='approved'?this.deliveries.publish(m.conversationId,{runId:m.runId},[review.fileId]):undefined
     if(!files)this.deliveries.discard([review.fileId])
-    this.host.store.put('chat-message',m.id,{...m,fileReview:{...review,state},...(files?{deliveries:files}:{})})
+    this.host.store.put('chat-message',m.id,{...m,fileReview:{...review,state,resolvedAt:Date.now()},...(files?{deliveries:files}:{})})
   }
   private fileReviewMessage(id:string,owner:string,messageId:string){
     const c=this.get(id,owner),m=this.sourceMessage(c,messageId)
@@ -654,7 +654,7 @@ export class ChatSessions {
     if(this.host.store.get('chat-message',id))return true
     const deliveries=this.deliveries.publish(dest.c.id,{ticketId},ids)
     if(!deliveries.length)return false
-    this.message(dest.c,{id,handoff:'files',runId:dest.triggerId,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
+    this.message(dest.c,{id,handoff:'files',runId:deliveries[0]!.runId??dest.run.id,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
     this.changed(dest.c.id)
     return true
   }

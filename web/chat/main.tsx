@@ -447,6 +447,7 @@ function App() {
   const navigate = useCallback((next: string | null) => {
     setId(next);
     const url = new URL("/chat", location.origin);
+    if(location.pathname === "/chat" && location.hash === "#schedules") url.hash = "schedules";
 
     history.pushState(null, "", url);
     switchView("page",()=>setRoute(url.pathname + url.search + url.hash));
@@ -1460,7 +1461,7 @@ function Chat(p: ChatProps) {
                       current={usage} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
-                  locateMessage={messageId=>{if(panelOverlay)void choosePanel(null);void locateMessage(messageId)}}
+                  locateMessage={messageId=>{if(panelOverlay)void choosePanel(null);requestAnimationFrame(()=>void locateMessage(messageId))}}
                   changeSchedule={async (planId,expectedRevision,patch)=>{
                     try{await api('/conversations/'+id+'/schedules',{id:planId,expectedRevision,operationId:crypto.randomUUID(),...patch},'PATCH')}finally{await refresh()}
                   }}

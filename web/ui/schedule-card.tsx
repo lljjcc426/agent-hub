@@ -1,19 +1,22 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { CalendarClock, ChevronRight, FileText, MessageSquare, Pause, Play } from 'lucide-react'
-import type { ChatSchedule, ScheduleEdit } from '../../src/chat-schedules.ts'
+import type { ChatSchedule } from '../../src/chat-schedules.ts'
 import type { Localize } from '../chat/composer-commands.tsx'
 import { Dialog } from './overlays.tsx'
 import { IconButton } from './controls.tsx'
 import { ScheduleEditor, scheduleCadence, scheduleDate } from './schedule-editor.tsx'
 import './schedule.css'
 
+type CardEdit = { active: boolean } | { timing: ChatSchedule['timing'] }
+
 export function ScheduleCard<File extends { id: string; name: string }>({ plan, lang, L, onChange, onMessage, onFile }: {
   plan: ChatSchedule<File>; lang: string; L: Localize
-  onChange: (revision: number, change: ScheduleEdit) => Promise<void>
+  onChange: (revision: number, change: CardEdit) => Promise<void>
   onMessage: (id: string) => void; onFile: (file: File) => void
 }) {
   const [editing, setEditing] = useState<Pick<typeof plan,'revision'|'timing'> | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const afterClose = useRef<(() => void) | null>(null)
   const { timing, active, lastRun, lastResult } = plan
   const date = (at: number) => scheduleDate(at, timing.timezone, lang)
   const ended = active ? plan.nextAt == null : (timing.endAt && Date.parse(timing.endAt) <= Date.now()) ||
@@ -23,7 +26,17 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
     completed: L('Completed','已完成'), failed: L('Failed','失败'), cancelled: L('Cancelled','已取消'), skipped: L('Skipped','已跳过') }
   const edit = () => { setError(''); setEditing({revision:plan.revision,timing:plan.timing}) }
   const close = () => { setEditing(null); setError('') }
-  async function change(revision: number, patch: ScheduleEdit) {
+  function follow(action: () => void) {
+    if (!editing) return action()
+    afterClose.current = action
+    close()
+  }
+  function finishClose() {
+    const action = afterClose.current
+    afterClose.current = null
+    action?.()
+  }
+  async function change(revision: number, patch: CardEdit) {
     setBusy(true); setError('')
     try {
       await onChange(revision, patch)
@@ -34,11 +47,11 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
     } finally { setBusy(false) }
   }
   const links = (compact: boolean) => lastResult && <div className="rp-schedule-links">
-    <button type="button" onClick={()=>{close(); onMessage(lastResult.messageId)}} title={lastResult.text || L('Go to message','查看消息')}>
+    <button type="button" onClick={()=>follow(()=>onMessage(lastResult.messageId))} title={lastResult.text || L('Go to message','查看消息')}>
       <MessageSquare size={14}/><span>{lastResult.text || L('Go to message','查看消息')}</span>
     </button>
     {(compact ? lastResult.files.slice(0,1) : lastResult.files).map(file=><button type="button" key={file.id}
-      onClick={()=>{close(); onFile(file)}} title={file.name}><FileText size={14}/><span>{file.name}</span></button>)}
+      onClick={()=>follow(()=>onFile(file))} title={file.name}><FileText size={14}/><span>{file.name}</span></button>)}
   </div>
   const toggle = (active ? L('Pause', '暂停') : L('Resume', '恢复')) + ' ' + plan.name
   return <article className="rp-schedule-card" data-schedule-id={plan.id}>
@@ -52,7 +65,7 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
     <div className="rp-schedule-receipt"><small>{L('Last delivery','上次交付')}</small>
       {lastResult ? links(true) : <span>{L('No delivery yet','暂无交付')}</span>}</div>
     {error && !editing && <p role="alert">{error}</p>}
-    <Dialog open={!!editing} onClose={close} title={plan.name} closeLabel={L('Close details', '关闭详情')}>
+    <Dialog open={!!editing} onClose={close} onAfterClose={finishClose} title={plan.name} closeLabel={L('Close details', '关闭详情')}>
       {editing && <div className="rp-schedule-detail">
         <p className="rp-schedule-prompt">{plan.prompt}</p>
         <dl><dt>{L('Next run','下次执行')}</dt><dd>{next}</dd>

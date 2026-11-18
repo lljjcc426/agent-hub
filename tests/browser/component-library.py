@@ -138,6 +138,28 @@ def check_delivery(page, base):
     page.keyboard.press("Escape")
 
 
+def check_schedule(page, base):
+    page.goto(base + "/#work")
+    card = page.locator('[data-schedule-id="release-checklist"]')
+    expect(card).to_contain_text("Asia/Shanghai")
+    card.get_by_role("button", name="暂停 发布清单").click()
+    expect(card).to_contain_text("已暂停")
+    card.get_by_role("button", name="发布清单", exact=True).click()
+    dialog = page.get_by_role("dialog", name="发布清单", exact=True)
+    dialog.get_by_role("combobox", name="频率", exact=True).select_option("weekend")
+    dialog.get_by_label("执行时间", exact=True).fill("15:46")
+    dialog.get_by_role("button", name="保存排期").click()
+    expect(card).to_contain_text("周末 15:46")
+    card.get_by_role("button", name="恢复 发布清单").click()
+    card.get_by_role("button", name="发布清单.xlsx", exact=True).click()
+    expect(page.get_by_role("dialog", name="发布清单.xlsx").get_by_role("link", name="下载")).to_be_visible()
+    page.keyboard.press("Escape")
+    card.get_by_role("button", name="整理好了。三项检查已按负责人分组。").click()
+    reply = page.locator('[data-message-id="reply"] .message-line')
+    expect(reply).to_be_focused()
+    expect(reply).to_be_in_viewport()
+
+
 def check_mobile(page, base):
     page.add_init_script("localStorage.setItem('roppo-component-theme', 'dark')")
     page.goto(base + "/#chat")
@@ -177,7 +199,9 @@ if __name__ == "__main__":
         page.goto(base + "/#work")
         check_dialogs(page)
         check_delivery(page, base)
+        check_schedule(page, base)
         mobile = browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True, color_scheme="dark")
         check_mobile(mobile, base)
         check_delivery(mobile, base)
+        check_schedule(mobile, base)
         browser.close()

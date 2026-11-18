@@ -42,3 +42,14 @@ it('skips an entire missing local date and does not duplicate a weekly fall fold
  const first=nextTime(fall,Date.parse(fall.startAt))!
  expect(utc(first)).toBe('2026-11-01T05:30:00.000Z');expect(utc(nextTime(fall,first+1))).toBe('2026-11-08T06:30:00.000Z')
 })
+
+it('resolves editable dates in the task zone, including seconds, DST gaps and folds',async()=>{
+ const {wallInstant,localDateTime}=await import('../src/schedule-calendar.ts')
+ const zone='America/New_York'
+ expect(wallInstant('2026-03-08T02:05',zone)).toBeUndefined()
+ expect(wallInstant('2026-02-30T12:00',zone)).toBeUndefined()
+ expect(wallInstant('2026-11-01T01:30:66',zone)).toBeUndefined()
+ const at=wallInstant('2026-11-01T01:30:07',zone)!
+ expect(utc(at)).toBe('2026-11-01T05:30:07.000Z')
+ expect(localDateTime(at,'Asia/Shanghai')).toBe('2026-11-01T13:30:07')
+})

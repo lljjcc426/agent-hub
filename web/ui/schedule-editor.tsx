@@ -56,8 +56,9 @@ export function ScheduleEditor({ timing, active, lang, L, busy, stale, reload, s
   const draft = useMemo((): { value?: Timing; next?: number; error?: string } => {
     try { new Intl.DateTimeFormat('en', { timeZone: zone }) } catch { return { error: L('Choose a valid time zone.', '请选择有效时区。') } }
     const startAt = dateValue(start, zone, timing.timezone, timing.startAt)
-    const endAt = end ? dateValue(end, zone, timing.timezone, timing.endAt) : undefined
-    if (!startAt || (end && !endAt)) return { error: L('This local date or time does not exist in this zone.', '这个日期或时间在所选时区不存在。') }
+    const useEnd = kind !== 'once' || (timing.kind === 'once' && !!timing.endAt)
+    const endAt = useEnd && end ? dateValue(end, zone, timing.timezone, timing.endAt) : undefined
+    if (!startAt || (useEnd && end && !endAt)) return { error: L('This local date or time does not exist in this zone.', '这个日期或时间在所选时区不存在。') }
     if (endAt && Date.parse(endAt) <= Date.parse(startAt)) return { error: L('End must be after the start.', '结束时间须晚于开始时间。') }
     const value: Timing = { timezone: zone, startAt, ...(endAt ? { endAt } : {}), kind: kind === 'workdays' || kind === 'weekend' ? 'weekly' : kind }
     if (kind === 'interval') {
@@ -74,15 +75,15 @@ export function ScheduleEditor({ timing, active, lang, L, busy, stale, reload, s
       value.time = time
     }
     const next = nextTime(value, Date.now())
-    return next === undefined ? { error: L('No future occurrence in this time range.', '这个时间范围内没有下一次执行。') } : { value, next }
+    return next === undefined ? { value, error: L('No future occurrence in this time range.', '这个时间范围内没有下一次执行。') } : { value, next }
   }, [kind, zone, start, end, time, count, unit, days, timing, L])
   const same = draft.value && (['kind','timezone','startAt','endAt','intervalSeconds','time'] as const).every(k => draft.value![k] === timing[k])
     && week.every(d => !!draft.value!.weekdays?.includes(d) === !!timing.weekdays?.includes(d))
   const dates = (once: boolean) => <div className="rp-schedule-fields">
     <label>{once ? L('Run at', '执行日期与时间') : L('Start', '开始时间')}<input type="datetime-local" step="1" value={start} onChange={e=>setStart(e.target.value)} required/></label>
-    {!once && <label>{L('End (optional)', '结束时间（可选）')}<input type="datetime-local" step="1" value={end} onChange={e=>setEnd(e.target.value)}/></label>}
+    {(!once || (timing.kind === 'once' && timing.endAt)) && <label>{L('End (optional)', '结束时间（可选）')}<input type="datetime-local" step="1" value={end} onChange={e=>setEnd(e.target.value)}/></label>}
   </div>
-  function submit(e: FormEvent) { e.preventDefault(); if (draft.value && !same && !stale && !busy) void save(draft.value) }
+  function submit(e: FormEvent) { e.preventDefault(); if (draft.value && !draft.error && !same && !stale && !busy) void save(draft.value) }
   return <form className="rp-schedule-form" onSubmit={submit}>
     <div className="rp-schedule-fields">
       <label>{L('Frequency', '频率')}<select value={kind} onChange={e=>setKind(e.target.value as Frequency)}>
@@ -105,10 +106,10 @@ export function ScheduleEditor({ timing, active, lang, L, busy, stale, reload, s
       <details><summary>{L('Date range', '日期范围')}</summary>{dates(false)}</details>
     </>}
     <div className="rp-schedule-save">
-      <small aria-live="polite">{stale ? L('This schedule was changed elsewhere.', '排期已在其他窗口更改。') : draft.error ??
+      <small aria-live="polite">{stale ? L('This schedule was changed elsewhere.', '排期已在其他窗口更改。') : same ? '' : draft.error ??
         (draft.next !== undefined ? (active ? L('Next · ', '下次 · ') : L('After resuming · ', '恢复后 · ')) + scheduleDate(draft.next, zone, lang) : '')}</small>
       {stale ? <Button onClick={reload}>{L('Reload schedule', '载入最新排期')}</Button>
-        : <Button tone="primary" type="submit" busy={busy} disabled={!draft.value || same}>{L('Save schedule', '保存排期')}</Button>}
+        : <Button tone="primary" type="submit" busy={busy} disabled={!draft.value || !!draft.error || same}>{L('Save schedule', '保存排期')}</Button>}
     </div>
   </form>
 }

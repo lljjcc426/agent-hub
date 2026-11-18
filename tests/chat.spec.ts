@@ -1454,3 +1454,79 @@ it('asks the same Worker to repair missing files without publishing a partial de
   expect(h.store.tickets.list()).toHaveLength(1)
   expect(h.store.db.prepare('SELECT count(*) AS n FROM chat_delivery_bytes').get()!.n).toBe(2)
 })
+
+it('edits a paused private schedule idempotently and keeps each delivery tied to its actual occurrence',()=>{
+  const {h}=fixture()
+  h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
+  const c=h.chat.create('owner'),other=h.chat.create('other')
+  const {runId}=send(h,c.id),context=h.scopes.context(h.store.triggers.get(runId)!,'local:chat:'+c.id)!
+  const scopeId=context.route.scopeId
+  const timing={kind:'daily' as const,time:'12:00',timezone:'Europe/Paris',startAt:new Date(Date.now()+60000).toISOString()}
+  const schedule={id:'digest',name:'Digest',prompt:'Deliver a digest.',triggerId:runId,mode:'standalone',notification:'always',timing,active:false}
+  const put=(id:string,active:boolean)=>h.proactive.command({action:'schedule.put',scopeId,operationId:randomUUID(),expectedRevision:0,schedule:{...schedule,id,active}},context)
+  put('digest',false);put('second',true)
+  const edit={id:'digest',expectedRevision:1,operationId:randomUUID(),timing:{...timing,kind:'weekly' as const,weekdays:[1,3,5]}}
+  const state=()=>h.chat.view(c.id,'owner').schedules.find(x=>x.id==='digest')!
+  const inferred={...edit,timing:{...edit.timing,timezone:undefined}}
+  h.chat.changeSchedule(c.id,'owner',inferred);h.chat.changeSchedule(c.id,'owner',inferred)
+  expect(state()).toMatchObject({active:false,revision:2,prompt:schedule.prompt,timing:edit.timing,lastRun:null,lastResult:null})
+  expect(state().nextAt).toBeUndefined()
+  expect(()=>h.chat.changeSchedule(c.id,'owner',{...edit,operationId:randomUUID()})).toThrow('Revision conflict')
+  expect(()=>h.chat.changeSchedule(other.id,'other',edit)).toThrow('unavailable')
+  h.chat.changeSchedule(c.id,'owner',{id:'digest',operationId:randomUUID(),expectedRevision:2,active:true})
+  const launch=(id:string,revision:number)=>h.proactive.command({action:'schedule.run',scopeId,id,expectedRevision:revision,operationId:randomUUID()},context) as {triggerId:string}
+  const digest=launch('digest',3),second=launch('second',1)
+  h.proactive.beforeTurn(digest.triggerId);h.proactive.beforeTurn(second.triggerId)
+  const review=h.chat.deliverText(digest.triggerId,{name:'notes.md',content:'reviewed bytes',requireApproval:true}) as {messageId:string}
+  expect(state().lastResult).toBeNull()
+  h.chat.deliverText(second.triggerId,{name:'notes.md',content:'different bytes'})
+  h.chat.reply('second-digest',second.triggerId,'Another task')
+  h.chat.reply('initial',runId,'Schedule created')
+  expect(state().lastResult).toBeNull()
+  h.chat.answerFileReview(c.id,'owner',review.messageId,'approved')
+  expect(state().lastResult).toMatchObject({messageId:review.messageId,files:[{name:'notes.md',runId:digest.triggerId}]})
+  h.chat.reply('first-digest',digest.triggerId,'Here is your digest.')
+  const result=state().lastResult!
+  expect(result).toMatchObject({messageId:'reply:first-digest',text:'Here is your digest.',files:[{name:'notes.md'}]})
+  expect(Buffer.from(h.chat.delivery(c.id,'owner',result.files[0]!.id).bytes).toString()).toBe('reviewed bytes')
+  expect(()=>h.chat.delivery(other.id,'other',result.files[0]!.id)).toThrow()
+  launch('digest',3) // The previous run is still active; this occurrence skips.
+  expect(state().lastRun?.state).toBe('skipped')
+  expect(state().lastResult).toEqual(result)
+})
+
+it('publishes a scheduled Worker file on that occurrence and reopens its message after a restart',async()=>{
+  const f=fixture(async request=>{
+    if(request.role==='worker'){
+      writeFileSync(join(request.cwd,'shift.md'),'Worker handover')
+      return {...report,files:['shift.md']}
+    }
+    const input=JSON.parse(request.input)
+    if(input.schedule && input.kind==='event'){
+      const pool=await request.onTool!('worker_manage',{action:'list'},'pool')
+      const {revision}=JSON.parse(pool.contentItems[0]!.text!)
+      const assigned=await request.onTool!('worker_manage',{action:'assign',id:'research',revision,requestId:'shift-worker',text:'Deliver shift.md'},'assign')
+      expect(assigned.success).toBe(true)
+      return {reply:''}
+    }
+    return {reply:input.kind==='user_message'?'Scheduled.':'Worker delivery verified.'}
+  })
+  const {h}=f
+  h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['research'],backendIds:['codex']}})
+  const c=h.chat.create('owner'),{runId}=send(h,c.id,'Schedule a handover.')
+  const context=h.scopes.context(h.store.triggers.get(runId)!,'local:chat:'+c.id)!
+  h.proactive.command({action:'schedule.put',scopeId:context.route.scopeId,operationId:'create',expectedRevision:0,
+    schedule:{id:'shift',name:'Shift',prompt:'Have Research deliver a handover file.',triggerId:runId,mode:'standalone',notification:'always',
+      timing:{kind:'daily',startAt:new Date().toISOString(),time:'09:00',timezone:'UTC'}}},context)
+  const occurrence=h.proactive.command({action:'schedule.run',scopeId:context.route.scopeId,id:'shift',operationId:'run',expectedRevision:1},context) as {triggerId:string}
+  await settle(h,()=>h.chat.view(c.id,'owner').schedules[0]?.lastRun?.state==='completed')
+  const result=h.chat.view(c.id,'owner').schedules[0]!.lastResult!
+  expect(result.files).toMatchObject([{workerId:'research',runId:occurrence.triggerId,name:'shift.md'}])
+  for(let i=0;i<125;i++)h.chat.reply('later-'+i,runId,'Later message')
+  expect(h.chat.view(c.id,'owner').messages.some(m=>m.id===result.messageId)).toBe(false)
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  const recovered=new Runtime(f.config,{model:f.model});hosts.push(recovered)
+  expect(recovered.chat.view(c.id,'owner').schedules[0]!.lastResult).toEqual(result)
+  expect(recovered.chat.view(c.id,'owner',undefined,undefined,result.messageId).messages.some(m=>m.id===result.messageId)).toBe(true)
+  expect(Buffer.from(recovered.chat.delivery(c.id,'owner',result.files[0]!.id).bytes).toString()).toBe('Worker handover')
+})

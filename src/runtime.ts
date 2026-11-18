@@ -365,14 +365,19 @@ export class Runtime {
     this.store.atomic(()=>{
       if(value.state==='ready')this.delegation.captureExecution(ticketId)
       if(!accepted&&this.verification.capture(ticketId,value,reply,files))return
-      if(files?.length)this.chat.publishFiles(ticketId,files)
+      const publishedFiles=files?.length && this.chat.publishFiles(ticketId,files)
       const previous=this.store.tickets.get(ticketId)?.attention
       // The core keeps an unchanged question; a different asker needs a fresh routed attention.
       if(value.question&&previous?.question===value.question&&previous.triggerId!==value.askedBy)this.engine.report(ticketId,{state:value.state,summary:value.summary,question:null})
       const {decision:decisionDetails,...coreReport}=value
       const ticket=this.engine.report(ticketId,coreReport)
       if(value.question)this.engine.reply({purpose:'attention',ticketId,question:value.question,text:value.question})
-      else if(reply&&value.state==='ready')this.engine.reply({purpose:value.answers?'answer':'result',ticketId,...(value.answers?{triggerId:value.answers}:{}),text:reply})
+      else if(reply&&value.state==='ready'){
+        const result=this.engine.reply({purpose:value.answers?'answer':'result',ticketId,...(value.answers?{triggerId:value.answers}:{}),text:reply})
+        // A published file already carries this handoff. Text results count only on delivery to the Router inbox.
+        if(!result.reused&&!publishedFiles)this.store.db.prepare(`UPDATE outbox SET body=json_set(body,'$.taskResult',1)
+          WHERE id=? AND status='pending' AND json_extract(body,'$.channel.address.routerInbox') IS NOT NULL`).run(result.id)
+      }
       else if(reply&&(value.state==='failed'||value.state==='blocked')){
         if(value.answers)this.engine.reply({purpose:'answer',ticketId,triggerId:value.answers,text:reply})
         else{
@@ -542,6 +547,7 @@ export class Runtime {
     for(let attempt=0;;attempt++){
       enforceBudget()
       this.usage.attempt(activity,attempt,'running')
+      if(threadId||attempt>0)this.usage.update(activity,{sessionKey:threadId?stableDigest([request.backendId,threadId]):undefined})
       try{
         this.delegation.beforeActivation(request)
         const activation:ModelRequest={...request,
@@ -549,8 +555,8 @@ export class Runtime {
           model:threadId?undefined:request.model??(role==='router'?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
           onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},
-          onUsage:value=>{this.usage.record(activity,attempt,value);const g=project();if(g?.project?.policy.budget)this.goals.holdBudget(g);request.onUsage?.(value)},
-          onThread:id=>{threadId=id;this.store.put('model-session',id,{threadId:id,cwd:request.cwd,ephemeral:request.ephemeral??false,activity,...context,scopeId,contextId:manifest?.id,at:Date.now()});request.onThread?.(id)},
+          onUsage:value=>{if(this.usage.record(activity,attempt,value)&&(role==='worker'||role==='router'))this.chat.usageChanged(activity);const g=project();if(g?.project?.policy.budget)this.goals.holdBudget(g);request.onUsage?.(value)},
+          onThread:id=>{threadId=id;this.usage.update(activity,{sessionKey:stableDigest([request.backendId,id])});this.store.put('model-session',id,{threadId:id,cwd:request.cwd,ephemeral:request.ephemeral??false,activity,...context,scopeId,contextId:manifest?.id,at:Date.now()});request.onThread?.(id)},
         }
         const recordInput=role==='router'
           ? (prepared:ModelRequest)=>this.chat.recordContextInput(activity,attempt,prepared) : undefined
@@ -560,6 +566,7 @@ export class Runtime {
           recordInput?.(activation)
           result=await this.model.run(activation)
         }
+        if(result.threadId&&result.threadId!==threadId)this.usage.update(activity,{sessionKey:stableDigest([request.backendId,result.threadId])})
         this.usage.attempt(activity,attempt,'completed');this.usage.finish(activity,'completed');this.activity.finish(activity,'completed');return result}
       catch(error){
         this.usage.attempt(activity,attempt,request.signal?.aborted?'interrupted':'failed')

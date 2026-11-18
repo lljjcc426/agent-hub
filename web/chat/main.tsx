@@ -1,3 +1,4 @@
+import {teamName} from './agent-avatar.tsx';
 import '../../src/ui/tab-motion.js';
 import '../../src/ui/tab-motion.css';
 import {
@@ -43,7 +44,7 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
 import {deliveryFile} from "./delivery-links.ts";
-import {TeamOverview,teamName,type TeamTab} from './team-view.tsx';
+import {TeamOverview,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,RouterDecision,FileReviewCard,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
@@ -68,6 +69,8 @@ import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
 
+import {HandoffStage,useHandoffPlayer,type HandoffCursor} from './handoff-stage.tsx';
+import './team-context.css';
 import {ChatCompanion} from "./companion.tsx";
 import {companionStatus} from "./companion-state.ts";
 import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
@@ -159,6 +162,7 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
+const loadTeamContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["teamContext"]>>("/conversations/"+id+"/team-context",undefined,"GET",signal);
 const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
@@ -403,6 +407,7 @@ function Readiness({ ready }: { ready: Ready | null }) {
   );
 }
 function App() {
+  const handoffCursor=useRef<HandoffCursor["current"]>(null);
   const chatArrivals = useRef<Arrivals>({conversationId:'',since:Infinity,seen:new Set()});
 
   const [route, setRoute] = useState(
@@ -543,6 +548,7 @@ function App() {
         aria-live="polite"
       />
       <Chat
+        handoffCursor={handoffCursor}
         arrivals={chatArrivals}
         key={id ?? "new"}
         {...{
@@ -569,6 +575,7 @@ function App() {
   );
 }
 type ChatProps = {
+  handoffCursor:HandoffCursor;
   arrivals: React.RefObject<Arrivals>;
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
@@ -767,7 +774,7 @@ function Chat(p: ChatProps) {
   const uploadConversation=useRef<Promise<string>|null>(null),uploadConversationId=useRef(id),[loadingAttachments,setLoadingAttachments]=useState(!!id),[attachmentBlocked,setAttachmentBlocked]=useState(false);
   const ensureConversation=useCallback(()=>{
     if(id)return Promise.resolve(id);
-    if(!uploadConversation.current)uploadConversation.current=spaceRequest({},'POST').then(space=>{const target=space.conversation!.id;uploadConversationId.current=target;write(draftKey(target),read(draftKey(null)));return target}).catch(error=>{uploadConversation.current=null;throw error});
+    if(!uploadConversation.current)uploadConversation.current=spaceRequest({},'POST').then(space=>{const target=space.conversation!.id;uploadConversationId.current=target;p.handoffCursor.current={id:target,sequence:space.conversation!.sequence};write(draftKey(target),read(draftKey(null)));return target}).catch(error=>{uploadConversation.current=null;throw error});
     return uploadConversation.current;
   },[id]);
   const attachmentLanguage=useRef(L);attachmentLanguage.current=L;
@@ -777,6 +784,7 @@ function Chat(p: ChatProps) {
   const selected=participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter);
   const readonly = selected.kind === "worker";
   const participantFilter = readonly ? selected.id : undefined;
+  const handoff=useHandoffPlayer(p.handoffCursor,id,snapshot,!configuring&&!around,participantFilter);
   const viewKey=JSON.stringify([id,participantFilter,around]),viewRef=useRef(viewKey);viewRef.current=viewKey;
   const ready = snapshot?.readiness ?? boot,
     run = snapshot?.run,
@@ -1303,7 +1311,7 @@ function Chat(p: ChatProps) {
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
                 <div className="chat-float chat-float-center">
-                  <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
+                  <ChatCompanion workerId={readonly?selected.id:undefined} status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
                     onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
                 </div>
                 <div className="chat-float chat-float-end">
@@ -1368,6 +1376,8 @@ function Chat(p: ChatProps) {
                       </div>:null}
                     </div>
                   </ThreadPrimitive.Viewport>
+                  {handoff.event && <HandoffStage key={handoff.event.id+handoff.generation} event={handoff.event}
+                    taskTitle={snapshot?.tasks.find(t=>t.id===handoff.event?.ticketId)?.title} finish={handoff.finish} close={handoff.close} L={L}/>}
                   <div className="composer-area">
                     <button type="button" className="scroll-bottom" data-visible={!motion.atBottom||!!around} tabIndex={!motion.atBottom||around?0:-1} aria-hidden={motion.atBottom&&!around} aria-label={L("Scroll to latest", "回到最新消息")} onClick={latestMessages}>
                       <ArrowDown size={16}/>{motion.unread?<span>{L('New messages','有新消息')}</span>:around?<span>{L('Back to latest','回到最新')}</span>:null}
@@ -1411,7 +1421,7 @@ function Chat(p: ChatProps) {
               {panel && <aside id="session-panel" aria-label={L('Session panel', '会话面板')}
                 className={'session-panel '+(overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(panelExpanded?' expanded':''))}>
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>
-                {overview && <TeamOverview snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                {overview && <TeamOverview readiness={boot} loadContext={loadTeamContext} connected={connected} replay={events=>{if(panelOverlay)closePanel();handoff.replay(events)}} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
                   tab={sidebarCards.revealing ? 'activity' : teamTab} focusOnOpen={!sidebarCards.revealing}
                   setTab={tab => {
                     if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');

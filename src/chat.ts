@@ -1,4 +1,5 @@
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
+import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
 import {businessDecision,assertBusinessDecision,decisionActorMatches,type BusinessDecisionView} from './business-decisions.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
@@ -40,7 +41,7 @@ interface Conversation {
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
-interface Message {opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
   | {kind:'file';id:string;createdAt:number;name:string;review:FileReview}
@@ -51,10 +52,10 @@ interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface ChatTask {
   id:string; workerId:string; title:string; state:string; reviewing:boolean; updatedAt:number
-  parentPlanId?:string; question?:string; summary?:string
+  parentPlanId?:string; question?:string; summary?:string; failed?:boolean
 }
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
-type ChatCall=ExecutionCall&{conversationId:string;runId:string}
+type ChatCall=ExecutionCall&{conversationId:string;runId:string;usageRevision?:number}
 function transcriptText(id:string,text:string){
   if(!id.startsWith('delegated:')||!text.startsWith('{"objective":'))return text
   try{
@@ -90,6 +91,7 @@ export class ChatSessions {
     host.store.db.exec(`CREATE INDEX IF NOT EXISTS chat_schedule_receipts ON records(json_extract(body,'$.scopeId'),json_extract(body,'$.spec.entryId'),json_extract(body,'$.scheduleId'),json_extract(body,'$.createdAt') DESC) WHERE kind='router-schedule-run';
       CREATE INDEX IF NOT EXISTS chat_schedule_messages ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.runId'),json_extract(body,'$.sequence')) WHERE kind='chat-message' AND json_extract(body,'$.status')='complete'`)
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.status')='streaming'").all()){const m=JSON.parse(String(row.body));host.store.put('chat-message',m.id,{...m,status:'interrupted'})}
+    host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_handoff_sequence ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message' AND json_extract(body,'$.handoff') IS NOT NULL")
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.state')='running'").all()){const call=JSON.parse(String(row.body));host.store.put('chat-call',call.id,{...call,state:'interrupted',endedAt:Date.now()})}
     this.unsubscribe=host.activity.subscribe(call=>this.recordCall(call))
     // Older Router traces carry an exact chat trigger. Never infer old Worker lineage from a reassigned ticket.
@@ -116,9 +118,15 @@ export class ChatSessions {
     const assignment=call.ticketId?this.host.store.get<Delegation>('worker-assignment',call.ticketId):undefined
     const triggerId=assignment?.parentTrigger??call.triggerId,run=triggerId?this.originRun(triggerId):undefined
     if(!run)return
-    const previous=this.host.store.get<{conversationId:string;runId:string}>('chat-call',call.id)
-    const saved={...call,conversationId:previous?.conversationId??run.conversationId,runId:previous?.runId??run.id}
+    const previous=this.host.store.get<ChatCall>('chat-call',call.id)
+    const saved={...call,usageRevision:previous?.usageRevision,conversationId:previous?.conversationId??run.conversationId,runId:previous?.runId??run.id}
     this.host.store.put('chat-call',call.id,saved);this.changed(saved.conversationId)
+  }
+  usageChanged(activity:string){
+    const call=this.host.store.get<ChatCall>('chat-call',activity)
+    if(!call)return
+    this.host.store.put('chat-call',activity,{...call,usageRevision:(call.usageRevision??0)+1})
+    this.changed(call.conversationId)
   }
   output(jobId:string,runId:string,event:ModelOutput,authorize?:()=>void){
     if(event.phase!=='answer')return
@@ -278,7 +286,7 @@ export class ChatSessions {
     else if(h.store.get<boolean>('settings','paused'))code='host_paused'
     return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as ChatTask[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
-  private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,...(c.project?{project:c.project}:{}),backend,model}}
+  private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,sequence:c.sequence,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,...(c.project?{project:c.project}:{}),backend,model}}
   private routerBinding(){
     const ready=this.readiness(),router=this.host.config.execution.router??{}
     const definition=this.host.model instanceof BackendRegistry?this.host.model.definition(ready.backend!):undefined
@@ -401,10 +409,10 @@ export class ChatSessions {
     return {id:route?.routerId??'router',label:scope?.router?.label??this.host.config.execution.router?.label??(route&&!route.scopeId.startsWith('@chat:')?scope!.name+' · Router':'Router'),kind:'router'}
   }
   private worker(id:string):Speaker {return {id,label:workerProfiles(this.host.config).find(w=>w.id===id)?.label??id,kind:'worker'}}
-  delegated(id:string,triggerId:string,ticketId:string,workerId:string,text:string){
+  delegated(id:string,triggerId:string,ticketId:string,workerId:string,text:string,assigned=false){
     const run=this.originRun(triggerId);if(!run||run.cancelRequested)return
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
-    this.message(c,{id:'delegated:'+id,runId:run.id,role:'assistant',text:transcriptText('delegated:'+id,text),status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
+    this.message(c,{id:'delegated:'+id,handoff:assigned?'assignment':undefined,runId:run.id,role:'assistant',text:transcriptText('delegated:'+id,text),status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
   }
   private workerDestination(ticketId:string,includeSilent=false){
     const assignment=this.host.store.get<Delegation>('worker-assignment',ticketId),authority=this.host.taskAuthority(ticketId)
@@ -523,6 +531,10 @@ export class ChatSessions {
     const call=this.host.store.get<ChatCall>('chat-call',activity)
     if(call)this.host.store.put('chat-context-input',activity,{conversationId:call.conversationId,runId:call.runId,attempt,size:measureChatInput(prepared)})
   }
+  teamContext(id:string,owner:string){
+    this.get(id,owner)
+    return teamContext(this.host.store,id)
+  }
   contextUsage(id:string,owner:string,selected?:string){
     this.get(id,owner)
     const {backend,model}=this.readiness()
@@ -543,17 +555,17 @@ export class ChatSessions {
     const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
     const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
     const attempt=Object.keys(usage?.attempts??{}).map(Number).at(-1)??recorded?.attempt
-    const step=Object.entries(usage?.steps??{}).findLast(([key])=>attempt===undefined||key.startsWith(attempt+':'))?.[1]
+    const reading=contextReading(usage,recorded?.attempt)
     const budget=receipt&&(attempt===undefined||(receipt.attempt??0)===attempt)?receipt:undefined
     return {activity:activity??null,at:current?.startedAt??null,
       composition:recorded?.attempt===attempt?recorded?.size??null:null,
-      model:model??usage?.model??null,inputTokens:step?.inputTokens??null,capacity:step?.contextWindowTokens??null,
+      model:model??usage?.model??null,inputTokens:reading.inputTokens,capacity:reading.capacity,
       budget:budget?{bytes:budget.bytes,reservedBytes:budget.reservedBytes,maxBytes:budget.maxBytes}:null}
   }
-  deliveredWorker(message:{id:string;ticketId?:string;text:string}){
+  deliveredWorker(message:{id:string;ticketId?:string;text:string;taskResult?:number}){
     if(!message.ticketId||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return
     const dest=this.workerDestination(message.ticketId);if(!dest)return
-    this.message(dest.c,{id:'worker:'+message.id,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
+    this.message(dest.c,{id:'worker:'+message.id,handoff:message.taskResult===1?'result':undefined,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
   }
   scheduledFileTarget(triggerId:string){
     if(!triggerId.startsWith('scheduled:'))return false
@@ -637,10 +649,13 @@ export class ChatSessions {
   discardFiles(ids:string[]){this.deliveries.discard(ids)}
   publishFiles(ticketId:string,ids:string[]){
     const dest=this.workerDestination(ticketId),id='worker-files:'+ids[0]
-    if(!ids.length||!dest||this.host.store.get('chat-message',id))return
+    if(!ids.length||!dest)return false
+    if(this.host.store.get('chat-message',id))return true
     const deliveries=this.deliveries.publish(dest.c.id,{ticketId},ids)
-    this.message(dest.c,{id,runId:dest.triggerId,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
+    if(!deliveries.length)return false
+    this.message(dest.c,{id,handoff:'files',runId:dest.triggerId,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
     this.changed(dest.c.id)
+    return true
   }
   delivery(id:string,owner:string,fileId:string){
     this.get(id,owner)
@@ -883,7 +898,7 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      return {id:d.ticketId,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
     })
   }
   async files(id:string,owner:string,input:{ticket?:string;path?:string;kind?:'directory'|'files';offset?:number;cursor?:string}={}){
@@ -1006,7 +1021,8 @@ export class ChatSessions {
     // The session panel covers the whole conversation even when the transcript shows only one member.
     const sessionRouterPlans=workerView?visiblePlans.filter(plan=>!plan.workerId&&!plan.ticketId):undefined
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
-    const result={pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const handoffs=withPending?this.handoffs(id):[]
+    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue
@@ -1037,6 +1053,17 @@ export class ChatSessions {
     }
     const decisions = this.businessDecisions(id,owner,{runIds,workerId:participant===router.id?undefined:participant})
     return {...result,decisions,earlierCards,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
+  }
+  private handoffs(id:string){
+    const rows=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
+      AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.handoff') IS NOT NULL
+      ORDER BY json_extract(body,'$.sequence')`).all(id)
+    return rows.flatMap(row=>{
+      const m=JSON.parse(String(row.body)) as Message
+      if(!m.handoff||!m.speaker||!m.recipient||!m.ticketId)return []
+      return [{id:m.id,sequence:m.sequence,at:m.createdAt,ticketId:m.ticketId,kind:m.handoff,
+        from:m.speaker,to:m.recipient,files:m.deliveries?.map(f=>f.name)??[]}]
+    })
   }
   /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
   revision(id:string,owner:string){

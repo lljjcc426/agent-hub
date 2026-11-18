@@ -1,10 +1,11 @@
-import {ArrowUpRight, ChevronRight, List} from 'lucide-react'
+import {ArrowUpRight, ChevronRight, List, Play} from 'lucide-react'
 import type {TaskActivity} from '../chat/task-activity.ts'
 import type {Localize} from '../chat/composer-commands.tsx'
 import './task-activity.css'
 
-export function TaskActivityRow({activity, agentName, onAgent, L}: {
+export function TaskActivityRow({activity, agentName, onAgent, replayTicket, L}: {
   activity: TaskActivity; agentName: (id: string) => string; onAgent: (id: string) => void; L: Localize
+  replayTicket?: (ticketId: string) => (() => void) | undefined
 }) {
   const taskStatus = (state: string) =>
     ({
@@ -35,14 +36,15 @@ export function TaskActivityRow({activity, agentName, onAgent, L}: {
         {activity.steps.length > 0 && <ol>{activity.steps.map(step =>
           <li key={step.id}>{step.title}{step.state && <small>{taskStatus(step.state)}</small>}</li>
         )}</ol>}
-        {activity.tickets.map(ticket => <div key={ticket.id}>
+        {activity.tickets.map(ticket => {const replay = replayTicket?.(ticket.id); return <div key={ticket.id}>
           {ticket.title !== activity.title && <strong>{ticket.title}</strong>}
           <button type="button" onClick={() => onAgent(ticket.workerId)}>
             {agentName(ticket.workerId)} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state)}
             <ArrowUpRight size={13}/>
           </button>
+          {replay && <button type="button" className="handoff-replay" onClick={replay}><Play size={12}/>{L('Replay handoffs','回放任务交接')}</button>}
           {(ticket.question || ticket.summary) && <p>{ticket.question || ticket.summary}</p>}
-        </div>)}
+        </div>})}
       </div>
     </details>
   )

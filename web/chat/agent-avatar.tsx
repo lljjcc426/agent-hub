@@ -5,13 +5,15 @@ import clay from '../../src/ui/assets/agents/worker-clay.webp';
 import stone from '../../src/ui/assets/agents/worker-stone.webp';
 import './agent-avatar.css';
 
+export const teamName = (label: string) => (label.replace(/(?:^Router$| · Router$)/, '').trim() || 'Roppo')
+
 const workers = [sage, blue, clay, stone];
 
 // Identity, not display order or current task, determines a Worker's appearance.
-function workerPortrait(id: string) {
+export function workerColorIndex(id: string) {
   let hash = 0;
   for (const char of id) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
-  return workers[hash % workers.length]!;
+  return hash % workers.length;
 }
 
 export function AgentAvatar({id = 'router', kind = 'router', size = 32}: {
@@ -20,6 +22,6 @@ export function AgentAvatar({id = 'router', kind = 'router', size = 32}: {
   size?: number;
 }) {
   return <img className="agent-portrait" data-agent-id={id} data-kind={kind}
-    src={kind === 'router' ? router : workerPortrait(id)} alt="" aria-hidden="true"
+    src={kind === 'router' ? router : workers[workerColorIndex(id)]} alt="" aria-hidden="true"
     width={size} height={size} draggable={false} />;
 }

@@ -6,7 +6,7 @@ import {normalizeUsage,sumUsage,usageFields,type ModelUsage,type TokenCounts} fr
 import type {UsagePurpose,UsageSummary,UsageGroup} from './usage-contract.ts'
 export type {UsagePurpose,UsageSummary,UsageGroup} from './usage-contract.ts'
 
-export interface UsageRecord extends ExecutionContext {id:string;purpose:UsagePurpose;role:string;state:'running'|'completed'|'failed'|'interrupted';at:number;endedAt?:number;backend?:string;model?:string;steps:Record<string,ModelUsage>;attempts?:Record<string,string>}
+export interface UsageRecord extends ExecutionContext {id:string;purpose:UsagePurpose;role:string;sessionKey?:string;latestReading?:{key:string;at:number};state:'running'|'completed'|'failed'|'interrupted';at:number;endedAt?:number;backend?:string;model?:string;steps:Record<string,ModelUsage>;attempts?:Record<string,string>}
 export function usagePurpose(role:string,context:ExecutionContext):UsagePurpose{
  const id=context.agentId??''
  return id.startsWith('memory:')?'memory':id.startsWith('goal-verify:')?'verification':id.startsWith('goal-replan:')?id.endsWith(':review')?'plan_review':'replanning':role==='router'?'router':role==='worker'?'worker':role==='auxiliary'?'auxiliary':'subagent'
@@ -19,13 +19,18 @@ export class UsageLedger {
  begin(id:string,role:string,context:ExecutionContext={},purpose=usagePurpose(role,context)){
   this.store.put('model-usage',id,{id,role,purpose,...context,state:'running',at:Date.now(),steps:{}} satisfies UsageRecord)
  }
- update(id:string,metadata:{backend?:string;model?:string}){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,...metadata})}
+ update(id:string,metadata:{backend?:string;model?:string;sessionKey?:string}){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,...metadata})}
  attempt(id:string,attempt:number,state:string){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,attempts:{...r.attempts,[attempt]:state}})}
  record(id:string,attempt:number,value:unknown){
   const usage=normalizeUsage(value),r=this.store.get<UsageRecord>('model-usage',id);if(!usage||!r?.steps)return // History cleanup can remove detail; never restore it from a late event.
   const key=attempt+':'+usage.id
   if(JSON.stringify(r.steps[key])===JSON.stringify(usage))return
-  r.steps[key]=usage;this.store.put('model-usage',id,r)
+  r.steps[key]=usage
+  const current=attempt>=Math.max(...Object.keys(r.attempts??{}).map(Number))
+    && Object.keys(r.steps).findLast(k=>k.startsWith(attempt+':'))===key
+  if(current)r.latestReading={key,at:Date.now()}
+  this.store.put('model-usage',id,r)
+  return current
  }
  finish(id:string,state:Exclude<UsageRecord['state'],'running'>){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,state,endedAt:Date.now()})}
  summary(sourceId?:string):UsageSummary{

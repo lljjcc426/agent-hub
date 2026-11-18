@@ -76,3 +76,10 @@
 @keyframes roppo-sway{0%,100%{transform:translateX(0) rotate(0)}25%{transform:translateX(-1px) rotate(-7deg)}70%{transform:translateX(1px) rotate(7deg)}}
 @keyframes roppo-dizzy{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.roppo-character *,.roppo-character *:after{animation:none!important;transition:none!important}}
+.roppo-character[data-skin="0"] {--skin-filter:grayscale(1) brightness(2.55) sepia(.63) saturate(1.25) hue-rotate(68deg) contrast(.76);--skin-arm:#748979}
+.roppo-character[data-skin="1"] {--skin-filter:grayscale(1) brightness(2.35) sepia(.58) saturate(2.4) hue-rotate(153deg) contrast(.8);--skin-arm:#677d8b}
+.roppo-character[data-skin="2"] {--skin-filter:grayscale(1) brightness(2.55) sepia(.75) saturate(1.7) hue-rotate(335deg) contrast(.8);--skin-arm:#9c7967}
+.roppo-character[data-skin="3"] {--skin-filter:grayscale(1) brightness(2.35) contrast(.76);--skin-arm:#777879}
+:root .roppo-character[data-skin] .roppo-body>img{filter:var(--skin-filter)}
+:root .roppo-character[data-skin] .roppo-eyes{color:#f7f3df}
+:root .roppo-character[data-skin] .roppo-arm{background:var(--skin-arm)}

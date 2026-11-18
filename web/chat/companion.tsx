@@ -1,6 +1,7 @@
 import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import body from '../../src/ui/assets/agents/roppo-body.webp';
 import type {CompanionPhase,CompanionStatus} from './companion-state.ts';
+import {workerColorIndex} from './agent-avatar.tsx';
 import './companion.css';
 
 const spiralEye=Array.from({length:65},(_,i)=>{
@@ -8,7 +9,7 @@ const spiralEye=Array.from({length:65},(_,i)=>{
  return `${i?'L':'M'}${(12+radius*Math.cos(angle)).toFixed(2)} ${(12+radius*Math.sin(angle)).toFixed(2)}`;
 }).join(' ');
 
-export function RoppoCharacter({phase,paused=false}:{phase:CompanionPhase;paused?:boolean}){
+export function RoppoCharacter({phase,paused=false,workerId}:{phase:CompanionPhase;paused?:boolean;workerId?:string}){
  const [visualPhase,setVisualPhase]=useState(phase);
  const bodyRef=useRef<HTMLSpanElement>(null);
  const previousPose=useRef<string|null>(null);
@@ -45,7 +46,7 @@ export function RoppoCharacter({phase,paused=false}:{phase:CompanionPhase;paused
   reduced.addEventListener('change',stop);
   return ()=>{reduced.removeEventListener('change',stop);bridge.current?.cancel()};
  },[]);
- return <span className="roppo-character" data-phase={visualPhase} data-paused={paused||undefined} aria-hidden="true">
+ return <span className="roppo-character" data-phase={visualPhase} data-skin={workerId ? workerColorIndex(workerId) : undefined} data-paused={paused||undefined} aria-hidden="true">
   <span className="roppo-pose"><span className="roppo-body" ref={bodyRef}>
    <img src={body} width="512" height="512" alt="" draggable={false}/>
    <span className="roppo-eyes">
@@ -61,7 +62,7 @@ export function RoppoCharacter({phase,paused=false}:{phase:CompanionPhase;paused
  </span>;
 }
 
-export function ChatCompanion({status:current,onOpen,L}:{status:CompanionStatus;onOpen:()=>void;L:(en:string,zh:string)=>string}){
+export function ChatCompanion({status:current,onOpen,L,workerId}:{workerId?:string;status:CompanionStatus;onOpen:()=>void;L:(en:string,zh:string)=>string}){
  const [displayed,setDisplayed]=useState(current);
  const changedAt=useRef(0);
  const critical=!['thinking','working','reviewing'].includes(current.phase);
@@ -90,7 +91,7 @@ export function ChatCompanion({status:current,onOpen,L}:{status:CompanionStatus;
  const phase=status.phase==='completed'&&!celebrate?'idle':status.phase;
  return <button type="button" className="chat-companion" onClick={onOpen}
    data-phase={status.phase} title={status.label} aria-label={L('View current activity','查看当前任务进展')}>
-   <RoppoCharacter phase={phase} paused={hidden}/>
+   <RoppoCharacter phase={phase} paused={hidden} workerId={workerId}/>
    <span className="companion-copy"><span className="companion-label" role="status" aria-live="polite" aria-atomic="true">{status.label}</span></span>
  </button>;
 }

@@ -136,12 +136,9 @@ with sync_playwright() as pw:
     for label in ['System instructions', 'Tool definitions', 'Attachment references', 'Conversation & task data', 'Memory']:
         expect(panel.get_by_role('button', name='Highlight ' + label)).to_be_visible()
     assert grid.locator('[data-band="0"]').count() > 0 and grid.locator('[data-band="1"]').count() > 0
-    panel.locator('summary',has_text='Model calls').click()
-    expect(panel.locator('.usage-steps')).to_contain_text('3,000 tokens')
-    panel.get_by_role('button',name='Older turn').click()
-    expect(panel.locator('.usage-history')).to_contain_text('Earlier turn')
-    panel.get_by_role('button',name='Latest turn').click()
-    expect(panel.locator('.usage-history')).to_contain_text('Latest turn')
+    expect(panel.get_by_role('navigation', name='Input history')).to_have_count(0)
+    expect(panel.get_by_text('Model calls', exact=False)).to_have_count(0)
+    expect(panel.get_by_text('3,000 tokens')).to_have_count(0)
     expect(panel).to_have_css('border-radius', '16px')
     expect(sidebar.get_by_role('tab', name='Overview')).to_have_attribute('aria-selected', 'true')
     expect(sidebar.get_by_role('heading', name='Tasks', exact=True)).to_be_visible()
@@ -289,5 +286,5 @@ with sync_playwright() as pw:
     optional.get_by_role('button',name='Table',exact=False).click()
     expect(page.locator('.assistant-message').filter(has_text='Switched to table.')).to_be_visible()
     assert not errors, errors
-    print('PASS: live workflow, reviewed file download, context history, independent dismissal and mobile focus')
+    print('PASS: live workflow, reviewed file download, current context usage, independent dismissal and mobile focus')
     browser.close()

@@ -4,7 +4,7 @@
   .chat-shell.functions-expanded {
     --function-width: clamp(150px, var(--navigation-size, 208px), min(400px, calc(100vw - 540px)));
   }
-  .chat-shell:not(.management-mode):not(.conversation-list-hidden) {
+  .chat-shell:has(> .conversation-sidebar):not(.management-mode, .conversation-list-hidden) {
     grid-template-columns: var(--function-width)
       clamp(180px, var(--agents-size, var(--conversation-width)), min(540px, calc(100% - var(--function-width) - 360px)))
       minmax(0, 1fr);

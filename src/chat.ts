@@ -513,26 +513,27 @@ export class ChatSessions {
   contextUsage(id:string,owner:string,selected?:string){
     this.get(id,owner)
     const {backend,model}=this.readiness()
-    const start="json_extract(c.body,'$.startedAt')"
-    const anchor=selected?this.host.store.db.prepare(`SELECT ${start} AS at,c.rowid AS seq FROM records c
-      WHERE c.kind='chat-call' AND c.id=? AND json_extract(c.body,'$.conversationId')=?`).get(selected,id):undefined
-    const rows=this.host.store.db.prepare(`SELECT c.id,${start} AS at FROM records c WHERE c.kind='chat-call'
-      AND json_extract(c.body,'$.conversationId')=? AND json_extract(c.body,'$.kind')='router'
-      AND (? IS NULL OR json_extract(c.body,'$.backend')=?) AND (? IS NULL OR json_extract(c.body,'$.model')=?)
-      ${selected?`AND (${start},c.rowid) <= (?,?)`:''}
-      AND (EXISTS (SELECT 1 FROM records b WHERE b.kind IN ('context-budget','chat-context-input') AND b.id=c.id)
-        OR EXISTS (SELECT 1 FROM records u,json_each(u.body,'$.steps') s WHERE u.kind='model-usage' AND u.id=c.id AND json_type(s.value,'$.inputTokens')='integer'))
-      ORDER BY ${start} DESC,c.rowid DESC LIMIT 2`).all(id,backend??null,backend??null,model??null,model??null,...(selected?[anchor?.at??null,anchor?.seq??null]:[]))
-    const activity=rows[0]?String(rows[0].id):undefined
-    if(selected&&activity!==selected)throw new ChatError('context_missing','Context record not found.',404)
+    const db=this.host.store.db
+    const row=selected
+      ? db.prepare("SELECT body FROM records WHERE kind='chat-call' AND id=?").get(selected)
+      : db.prepare(`SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.kind')='router'
+          AND json_extract(body,'$.runId')=(
+            SELECT id FROM records WHERE kind='chat-run' AND json_extract(body,'$.conversationId')=?
+              AND json_extract(body,'$.feedback') IS NULL ORDER BY rowid DESC LIMIT 1)
+          ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 1`).get(id)
+    const call=row?JSON.parse(String(row.body)) as ChatCall:undefined
+    const current=call?.conversationId===id && call.kind==='router' &&
+      (!backend||call.backend===backend) && (!model||call.model===model) ? call : undefined
+    if(selected&&!current)throw new ChatError('context_missing','Context record not found.',404)
+    const activity=current?.id
     const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
     const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
-    const steps=Object.entries(usage?.steps??{}).filter(([key,value])=>value.inputTokens!==undefined&&(!recorded||key.startsWith(recorded.attempt+':'))).map(([,value])=>value)
-    const step=steps.at(-1)
     const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
-    const budget=receipt&&(!recorded||(receipt.attempt??0)===recorded.attempt)?receipt:undefined
-    return {activity:activity??null,at:rows[0]?Number(rows[0].at):null,previous:rows[1]?String(rows[1].id):null,
-      composition:recorded?.size??null,modelInputs:steps.map(s=>s.inputTokens!),
+    const attempt=Object.keys(usage?.attempts??{}).map(Number).at(-1)??recorded?.attempt
+    const step=Object.entries(usage?.steps??{}).findLast(([key])=>attempt===undefined||key.startsWith(attempt+':'))?.[1]
+    const budget=receipt&&(attempt===undefined||(receipt.attempt??0)===attempt)?receipt:undefined
+    return {activity:activity??null,at:current?.startedAt??null,
+      composition:recorded?.attempt===attempt?recorded?.size??null:null,
       model:model??usage?.model??null,inputTokens:step?.inputTokens??null,capacity:step?.contextWindowTokens??null,
       budget:budget?{bytes:budget.bytes,reservedBytes:budget.reservedBytes,maxBytes:budget.maxBytes}:null}
   }

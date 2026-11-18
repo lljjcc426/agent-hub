@@ -27,14 +27,14 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
 
-it('keeps a public plan through a decision and browses the Router inputs from the same conversation and model',async()=>{
+it('keeps the plan through a decision and shows only the current Router input for this conversation and model',async()=>{
   const {h}=fixture(async r=>{
     const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'
     const stage=first?'running':'completed'
     await r.onTool!('superagent_plan',{title:'Guide',steps:[{id:'draft',title:'Write the guide',state:stage}]},'plan')
     if(first)await r.onTool!('chat_request_decision',{question:'Which language?',options:[{label:'English'},{label:'Chinese'}]},'ask')
     r.onUsage?.({id:'earlier',inputTokens:600,outputTokens:40})
-    r.onUsage?.({id:'latest',inputTokens:123,outputTokens:12,contextWindowTokens:2048})
+    r.onUsage?.({id:'latest',inputTokens:first?321:123,outputTokens:12,contextWindowTokens:2048})
     r.onBudget?.({basis:'native-protocol',phase:'turn',bytes:700,maxBytes:2000,reservedBytes:100,status:'within_budget'})
     return {reply:first?'':'Guide ready.'}
   }),c=h.chat.create('owner'),other=h.chat.create('another-owner')
@@ -44,7 +44,10 @@ it('keeps a public plan through a decision and browses the Router inputs from th
   const m=h.chat.view(c.id,'owner').messages.find(m=>m.decision)!
   expect(h.chat.view(c.id,'owner').publicPlans[0]?.steps[0]?.state).toBe('running')
   expect(()=>h.chat.answerDecision(other.id,'another-owner',m.id,'English')).toThrow('no longer available')
+  const firstUsage=h.chat.contextUsage(c.id,'owner')
+  expect(firstUsage.inputTokens).toBe(321)
   const reply=h.chat.answerDecision(c.id,'owner',m.id,'English','en')
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:null,inputTokens:null,composition:null,budget:null})
   expect(h.chat.answerDecision(c.id,'owner',m.id,'English')).toEqual({...reply,duplicate:true})
   expect(()=>h.chat.answerDecision(c.id,'owner',m.id,'Chinese')).toThrow('already has an answer')
   await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='Guide ready.'))
@@ -54,14 +57,17 @@ it('keeps a public plan through a decision and browses the Router inputs from th
   expect(view.messages.filter(m=>m.role==='user')).toHaveLength(2)
   expect(view.messages.find(m=>m.text==='English')?.quote?.messageId).toBe(m.id)
   const latest=h.chat.contextUsage(c.id,'owner')
-  expect(latest).toMatchObject({inputTokens:123,modelInputs:[600,123],capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
+  expect(latest).toMatchObject({inputTokens:123,capacity:2048,budget:{bytes:700,reservedBytes:100,maxBytes:2000}})
   expect(latest.composition!.system).toBeGreaterThan(0)
   expect(latest.composition!.tools).toBeGreaterThan(0)
-  const prior=h.chat.contextUsage(c.id,'owner',latest.previous!)
-  expect(prior).toMatchObject({activity:latest.previous,previous:null,modelInputs:[600,123]})
-  expect(()=>h.chat.contextUsage(other.id,'another-owner',prior.activity!)).toThrow('not found')
-  h.store.db.prepare("DELETE FROM records WHERE kind='chat-context-input' AND id=?").run(prior.activity)
-  expect(h.chat.contextUsage(c.id,'owner',prior.activity!)).toMatchObject({composition:null,inputTokens:123})
+  expect(latest.activity).not.toBe(firstUsage.activity)
+  expect(latest).not.toHaveProperty('previous')
+  expect(latest).not.toHaveProperty('modelInputs')
+  expect(()=>h.chat.contextUsage(other.id,'another-owner',latest.activity!)).toThrow('not found')
+  h.store.db.prepare("DELETE FROM records WHERE kind='chat-context-input' AND id=?").run(latest.activity)
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({composition:null,inputTokens:123})
+  h.usage.attempt(latest.activity!,2,'running')
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({composition:null,inputTokens:null,budget:null})
   expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
   h.config.execution.router!.model='other-model'
   expect(()=>h.chat.contextUsage(c.id,'owner',latest.activity!)).toThrow('not found')

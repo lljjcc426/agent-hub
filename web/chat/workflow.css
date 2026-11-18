@@ -16,7 +16,7 @@
 .workflow-block .rp-call-heading b, .workflow-block .rp-step-name strong { overflow-wrap: anywhere; }
 .workflow-card, .workflow-questions, .rp-native-closed { max-width: 100%; }
 .rp-native-closed, .workflow-error { font-size: 13px; color: var(--rp-muted); }
-.command-input { position: relative; min-width: 0; grid-column: 2; grid-row: -2/-1; align-self: center; }
+.command-input { position: relative; min-width: 0; }
 .command-input > textarea { display: block; width: 100%; }
 .slash-surface {
   position: absolute; z-index: 6; inset-inline-start: 0; bottom: calc(100% + 14px);
@@ -26,7 +26,7 @@
   animation: rp-panel-in .24s cubic-bezier(.2,.8,.2,1) both;
 }
 @container chat-thread (max-width: 680px) {
-  .slash-surface { width: min(320px, calc(100cqw - 40px)); inset-inline-start: -28px; }
+  .slash-surface { width: min(320px, 100%); }
 }
 .slash-surface[role=listbox] button { display: flex; gap: 8px; align-items: center; border: 0; border-radius: 10px; width: 100%; background: transparent; color: var(--rp-ink); padding: 9px 10px; cursor: pointer; }
 .slash-surface[role=listbox] button[aria-selected=true] { background: var(--rp-soft); }
@@ -43,15 +43,8 @@
 .usage-model, .usage-note { font-size: 12px; line-height: 1.5; color: var(--rp-muted); }
 .usage-model dd { min-width: 0; margin: 0; text-align: end; overflow-wrap: anywhere; }
 .usage-note { margin: 6px 0 0; }
-.usage-history, .usage-history > span, .usage-breakdown-heading, .usage-steps li {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-}
-.usage-history { margin-bottom: 12px; }
-.usage-history > span, .usage-steps { font-size: 12px; font-variant-numeric: tabular-nums; }
-.usage-history time, .usage-breakdown-heading span { color: var(--rp-muted); font-size: 12px; font-weight: 400; }
-.usage-steps { list-style: none; padding: 0; margin: 4px 0; }
-.usage-steps li { padding-block: 3px; }
-.usage-steps b { font-weight: 500; }
+.usage-breakdown-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.usage-breakdown-heading span { color: var(--rp-muted); font-size: 12px; font-weight: 400; }
 .usage-section .rp-context-file span { min-width: 0; overflow-wrap: anywhere; }
 .workflow-block :is(.rp-approval,.rp-decision), .workflow-card :is(.rp-approval,.rp-decision) { width:fit-content; max-width:min(100%,29rem); }
 .workflow-draft { margin-block-start:6px; font-size:12px; }

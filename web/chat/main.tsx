@@ -160,7 +160,7 @@ async function api<T>(
   if (!response.ok) throw new ApiError(result.code ?? "request_failed");
   return result;
 }
-const loadContext=(id:string,signal:AbortSignal,activity?:string)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context"+(activity?'?activity='+encodeURIComponent(activity):''),undefined,"GET",signal);
+const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
 const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
@@ -1392,7 +1392,7 @@ function Chat(p: ChatProps) {
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                   cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
-                      conversationId={id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
+                      conversationId={id} turnId={run?.id} load={loadContext} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
                   changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}

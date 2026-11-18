@@ -105,7 +105,10 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
         if(!registered&&!existsSync(join(folder,'.codex-remote-plugin-install.json')))continue
         const versions=dirs(folder).filter(v=>existsSync(join(folder,v,'.codex-plugin/plugin.json')))
         // Multiple cached builds do not identify the active version. Native discovery resolves it.
-        if(versions.length!==1)continue
+        if(versions.length!==1){
+          if(!registered)add(source,pluginId,{kind:'plugin',name,status:versions.length?'installed':'unavailable',facts:[pluginId]})
+          continue
+        }
         const parent=join(folder,versions[0]!),manifest=read(join(parent,'.codex-plugin/plugin.json'),source)
         if(typeof manifest.name!=='string')continue
         const disabled=registered?.enabled===false
@@ -165,5 +168,7 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
       }
     }
   }
-  return {entries:[...rows.values()],warnings:[...warnings],native:[...native.values()],sourceGroups}
+  const entries=[...rows.values()]
+  for(const profile of native.values())profile.declaredMcpIds=entries.filter(e=>e.source===profile.source&&e.kind==='mcp'&&e.status==='declared').map(e=>e.id)
+  return {entries,warnings:[...warnings],native:[...native.values()],sourceGroups}
 }

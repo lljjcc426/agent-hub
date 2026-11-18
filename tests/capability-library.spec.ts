@@ -6,7 +6,7 @@ import {configSchema} from '../src/config.ts'
 import {profileInventory} from '../src/capability-profiles.ts'
 import {codexInventory,withPreviousCatalog} from '../src/capability-codex.ts'
 import {clientConfig} from '../src/clients.ts'
-import {skillText} from '../src/capability-data.ts'
+import {identifier,skillText} from '../src/capability-data.ts'
 
 const dirs:string[]=[]
 function setup(){
@@ -32,6 +32,9 @@ it('enumerates configured CLI families, exact incoming bridges and installed plu
   write(cached+'/1.0/skills/notes/SKILL.md','# Notes')
   write(cached+'/1.0/.app.json',{apps:{notes:{id:'notes-app'}}})
   write(cached+'/1.0/.mcp.json',{mcpServers:{notesMcp:{command:secret}}})
+  const multi='.codex/plugins/cache/remote/multi'
+  write(multi+'/.codex-remote-plugin-install.json',{remote_plugin_id:'multi'})
+  for(const version of ['1','2'])write(multi+'/'+version+'/.codex-plugin/plugin.json',{name:'multi',version})
   write('.codex/plugins/cache/deleted/stale/1.0/.codex-plugin/plugin.json',{name:'stale'})
   write('.cursor/mcp.json',clientConfig({client:'cursor',url:endpoint,name:'custom-alias',tokenFile:join(config.stateDir,'access-token')}).config)
   write('.qwen/settings.json',{mcpServers:{unrelated:{command:secret}}})
@@ -41,6 +44,7 @@ it('enumerates configured CLI families, exact incoming bridges and installed plu
   expect(inventory.sourceGroups.get('CLI · secondary')).toBe('Codex')
   expect(inventory.sourceGroups.get('Codex · secondary')).toBe('Codex')
   expect(inventory.sourceGroups.get('CLI · gemini-cli')).toBe('Gemini CLI')
+  expect(inventory.entries.filter(e=>e.name==='multi'&&e.source==='Codex')).toMatchObject([{kind:'plugin',status:'installed'}])
   expect(names).not.toContain('unrelated');expect(names).not.toContain('stale')
   expect(inventory.entries.find(x=>x.name==='geminiDocs')?.status).toBe('disabled')
   expect(inventory.entries.find(x=>x.name==='notes'&&x.kind==='app')?.status).toBe('declared')
@@ -53,22 +57,26 @@ it('consumes paginated native registries, keeps successful catalogs on a source 
   const {write,home}=setup(),path=write('guide/SKILL.md','# Real instructions')
   const script=write('cli.cjs',`
 const readline=require('node:readline')
-readline.createInterface({input:process.stdin}).on('line',line=>{
+let pluginsReady=false,mcpReads=0
+readline.createInterface({input:process.stdin}).on('line',async line=>{
   const m=JSON.parse(line);if(!m.id)return
   const next=!!m.params.cursor;let result
   if(m.method==='initialize')result={}
-  if(m.method==='plugin/list')result={marketplaces:[{name:'local',plugins:[{id:'one',name:'One',installed:true,enabled:true},{id:'x',name:'uninstalled',installed:false}]}]}
+  if(m.method==='plugin/list'){process.stdout.write(JSON.stringify({id:m.id,error:{code:-32603,message:'Remote marketplace unreachable'}})+'\\n');return}
+  if(m.method==='plugin/installed'){await new Promise(done=>setTimeout(done,20));pluginsReady=true;result={marketplaces:[{name:'local',plugins:[{id:'one',name:'One',installed:true,enabled:true},{id:'x',name:'uninstalled',installed:false}]}]}}
   if(m.method==='skills/list')result={data:[{skills:[{name:'guide',path:${JSON.stringify(path)},enabled:true}]}]}
   if(m.method==='mcpServerStatus/list')result={data:[{name:next?'codex_apps':'first',toolListMeta:{'openai/apps':[{connectorId:'no-tools'}]},runtimeStatus:'connected',tools:{fetch:{name:'fetch',_meta:{connector_id:'tracked',connector_name:'App',link_id:'private-link'},inputSchema:{properties:{id:{type:'string',default:'private default'}},required:['id']}}}}],nextCursor:next?null:'page-2'}
+  if(m.method==='mcpServerStatus/list'&&!next&&++mcpReads>1)result.data.push({pluginId:'p',name:'late',tools:{}})
   if(m.method==='app/list'){
     if(!global.retry){global.retry=true;process.stdout.write(JSON.stringify({id:m.id,error:{code:-32603,message:'temporary upstream failure'}})+'\\n');return}
     result={data:[{id:'tracked',name:'App',isAccessible:true,isEnabled:true}],nextCursor:null}
   }
+  if(!pluginsReady&&['mcpServerStatus/list','skills/list'].includes(m.method))result={data:[]}
   process.stdout.write(JSON.stringify({id:m.id,result})+'\\n')
 })
 `)
-  const r=await codexInventory({command:process.execPath,args:[script],cwd:home,projects:[home],source:'Codex test'})
-  expect(r.entries.map(e=>e.name).sort()).toEqual(['App','One','codex_apps','first','guide','no-tools'])
+  const r=await codexInventory({command:process.execPath,args:[script],cwd:home,projects:[home],source:'Codex test',declaredMcpIds:[identifier('Codex test','mcp','p/late')]})
+  expect(r.entries.map(e=>e.name).sort()).toEqual(['App','One','codex_apps','first','guide','late','no-tools'])
   expect(r.entries.find(e=>e.name==='guide')?.content?.()).toBe('# Real instructions')
   expect(r.entries.find(e=>e.name==='codex_apps')?.tools?.[0]?.inputs).toEqual([{name:'id',required:true,type:'string'}])
   expect(r.entries.find(e=>e.name==='App')?.tools?.map(t=>t.name)).toEqual(['fetch'])
@@ -77,6 +85,29 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   expect(withPreviousCatalog(failed,r).entries.find(e=>e.name==='App')?.status).toBe('cached')
   expect(withPreviousCatalog({...failed,complete:['app']},r).entries.some(e=>e.name==='App')).toBe(false)
   expect(JSON.stringify(r)).not.toMatch(/credential hidden|private default|private-link/)
+})
+
+it.each(['legacy','partial'] as const)('preserves installed entries when a %s Codex catalog responds',async mode=>{
+  const {write,home}=setup()
+  const script=write('plugins.cjs',`
+const readline=require('node:readline')
+readline.createInterface({input:process.stdin}).on('line',line=>{
+  const {id,method,params}=JSON.parse(line);if(!id)return
+  const send=msg=>process.stdout.write(JSON.stringify({id,...msg})+'\\n')
+  const catalog=(id,errors=[])=>({marketplaces:[{name:'local',plugins:[{id,name:id,installed:true,enabled:false}]}],marketplaceLoadErrors:errors})
+  if(method==='plugin/installed'){
+    if(${JSON.stringify(mode)}==='legacy')return send({error:{code:-32601,message:'Method not found'}})
+    return send({result:catalog('partial-entry',[{message:'unreadable installed directory'}])})
+  }
+  if(method==='plugin/list')return send({result:catalog(params.marketplaceKinds?'external':'local')})
+  send({result:{data:[]}})
+})
+`)
+  const r=await codexInventory({command:process.execPath,args:[script],cwd:home,projects:[home],source:'Codex'})
+  expect(r.entries.map(entry=>entry.name).sort()).toEqual(mode==='legacy'?['external','local']:['partial-entry'])
+  expect(r.entries.every(entry=>entry.status==='disabled')).toBe(true)
+  expect(r.warnings).toEqual(mode==='legacy'?[]:['Codex · Plugins'])
+  expect(r.complete.includes('plugin')).toBe(mode==='legacy')
 })
 
 it('serves workspace metadata only to the operator, resolves real content and keeps role restrictions on harness bridges',async()=>{

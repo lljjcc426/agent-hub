@@ -5,7 +5,7 @@ import {AppServer} from '../plugins/backend-codex/model.ts'
 import {identifier,object,skillText,toolInfo,type Entry} from './capability-data.ts'
 
 export interface CodexInventory {entries:Entry[];warnings:string[];complete:CapabilityKind[]}
-export async function codexInventory(options:{command:string;args?:string[];environment?:Record<string,string>;cwd:string;projects:string[];source:string;signal?:AbortSignal},progress?:(result:CodexInventory)=>void):Promise<CodexInventory>{
+export async function codexInventory(options:{command:string;args?:string[];environment?:Record<string,string>;cwd:string;projects:string[];source:string;declaredMcpIds?:string[];signal?:AbortSignal},progress?:(result:CodexInventory)=>void):Promise<CodexInventory>{
   const {source,projects}=options
   const client=new AppServer(options.command,options.args??[],options.cwd,undefined,undefined,undefined,options.environment)
   const stop=()=>client.fail(Error('Inventory stopped'))
@@ -14,7 +14,7 @@ export async function codexInventory(options:{command:string;args?:string[];envi
   const timer=setTimeout(()=>client.fail(Error('Inventory timeout')),100_000)
   const entries=new Map<string,Entry>(),warnings:string[]=[],complete:CapabilityKind[]=[]
   const snapshot=():CodexInventory=>({entries:[...entries.values()],warnings:[...new Set(warnings)],complete:[...complete]})
-  async function listPage(method:string,params:Record<string,unknown>){
+  async function readCatalog(method:string,params:Record<string,unknown>){
     for(let attempt=0;;attempt++){
       try{return await client.call(method,params)}
       catch(error){
@@ -59,7 +59,7 @@ export async function codexInventory(options:{command:string;args?:string[];envi
     let cursor:string|undefined
     const seen=new Set<string>()
     do{
-      const page=await listPage(method,{limit:method==='app/list'?1000:100,...(cursor?{cursor}:{})})
+      const page=await readCatalog(method,{limit:method==='app/list'?1000:100,...(cursor?{cursor}:{})})
       for(const row of page.data)visit(row)
       progress?.(snapshot())
       cursor=page.nextCursor
@@ -67,11 +67,43 @@ export async function codexInventory(options:{command:string;args?:string[];envi
       if(cursor)seen.add(cursor)
     }while(cursor)
   }
+  async function readMcpServers(){
+    await pages('mcpServerStatus/list',mcpServer)
+    // A cold app server can finish its first page before plugin MCPs are registered.
+    if(options.declaredMcpIds?.some(id=>!entries.has(id)))await pages('mcpServerStatus/list',mcpServer)
+  }
+  function collectPlugins(catalog:any){
+    if(catalog.marketplaceLoadErrors?.length)warnings.push(source+' · Plugins')
+    for(const market of catalog.marketplaces)for(const plugin of market.plugins){
+      if(!plugin.installed)continue
+      add(plugin.id,{kind:'plugin',name:plugin.interface?.displayName||plugin.name,status:plugin.enabled?'cli':'disabled',
+        description:plugin.interface?.shortDescription||undefined,version:plugin.localVersion??plugin.version??undefined,facts:[market.name,plugin.id]})
+    }
+  }
+  async function installedPlugins(){
+    try{
+      collectPlugins(await readCatalog('plugin/installed',{cwds:projects}))
+      return
+    }catch(error){
+      const code=(error as {diagnostic?:{rpcCode?:number}}).diagnostic?.rpcCode
+      // Older app servers can report an unknown request as Invalid Request.
+      if(code!==-32601&&!(code===-32600&&/unknown (variant|method)|method not found/i.test(String(error))))throw error
+    }
+    // Preserve discovery across local and remote markets on clients without an installed inventory.
+    const legacy=[{}, {marketplaceKinds:['local','vertical','workspace-directory','shared-with-me','created-by-me-remote']}]
+    const results=await Promise.allSettled(legacy.map(extra=>readCatalog('plugin/list',{cwds:projects,...extra}).then(collectPlugins)))
+    if(results.some(result=>result.status==='rejected'))warnings.push(source+' · Plugins')
+  }
   try{
     await client.call('initialize',{clientInfo:{name:'roppo-library',version:'1.0'},capabilities:{experimentalApi:true}})
     client.notify('initialized')
+    const plugins=installedPlugins()
+    // Codex materializes plugin-provided MCPs and skills while resolving installed plugins.
+    // Its first parallel MCP response can otherwise omit servers without a pagination cursor.
+    const pluginsSettled=plugins.catch(()=>{})
     const tasks:Record<string,Promise<void>>={
-      Skills:client.call('skills/list',{cwds:projects.length?projects:[options.cwd]}).then(r=>{
+      Plugins:plugins,
+      Skills:pluginsSettled.then(()=>readCatalog('skills/list',{cwds:projects.length?projects:[options.cwd]})).then(r=>{
         for(const group of r.data){
           if(group.errors?.length)warnings.push(source+' · Skills')
           for(const s of group.skills){if(typeof s.path!=='string'||typeof s.name!=='string')continue
@@ -81,15 +113,7 @@ export async function codexInventory(options:{command:string;args?:string[];envi
           }
         }
       }),
-      Plugins:Promise.all([{}, {marketplaceKinds:['local','vertical','workspace-directory','shared-with-me','created-by-me-remote']}].map(async extra=>{
-        try{
-          const r=await client.call('plugin/list',{cwds:projects,...extra})
-          if(r.marketplaceLoadErrors?.length)warnings.push(source+' · Plugins')
-          for(const m of r.marketplaces)for(const p of m.plugins)if(p.installed)add(p.id,{kind:'plugin',name:p.interface?.displayName||p.name,status:p.enabled?'cli':'disabled',
-            description:p.interface?.shortDescription||undefined,version:p.localVersion??p.version??undefined,facts:[m.name,p.id]})
-        }catch{warnings.push(source+' · Plugins')}
-      })).then(()=>{}),
-      MCP:pages('mcpServerStatus/list',mcpServer),
+      MCP:pluginsSettled.then(readMcpServers),
       Apps:pages('app/list',a=>{if(a.isEnabled&&a.isAccessible)app(a.id,a.name,a.description??undefined,undefined,a.pluginDisplayNames??[])}),
     }
     const kinds:Record<string,CapabilityKind>={Skills:'skill',Plugins:'plugin',MCP:'mcp',Apps:'app'}

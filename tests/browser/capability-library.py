@@ -9,6 +9,20 @@ root = Path(sys.argv[1])
 info = json.loads((root / 'browser.json').read_text())
 output = root / 'screenshots'
 output.mkdir(exist_ok=True)
+def check_sticky_header(listing):
+    # Scroll a row behind the header and hit-test the top and both edges of the scrollport.
+    listing.scroll_into_view_if_needed()
+    result = listing.evaluate("""el => {
+        el.scrollTop = 124;
+        const heading = el.querySelector('h3'), box = el.getBoundingClientRect();
+        const x = box.left + el.clientLeft, width = el.clientWidth;
+        const points = [[width / 2, 2], [2, 16], [width - 3, 16]];
+        return el.scrollTop > 0 && points.every(([dx, dy]) =>
+            heading.contains(document.elementFromPoint(x + dx, box.top + dy)));
+    }""")
+    assert result, 'Scrolled content is visible outside the sticky group heading'
+    listing.evaluate('el => el.scrollTop = 0')
+
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch()
     context = browser.new_context(viewport={'width': 1440, 'height': 960})
@@ -37,6 +51,7 @@ with sync_playwright() as playwright:
     types = page.get_by_role('navigation', name='Capability types')
     expect(listing.get_by_role('region').first).to_have_attribute('aria-label', 'Roppo')
     expect(source.locator('option').nth(1)).to_have_text('Roppo')
+    check_sticky_header(listing)
     source.select_option('Codex')
     expect(listing.get_by_role('region')).to_have_count(1)
     codex = listing.get_by_role('region', name='Codex', exact=True)
@@ -82,6 +97,8 @@ with sync_playwright() as playwright:
     expect(listing).to_contain_text('No matching capabilities')
     search.fill('')
     page.set_viewport_size({'width': 390, 'height': 844})
+    types.get_by_role('button', name=re.compile(r'^All ')).click()
+    check_sticky_header(listing)
     types.get_by_role('button', name=re.compile('MCP servers')).click()
     expect(listing).to_be_visible()
     listing.get_by_role('button', name=re.compile('AgentHub MCP')).click()

@@ -162,10 +162,17 @@ function projectReviewCard(review,editable) {
   card.append(label,feedback,add(el('div','actions'),opButton(L('Approve commit','验收通过'),()=>decide('approve'),'button'),opButton(L('Return for changes','退回修改'),()=>decide('return'),'button')))
   return card
 }
+function activityHeader(current) {
+  return [opHeading(L('Activity', '运行记录'), null, opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
+    workspaceTabs(L('Activity views', '记录筛选'), [
+      [L('History', '历史记录'), current === 'activity', () => opNavigate('activity')],
+      [L('In progress', '进行中'), current === 'active-tasks', () => opNavigate('active-tasks')],
+      [L('Needs attention', '待处理'), current === 'attention', () => opNavigate('attention')]
+    ])]
+}
 function opAttention() {
   const items = operator.work?.attention || []
-  const result = [opHeading(L('Needs your attention', '待我处理'), null,
-    opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh'))]
+  const result = activityHeader('attention')
   for (const [label, list] of [
     [L('Needs a reply', '需要回复'), items.filter(task => !task.deliveryUncertain && !task.approvalIds?.length)],
     [L('Needs confirmation', '需要确认'), items.filter(task => task.deliveryUncertain || task.approvalIds?.length)]
@@ -197,12 +204,7 @@ function opAttention() {
 function opTasks() {
   const history = entryState.page === 'activity'
   const data = operator.work
-  const result = [opHeading(L('Tasks', '任务'), null,
-    opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
-    workspaceTabs(L('Task views', '任务视图'), [
-      [L('In progress', '进行中'), !history, () => opNavigate('active-tasks')],
-      [L('Work history', '任务记录'), history, () => opNavigate('activity')]
-    ])]
+  const result = activityHeader(history ? 'activity' : 'active-tasks')
   if (!history) {
     const tasks = data?.activeTasks || []
     for (const request of data?.understanding || [])

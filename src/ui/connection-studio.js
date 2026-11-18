@@ -43,14 +43,14 @@ function connectionSelect(kind) {
 }
 function connectionKindTabs() {
   const row = el('div', 'connection-kinds'); row.setAttribute('role', 'group'); row.setAttribute('aria-label', L('Connection type', '接入方式'))
-  for (const [kind, title, glyph, description] of [
-    ['api', 'API', 'sources', L('Connect with an API key', '使用密钥连接服务')],
-    ['subscription', L('Subscription account', '订阅账号'), 'key', L('Sign in to your account', '登录已有订阅账号')],
-    ['cli', 'CLI', 'terminal', L('Use a tool on the host', '使用主机上的工具')]
+  for (const [kind, title, glyph] of [
+    ['api', 'API', 'sources'],
+    ['subscription', L('Subscription account', '订阅账号'), 'key'],
+    ['cli', 'CLI', 'terminal']
   ]) {
     const button = opButton('', () => connectionSelect(kind), 'connection-kind')
     button.setAttribute('aria-pressed', String(connectionStudio.kind === kind)); button.disabled = !!(entryState.busy || S.busy)
-    button.replaceChildren(add(el('span', 'connection-kind-title'), icon(glyph), el('span', '', title)), el('span', 'connection-kind-description', description))
+    button.replaceChildren(add(el('span', 'connection-kind-title'), icon(glyph), el('span', '', title)))
     row.append(button)
   }
   return row

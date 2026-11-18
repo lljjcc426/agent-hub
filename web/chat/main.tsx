@@ -27,8 +27,9 @@ import {
   ArrowUp,
   ArrowDown,
   Users,
-  Sun,
-  Moon,
+  ListChecks,
+  UsersRound,
+  FileText,
   PanelRight,
   Menu,
   X,
@@ -49,7 +50,8 @@ import {DeliveryCard,FileViewer,TeamDrawer,type TeamTab} from './team-view.tsx';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import { ResourceWorkspace } from "./resource-workspace.tsx";
 import { initialResources, openResource, resourceKey, type ResourceKind } from "./resource-state.ts";
-import { FeatureNavigation } from "./navigation.tsx";
+import { StudioRail, General, TeamSettings } from "./studio-navigation.tsx";
+import { SwitchView, switchView } from "../ui";
 import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
@@ -58,9 +60,8 @@ import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
-import {RouterModelControl} from './router-model.tsx';
 
-import {ChatCompanion} from "./companion.tsx";
+import {ChatCompanion,RoppoCharacter} from "./companion.tsx";
 import {companionStatus} from "./companion-state.ts";
 import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
 import {useChatMotion} from './chat-motion.ts';
@@ -76,8 +77,9 @@ import "./navigation.css";
 import "./chat-layout.css";
 import "./message-interactions.css";
 import "./team-view.css";
-import { SidebarSeparator } from "./sidebar-separator.tsx";
+
 import "./sidebar-resize.css";
+import "./studio.css";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
 type Conversation = Snapshot["conversation"];
@@ -541,10 +543,10 @@ function App() {
   const [id, setId] = useState<string | null>(null),
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
     [ready, setReady] = useState<Ready | null>(null);
-  const [navExpanded, setNavExpanded] = useState(read("roppo.navigation.expanded") === "true");
+  const [navExpanded, setNavExpanded] = useState(read("roppo.navigation.expanded") !== "false");
   useEffect(() => write("roppo.navigation.expanded", String(navExpanded)), [navExpanded]);
   const [lang, setLang] = useState<Language>(
-      read("agenthub.configuration.language") === "zh-CN" ? "zh-CN" : "en",
+      read("agenthub.configuration.language") === "en" ? "en" : "zh-CN",
     ),
     [dark, setDark] = useState(read("agenthub.configuration.theme") === "dark");
   const L = useCallback(
@@ -569,7 +571,7 @@ function App() {
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
-      setRoute(location.pathname + location.search + location.hash);
+      switchView("page",()=>setRoute(location.pathname + location.search + location.hash));
     };
     const click = (event: MouseEvent) => {
       if (
@@ -663,11 +665,11 @@ function App() {
       />
       <Chat
         arrivals={chatArrivals}
-        refreshReady={async()=>setReady(await api<Ready>("/readiness"))}
         key={id ?? "new"}
         {...{
           id,
           display,
+          setDisplay,
           ready,
           lang,
           L,
@@ -686,10 +688,10 @@ function App() {
 }
 type ChatProps = {
   arrivals: React.RefObject<Arrivals>;
-  refreshReady: () => Promise<void>;
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
+  setDisplay: (value:ChatSpace["display"])=>void;
   route: string;
   id: string | null;
   ready: Ready | null;
@@ -734,8 +736,8 @@ function Chat(p: ChatProps) {
   useEffect(() => write(resourceKey(id), JSON.stringify(resources)), [id, resources]);
   const [teamTab,setTeamTab]=useState<TeamTab>('activity'),[file,setFile]=useState<ChatDelivery|null>(null);
   const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
-  const [panelExpanded, setPanelExpanded] = useState(false),
-    [pickerRequest, setPickerRequest] = useState(0);
+  const [panelExpanded, setPanelExpanded] = useState(false);
+  const [pickerRequest,setPickerRequest]=useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
     if (next === "browser" && !id) {
@@ -758,7 +760,9 @@ function Chat(p: ChatProps) {
     setResources((state) => next ? openResource(state, next) : { ...state, visible: false });
     if (!next) setPanelExpanded(false);
   };
-  const hash = route.split("#")[1] ?? "tasks";
+  const hash = route.split("#")[1] || "general";
+  const general = configuring && hash === "general";
+  const teamSettings = configuring && hash === "team";
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
   const marketTools=hash==='integrations'||hash==='integrations/tools';
@@ -766,16 +770,20 @@ function Chat(p: ChatProps) {
   const pluginId=configuring&&hash.startsWith('plugin/')?hash.slice(7):null;
   const currentView=views.find(view=>view.id===pluginId);
   const pageNames: Record<string, string> = {
-    tasks: L("Workspace", "工作区"),
-    "tasks/active": L("Tasks", "任务"),
-    "tasks/history": L("Tasks", "任务"),
-    attention: L("Needs your attention", "待处理"),
+    general: L("General", "通用"),
+    team: L("Agent team","Agent 团队"),
+    tasks: L("Activity", "运行记录"),
+    "tasks/active": L("Activity", "运行记录"),
+    "tasks/history": L("Activity", "运行记录"),
+    attention: L("Activity", "运行记录"),
+    "advanced/memory": L("Memory","记忆"),
+    "advanced/host": L("Workspace settings","工作区设置"),
     automations: L("Event automations", "事件自动化"),
     execution: L("Agent team", "Agent 团队"),
     deployments: L("Deployments", "部署"),
     models: L("Model connections", "模型连接"),
     connections: L("Conversation entries", "会话入口"),
-    integrations: L("Plugins & tools", "插件与工具"),
+    integrations: L("Tools & MCP", "工具与 MCP"),
     prompts: L("Behavior rules", "行为规则"),
     advanced: L("Settings", "设置"),
     usage: L("Usage guide", "使用指引"),
@@ -1185,7 +1193,7 @@ function Chat(p: ChatProps) {
   useEffect(() => {
     if (narrow && menu)
       document
-        .querySelector<HTMLAnchorElement>('.function-link[aria-current="page"]')
+        .querySelector<HTMLElement>('#function-navigation button, #function-navigation a')
         ?.focus();
   }, [narrow, menu]);
   const current = snapshot?.conversation;
@@ -1246,7 +1254,7 @@ function Chat(p: ChatProps) {
         <InteractionProvider L={L} messages={snapshot?.messages??[]} reply={quoteMessage} react={reactMessage} locate={messageId=>void locateMessage(messageId)}>
         <div
           className={
-            "chat-shell" +
+            "chat-shell studio-shell" +
             (menu ? " menu-open" : "") +
             (panel ? " team-open" : "") +
             (navExpanded ? " functions-expanded" : "") +
@@ -1259,30 +1267,10 @@ function Chat(p: ChatProps) {
               ? L("Skip to content", "跳转到内容")
               : L("Skip to conversation", "跳转到对话")}
           </a>
-          <FeatureNavigation
-            L={L}
-            configuring={configuring}
-            hash={hash}
-            expanded={navExpanded}
-            onExpandedChange={setNavExpanded}
-            mobile={narrow}
-            menuOpen={menu}
-            closeMenu={closeNavigation}
-            openWorkspaces={() => {if(automationRoute||pluginId||marketRoute&&!marketTools){history.pushState(null,"","/configure#tasks");window.dispatchEvent(new Event('roppo:navigation'))}setPickerRequest((value) => value + 1)}}
-            user={boot?.user}
-            views={views.map(view=>({id:view.id,label:view.label[lang]}))}
-          />
-          {display === "agents" && !configuring ? <aside className="conversation-sidebar" id="agent-list" inert={(narrow && !menu) || (narrow && navExpanded)} aria-label={L("Agents", "Agents 列表")}>
-            <header className="conversation-heading"><h2>{L("Agents", "Agents 列表")}</h2></header>
-            <div className="agent-list">{participants.map(agent=>{
-              const latest=agent.latestMessage,prefix=latest?.role==='user'?L('You: ','你：'):latest?.speaker&&latest.speaker!==agent.label?latest.speaker+': ':'';
-              const preview=latest?prefix+latest.text.replace(/\s+/g,' ').trim():L('No messages yet','暂无消息');
-              return <button key={agent.id} className="agent-contact" aria-pressed={selected?.id===agent.id} onClick={()=>{selectAgent(agent.id);if(narrow)closeNavigation()}}>
-                <AgentAvatar id={agent.id} kind={agent.kind} size={36} /><span><span className="agent-name"><span className="agent-label">{agent.label}</span><span className="agent-role">{agent.kind === "worker" ? "Worker" : "Router"}</span></span><small title={preview}>{preview}</small></span>
-              </button>
-            })}</div>
-            <SidebarSeparator pane="agents" controls="agent-list" label={L("Agents", "Agents 列表")} />
-          </aside> : null}
+          <StudioRail L={L} configuring={configuring} hash={hash} expanded={navExpanded} expand={setNavExpanded}
+            mobile={narrow} open={menu} close={closeNavigation} participants={participants} selected={selected.id}
+            select={selectAgent} display={display} views={views.map(v=>({id:v.id,label:v.label[lang]}))}
+            user={boot?.user?.displayName || L("Local account","本地账户")}/>
           {menu ? (
             <button
               className="nav-scrim"
@@ -1290,7 +1278,7 @@ function Chat(p: ChatProps) {
               onClick={closeNavigation}
             />
           ) : null}
-          <main
+          <SwitchView scope="page"><main
             className="chat-main"
             id="conversation"
             tabIndex={-1}
@@ -1303,24 +1291,15 @@ function Chat(p: ChatProps) {
                 onClick={() => setMenu(true)}
                 aria-label={L("Open navigation", "打开导航")}
                 aria-expanded={menu}
-                aria-controls={display === "agents" ? "function-navigation agent-list" : "function-navigation"}
+                aria-controls="function-navigation"
               >
                 <Menu size={20} />
               </button>
-              <div className="chat-breadcrumb">
-                <span>
-                  {configuring
-                    ? L("Current workspace", "当前工作区")
-                    : L("Conversations", "对话")}
-                </span>
-                <span className="slash">/</span>
-                <strong>
-                  {configuring
-                    ? pageTitle
-                    : display === "agents" ? selected?.label : L("Team chat", "团队群聊")}
-                </strong>
+              <div className="studio-breadcrumb">
+                {configuring?<><span>{L("Settings","设置")}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></>:
+                  <strong>{readonly ? selected.label : L("Workspace chat","工作区对话")}</strong>}
               </div>
-              {!configuring ? <ChatCompanion key={(id??"new")+":"+(readonly?selected.id:"group")} status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/> : null}
+              {!configuring && (snapshot?.messages.length || running) ? <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L} onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/> : null}
               <div className="header-actions">
                 {!configuring ? (
                   <button
@@ -1335,29 +1314,14 @@ function Chat(p: ChatProps) {
                     <PanelRight size={19} />
                   </button>
                 ) : null}
-                <IconButton
-                  label={
-                    dark
-                      ? L("Switch to light mode", "切换为浅色模式")
-                      : L("Switch to dark mode", "切换为深色模式")
-                  }
-                  onClick={() => setDark(!dark)}
-                >
-                  {dark ? <Sun size={19} /> : <Moon size={19} />}
-                </IconButton>
-                <button
-                  className="language-button"
-                  onClick={() => setLang(lang === "en" ? "zh-CN" : "en")}
-                  aria-label={L("Switch to Chinese", "切换为英文")}
-                >
-                  {lang === "en" ? "中文" : "EN"}
-                </button>
               </div>
             </header>
+            {teamSettings?<TeamSettings L={L} members={participants.map(member=>({...member,model:member.kind==='router'?ready?.model:workers.find(w=>w.id===member.id)?.model}))}/>:null}
+            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}/>:null}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
             <Configuration
-              visible={configuring&&!automationRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!general&&!teamSettings&&!automationRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}
@@ -1373,6 +1337,7 @@ function Chat(p: ChatProps) {
               <ThreadPrimitive.Root
                 ref={threadRef}
                 className="thread"
+                data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
                 inert={panelExpanded || (panelOverlay && !!panel)}
               >
                 <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
@@ -1388,9 +1353,9 @@ function Chat(p: ChatProps) {
                     ) : null}
                     <ThreadPrimitive.Empty>
                       <div className="empty-state">
-                        <AgentAvatar id={selected.id} kind={selected.kind} size={72} />
+                        {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:<RoppoCharacter phase="idle"/>}
                         <h1>
-                          {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想完成什么？")}
+                          {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
                         </h1>
                       </div>
                     </ThreadPrimitive.Empty>
@@ -1444,7 +1409,8 @@ function Chat(p: ChatProps) {
                     />
                     <div className="composer-toolbar">
                       <ComposerPrimitive.AddAttachment className="icon-button attach-button" disabled={sending||loadingAttachments||!ready?.ready} aria-label={L('Attach files','上传文件')} title={L('Attach files','上传文件')}><Paperclip size={18}/></ComposerPrimitive.AddAttachment>
-                      <RouterModelControl visible={!configuring} label={currentRouter.label} model={current?.model || ready?.model} busy={running||sending} L={L} onSaved={async()=>{await p.refreshReady();await refresh()}}/>
+                      <button type="button" className="compose-resource" onClick={()=>void choosePanel("files")}><FileText size={16}/><span>{L("Files","文件")}</span></button>
+                      <button type="button" className="compose-resource" onClick={()=>void choosePanel("browser")}><Globe size={16}/><span>{L("Browser","浏览器")}</span></button>
                       {workers.length ? (
                         <button
                           className="team-chip"
@@ -1455,7 +1421,7 @@ function Chat(p: ChatProps) {
                         >
                           <Users size={15} />
                           <span>
-                            {workers.length} {L(workers.length===1?"worker":"workers", "个 Worker")}
+                            {workers.length} {L(workers.length===1?"member":"members", "位成员")}
                           </span>
                         </button>
                       ) : null}
@@ -1465,6 +1431,13 @@ function Chat(p: ChatProps) {
                     </div>
                   </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                 </div>
+                {!readonly && !loading && !snapshot?.messages.length && !sending && !running ? <div className="starter-actions">
+                  {[
+                    {Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
+                    {Icon:UsersRound,label:L("Meet the team","查看分工"),text:L("Which Agents are in this workspace and what can they do?","我的团队里有哪些 Agent？各自负责什么？")},
+                    {Icon:FileText,label:L("Draft a brief","起草简报"),text:L("Draft a short progress brief for this release.","帮我起草一份发布进度简报。")}
+                  ].map(({Icon,label,text})=><button key={label} onClick={()=>{runtime.thread.composer.setText(text);threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()}}><Icon size={16}/>{label}</button>)}
+                </div>:null}
               </ThreadPrimitive.Root>
               {panel==='activity'?<TeamDrawer snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L} tab={teamTab} setTab={setTeamTab} close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
                 changeSchedule={async plan=>{try{await api('/conversations/'+id+'/schedules',{id:plan.id,active:!plan.active,operationId:crypto.randomUUID(),expectedRevision:plan.revision},'PATCH')}finally{await refresh()}}}
@@ -1481,12 +1454,12 @@ function Chat(p: ChatProps) {
                   L={L}
                 >
                   {panel === "files" ? (
-                    <FilesPanel conversationId={id} L={L} />
+                    <FilesPanel conversationId={id} deliveries={snapshot?.deliveries ?? []} openFile={setFile} L={L} />
                   ) : null}
                 </ResourceWorkspace>
               ) : null}
             </div>
-          </main>
+          </main></SwitchView>
         </div>
         {file?<FileViewer key={file.id} file={file} L={L} close={()=>setFile(null)}/>:null}
         </InteractionProvider>

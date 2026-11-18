@@ -6,6 +6,10 @@ import {
   ArrowLeft,
   RefreshCw,
 } from "lucide-react";
+import type {ChatDelivery} from '../../src/chat-deliveries.ts';
+import {ChoiceGroup} from '../ui';
+import {DeliveryCard} from './team-view.tsx';
+
 type Task = { id: string; title: string; workerId: string };
 type Result = {
   items?: { name: string; directory: boolean }[];
@@ -13,7 +17,24 @@ type Result = {
   nextOffset: number | null;
   cursor?: string;
 };
-export function FilesPanel({
+export function FilesPanel({conversationId, deliveries, openFile, L}:{
+  conversationId:string|null;
+  deliveries:ChatDelivery[];
+  openFile:(file:ChatDelivery)=>void;
+  L:(en:string,zh:string)=>string;
+}) {
+  const [tab,setTab]=useState<'chat'|'tasks'>('chat');
+  return <div className="studio-files">
+    <div className="studio-files-tabs roppo-ui"><ChoiceGroup label={L('Files','文件')} value={tab} onChange={setTab} choices={[
+      {value:'chat',label:L('Chat files','会话文件')},{value:'tasks',label:L('Task folders','任务目录')}
+    ]}/></div>
+    {tab==='tasks'?<TaskFiles conversationId={conversationId} L={L}/>:<div className="studio-deliveries">
+      {deliveries.length?[...deliveries].sort((a,b)=>b.createdAt-a.createdAt).map(file=><DeliveryCard key={file.id} file={file} open={openFile} L={L}/>):<p>{L('No files yet','还没有会话文件')}</p>}
+    </div>}
+  </div>
+}
+
+function TaskFiles({
   conversationId,
   L,
 }: {

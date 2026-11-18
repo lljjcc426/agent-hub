@@ -67,14 +67,16 @@ it('keeps the in-progress task tab separate from the workspace home and restores
    entryState.page='home';
    const taskTabs=opTasks()[1];
    entryState.page='activity';
-   taskTabs[0][2]();
+   taskTabs.find(tab=>tab[0]==='In progress')[2]();
  `)
  expect(b.get('entryState.page')).toBe('active-tasks')
  expect(b.get('workspaceHash()')).toBe('tasks/active')
  expect(b.context.location.hash).toBe('#tasks/active')
  expect(b.get('opPages()[entryState.page]')).toBe('Tasks')
- expect(b.get('opTasks()[1].map(tab=>tab[1])')).toEqual([true,false])
- b.get(`taskTabs[1][2]()`)
+ expect(b.get('opTasks()[1].filter(tab=>tab[1]).map(tab=>tab[0])')).toEqual(['In progress'])
+ b.get(`taskTabs.find(tab=>tab[0]==='Needs attention')[2]()`)
+ expect(b.get('workspaceHash()')).toBe('attention')
+ b.get(`taskTabs.find(tab=>tab[0]==='History')[2]()`)
  expect(b.get('entryState.page')).toBe('activity')
  expect(b.get('workspaceHash()')).toBe('tasks/history')
  b.context.location.hash='#tasks/active';b.get('applyWorkspaceLocation()')

@@ -156,8 +156,11 @@ function teamField(id, label, value, change, options = {}) {
   const input = field.querySelector('input, select')
   if (options.number) { input.type = 'number'; input.min = options.min; if (options.max !== undefined) input.max = options.max; input.step = '1' }
   if (options.help) {
-    const help = el('small', 'team-help', options.help); help.id = id + '-help'
-    input.setAttribute('aria-describedby', help.id); field.append(help)
+    const note = el('p', 'team-field-note', options.help)
+    note.id = id + '-help'
+    note.dataset.label = label
+    input.setAttribute('aria-describedby', note.id)
+    field.append(note)
   }
   return field
 }
@@ -376,7 +379,12 @@ function teamInspector() {
   panel.append(teamStudio.tab === 'decision' ? decisionSettings() : ({ essentials: teamBasics, tools: teamTools, advanced: teamAdvanced })[teamStudio.tab](current))
   panel.addEventListener('input', teamUpdatePreview)
   pane.append(tabs, panel)
-  if (current.router) pane.append(el('p', 'team-help', L('One Router is required. You can rename it or replace its model connection and instructions.', '保留一个 Router。可修改名称，或更换模型连接与指令。')))
+  const notes = [...panel.querySelectorAll('.team-field-note')]
+  if (notes.length) {
+    const disclosure = add(el('details', 'field-notes'), el('summary', '', L('Field notes', '字段说明')))
+    for (const note of notes) disclosure.append(el('strong', '', note.dataset.label), note)
+    pane.append(disclosure)
+  }
   if (!current.router) {
     const copy = opButton(L('Duplicate', '复制 Worker'), () => teamAddWorker(true), 'button')
     copy.dataset.addWorker = ''

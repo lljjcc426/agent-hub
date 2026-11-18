@@ -60,11 +60,11 @@ function connectionLibrary() {
       const status = connectionCheckStatus(service), uses = connectionUses(service.id)
       const test = opButton(L('Test connection', '测试连接'), () => { connectionLibraryState.selected = service.id; render() }, 'text-button')
       const manage = opButton(L('Manage ', '管理 ') + service.label, () => { connectionLibraryState.selected = service.id; render() }, 'icon-button', 'advanced'); manage.dataset.connection = service.id
-      return add(el('li', 'model-service-row'), connectionIdentity(service, true), add(el('div', 'connection-latest'), connectionStatusLabel(service), status.result ? el('time', 'model-service-meta', new Date(status.result.at).toLocaleString(lang === 'zh-CN' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })) : el('span', 'model-service-meta', L('No test recorded', '暂无测试记录'))),
+      return add(el('li', 'model-service-row'), connectionIdentity(service, true), add(el('div', 'connection-latest'), connectionStatusLabel(service), status.result ? el('time', 'model-service-meta', new Date(status.result.at).toLocaleString(lang === 'zh-CN' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })) : document.createTextNode('')),
         el('span', 'connection-usage', uses.length ? L(uses.length + ' uses', uses.length + ' 处使用') : L('Unused', '未使用')), add(el('div', 'actions'), test, manage))
     }))
     if (!filtered.length) list.append(add(el('li', 'connection-empty'), el('h3', '', L('No matching connections', '没有匹配的连接')), opButton(L('Clear search', '清除搜索'), () => { connectionLibraryState.search = ''; connectionLibraryState.filter = 'all'; render() }, 'button')))
-    footer.replaceChildren(el('span', '', L(filtered.length + ' connections', filtered.length + ' 个连接')), el('span', '', L('Results reflect the last test only.', '测试结果仅反映上次检查状态。')))
+    footer.replaceChildren(el('span', '', L(filtered.length + ' connections', filtered.length + ' 个连接')))
   }
   search.oninput = () => { connectionLibraryState.search = search.value; draw() }; draw(); page.append(list, footer)
   const selected = services.find(s => s.id === connectionLibraryState.selected)

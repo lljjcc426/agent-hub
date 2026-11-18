@@ -1,3 +1,4 @@
+import type {ToolTrace} from './tool-trace.ts'
 import {randomUUID} from 'node:crypto'
 import type {Store} from './store.ts'
 import {chatStatusSchema,type ChatStatus} from './chat-status.ts'
@@ -7,7 +8,7 @@ export interface ExecutionCall extends ExecutionContext {
  id:string;kind:'router'|'worker'|'subagent'|'tool';name:string;parentId?:string
  backend?:string;model?:string;startedAt:number;endedAt?:number
  state:'running'|'completed'|'failed'|'interrupted'
- action?:string;target?:string;status?:ChatStatus
+ action?:string;target?:string;trace?:ToolTrace;permission?:'pending'|'denied'|'uncertain'|'cancelled';status?:ChatStatus
 }
 /** Execution metadata and explicit public status only; never copy prompts, arbitrary arguments, output or provider errors. */
 export class ExecutionActivity {
@@ -18,7 +19,7 @@ export class ExecutionActivity {
   for(const call of this.list())if(call.state==='running')this.finish(call.id,'interrupted')
  }
  list(){return this.store.list<ExecutionCall>('execution-call')}
- begin(kind:ExecutionCall['kind'],name:string,context:ExecutionContext={},parentId?:string,details:Pick<ExecutionCall,'action'|'target'>={}){
+ begin(kind:ExecutionCall['kind'],name:string,context:ExecutionContext={},parentId?:string,details:Pick<ExecutionCall,'action'|'target'|'trace'>={}){
   const call:ExecutionCall={...context,...details,id:randomUUID(),kind,name:name.slice(0,100),parentId,startedAt:Date.now(),state:'running'}
   this.store.put('execution-call',call.id,call)
   this.changed(call)
@@ -44,16 +45,16 @@ export class ExecutionActivity {
   const next={...call,status:{...parsed,updatedAt:Date.now()}}
   this.store.put('execution-call',id,next);this.changed(next);return true
  }
- finish(id:string,state:Exclude<ExecutionCall['state'],'running'>){
+ finish(id:string,state:Exclude<ExecutionCall['state'],'running'>,permission?:ExecutionCall['permission']){
   const call=this.store.get<ExecutionCall>('execution-call',id);if(!call||call.state!=='running')return
-  const next={...call,state,endedAt:Date.now()}
+  const next={...call,state,endedAt:Date.now(),...(permission?{permission}:{})}
   this.store.put('execution-call',id,next);this.changed(next)
   this.prune()
  }
  parent(context:ExecutionContext){return this.list().findLast(c=>c.kind!=='tool'&&c.state==='running'&&c.ticketId===context.ticketId&&c.agentId===context.agentId)?.id}
- async tool<T extends {success:boolean}>(name:string,context:ExecutionContext,run:()=>Promise<T>,parentId=this.parent(context),details:Pick<ExecutionCall,'action'|'target'>={}){
+ async tool<T extends {success:boolean;permission?:ExecutionCall['permission']}>(name:string,context:ExecutionContext,run:()=>Promise<T>,parentId=this.parent(context),details:Pick<ExecutionCall,'action'|'target'|'trace'>={}){
   const id=this.begin('tool',name,context,parentId,details)
-  try{const result=await run();this.finish(id,result.success?'completed':'failed');return result}
+  try{const result=await run();this.finish(id,result.success?'completed':'failed',result.permission);return result}
   catch(error){this.finish(id,'failed');throw error}
  }
 }

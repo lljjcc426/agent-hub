@@ -7,6 +7,7 @@ const version = JSON.parse(readFileSync(new URL('../../package.json', import.met
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
 import { clean, type Snapshot } from './client.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 
 const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const oneLine = (value: string) => clean(value).replace(/\s+/g, ' ').trim()
@@ -393,9 +394,9 @@ export class TerminalLayout {
     }
     lines.push(rule)
     const pending = view?.messages.some(
-      (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId
+      (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId && !m.decision.defaultOption
     )
-    const needsApproval = view?.approvals.some((a) => a.state === 'pending' && a.expiresAt > now)
+    const needsApproval = view?.approvals.some((a) => isApprovalPending(a, now))
     const keys = menu
       ? options.picker
         ? '↑↓ select    Enter resume    Esc back'

@@ -1,11 +1,11 @@
-import {mkdtempSync,rmSync} from 'node:fs'
+import {mkdtempSync,rmSync,mkdirSync,symlinkSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {afterEach,it,expect} from 'vitest'
 import {Store} from '../src/store.ts'
 import {Settings} from '../src/settings.ts'
 import {configSchema} from '../src/config.ts'
-import {Approvals} from '../src/approvals.ts'
+import {Approvals,withinNativeTask} from '../src/approvals.ts'
 const roots:string[]=[],stores:Store[]=[]
 function store(){const r=mkdtempSync(join(tmpdir(),'agent-setting-'));roots.push(r);const s=new Store(join(r,'state.db'));stores.push(s);return s}
 afterEach(()=>{for(const s of stores.splice(0))s.close();for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true})})
@@ -67,4 +67,44 @@ it('retains transaction rollback after a failed transaction start',()=>{
  s.db.exec=original
  expect(()=>s.atomic(()=>{s.put('test','x',1);throw Error('rollback')})).toThrow('rollback')
  expect(s.get('test','x')).toBeUndefined()
+})
+
+it('reopens an unconsumed private answer after restart and returns it only over the live protocol',async()=>{
+ const s=store(),chat={conversationId:'chat',runId:'run',workerId:'worker'},request={id:'question',method:'item/tool/requestUserInput',params:{questions:[{id:'code',isSecret:true,question:'Access code?'}]}}
+ const first=new Approvals(s)
+ expect(await first.request('work',request,chat,true)).toEqual({answers:{}})
+ const id=s.list<any>('approval')[0].id
+ const answers={code:{answers:['test-secret']}}
+ first.answer(id,answers);first.close()
+ expect(JSON.stringify(s.list('approval'))).not.toContain('test-secret')
+ const second=new Approvals(s)
+ expect(s.get<any>('approval',id).status).toBe('pending')
+ second.answer(id,answers);second.answer(id,answers)
+ expect(await second.request('work',request,chat)).toEqual({answers})
+ expect(await second.request('work',request,chat)).toEqual({answers:{}})
+ expect(JSON.stringify(s.list('approval'))).not.toContain('test-secret')
+ second.close()
+})
+
+it('never transfers opaque file consent to a different native item',async()=>{
+ const s=store(),approvals=new Approvals(s),chat={conversationId:'chat',runId:'run',workerId:'worker'}
+ const req=(itemId:string)=>approvals.request('work',{id:itemId,method:'item/fileChange/requestApproval',params:{threadId:'t',itemId}},chat)
+ await req('first');approvals.answer(s.list<any>('approval')[0].id,'accept')
+ expect(await req('second')).toEqual({decision:'decline'})
+ expect(await req('first')).toEqual({decision:'accept'})
+ expect(await req('first')).toEqual({decision:'decline'})
+ approvals.close()
+})
+
+it('keeps native permission expansion inside the configured task, including symlink targets',()=>{
+ const root=mkdtempSync(join(tmpdir(),'native-grants-'));roots.push(root)
+ const work=join(root,'project'),privateDir=join(work,'state'),allowed=join(work,'output')
+ for(const p of [work,privateDir,allowed])mkdirSync(p)
+ symlinkSync(privateDir,join(work,'alias'))
+ const can=(permissions:unknown,writable=true)=>withinNativeTask({id:'p',method:'item/permissions/requestApproval',params:{permissions}},work,writable,false,privateDir)
+ expect(can({fileSystem:{write:[allowed]}})).toBe(true)
+ expect(can({fileSystem:{write:[allowed]}},false)).toBe(false)
+ expect(can({fileSystem:{write:[work]}})).toBe(false)
+ expect(can({fileSystem:{read:[join(work,'alias')]}})).toBe(false)
+ expect(can({network:{enabled:true}})).toBe(false)
 })

@@ -83,6 +83,15 @@ it('completes quoted filenames and uses repository ignore rules', async () => {
   const menu = suggestions('Use @one', 8, [], files)!
   expect(mentionedFiles('Use ' + menu.items[0]!.value, cwd)).toEqual([join(cwd, filename)])
 })
+it('completes Router approval commands for durable requests and omits expired and closed cards', () => {
+  const request = { id: 'permission:' + 'a'.repeat(64), ticketId: 'router-turn', workerId: 'router', method: 'roppo/tool', state: 'pending', expiresAt: null, facts: { tool: 'worker_manage' }, questions: [] }
+  const view = { approvals: [request, { ...request, ticketId: 'expired', expiresAt: 10 }, { ...request, ticketId: 'closed', state: 'denied' }] } as unknown as Snapshot
+  const menu = (line: string) => suggestions(line, line.length, [], [], view)!.items
+  expect(menu('/approve ').map((item) => item.value)).toEqual(['/approve router-turn '])
+  expect(menu('/approve router-turn ').map((item) => item.value)).toEqual(['/approve router-turn ' + request.id])
+  expect(menu('/answer ')).toEqual([])
+  expect(menu('/diff ')).toEqual([])
+})
 it('binds a selected Router answer to the original question and ignores closed questions', async () => {
   const m = {
     id: 'decision:original',

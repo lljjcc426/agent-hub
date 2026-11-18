@@ -1,6 +1,6 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useRef,useState,type RefObject} from 'react';
 import {createPortal} from 'react-dom';
-import {Check,ChevronRight,LoaderCircle,SlidersHorizontal} from 'lucide-react';
+import {Check,ChevronRight,LoaderCircle} from 'lucide-react';
 import type {Config} from '../../src/config.ts';
 import type {AgentOptions,BackendDefinition} from '../../src/backend-config.ts';
 import {mergeParameters} from '../../src/agent-options.ts';
@@ -8,17 +8,17 @@ import './router-model.css';
 
 type Effort=NonNullable<AgentOptions['effort']>;
 type Configuration={current:{revision:number;config:Config};agentCapabilities?:Record<string,{efforts?:Effort[]}>};
-type Props={label:string;model?:string;busy:boolean;visible:boolean;L:(en:string,zh:string)=>string;onSaved:()=>Promise<void>};
+type Props={anchor:RefObject<HTMLButtonElement|null>;shown:boolean;onClose:()=>void;busy:boolean;L:(en:string,zh:string)=>string;onSaved:()=>Promise<void>};
 async function request<T>(path:string,body?:unknown,signal?:AbortSignal):Promise<T>{
  const response=await fetch(path,{credentials:'same-origin',signal,...(body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{})});
  const data=await response.json();if(!response.ok)throw Error(data.code??'configuration_failed');return data;
 }
-export function RouterModelControl({label,model,busy,visible,L,onSaved}:Props){
- const trigger=useRef<HTMLButtonElement>(null),popover=useRef<HTMLDivElement>(null);
+export function RouterModelControl({anchor:trigger,shown,onClose,busy,L,onSaved}:Props){
+ const popover=useRef<HTMLDivElement>(null);
  const [open,setOpen]=useState(false),[config,setConfig]=useState<Configuration|null>(null),[backend,setBackend]=useState(''),[effort,setEffort]=useState<Effort|''>(''),[saving,setSaving]=useState(false),[error,setError]=useState('');
  const [position,setPosition]=useState({left:16,bottom:16});
  const close=()=>popover.current?.hidePopover();
- useEffect(()=>{if(!visible)close()},[visible]);
+ useEffect(()=>{const el=popover.current;if(!el)return;if(shown)el.showPopover();else el.hidePopover()},[shown]);
  const load=async(signal?:AbortSignal)=>{
   setError('');const data=await request<Configuration>('/configuration',undefined,signal);setConfig(data);
   setBackend(data.current.config.execution.router?.backend??data.current.config.execution.roles.router??data.current.config.execution.backend);
@@ -26,7 +26,7 @@ export function RouterModelControl({label,model,busy,visible,L,onSaved}:Props){
  };
  useEffect(()=>{
   if(!open)return;
-  const place=()=>{const rect=trigger.current!.getBoundingClientRect();setPosition({left:Math.max(12,Math.min(rect.left,innerWidth-344)),bottom:innerHeight-rect.top+8})};
+  const place=()=>{const rect=trigger.current?.getBoundingClientRect();if(rect)setPosition({left:Math.max(12,Math.min(rect.left,innerWidth-344)),bottom:innerHeight-rect.top+8})};
   place();window.addEventListener('resize',place);window.addEventListener('scroll',place,true);
   const controller=new AbortController();void load(controller.signal).catch(e=>{if(!controller.signal.aborted)setError(e.message)});
   return()=>{controller.abort();window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true)};
@@ -63,8 +63,7 @@ export function RouterModelControl({label,model,busy,visible,L,onSaved}:Props){
  };
  const labels:Record<string,string>={none:L('Off','关闭'),minimal:L('Minimal','最少'),low:L('Low','低'),medium:L('Medium','中'),high:L('High','高'),xhigh:L('Extra high','最高')};
  return <>
-  <button ref={trigger} type="button" className="model-link" popoverTarget="router-model-picker" aria-haspopup="dialog" aria-expanded={open} aria-label={L("Choose model and reasoning","选择模型和思考强度")} title={L('Choose model and reasoning','选择模型和思考强度')}><span className="composer-agent-name">{label}</span><span className="model-separator">·</span><span className="model-name">{model||L('Choose model','选择模型')}</span><SlidersHorizontal size={14}/></button>
-  {createPortal(<div ref={popover} id="router-model-picker" className="router-model-picker" popover="auto" role="dialog" aria-label={L('Router model','Router 模型')} onToggle={e=>{const shown=e.newState==='open';setOpen(shown);if(!shown)setConfig(null)}} style={position}>
+  {createPortal(<div ref={popover} id="router-model-picker" className="router-model-picker" popover="auto" role="dialog" aria-label={L('Router model','Router 模型')} onToggle={e=>{const shown=e.newState==='open';setOpen(shown);if(!shown){setConfig(null);onClose()}}} style={position}>
    <div className="router-model-heading"><strong>{L('Router model','Router 模型')}</strong></div>
    {!config&&!error?<div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…','正在读取连接…')}</div>:null}
    {config?<form onSubmit={e=>{e.preventDefault();e.stopPropagation();void save()}}>

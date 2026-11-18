@@ -7,6 +7,7 @@ import {randomUUID} from 'node:crypto'
 import {deliveryHref,downloadUrl} from '../web/chat/delivery-links.ts'
 import {memoryWorkspace} from '../src/memory-workspace.ts'
 import {Runtime} from '../src/runtime.ts'
+import {terminalTask} from '../src/terminal/tasks.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
@@ -16,9 +17,9 @@ import {chatUploadLimits} from '../src/chat-attachments.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
 afterEach(async()=>{for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()))}for(const h of hosts.splice(0))await h.close();for(const p of roots.splice(0))rmSync(p,{recursive:true,force:true})})
 const report={state:'ready',summary:'Worker checked the evidence',reply:'Worker result',question:null,askedBy:null,handbacks:[]}
-function fixture(run?:(r:ModelRequest)=>Promise<unknown>){
+function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   const root=mkdtempSync(join(tmpdir(),'roppo-chat-'));roots.push(root)
-  const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},execution:{router:{mode:'host',model:'router-one',effort:'medium'},management:{enabled:true},workers:[{id:'research',label:'Research',backend:'codex'},{id:'review',label:'Review',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]})
+  const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:writable?(process.platform==='darwin'?'seatbelt':'bubblewrap'):'disabled'},execution:{router:{mode:'host',model:'router-one',effort:'medium'},management:{enabled:true},workers:[{id:'research',label:'Research',backend:'codex'},{id:'review',label:'Review',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator'],...(writable?{sandbox:'workspace-write'}:{})}]})
   const calls:ModelRequest[]=[]
   const model={async run(r:ModelRequest){calls.push(r);const threadId=r.threadId??randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId);return {threadId,turnId,text:JSON.stringify(run?await run(r):{reply:'Router reply: '+JSON.parse(r.input).trigger.text})}}}
   const h=new Runtime(config,{model});hosts.push(h)
@@ -151,8 +152,15 @@ it('resumes only the requesting Worker when its Chat owner answers a native appr
   const decisions:unknown[]=[]
   const {h}=fixture(async r=>{
     if(r.role==='worker'){
-      decisions.push(await r.onHumanRequest!({id:'a',method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:'/project'}}))
-      decisions.push(await r.onHumanRequest!({id:'b',method:'item/tool/requestUserInput',params:{questions:[{id:'word',question:'Check word?',isSecret:true}]}}))
+      const answered=JSON.parse(r.input).inputs?.some((i:{text?:string})=>i.text?.includes('native_question_answer'))
+      if(!answered){
+        const permission=await r.onHumanRequest!({id:'a',method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:'/project'}})
+        if((permission as {decision:string}).decision!=='accept')return {...report,state:'waiting',reply:''}
+        decisions.push(permission)
+      }
+      const answers=await r.onHumanRequest!({id:'b',method:'item/tool/requestUserInput',params:{questions:[{id:'word',question:'Check word?',isSecret:true}]}}) as {answers:Record<string,unknown>}
+      if(!answers.answers.word)return {...report,state:'waiting',reply:''}
+      decisions.push(answers)
       return report
     }
     if(JSON.parse(r.input).kind==='user_message')await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:'native',id:'research',text:'Check the report'},'assign')
@@ -165,8 +173,9 @@ it('resumes only the requesting Worker when its Chat owner answers a native appr
   expect(a).toMatchObject({state:'pending',facts:{command:'pwd',cwd:'/project'},workerId:'research'})
   expect(h.chat.view(c.id,'owner',undefined,'review').approvals).toEqual([])
   expect(()=>h.chat.answerApproval(other.id,'other',a.id,'accept')).toThrow('not found')
-  h.chat.answerApproval(c.id,'owner',a.id,'accept')
-  expect(()=>h.chat.answerApproval(c.id,'owner',a.id,'accept')).toThrow('no longer active')
+  await terminalTask(h,'owner',{conversation:c.id,ticket:a.ticketId,action:'answer',approval:a.id,answer:'accept'})
+  expect(h.chat.answerApproval(c.id,'owner',a.id,'accept')).toEqual({accepted:true})
+  expect(()=>h.chat.answerApproval(c.id,'owner',a.id,'decline')).toThrow()
   await settle(h,()=>requests().length===2)
   const question=requests()[1]!
   expect(()=>h.chat.answerApproval(c.id,'owner',question.id,{})).toThrow('could not accept')
@@ -176,6 +185,173 @@ it('resumes only the requesting Worker when its Chat owner answers a native appr
   expect(requests().map(a=>a.state)).toEqual(['approved','answered'])
   expect(JSON.stringify(h.store.get('approval',question.id))).not.toContain('private-answer')
 })
+it('replays the exact Router operation after restart and preserves a denied decision across mode changes',async()=>{
+  const f=fixture(async r=>{
+    const input=JSON.parse(r.input)
+    if(input.permissionReceipt)return {reply:'The pending operation was resolved.'}
+    const info=await r.onTool!('worker_manage',{action:'list'},'list')
+    const revision=JSON.parse(info.contentItems[0]!.text!).revision
+    await r.onTool!('worker_manage',{action:'retire',id:input.trigger.text,revision,requestId:'retire-'+input.trigger.text},'retire')
+    return {reply:'Request checked.'}
+  })
+  let h=f.h
+  const c=h.chat.create('owner'),other=h.chat.create('another')
+  send(h,c.id,'research')
+  await settle(h,()=>h.chat.view(c.id,'owner').approvals.some(a=>a.state==='pending'))
+  const denied=h.chat.view(c.id,'owner').approvals[0]!
+  expect(()=>h.chat.answerApproval(other.id,'another',denied.id,'accept')).toThrow('not found')
+  h.chat.setApprovalMode('owner','full')
+  for(let i=0;i<2;i++)h.chat.answerApproval(c.id,'owner',denied.id,'decline')
+  expect(()=>h.chat.answerApproval(c.id,'owner',denied.id,'accept')).toThrow()
+  await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='The pending operation was resolved.'))
+  expect(h.config.execution.workers!.find(w=>w.id==='research')?.state).not.toBe('draining')
+
+  h.chat.setApprovalMode('owner','ask')
+  send(h,c.id,'review')
+  await settle(h,()=>h.chat.view(c.id,'owner').approvals.some(a=>a.state==='pending'))
+  const held=h.chat.view(c.id,'owner').approvals.find(a=>a.state==='pending')!
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  expect(h.chat.view(c.id,'owner').approvals.find(a=>a.id===held.id)?.state).toBe('pending')
+  const scoped={conversation:c.id,ticket:held.ticketId}
+  expect(await terminalTask(h,'owner',{...scoped,action:'approvals'})).toMatchObject({pending:[{id:held.id,method:'roppo/tool',expiresAt:null}]})
+  await expect(terminalTask(h,'owner',{...scoped,ticket:'another-task',action:'answer',approval:held.id,answer:'accept'})).rejects.toThrow('not found')
+  await terminalTask(h,'owner',{...scoped,action:'answer',approval:held.id,answer:'accept'})
+  h.chat.answerApproval(c.id,'owner',held.id,'accept')
+  expect(await terminalTask(h,'owner',{...scoped,action:'approvals'})).toEqual({pending:[]})
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  await settle(h,()=>h.permissions.get(held.id)?.phase==='complete')
+  expect(h.permissions.get(held.id)?.receipt?.success).toBe(true)
+  expect(h.chat.view(c.id,'owner').approvals.filter(a=>a.id===held.id)).toHaveLength(1)
+  const revision=h.settings.current().revision
+  h.chat.answerApproval(c.id,'owner',held.id,'accept')
+  expect(h.settings.current().revision).toBe(revision)
+  h.chat.setApprovalMode('owner','full')
+  send(h,c.id,'research')
+  await settle(h,()=>h.permissions.forChat(c.id).some(a=>a.automatic&&a.phase==='complete'&&a.receipt?.success))
+  expect(h.chat.view(c.id,'owner').approvals).toHaveLength(2)
+})
+
+it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('resumes a Worker command from the stored decision and performs its filesystem write only once',async()=>{
+  let target=''
+  const f=fixture(async r=>{
+    const input=JSON.parse(r.input)
+    if(r.role==='worker'){
+      if(!input.permissionReceipts?.length&&!input.inputs?.some((i:any)=>i.text?.includes('approval_decision'))){
+        const trigger=input.origin?.[0]?.id
+        if(trigger)await r.onTool!('superagent_ack',{triggerId:trigger,text:'Working on it'},'ack').catch(()=>{})
+
+        await r.onTool!('superagent_shell',{command:'printf x >> "'+target+'/receipt.txt"',writePaths:[target],requestId:'write'},'write')
+        const independent=await r.onTool!('superagent_shell',{command:'printf verified > independent.txt',requestId:'local-check'},'local-check')
+        expect(independent.success).toBe(true)
+      }
+      return report
+    }
+    if(input.kind==='user_message')await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:input.trigger.id,text:'Update the shared release receipt'},'assign')
+    return {reply:'Updated.'}
+  },true)
+  target=join(f.root,'handoff');mkdirSync(target)
+  let h=f.h
+  const c=h.chat.create('owner')
+  send(h,c.id)
+  await settle(h,()=>h.chat.view(c.id,'owner').approvals.some(a=>a.state==='pending'))
+  const request=h.chat.view(c.id,'owner').approvals[0]!
+  expect(existsSync(join(target,'receipt.txt'))).toBe(false)
+  await settle(h,()=>h.activeExecutions===0)
+  const workspace=h.store.get<{cwd:string}>('run',request.ticketId)!.cwd
+  expect(readFileSync(join(workspace,'independent.txt'),'utf8')).toBe('verified')
+  expect(existsSync(join(target,'receipt.txt'))).toBe(false)
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  h.chat.answerApproval(c.id,'owner',request.id,'accept')
+  h.chat.answerApproval(c.id,'owner',request.id,'accept')
+  await settle(h,()=>h.permissions.get(request.id)?.phase==='complete')
+  expect(readFileSync(join(target,'receipt.txt'),'utf8')).toBe('x')
+  expect(h.chat.view(c.id,'owner').approvals).toHaveLength(1)
+})
+
+it('continues independent file work while a delivery review is open, then resumes its dependent step once',async()=>{
+  let receipts=0
+  const f=fixture(async r=>{
+    const input=JSON.parse(r.input)
+    if(input.fileReviewReceipt){receipts++;return {reply:'Reviewed release delivered.'}}
+    await r.onTool!('chat_deliver_file',{name:'release.md',content:'Release',requireApproval:true},'review')
+    await r.onTool!('chat_deliver_file',{name:'summary.md',content:'Summary'},'independent')
+    return {reply:''}
+  }),c=f.h.chat.create('owner')
+  send(f.h,c.id,'Review the release and prepare the separate summary')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='waiting')
+  const v=f.h.chat.view(c.id,'owner'),review=v.messages.find(m=>m.fileReview)!
+  expect(v.deliveries.map(d=>d.name)).toEqual(['summary.md'])
+  f.h.chat.answerFileReview(c.id,'owner',review.id,'approved')
+  f.h.chat.answerFileReview(c.id,'owner',review.id,'approved')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.some(m=>m.text==='Reviewed release delivered.'))
+  expect(receipts).toBe(1)
+  expect(f.h.chat.view(c.id,'owner').deliveries.filter(d=>d.name==='release.md')).toHaveLength(1)
+})
+
+it('uses a reversible preference immediately and accepts a later change as an ordinary follow-up',async()=>{
+  const f=fixture(async r=>{
+    const input=JSON.parse(r.input)
+    if(input.trigger.text!=='Prepare notes')return {reply:'Switched to table'}
+    const choices=await r.onTool!('chat_request_decision',{question:'How should the notes look?',options:[{label:'List'},{label:'Table'}],defaultOption:'List'},'choose')
+    expect(JSON.parse(choices.contentItems[0]!.text!)).toMatchObject({continueWith:'List'})
+    await r.onTool!('chat_deliver_file',{name:'notes.md',content:'- Prepared'},'file')
+    return {reply:'The list is ready.'}
+  }),c=f.h.chat.create('owner')
+  const sent=send(f.h,c.id,'Prepare notes')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')
+  const view=f.h.chat.view(c.id,'owner'),choice=view.messages.find(m=>m.decision)!
+  expect(view.deliveries.map(d=>d.name)).toContain('notes.md')
+  expect(choice.decision).toMatchObject({defaultOption:'List'})
+  expect(()=>f.h.chat.requestDecision(sent.runId,{question:'Layout?',options:[{label:'A'},{label:'B'}],defaultOption:'X'})).toThrow('default')
+  f.h.chat.answerDecision(c.id,'owner',choice.id,'Table')
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.some(m=>m.text==='Switched to table'))
+})
+
+it('keeps old tasks scoped when full access is disabled and enabled again',()=>{
+  const f=fixture(),c=f.h.chat.create('owner')
+  expect(f.h.chat.permissionActor('external')).toBeUndefined()
+  const first=send(f.h,c.id)
+  f.h.chat.setApprovalMode('owner','full')
+  const full=send(f.h,c.id)
+  expect(f.h.chat.permissionActor(full.runId)?.mode).toBe('full')
+  expect(f.h.chat.permissionActor(first.runId)?.mode).toBe('ask')
+  f.h.chat.setApprovalMode('owner','ask');f.h.chat.setApprovalMode('owner','full')
+  expect(f.h.chat.permissionActor(full.runId)?.mode).toBe('ask')
+})
+
+it.each(['accept','decline'] as const)('restores the same native operation after restart and consumes %s once',async decision=>{
+  let effects=0,independent=0
+  const f=fixture(async r=>{
+    if(r.role==='worker'){
+      const value=await r.onHumanRequest!({id:randomUUID(),method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:'/project',turnId:randomUUID()}}) as {decision:string}
+      independent++
+      if(value.decision==='accept')effects++
+      return report
+    }
+    if(JSON.parse(r.input).kind==='user_message')await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:'native-restart',id:'research',text:'Check the report'},'assign')
+    return {reply:'Received.'}
+  })
+  let h=f.h
+  const c=h.chat.create('owner')
+  send(h,c.id)
+  await settle(h,()=>independent===1&&h.activeExecutions===0)
+  const [pending]=h.chat.view(c.id,'owner').approvals
+  expect(pending?.state).toBe('pending')
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  expect(h.chat.view(c.id,'owner').approvals[0]?.id).toBe(pending!.id)
+  h.chat.answerApproval(c.id,'owner',pending!.id,decision)
+  h.chat.answerApproval(c.id,'owner',pending!.id,decision)
+  await h.close();hosts.splice(hosts.indexOf(h),1)
+  h=new Runtime(f.config,{model:f.model});hosts.push(h)
+  await settle(h,()=>independent>1&&h.activeExecutions===0)
+  expect(effects).toBe(decision==='accept'?1:0)
+  expect(h.chat.view(c.id,'owner').approvals).toHaveLength(1)
+})
+
 async function settle(h:Runtime,done:()=>boolean){for(let i=0;i<500;i++){await h.tick();await new Promise(r=>setTimeout(r,2));if(done())return}throw Error('Chat did not settle')}
 function waitForAbort(r:ModelRequest){return new Promise<void>((resolve)=>{if(r.signal?.aborted)return resolve();r.signal?.addEventListener('abort',()=>resolve(),{once:true})})}
 function enableChatBatch(h:Runtime,id:string,settings:Record<string,number>={}){

@@ -1,3 +1,5 @@
+import {SelectField} from '../ui/controls.tsx';
+import {memoryCategory,memoryCategoryLabel} from './memory-provenance.ts';
 import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -26,6 +28,7 @@ const files: FileTab[] = ['MEMORY.md', 'USER.md', 'SOUL.md', 'IDENTITY.md', 'AGE
 type InitialLearning = { enabled: boolean; editable: boolean; available: boolean; revision: number };
 type MemoryWorkspace = { contexts: Entry[]; initialLearning: InitialLearning };
 export function MemorySettings({ L }: { L: Labels }) {
+  const [category,setCategory]=useState('all');
   const [file, setFile] = useState<FileTab>('MEMORY.md'),
     [scope, setScope] = useState('personal'),
     [entries, setEntries] = useState<Entry[] | null>(null),
@@ -58,6 +61,7 @@ export function MemorySettings({ L }: { L: Labels }) {
             (f) =>
               ['active', 'candidate'].includes(f.state) &&
               f.proposalAction !== 'forget' &&
+              (file === 'USER.md' || category === 'all' || memoryCategory(f) === category) &&
               (file !== 'USER.md' || ['profile', 'preference', 'interest'].includes(f.kind ?? '')),
           )
           .map((fact) => [fact.id, { fact, entry }] as const),
@@ -328,27 +332,17 @@ export function MemorySettings({ L }: { L: Labels }) {
           <section className="settings-group">
             <div className="memory-section-title">
               <h2>{L('Saved memories', '记住的内容')}</h2>
-              <div
-                className="settings-segments"
-                role="group"
-                aria-label={L('Filter memories', '筛选记忆')}
-              >
-                {(
-                  [
-                    ['MEMORY.md', L('All', '全部')],
-                    ['USER.md', L('About you', '个人偏好')],
-                  ] as const
-                ).map(([name, label]) => (
-                  <button
-                    key={name}
-                    disabled={editing || busy}
-                    aria-pressed={file === name}
-                    onClick={() => chooseFile(name)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SelectField label={L('Filter memories','筛选记忆')} disabled={editing||busy}
+                value={file==='USER.md'?'about':category} onChange={event=>{
+                  const value=event.target.value;
+                  chooseFile(value==='about'?'USER.md':'MEMORY.md');
+                  setCategory(value==='about'?'all':value);
+                }}>
+                <option value="all">{L('All memories','全部记忆')}</option>
+                <option value="about">{L('About you','个人资料')}</option>
+                {(['preference','fact','project_decision','method'] as const).map(key=>
+                  <option key={key} value={key}>{memoryCategoryLabel(key,L)}</option>)}
+              </SelectField>
             </div>
             {entries === null ? (
               <p role="status">
@@ -390,7 +384,7 @@ export function MemorySettings({ L }: { L: Labels }) {
                 <span>
                   {file === 'USER.md'
                     ? L('No saved preferences', '还没有记下个人偏好')
-                    : L('No saved memories', '还没有记住的内容')}
+                    : category==='all'?L('No saved memories', '还没有记住的内容'):L('No memories in this category','这个分类暂无记忆')}
                 </span>
               </div>
             )}

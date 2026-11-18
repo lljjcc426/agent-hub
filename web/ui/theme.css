@@ -1,0 +1,77 @@
+@import '../../src/ui/typography.css';
+
+.roppo-ui {
+  color-scheme: light;
+  --rp-bg: #ffffff;
+  --rp-panel: #ffffff;
+  --rp-rail: #f8f8f8;
+  --rp-soft: #f5f5f5;
+  --rp-hover: #eeeeee;
+  --rp-selected: #eaeaea;
+  --rp-ink: #1b1b1b;
+  --rp-muted: #626262;
+  --rp-faint: #777777;
+  --rp-line: #e1e1e1;
+  --rp-line-strong: #b3b3b3;
+  --rp-action: #222222;
+  --rp-on-action: #ffffff;
+  --rp-focus: #676767;
+  --rp-backdrop: rgb(0 0 0 / 20%);
+  --rp-shadow: 0 3px 12px rgb(0 0 0 / 5%);
+  --rp-sheet-shadow: 0 1px 4px rgb(0 0 0 / 13%);
+  --rp-corner-control: 8px;
+  --rp-corner-field: 12px;
+  --rp-corner-object: 18px;
+  --rp-corner-panel: 22px;
+  --rp-ease: cubic-bezier(.22,.72,.2,1);
+  color: var(--rp-ink);
+  background: var(--rp-bg);
+  font: 400 var(--roppo-font-body)/1.55 "Avenir Next","PingFang SC",system-ui,sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.roppo-ui[data-theme="dark"], :root[data-theme="dark"] .roppo-ui:not([data-theme]) {
+  color-scheme: dark;
+  --rp-bg: #171717;
+  --rp-panel: #1d1d1d;
+  --rp-rail: #1b1b1b;
+  --rp-soft: #242424;
+  --rp-hover: #2e2e2e;
+  --rp-selected: #353535;
+  --rp-ink: #f2f2f2;
+  --rp-muted: #b5b5b5;
+  --rp-faint: #a3a3a3;
+  --rp-line: #363636;
+  --rp-line-strong: #696969;
+  --rp-action: #ebebeb;
+  --rp-on-action: #1b1b1b;
+  --rp-focus: #cccccc;
+  --rp-backdrop: rgb(0 0 0 / 46%);
+  --rp-shadow: 0 3px 12px rgb(0 0 0 / 12%);
+  --rp-sheet-shadow: 0 1px 4px rgb(0 0 0 / 32%);
+}
+.roppo-ui :where(*, *::before, *::after) { box-sizing: border-box; }
+.roppo-ui :where(button, input, select, textarea) { font: inherit; color: inherit; }
+.roppo-ui :where(button, a, select, summary, input, textarea):focus-visible {
+  outline: 2px solid var(--rp-focus); outline-offset: 3px;
+}
+.roppo-ui :where(button:disabled, input:disabled, select:disabled) { cursor: not-allowed; }
+.roppo-ui :where(svg) { flex: none; stroke-width: 1.65; }
+.roppo-ui .agent-portrait[data-kind="worker"] { filter: grayscale(1); }
+.roppo-ui[data-theme="dark"] :is(.rp-brand img, .agent-portrait[data-kind="router"]),
+:root[data-theme="dark"] .roppo-ui:not([data-theme]) :is(.rp-brand img, .agent-portrait[data-kind="router"]) { filter: grayscale(1) invert(1); }
+.roppo-ui[data-theme="light"] .agent-portrait[data-kind="router"] { filter: grayscale(1); }
+.rp-sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; padding: 0; border: 0;
+}
+.rp-spin, .rp-status[data-state="working"] svg { animation: rp-turn 1.7s linear infinite; }
+@keyframes rp-turn { to { transform: rotate(360deg); } }
+@keyframes rp-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes rp-drawer { from { opacity: .4; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes rp-veil { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .roppo-ui *, .roppo-ui *::before, .roppo-ui *::after, .rp-dialog::backdrop {
+    scroll-behavior: auto !important; animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important; transition-duration: .01ms !important;
+  }
+}

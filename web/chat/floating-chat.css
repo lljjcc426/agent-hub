@@ -80,29 +80,38 @@
 .floating-chat .thread:not([data-welcome]) { padding-top: var(--below-controls); }
 .floating-chat .thread:not([data-welcome]) .transcript { padding-top: 8px; scroll-padding-top: 8px; }
 .chat-float-start .member .agent-portrait[data-kind="worker"] { filter: none; }
-.floating-chat .conversation-body {
-  --float-panel-width: clamp(360px, var(--panel-size, min(43vw, 600px)), calc(100% - 396px));
-}
-.floating-chat .conversation-body:has(> .team-drawer) {
-  --float-panel-width: clamp(290px, var(--panel-size, 360px), calc(100% - 396px));
+.conversation-lane {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
 }
 .floating-chat .conversation-body > .session-panel {
-  position: absolute;
   z-index: 10;
-  inset: var(--below-controls) var(--float-right) var(--float-bottom) auto;
-  width: var(--float-panel-width);
   min-width: 0;
-  height: auto;
+  min-height: 0;
   border: 1px solid var(--c-line);
   border-radius: 18px;
   overflow: hidden;
   box-shadow: var(--float-shadow);
 }
+.floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+  position: relative;
+  inset: auto;
+  align-self: stretch;
+  margin: var(--float-top) var(--float-right) var(--float-bottom) 0;
+  width: clamp(var(--panel-min, 360px), var(--panel-size, var(--panel-default, min(43vw, 600px))), calc(100% - 394px));
+}
+.floating-chat .session-panel.team-drawer { --panel-min: 290px; --panel-default: 360px; }
 .floating-chat .session-panel > .sidebar-separator { left: 0; }
 .floating-chat .conversation-body > .session-panel.expanded,
-.floating-chat .conversation-body.panel-overlay > .session-panel { left: var(--float-left); width: auto; }
+.floating-chat .conversation-body.panel-overlay > .session-panel {
+  position: absolute;
+  inset: var(--below-controls) var(--float-right) var(--float-bottom) var(--float-left);
+  width: auto;
+}
 .floating-chat .pending-tray { top: var(--below-controls); right: var(--float-right); max-height: calc(100% - var(--below-controls) - var(--float-bottom)); }
-.floating-chat .conversation-body:not(.panel-overlay):has(> .session-panel) .pending-tray { right: calc(var(--float-right) + var(--float-panel-width) + var(--float-gap)); }
 @media (max-width: 600px) {
   .chat-shell.studio-shell.floating-chat { --float-gap: 8px; }
   .chat-float :is(.icon-button, .rp-icon-button) { width: 38px; height: 38px; }

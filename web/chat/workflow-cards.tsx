@@ -55,7 +55,7 @@ export function groupWorkflow(
   }
   const graphs=new Set<string>()
   for(const goal of snapshot.plans){
-    if(workerId)continue
+    if(workerId||!goal.steps.length)continue
     graphs.add(goal.runId)
     add(goal.runId,undefined,{kind:'plan',at:goal.createdAt,plan:{...goal,live:goal.state==='active'}},goal.state==='active')
   }

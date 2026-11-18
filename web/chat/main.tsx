@@ -1275,34 +1275,7 @@ function Chat(p: ChatProps) {
               <div className="studio-breadcrumb">
                 <span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong>
               </div>
-            </header> : <>
-              <div className="chat-float chat-float-start roppo-ui">
-                <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
-                {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
-              </div>
-              <div className="chat-float chat-float-center">
-                <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
-                  onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
-              </div>
-              <div className="chat-float chat-float-end">
-                <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
-                  aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
-                  title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
-                  <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
-                </button>
-                <button
-                  ref={teamButton}
-                  className={"icon-button" + (panel ? " selected" : "")}
-                  onClick={() => void choosePanel(panel ? null : lastView)}
-                  aria-label={L("Session panel", "会话面板")}
-                  title={L("Session panel", "会话面板")}
-                  aria-expanded={!!panel}
-                  aria-controls="session-panel"
-                >
-                  <PanelRight size={19} />
-                </button>
-              </div>
-            </>}
+            </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
             {teamSettings?<TeamSettings L={L} members={participants.map(member=>({...member,model:member.kind==='router'?ready?.model:workers.find(w=>w.id===member.id)?.model}))}/>:null}
@@ -1323,89 +1296,117 @@ function Chat(p: ChatProps) {
               }
               hidden={configuring}
             >
-              {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
-                changeTray(false);
-                if(panel)void choosePanel(null);
-                if('messageId' in card)void locateMessage(card.messageId,card.id);
-                else void locateMessage(card.id);
-              }}/>}
-              <ThreadPrimitive.Root
-                ref={threadRef}
-                className="thread"
-                data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
-                inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
-              >
-                <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
-                  <div className="transcript-inner">
-                    <ThreadPrimitive.LoadEarlier className="load-earlier">
-                      {L("Load earlier messages", "加载更早的消息")}
-                    </ThreadPrimitive.LoadEarlier>
-                    {loading ? (
-                      <div className="loading" role="status">
-                        <LoaderCircle size={22} className="spin" />
-                        {L("Loading conversation", "正在加载会话")}
+              <div className="conversation-lane">
+                <div className="chat-float chat-float-start roppo-ui">
+                  <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
+                  {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
+                </div>
+                <div className="chat-float chat-float-center">
+                  <ChatCompanion status={companionStatus(snapshot,L,{participantId:readonly?selected.id:undefined,connected,sending,loading})} L={L}
+                    onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
+                </div>
+                <div className="chat-float chat-float-end">
+                  <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
+                    aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
+                    title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
+                    <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
+                  </button>
+                  <button
+                    ref={teamButton}
+                    className={"icon-button" + (panel ? " selected" : "")}
+                    onClick={() => void choosePanel(panel ? null : lastView)}
+                    aria-label={L("Session panel", "会话面板")}
+                    title={L("Session panel", "会话面板")}
+                    aria-expanded={!!panel}
+                    aria-controls="session-panel"
+                  >
+                    <PanelRight size={19} />
+                  </button>
+                </div>
+                {trayVisible&&<PendingTray cards={pendingCards} loading={!snapshot&&loading} close={closeTray} locate={card=>{
+                  changeTray(false);
+                  if(panel && (panelOverlay || panelExpanded))void choosePanel(null);
+                  if('messageId' in card)void locateMessage(card.messageId,card.id);
+                  else void locateMessage(card.id);
+                }}/>}
+                <ThreadPrimitive.Root
+                  ref={threadRef}
+                  className="thread"
+                  data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
+                  inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
+                >
+                  <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
+                    <div className="transcript-inner">
+                      <ThreadPrimitive.LoadEarlier className="load-earlier">
+                        {L("Load earlier messages", "加载更早的消息")}
+                      </ThreadPrimitive.LoadEarlier>
+                      {loading ? (
+                        <div className="loading" role="status">
+                          <LoaderCircle size={22} className="spin" />
+                          {L("Loading conversation", "正在加载会话")}
+                        </div>
+                      ) : null}
+                      <ThreadPrimitive.Empty>
+                        <div className="empty-state">
+                          {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:null}
+                          <h1>
+                            {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
+                          </h1>
+                        </div>
+                      </ThreadPrimitive.Empty>
+                      <ThreadPrimitive.Messages
+                        components={{ UserMessage, AssistantMessage }}
+                      />
+                      <WorkflowCards anchor="pending"/>
+                      {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
+                        <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
+                        <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
+                      </div>)}
+                      {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
+                        <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
+                      </div>:null}
+                    </div>
+                  </ThreadPrimitive.Viewport>
+                  <div className="composer-area">
+                    <button type="button" className="scroll-bottom" data-visible={!motion.atBottom||!!around} tabIndex={!motion.atBottom||around?0:-1} aria-hidden={motion.atBottom&&!around} aria-label={L("Scroll to latest", "回到最新消息")} onClick={latestMessages}>
+                      <ArrowDown size={16}/>{motion.unread?<span>{L('New messages','有新消息')}</span>:around?<span>{L('Back to latest','回到最新')}</span>:null}
+                    </button>
+                    {error ? (
+                      <ErrorNotice code={error} clear={() => setError("")} />
+                    ) : null}
+                    {!connected ? (
+                      <div className="connection-state" role="status">
+                        <RefreshCw size={14} />
+                        {L(
+                          "Reconnecting… Your work continues.",
+                          "正在重连，任务仍在继续。",
+                        )}
                       </div>
                     ) : null}
-                    <ThreadPrimitive.Empty>
-                      <div className="empty-state">
-                        {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:null}
-                        <h1>
-                          {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
-                        </h1>
-                      </div>
-                    </ThreadPrimitive.Empty>
-                    <ThreadPrimitive.Messages
-                      components={{ UserMessage, AssistantMessage }}
-                    />
-                    <WorkflowCards anchor="pending"/>
-                    {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
-                      <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
-                      <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
-                    </div>)}
-                    {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
-                      <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
-                    </div>:null}
+                    <Readiness ready={ready} />
+                    {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
+                      <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
+                      <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
+                      <ComposerControls visible={!configuring} L={L} sending={sending} router={currentRouter.label}
+                        model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
+                        uploadDisabled={sending || loadingAttachments || !ready?.ready}
+                        onContext={() => revealCard('context')} saveMode={p.saveApprovalMode}
+                        onModelSaved={id ? refresh : p.refreshReady}
+                        onEnter={text => {
+                          if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }
+                          runtime.thread.composer.send();
+                        }}/>
+                    </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                   </div>
-                </ThreadPrimitive.Viewport>
-                <div className="composer-area">
-                  <button type="button" className="scroll-bottom" data-visible={!motion.atBottom||!!around} tabIndex={!motion.atBottom||around?0:-1} aria-hidden={motion.atBottom&&!around} aria-label={L("Scroll to latest", "回到最新消息")} onClick={latestMessages}>
-                    <ArrowDown size={16}/>{motion.unread?<span>{L('New messages','有新消息')}</span>:around?<span>{L('Back to latest','回到最新')}</span>:null}
-                  </button>
-                  {error ? (
-                    <ErrorNotice code={error} clear={() => setError("")} />
-                  ) : null}
-                  {!connected ? (
-                    <div className="connection-state" role="status">
-                      <RefreshCw size={14} />
-                      {L(
-                        "Reconnecting… Your work continues.",
-                        "正在重连，任务仍在继续。",
-                      )}
-                    </div>
-                  ) : null}
-                  <Readiness ready={ready} />
-                  {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
-                    <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
-                    <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                    <ComposerControls visible={!configuring} L={L} sending={sending} router={currentRouter.label}
-                      model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
-                      uploadDisabled={sending || loadingAttachments || !ready?.ready}
-                      onContext={() => revealCard('context')} saveMode={p.saveApprovalMode}
-                      onModelSaved={id ? refresh : p.refreshReady}
-                      onEnter={text => {
-                        if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }
-                        runtime.thread.composer.send();
-                      }}/>
-                  </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
-                </div>
-                {!readonly && !loading && !snapshot?.messages.length && !sending && !running ? <div className="starter-actions">
-                  {[
-                    {Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
-                    {Icon:UsersRound,label:L("Meet the team","查看分工"),text:L("Which Agents are in this workspace and what can they do?","我的团队里有哪些 Agent？各自负责什么？")},
-                    {Icon:FileText,label:L("Draft a brief","起草简报"),text:L("Draft a short progress brief for this release.","帮我起草一份发布进度简报。")}
-                  ].map(({Icon,label,text})=><button key={label} onClick={()=>{runtime.thread.composer.setText(text);threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()}}><Icon size={16}/>{label}</button>)}
-                </div>:null}
-              </ThreadPrimitive.Root>
+                  {!readonly && !loading && !snapshot?.messages.length && !sending && !running ? <div className="starter-actions">
+                    {[
+                      {Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
+                      {Icon:UsersRound,label:L("Meet the team","查看分工"),text:L("Which Agents are in this workspace and what can they do?","我的团队里有哪些 Agent？各自负责什么？")},
+                      {Icon:FileText,label:L("Draft a brief","起草简报"),text:L("Draft a short progress brief for this release.","帮我起草一份发布进度简报。")}
+                    ].map(({Icon,label,text})=><button key={label} onClick={()=>{runtime.thread.composer.setText(text);threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()}}><Icon size={16}/>{label}</button>)}
+                  </div>:null}
+                </ThreadPrimitive.Root>
+              </div>
               {panel && <aside id="session-panel" aria-label={L('Session panel', '会话面板')}
                 className={'session-panel '+(overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(panelExpanded?' expanded':''))}>
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>

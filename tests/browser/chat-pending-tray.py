@@ -41,6 +41,13 @@ with sync_playwright() as pw:
         box.fill(text)
         box.press('Enter')
 
+    panel_button=page.get_by_role('button',name='Session panel',exact=True)
+    panel=page.get_by_role('complementary',name='Session panel')
+    send('Keep going')
+    expect(page.locator('.transcript').get_by_text('Still here.',exact=True)).to_be_visible(timeout=20000)
+    panel_button.click()
+    expect(panel.get_by_text('No tasks yet', exact=True)).to_be_visible()
+    panel_button.click()
     send('Prepare the guide.')
     choice = tray.get_by_role('group', name='Which language?')
     expect(choice).to_be_visible(timeout=20000)
@@ -51,14 +58,27 @@ with sync_playwright() as pw:
     assert empty_height < one_height < tray.bounding_box()['height']
     expect(trigger).to_have_accessible_name('Pending requests · 2')
     page.screenshot(path=str(out / 'pending-desktop.png'))
-    panel_button=page.get_by_role('button',name='Session panel',exact=True)
     composer_left=page.locator('.composer').bounding_box()['x']
     panel_button.click()
     panel=page.get_by_role('complementary',name='Session panel')
     expect(panel).to_be_visible()
     expect(tray).to_be_visible()
-    assert abs(page.locator('.composer').bounding_box()['x'] - composer_left) < 1
-    assert panel.bounding_box()['y'] > panel_button.bounding_box()['y'] + panel_button.bounding_box()['height']
+    def center(el):
+        bounds=el.bounding_box()
+        return bounds['x']+bounds['width']/2
+    lane=page.locator('.conversation-lane')
+    sidebar=panel.bounding_box()
+    assert page.locator('.composer').bounding_box()['x'] < composer_left
+    for el in [page.locator('.composer'),page.locator('.transcript-inner'),page.locator('.chat-companion')]:
+        assert abs(center(el)-center(lane)) < 1
+    assert abs(lane.bounding_box()['width'] - sidebar['x']) < 1
+    assert sidebar['y'] <= 16 and 0 < 960-sidebar['y']-sidebar['height'] <= 16
+    expect(panel.locator('.task-activity')).to_have_count(1)
+    activity=panel.locator('.task-activity')
+    activity_id=activity.get_attribute('data-activity-id')
+    activity.locator('summary').click()
+    expect(activity).to_contain_text('Choose language')
+    page.screenshot(path=str(out/'session-panel-split.png'))
     transcript=page.locator('.transcript').bounding_box()
     mascot=page.locator('.chat-companion').bounding_box()
     assert transcript['y'] >= mascot['y'] + mascot['height']
@@ -73,12 +93,15 @@ with sync_playwright() as pw:
     page.reload()
     expect(file).to_be_visible()
     expect(choice).to_be_visible()
+    panel_button.click()
     choice.locator('strong',has_text='Which language?').first.click()
+    expect(panel).to_be_visible()
     expect(tray).to_have_count(0)
     marked=page.locator('.transcript [data-located]')
     expect(marked).to_have_count(1)
     expect(marked).to_contain_text('Which language?')
     expect(marked).to_be_focused()
+    panel_button.click()
     expect(marked).to_have_count(0,timeout=5000)
     trigger.click()
     page.set_viewport_size({'width':390,'height':430})
@@ -104,6 +127,10 @@ with sync_playwright() as pw:
     member=page.get_by_role('button',name='@Research',exact=True).first
     member.click()
     expect(page.locator('.worker-readonly textarea')).to_be_disabled()
+    panel_button.click()
+    expect(activity).to_have_count(1)
+    expect(activity).to_have_attribute('data-activity-id',activity_id)
+    panel_button.click()
     expect(approval).to_be_visible()
     approval.locator('xpath=ancestor::li[1]').get_by_role('button',name='Go to original message').click()
     expect(tray).to_have_count(0)
@@ -120,6 +147,12 @@ with sync_playwright() as pw:
     page.keyboard.press('Escape')
     expect(tray).to_have_count(0)
     expect(trigger).to_be_focused()
+    panel_button.click()
+    expect(activity).to_have_count(1)
+    expect(activity).to_have_attribute('data-activity-id', activity_id)
+    activity.locator('summary').click()
+    expect(activity.locator('.task-activity-detail')).to_contain_text('Verify the layout')
+    panel_button.click()
     for i in range(1, 7):
         send(f'Choose a language for draft {i}.')
         expect(trigger).to_have_accessible_name(f'Pending requests · {i}',timeout=15000)

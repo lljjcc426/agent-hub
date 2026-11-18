@@ -20,6 +20,7 @@ export const publicPlanSchema = z.object({ title: label, steps }).strict()
 export type PublicPlan = z.infer<typeof publicPlanSchema>
 export interface ChatPlan extends PublicPlan {
   createdAt?:number
+  updatedAt?:number
   id: string
   conversationId: string
   runId: string
@@ -70,7 +71,8 @@ export function goalPlan(goal: RouterGoal) {
   const steps = goal.nodes?.length
     ? goal.nodes.map((n) => ({ id: n.id, title: n.title, state: states[n.state], workerId: n.workerId }))
     : goal.plan.map((title, i) => ({ id: String(i), title, state: undefined, workerId: undefined }))
-  return { id: goal.id, runId: goal.triggerId, createdAt:goal.at,title: goal.title, state: goal.state, steps }
+  return { id: goal.id, runId: goal.triggerId, createdAt:goal.at, title: goal.title, objective: goal.objective, nextAction: goal.nextAction, state: goal.state, steps,
+    ticketIds: [...new Set([...(goal.taskIds ?? []), ...(goal.nodes ?? []).flatMap(node => node.ticketId ? [node.ticketId] : [])])] }
 }
 export interface NativeQuestion {
   id: string

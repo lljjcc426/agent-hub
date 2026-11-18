@@ -21,6 +21,7 @@ import type { ChatDelivery } from '../../src/chat-deliveries.ts'
 import type { Timing } from '../../src/schedule-time.ts'
 import { downloadUrl } from './delivery-links.ts'
 import { AgentAvatar } from './agent-avatar.tsx'
+import { taskActivities } from './task-activity.ts'
 
 const DeliveryMarkdown = lazy(() => import('./markdown.tsx').then((m) => ({ default: m.FileMarkdown })))
 
@@ -221,11 +222,19 @@ export function TeamOverview({
   const [busy, setBusy] = useState<string[]>([]),
     [error, setError] = useState('')
   const titles = { activity: L('Overview', '概览'), agents: 'Agents', schedules: L('Schedules', '定时') }
-  const tasks = [...(snapshot?.tasks ?? [])].sort((a, b) => b.updatedAt - a.updatedAt)
+  const activities = snapshot ? taskActivities(snapshot) : []
   const files = snapshot?.deliveries ?? [],
     plans = snapshot?.schedules ?? []
   const taskStatus = (state: string) =>
     ({
+      pending: L('Pending', '待开始'),
+      planned: L('Planned', '已计划'),
+      active: L('Working', '进行中'),
+      reviewing: L('In review', '验收中'),
+      needs_input: L('Needs input', '待补充'),
+      paused: L('Paused', '已暂停'),
+      blocked: L('Blocked', '受阻'),
+      held: L('On hold', '已搁置'),
       queued: L('Queued', '排队中'),
       running: L('Working', '进行中'),
       completed: L('Complete', '已完成'),
@@ -319,19 +328,30 @@ export function TeamOverview({
           <>
             {cards && <div className="roppo-ui team-card-stack">{cards}</div>}
             <h3>{L('Tasks', '任务动态')}</h3>
-            {tasks.length ? (
-              tasks.map((t) => (
-                <button key={t.id} className="team-row" onClick={() => select(t.workerId)}>
-                  <AgentAvatar id={t.workerId} kind="worker" size={31} />
-                  <span>
-                    <strong>{t.title}</strong>
-                    <small>
-                      {participants.find((a) => a.id === t.workerId)?.label ?? t.workerId} ·{' '}
-                      {t.reviewing ? L('In review', '验收中') : taskStatus(t.state)}
-                    </small>
-                  </span>
-                  <ChevronRight size={15} />
-                </button>
+            {activities.length ? (
+              activities.map(activity => (
+                <details key={activity.id} className="task-activity" data-activity-id={activity.id}>
+                  <summary className="team-row">
+                    <List size={19} aria-hidden="true"/>
+                    <span><strong>{activity.title}</strong><small>{taskStatus(activity.state)}</small></span>
+                    <ChevronRight size={15} aria-hidden="true"/>
+                  </summary>
+                  <div className="task-activity-detail">
+                    {activity.objective && activity.objective !== activity.title && <p>{activity.objective}</p>}
+                    {activity.nextAction && !activity.steps.length && <p>{activity.nextAction}</p>}
+                    {activity.steps.length > 0 && <ol>{activity.steps.map(step =>
+                      <li key={step.id}>{step.title}{step.state && <small>{taskStatus(step.state)}</small>}</li>
+                    )}</ol>}
+                    {activity.tickets.map(ticket => <div key={ticket.id}>
+                      {ticket.title !== activity.title && <strong>{ticket.title}</strong>}
+                      <button type="button" onClick={() => select(ticket.workerId)}>
+                        {participants.find(p => p.id === ticket.workerId)?.label ?? ticket.workerId} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state)}
+                        <ArrowUpRight size={13}/>
+                      </button>
+                      {(ticket.question || ticket.summary) && <p>{ticket.question || ticket.summary}</p>}
+                    </div>)}
+                  </div>
+                </details>
               ))
             ) : (
               <p>{L('No tasks yet', '暂无任务')}</p>

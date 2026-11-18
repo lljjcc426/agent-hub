@@ -29,11 +29,31 @@ function led(ok, done = true) {
 }
 function updateBar() {
   updatePromptActions()
+  const groups = changed()
+  const count = groups.length
+  const promptSave = document.getElementById('prompt-rules-save')
+  const show = S.authed && (count || S.errors.size || S.latest) &&
+    (!promptSave || groups.some(key => key !== 'prompts') || [...S.errors.keys()].some(path => !path.startsWith('prompts')))
+  if (typeof configurationHost !== 'undefined' && configurationHost) {
+    const notice = S.notice
+    configurationHost.settings({
+      draft: show ? { count, invalid: S.errors.keys().next().value, conflict: !!S.latest } : null,
+      busy: S.busy || (entryState.busy ? 'working' : ''),
+      blocked: !!S.busy || !!entryState.busy,
+      notice,
+      dismiss: () => { if (notice && S.notice === notice) { S.notice = null; updateBar() } },
+      save: () => S.latest ? revealRecovery() : save(),
+      savePrompts: entryState.page === 'prompts' && groups.includes('prompts') && count > 1 && !S.latest
+        ? () => save(['prompts']) : null,
+      discard: applyDiscardDraft,
+      intake: entryState.page === 'advanced' && entryState.advancedPage === 'intake' && S.authed && S.draft
+        ? intakeEditor() : null
+    })
+    return
+  }
   const bar = document.getElementById('savebar')
   if (!bar) return
-  const count = changed().length,
-    show = S.authed && (dirty() || S.latest) && (!document.getElementById('prompt-rules-save') || changed().some(key => key !== 'prompts') || [...S.errors.keys()].some(path => !path.startsWith('prompts'))),
-    was = bar.hidden
+  const was = bar.hidden
   bar.hidden = !show
   if (!show) return
   const msg = S.errors.size
@@ -320,13 +340,15 @@ function discardDraft() {
   confirmWorkspaceAction(
     L('Discard configuration draft?', '放弃配置草稿？'),
     L('All unsaved configuration changes will be discarded.', '所有未保存的配置更改都会被放弃。'),
-    L('Discard changes', '放弃更改'), () => {
-      if (S.latest) S.snap = S.latest
-      resetDraft(S.snap.current)
-      setNotice('success', 'Draft discarded.', '已放弃草稿。')
-      render()
-    }
+    L('Discard changes', '放弃更改'), applyDiscardDraft
   )
+}
+function applyDiscardDraft() {
+  if (!S.authed || S.busy || entryState.busy) return
+  if (S.latest) S.snap = S.latest
+  resetDraft(S.snap.current)
+  setNotice('success', 'Draft discarded.', '已放弃草稿。')
+  render()
 }
 async function disconnect() {
   if ((dirty() || entryHasDraft()) && !confirm(L('Disconnect and discard this draft?', '断开连接并放弃当前草稿？'))) return

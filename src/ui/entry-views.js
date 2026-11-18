@@ -542,7 +542,7 @@ function renderEntrySurface() {
     const status=el('p',entryState.error?'workspace-load-error':'workspace-loading',entryState.error?L('Couldn’t load this page.','页面加载失败。'):L('Loading…','加载中…'))
     status.setAttribute('role',entryState.error?'alert':'status');main.append(status)
     if(entryState.error)main.append(action(L('Retry','重试'),startEntrySession,'button'))
-    app.replaceChildren(main);return
+    app.replaceChildren(main);updateBar();return
   }
   if (!entryState.sessionChecked) {
     document.documentElement.lang = lang

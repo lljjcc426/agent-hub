@@ -181,3 +181,9 @@ body:has(.rp-dialog[open]) { overflow: hidden; }
   .rp-message-actions :is(.rp-icon-button,.copy-button), .rp-popover .rp-icon-button { min-width: 36px; min-height: 36px; }
   .rp-send, .rp-composer .rp-icon-button { min-width: 38px; min-height: 38px; }
 }
+
+.rp-textarea {
+  display: block; width: 100%; min-height: 76px; resize: vertical; padding: 9px 12px;
+  border: 1px solid var(--rp-line); border-radius: var(--rp-corner-field);
+  background: var(--rp-panel); color: var(--rp-ink); font: inherit;
+}

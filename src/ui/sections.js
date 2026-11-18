@@ -32,6 +32,27 @@ function sourceSettings(sourceId) {
       raw(Object.fromEntries(Object.entries(source).filter(([key]) => !permittedSource().includes(key)))))
   )
 }
+function intakeEditor() {
+  const writable = key => S.authed && !S.busy && !entryState.busy && keys().includes(key)
+  function edit(path, value) {
+    if (!writable(path.split('.')[0])) return
+    clearRelated(path)
+    set(S.draft, path, value)
+    if (S.notice?.level === 'success') S.notice = null
+    if (S.latest) render()
+    else updateBar()
+  }
+  const rules = S.draft.rules || []
+  return {
+    mode: S.draft.acceptMode,
+    rules: rules.map(rule => ({ ...rule })),
+    modeEditable: writable('acceptMode'), rulesEditable: writable('rules'),
+    select: value => edit('acceptMode', value),
+    changeRule: (index, field, value) => edit('rules.' + index + '.' + field, value),
+    addRule: () => edit('rules', [...rules, { id: '', instruction: '' }]),
+    removeRule: index => edit('rules', rules.filter((_, i) => i !== index))
+  }
+}
 function renderPolicy() {
   const rules = S.draft.rules || []
   const editRules = rules.map((rule, i) =>
@@ -237,6 +258,7 @@ function renderWorkspaceSettings() {
       runtime: L('Run limits and isolation', '运行限制与隔离'), json: L('Configuration editor', '配置编辑器'),
       revisions: L('Version history', '版本记录')}
     const title = names[page] || tabs.find(([key]) => key === page)?.[1]
+    if (page === 'intake') return [opHeading(title, null)]
     return [opHeading(title, null), add(el('div', 'workspace-settings settings-stack'), ...views[page]())]
   }
   return [opHeading(L('Settings', '设置'), null),

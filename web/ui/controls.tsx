@@ -6,6 +6,7 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react'
 import { Check, ChevronDown, LoaderCircle } from 'lucide-react'
 import { SelectionIndicator } from './transitions.tsx'
@@ -69,6 +70,12 @@ export function TextField({
       <input {...props} aria-label={label} />
     </label>
   )
+}
+
+export function TextAreaField({
+  label, ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string }) {
+  return <textarea {...props} className={'rp-textarea ' + (props.className || '')} aria-label={label} />
 }
 
 export function SelectField({

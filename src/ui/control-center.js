@@ -186,9 +186,13 @@ function controlPrompts() {
   const page = el('section', 'prompt-rules-page')
   const preview = opButton(L('Preview instructions', '预览指令'), openPromptPreview, 'button')
   preview.id = 'prompt-rules-preview'
-  const saveButton = opButton(L('Save changes', '保存更改'), () => S.latest ? revealRecovery() : save(['prompts']), 'button primary')
-  saveButton.id = 'prompt-rules-save'
-  page.append(opHeading(L('Behavior rules', '行为规则'), null, preview, saveButton))
+  const actions = [preview]
+  if (typeof configurationHost === 'undefined' || !configurationHost) {
+    const saveButton = opButton(L('Save changes', '保存更改'), () => S.latest ? revealRecovery() : save(['prompts']), 'button primary')
+    saveButton.id = 'prompt-rules-save'
+    actions.push(saveButton)
+  }
+  page.append(opHeading(L('Behavior rules', '行为规则'), null, ...actions))
   const roles = [['shared', L('General rules', '通用规则')], ['router', L('Router rules', 'Router 规则')], ['worker', L('Worker rules', 'Worker 规则')]]
   const tabs = el('div', 'prompt-rules-tabs')
   tabs.setAttribute('role', 'tablist')

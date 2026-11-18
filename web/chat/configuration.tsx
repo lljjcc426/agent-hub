@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {createPortal} from "react-dom";
 import {BrowserPanel} from './browser.tsx';
+import { IntakeEditor, SettingsFeedback, publishSettings } from './settings-editor.tsx';
 import {ChatSettings} from './chat-settings.tsx';
 import {MemorySettings} from "./memory.tsx";
 import type { mount } from "virtual:configuration-content";
@@ -26,7 +27,12 @@ async function prepare() {
         memoryElement = document.createElement("div");
         chatElement = document.createElement("div");
         browserElement = document.createElement("div");
-        controller = module.mount({ element, active, memory: () => memoryElement!, chat: () => chatElement!, browser: () => browserElement! });
+        controller = module.mount({
+          element, active, settings: publishSettings,
+          memory: () => memoryElement!,
+          chat: () => chatElement!,
+          browser: () => browserElement!,
+        });
       })
       .catch((error) => {
         pending = undefined;
@@ -92,27 +98,35 @@ export function Configuration({
   useEffect(() => {
     controller?.language(language);
   }, [language]);
+  const intake = visible && route.split("#")[1] === "advanced/intake";
   return (
-    <section
-      ref={viewport}
-      className="configuration-outlet"
-      hidden={!visible}
-      aria-label={language === "en" ? "Workspace content" : "工作区内容"}
-    >
-      <div ref={outlet} />
-      {visible && route.split("#")[1] === "advanced/memory" && memoryTarget ? createPortal(<MemorySettings L={(en, zh) => language === "en" ? en : zh}/>, memoryTarget) : null}
-      {visible && route.split("#")[1] === "advanced/chat" && chatTarget ? createPortal(<ChatSettings L={(en, zh) => language === "en" ? en : zh}/>, chatTarget) : null}
-      {visible && route.split("#")[1] === "advanced/browser" && browserTarget ? createPortal(<BrowserPanel settingsOnly L={(en,zh)=>language==="en"?en:zh}/>, browserTarget) : null}
-      {error ? (
-        <button
-          className="configuration-retry"
-          onClick={() => location.reload()}
-        >
-          {language === "en"
-            ? "Couldn’t load this page. Reload"
-            : "页面加载失败，重新加载"}
-        </button>
-      ) : null}
-    </section>
+    <>
+      <section
+        ref={viewport}
+        className="configuration-outlet"
+        hidden={!visible}
+        data-intake={intake || undefined}
+        aria-label={language === "en" ? "Workspace content" : "工作区内容"}
+      >
+        <div>
+          <div ref={outlet} />
+          {intake && <IntakeEditor language={language} />}
+        </div>
+        {visible && route.split("#")[1] === "advanced/memory" && memoryTarget ? createPortal(<MemorySettings L={(en, zh) => language === "en" ? en : zh}/>, memoryTarget) : null}
+        {visible && route.split("#")[1] === "advanced/chat" && chatTarget ? createPortal(<ChatSettings L={(en, zh) => language === "en" ? en : zh}/>, chatTarget) : null}
+        {visible && route.split("#")[1] === "advanced/browser" && browserTarget ? createPortal(<BrowserPanel settingsOnly L={(en,zh)=>language==="en"?en:zh}/>, browserTarget) : null}
+        {error ? (
+          <button
+            className="configuration-retry"
+            onClick={() => location.reload()}
+          >
+            {language === "en"
+              ? "Couldn’t load this page. Reload"
+              : "页面加载失败，重新加载"}
+          </button>
+        ) : null}
+      </section>
+      {visible && !error && <SettingsFeedback language={language} />}
+    </>
   );
 }

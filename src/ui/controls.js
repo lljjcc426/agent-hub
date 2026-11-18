@@ -164,7 +164,7 @@ const badge = (label, kind = '') => el('span', 'badge ' + kind, label)
 const notReported = () => L('Not reported', '未报告')
 function setNotice(level, en, zh, details = '') {
   S.notice = { level, en, zh, details }
-  announce(L(en, zh))
+  if (typeof configurationHost === 'undefined' || !configurationHost) announce(L(en, zh))
 }
 function announce(message) {
   document.getElementById('announcer').textContent = message

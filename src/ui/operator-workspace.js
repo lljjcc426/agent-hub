@@ -450,20 +450,20 @@ function renderOperatorWorkspace(){
     content.append(state)
   } else content.append(...(views[entryState.page] || opTasks)().filter(Boolean))
   main.append(content)
-  if (S.notice || S.busy && S.busy !== 'connect') main.prepend(noticeView())
-  if (entryState.busy) main.append(el('p','entry-progress',L('Working…','正在处理…')))
-  const savebar = el('div', 'savebar')
-  savebar.id = 'savebar'
-  savebar.hidden = document.getElementById('savebar')?.hidden ?? true
   if(typeof configurationHost !== 'undefined' && configurationHost) {
     const dialog=opTaskDialog()
-    root.append(main,savebar)
+    root.append(main)
     if(dialog)root.append(dialog)
     app.replaceChildren(root)
     updateBar()
     if(dialog && configurationHost.active())dialog.showModal()
     return
   }
+  if (S.notice || S.busy && S.busy !== 'connect') main.prepend(noticeView())
+  if (entryState.busy) main.append(el('p','entry-progress',L('Working…','正在处理…')))
+  const savebar = el('div', 'savebar')
+  savebar.id = 'savebar'
+  savebar.hidden = document.getElementById('savebar')?.hidden ?? true
   const body = add(el('div','main-shell'),top,main,savebar)
   const scrim=opButton(L('Close navigation background','关闭导航背景'),()=>setOperatorMenu(false),'nav-scrim')
   shell.append(rail,scrim,body);const skip=el('a','skip',L('Skip to content','跳至主要内容'));skip.href='#main';root.append(skip,shell);const dialog=opTaskDialog();if(dialog)root.append(dialog);app.replaceChildren(root)

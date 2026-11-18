@@ -5,6 +5,7 @@ declare module "virtual:configuration-content" {
     memory: () => HTMLElement;
     chat: () => HTMLElement;
     browser: () => HTMLElement;
+    settings: (state: import("./settings-editor.tsx").SettingsEditorState) => void;
   }): {
     activate: (language: string) => void;
     language: (language: string) => void;

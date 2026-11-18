@@ -24,18 +24,9 @@ export function validatePluginValue(schema:Record<string,unknown>,value:unknown,
  const validate=new Ajv2020({strict:false,validateFormats:false}).compile(schema)
  if(!validate(value))throw Error('Invalid execution backend '+label)
 }
-export function validateHarnessPackages(config:Config,packages?:Map<string,BackendPackage>){
- for(const profile of [config.execution.router,...config.execution.workers??[]]){
-  if(!profile?.harness)continue
-  packages??=backendPackages(config)
-  const engine=config.backends[profile.harness],source=config.backends[profile.backend??config.execution.roles.router??config.execution.backend]
-  if(engine?.kind!=='plugin'||!source||source.kind==='plugin'||source.kind==='codex'||!packages.get(engine.plugin)?.manifest.capabilities.harnessProtocols?.includes(source.kind))throw Error('Install an OpenCode backend package that supports the selected API protocol')
- }
-}
 /** Startup transaction. Code revisions never restore a task DB or silently migrate native sessions. */
 export function activateBackendPackages(store:Store,config:Config){
  const packages=backendPackages(config)
- validateHarnessPackages(config,packages)
  for(const backend of Object.values(config.backends))if(backend.kind==='plugin'&&!packages.has(backend.plugin))throw Error('Unknown execution backend plugin: '+backend.plugin)
  const unfinished=()=>store.tickets.open().length>0||store.list<any>('router-goal').some(g=>!['completed','cancelled'].includes(g.state))||store.deliveries().some(d=>['pending','sending','uncertain','held'].includes(d.status))||store.list<any>('tool-receipt').some(r=>['running','uncertain'].includes(r.state))||store.list<any>('backend-plugin-tool').some(r=>r.state==='running')||store.list<any>('backend-plugin-thread').some(r=>r.state==='running')||store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('pending','running') LIMIT 1").get()
  for(const [id,definition] of Object.entries(config.backends))if(definition.kind==='plugin'){

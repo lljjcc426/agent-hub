@@ -19,6 +19,7 @@ deployment/*.plist
 .DS_Store
 
 /dist/chat/
+/dist/engines/
 
 # Private design notes, local acceptance output, and Python caches.
 /.impeccable/

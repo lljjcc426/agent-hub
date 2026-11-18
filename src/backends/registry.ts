@@ -1,11 +1,13 @@
 import {openHarnessProvider} from './harness-provider.ts'
+import {probeSandbox,type SandboxDriver} from '../sandbox.ts'
 import {hostPrivateFiles} from '../private-files.ts'
-import {resolve} from 'node:path'
+import {join,resolve} from 'node:path'
 import {realpathSync,existsSync} from 'node:fs'
 import {stableDigest} from '../sources.ts'
 import {nativeToolFor} from '../cli-native-tools.ts'
 import {ProcessBackend,pluginIdentity} from './plugin-process.ts'
-import {backendPackages} from './plugin-package.ts'
+import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from './bundled-opencode.ts'
+import {backendObjects,backendPackages,readBackendPackage,type BackendPackage} from './plugin-package.ts'
 import type {Config} from '../config.ts'
 import {validateBackendSelection,type BackendDefinition,type AgentOptions,type ApiDefinition,isApiBackend} from '../backend-config.ts'
 import {mergeOptions,apiOptions} from '../agent-options.ts'
@@ -16,10 +18,12 @@ import type {BackendDescription,Model,ModelRequest,ModelResult} from '../model.t
 import {ApiModel,type ThreadStore} from './api.ts'
 interface Binding {
  id:string;kind:string;endpoint?:string;identity?:string
- harness?:string;harnessIdentity?:string;harnessModel?:string;harnessAccount?:string
+ harness?:string;harnessIdentity?:string;harnessDigest?:string;harnessModel?:string;harnessAccount?:string
 }
 /** New work follows role settings; existing conversations stay bound to their original backend. */
 export class BackendRegistry implements Model {
+ private sandboxCheck?:{driver:SandboxDriver;codex:string;available:Promise<boolean>}
+ private bundled?:Promise<BackendPackage>
  private writers=new Set<string>()
  constructor(private config:Config,private store:ThreadStore){validateBackendSelection(config)}
  selected(role:'router'|'worker'|'subagent'='worker'){return (role==='router'?this.config.execution.router?.backend:undefined)??this.config.execution.roles[role]??this.config.execution.backend}
@@ -37,16 +41,21 @@ export class BackendRegistry implements Model {
   if(threadId.startsWith('api:')||threadId.startsWith('plugin:'))throw Error('Thread has no backend binding')
   return 'codex' // Pre-registry native Codex conversations retain their original executor.
  }
- private harness(id:string,engineId:string){
-  const api=this.definition(id),engine=this.definition(engineId)
-  if(api.kind==='codex'||api.kind==='plugin'||engine.kind!=='plugin'||engine.plugin!=='opencode-cli')throw Error('Invalid model and OpenCode harness combination')
-  const pkg=backendPackages(this.config).get(engine.plugin)
-  if(!pkg?.manifest.capabilities.harnessProtocols?.includes(api.kind))throw Error('Install an OpenCode backend package that supports the selected API protocol')
+ private harness(id:string,engineId:string,bundled?:BackendPackage){
+  const api=this.definition(id)
+  if(!isApiBackend(api))throw Error('A harness requires an API model connection')
+  if(engineId===bundledEngineId&&(!bundled||!bundledCLI))throw Error('This conversation requires the OpenCode runtime shipped with Roppo')
+  const engine=engineId===bundledEngineId&&bundledCLI
+   ?{kind:'plugin' as const,plugin:'opencode-cli',config:{...bundledCLI,args:undefined},readPaths:[bundledCLI.command]}
+   :this.definition(engineId)
+  if(engine.kind!=='plugin'||engine.plugin!=='opencode-cli')throw Error('The original OpenCode engine is unavailable')
+  const pkg=bundled??backendPackages(this.config).get(engine.plugin)
+  if(pkg?.manifest.id!=='opencode-cli'||!pkg.manifest.capabilities.harnessProtocols?.includes(api.kind))throw Error('OpenCode adapter does not support the bound protocol')
   const {command,args,cliVersion}=engine.config
   const definition={kind:'plugin' as const,plugin:engine.plugin,env:{},readPaths:engine.readPaths,writePaths:[],
    config:{command,...(args?{args}:{}),cliVersion,apiProtocol:api.kind}}
   const identity=stableDigest([engineId,pluginIdentity(definition,pkg),api.headers,api.headerEnv,api.apiKeyEnv,api.subscription?.account])
-  return {api,identity,model:new ProcessBackend(id,definition,pkg,this.config,this.store,true)}
+  return {api,identity,digest:pkg.digest,model:new ProcessBackend(id,definition,pkg,this.config,this.store,true)}
  }
  private harnessSubscription(id:string,subscription:NonNullable<ApiDefinition['subscription']>,principal:ModelRequest['principal'],previous?:Binding){
   const accounts=new SubscriptionAccounts(this.config.stateDir)
@@ -68,10 +77,28 @@ export class BackendRegistry implements Model {
    return token
   }}
  }
+ private pinnedBundle(binding:Binding){
+  if(binding.harness!==bundledEngineId)return undefined
+  if(!binding.harnessDigest||!/^[a-f0-9]{64}$/.test(binding.harnessDigest))throw Error('Bundled engine session has no valid package identity')
+  return readBackendPackage(join(backendObjects(this.config.stateDir),binding.harnessDigest),binding.harnessDigest)
+ }
+ private presetSandboxAvailable(){
+  const driver=this.config.work.sandboxDriver,codex=this.config.codex
+  if(driver==='disabled')return false
+  if(this.sandboxCheck?.driver!==driver||this.sandboxCheck.codex!==codex){
+   // Probe before binding a new session. A host without process isolation retains its direct API tools.
+   this.sandboxCheck={driver,codex,available:probeSandbox(driver,codex).then(check=>check.verified,()=>false)}
+  }
+  return this.sandboxCheck.available
+ }
+ private prepareBundle(){
+  this.bundled??=prepareBundledOpenCode(this.config.stateDir).catch(error=>{this.bundled=undefined;throw error})
+  return this.bundled
+ }
  private threadModel(threadId:string,deleting=false,id=this.forThread(threadId,deleting)){
   const saved=this.store.get<Binding>('backend-binding',threadId)
   if(!saved?.harness)return this.model(id)
-  const engine=this.harness(id,saved.harness)
+  const engine=this.harness(id,saved.harness,this.pinnedBundle(saved))
   if(engine.identity!==saved.harnessIdentity)throw Error('Bound harness configuration changed; explicit migration required')
   return engine.model
  }
@@ -105,10 +132,10 @@ export class BackendRegistry implements Model {
    if(!sub.backgroundAuthorized||!r.principal||r.principal.source!==sub.owner.source||r.principal.actor!==sub.owner.actor)throw Error('Subscription requires its owner and authorized background activity')
   }
   const previous=r.threadId?this.store.get<Binding>('backend-binding',r.threadId):undefined
-  const engineId=r.threadId?previous?.harness:hostedTurn&&profileBackend===id?profile?.harness:undefined
-  const engine=engineId?this.harness(id,engineId):undefined
-  if(engine&&previous&&engine.identity!==previous.harnessIdentity)throw Error('Bound harness configuration changed; explicit migration required')
-  if(engine&&hostedTurn&&(profile?.harness!==engineId||profileBackend!==id))throw Error('Role harness changed; start a new session or migrate this task')
+  // The bundled text harness requires a managed sandbox. Vision connections retain the image-capable API executor.
+  const eligible=hostedTurn&&bundledCLI&&isApiBackend(definition)&&!definition.images
+  let engineId=previous?.harness
+  if(!r.threadId&&eligible&&await this.presetSandboxAvailable())engineId=bundledEngineId
   if(r.threadId&&this.writers.has(r.threadId))throw Error('Backend thread already has an active writer')
   let locked=r.threadId;if(locked)this.writers.add(locked)
   const binding=this.binding(id)
@@ -119,10 +146,13 @@ export class BackendRegistry implements Model {
   r.onBackend?.(id)
   try{
    let executor:Model,runOptions=options
-   if(engine){
+   if(engineId){
+    const pkg=previous?this.pinnedBundle(previous):await this.prepareBundle()
+    const engine=this.harness(id,engineId,pkg)
+    if(previous&&engine.identity!==previous.harnessIdentity)throw Error('Bound harness configuration changed; explicit migration required')
     const d=apiOptions(engine.api,options)
     const model=previous?.harnessModel??r.model??profile?.model??d.model
-    Object.assign(binding,{harness:engineId,harnessIdentity:engine.identity,harnessModel:model})
+    Object.assign(binding,{harness:engineId,harnessIdentity:engine.identity,harnessModel:model,...(engineId===bundledEngineId?{harnessDigest:engine.digest}:{})})
     const authorization=d.subscription?this.harnessSubscription(id,d.subscription,r.principal,previous):undefined
     if(authorization)binding.harnessAccount=authorization.account
     harnessProvider=await openHarnessProvider(d,model,r,authorization?.credential)

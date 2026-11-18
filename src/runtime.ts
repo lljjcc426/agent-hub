@@ -416,13 +416,14 @@ export class Runtime {
     if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
-    request.onConfiguration=value=>{this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
+    let usingOpenCode=false
+    request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode';this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
-    if(profile?.harness){
+    if(this.model instanceof BackendRegistry){
       const progress=request.onProgress
       request.onProgress=event=>{
         const match=/^opencode\/(completed|failed)\/(read|glob|grep|edit)$/.exec(event)
-        if(match){
+        if(usingOpenCode&&match){
           const call=this.activity.begin('tool','opencode/'+match[2],context,activity)
           this.activity.finish(call,match[1]==='completed'?'completed':'failed')
         }

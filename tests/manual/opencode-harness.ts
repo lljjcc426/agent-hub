@@ -3,15 +3,15 @@ import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
 import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
-import {join,resolve} from 'node:path'
+import {join} from 'node:path'
 import {Runtime} from '../../src/runtime.ts'
 import {configSchema} from '../../src/config.ts'
 import {Store} from '../../src/store.ts'
 import {BackendRegistry} from '../../src/backends/registry.ts'
-import {activateBackendPackages,buildBackendPackage} from '../../src/backends/plugin-package.ts'
+import {bundledEngineId} from '../../src/backends/bundled-opencode.ts'
 import type {ModelRequest} from '../../src/model.ts'
 
-const prefix=resolve(process.argv[2]!),root=mkdtempSync(join(tmpdir(),'roppo-harness-'))
+const root=mkdtempSync(join(tmpdir(),'roppo-harness-'))
 const cwd=join(root,'task'),file=join(cwd,'endpoint.txt')
 mkdirSync(cwd);writeFileSync(file,'old-address\n')
 let step=0,router=false,writes=0,runtimeTask=false,subscription=false,hostRouter=false,direct=false
@@ -89,16 +89,12 @@ const server=createServer(async(req,res)=>{
 })
 await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok))
 const url='http://127.0.0.1:'+(server.address() as {port:number}).port+'/v1'
-const manifest=JSON.parse(readFileSync('plugins/backend-opencode/manifest.json','utf8'))
-const pkg=await buildBackendPackage(resolve('plugins/backend-opencode/index.ts'),manifest,join(root,'package'))
 process.env.ROPPO_FIXTURE_HARNESS_KEY='fixture-api-key'
 const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',cwd,allowedActors:['alice']}],work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
- backendPlugins:[{directory:pkg.directory,digest:pkg.digest}],backends:{
- api:{kind:'openai-chat',model:'sample',baseUrl:url,apiKeyEnv:'ROPPO_FIXTURE_HARNESS_KEY',maxOutputTokens:1024},
- engine:{kind:'plugin',plugin:'opencode-cli',config:{command:join(prefix,'node_modules/.bin/opencode'),cliVersion:'1.19.5'},readPaths:[prefix]}},
- execution:{backend:'api',router:{mode:'host',backend:'api',harness:'engine'},workers:[{id:'one',backend:'api',harness:'engine'}]}})
+ backends:{api:{kind:'openai-chat',model:'sample',baseUrl:url,apiKeyEnv:'ROPPO_FIXTURE_HARNESS_KEY',maxOutputTokens:1024}},
+ execution:{backend:'api',router:{mode:'host',backend:'api'},workers:[{id:'one',backend:'api'}]}})
 let store=new Store(join(config.stateDir,'state.sqlite'))
-activateBackendPackages(store,config)
+assert.deepEqual(config.backendPlugins,[]);assert.deepEqual(Object.keys(config.backends),['api'])
 const request:ModelRequest={role:'worker',activity:{workerId:'one',ticketId:'sample'},backendId:'api',managed:true,allowNativeTools:true,sandbox:'workspace-write',cwd,
  instructions:'Use the task workspace and finish the requested change.',input:'Update the endpoint and verify it.',schema:{type:'object',properties:{answer:{type:'string'}},required:['answer']},
  tools:['router_read','superagent_read','superagent_shell'].map(name=>({type:'function',name,description:name,inputSchema:{type:'object',properties:{}}})),
@@ -107,17 +103,17 @@ const request:ModelRequest={role:'worker',activity:{workerId:'one',ticketId:'sam
 try{
  let registry=new BackendRegistry(config,store)
  const quiet=await registry.run({...request,tools:[],onTool:undefined,input:'Respond with the requested JSON.'})
- assert.equal(store.get<{harness?:string}>('backend-binding',quiet.threadId)?.harness,'engine')
+ assert.equal(store.get<{harness?:string}>('backend-binding',quiet.threadId)?.harness,bundledEngineId)
  await registry.purge(quiet.threadId,cwd)
  const result=await registry.run(request)
  assert.deepEqual(JSON.parse(result.text),{answer:'done'});assert.equal(writes,1)
  assert.deepEqual(events.filter(e=>e.startsWith('opencode/')),['opencode/completed/glob','opencode/completed/grep','opencode/completed/read','opencode/completed/edit'])
+ const connection=config.backends.api!;assert(connection.kind==='openai-chat')
+ connection.images=true // Changing the fresh-session preset must preserve this active session.
  store.close();store=new Store(join(config.stateDir,'state.sqlite'));registry=new BackendRegistry(config,store)
  assert.equal((await registry.run({...request,threadId:result.threadId,input:'Confirm the previous result.'})).threadId,result.threadId)
+ connection.images=false
  assert.equal(writes,1);assert((await registry.history(result.threadId,cwd)).turns[0].items.some((i:any)=>i.name==='opencode/edit'))
- delete config.execution.workers![0]!.harness
- await assert.rejects(registry.run({...request,threadId:result.threadId}),/Role harness changed/)
- config.execution.workers![0]!.harness='engine'
  writes=0;step=0;writeFileSync(file,'old-address\n')
  const stop=new AbortController();let interrupted=''
  await assert.rejects(registry.run({...request,signal:stop.signal,onThread:id=>{interrupted=id},onProgress:e=>{if(e==='opencode/completed/edit')stop.abort()}}))
@@ -148,12 +144,13 @@ try{
  }finally{globalThis.fetch=originalFetch;subscription=false}
  assert.deepEqual([...protocols].sort(),['/v1/chat/completions','/v1/messages','/v1/responses'])
  runtimeTask=true;router=false;step=0;writeFileSync(file,'old-address\n')
- const normalConfig=configSchema.parse({...config,stateDir:join(root,'runtime-state'),models:{router:'assessment'},execution:{backend:'api',roles:{router:'api'},workers:[{id:'one',backend:'api',harness:'engine'}]},sources:[{id:'local',kind:'local',cwd,allowedActors:['alice'],sandbox:'workspace-write',workspace:{mode:'source'}}]})
+ const normalConfig=configSchema.parse({...config,stateDir:join(root,'runtime-state'),models:{router:'assessment'},execution:{backend:'api',roles:{router:'api'},workers:[{id:'one',backend:'api'}]},sources:[{id:'local',kind:'local',cwd,allowedActors:['alice'],sandbox:'workspace-write',workspace:{mode:'source'}}]})
  for(const engine of ['opencode','direct']){
   direct=engine==='direct';step=0;writeFileSync(file,'old-address\n')
   const trial=structuredClone(normalConfig)
   trial.stateDir=join(root,'runtime-'+engine)
-  if(direct)delete trial.execution.workers![0]!.harness
+  // The image-capable profile uses Roppo's multimodal API executor.
+  if(direct){const api=trial.backends.api!;assert(api.kind==='openai-chat');api.images=true}
   const host=await Runtime.create(trial)
   const start=Date.now()
   try{
@@ -173,7 +170,7 @@ try{
  }
  direct=false
  hostRouter=true;router=true;step=0
- const coordinator=await Runtime.create(configSchema.parse({...normalConfig,stateDir:join(root,'router-state'),execution:{...normalConfig.execution,router:{mode:'host',backend:'api',model:'sample',harness:'engine'}}}))
+ const coordinator=await Runtime.create(configSchema.parse({...normalConfig,stateDir:join(root,'router-state'),execution:{...normalConfig.execution,router:{mode:'host',backend:'api',model:'sample'}}}))
  try{
   coordinator.receive('local','alice',{id:'inspect-endpoint',thread:'router-discussion',text:'Read endpoint.txt and tell me its contents.',addressed:true})
   const deadline=Date.now()+60000
@@ -182,7 +179,7 @@ try{
   assert(reply,JSON.stringify(coordinator.store.deliveries()).slice(-1200));assert(JSON.stringify(reply).includes('router-discussion'))
   assert(coordinator.activity.list().some(c=>c.name==='opencode/read'&&c.state==='completed'))
  }finally{await coordinator.close()}
- assert.deepEqual(errors,[]);console.log('PASS: native file tools, read-only Router, grant revocation, restart, interruption after edit, purge, three protocols, synthetic subscription, Runtime-managed shell and delivery')
+ assert.deepEqual(errors,[]);console.log('PASS: native file tools, automatic engine selection, read-only Router, restart, interruption after edit, purge, three protocols, synthetic subscription, Runtime-managed shell and delivery')
 }catch(error){console.error({root,step,events,errors});throw error}
 finally{store.close();server.closeAllConnections();server.close();delete process.env.ROPPO_FIXTURE_HARNESS_KEY}
 rmSync(root,{recursive:true,force:true})

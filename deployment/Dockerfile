@@ -7,7 +7,10 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY web ./web
 COPY plugins ./plugins
-RUN npm run build:chat && npm prune --omit=dev
+RUN npm run build:chat \
+    && node --import tsx src/cli.ts backend-plugins pack plugins/backend-opencode/index.ts plugins/backend-opencode/manifest.json dist/engines/opencode \
+    && npm prune --omit=dev \
+    && test "$(node_modules/.bin/opencode --version)" = "1.19.5"
 
 FROM ${NODE_IMAGE} AS runtime
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -21,7 +24,8 @@ COPY --from=build /opt/roppo/package*.json ./
 COPY --from=build /opt/roppo/node_modules ./node_modules
 COPY --from=build /opt/roppo/src ./src
 COPY --from=build /opt/roppo/plugins ./plugins
-COPY --from=build /opt/roppo/dist/chat ./dist/chat
+COPY --from=build /opt/roppo/dist ./dist
+RUN chmod -R a+rX /opt/roppo/dist/engines
 COPY deployment/container-entrypoint.py deployment/MOBY-PROFILES-LICENSE ./deployment/
 COPY LICENSE NOTICE THIRD_PARTY.md ./
 COPY docs/THIRD_PARTY_CHAT.md docs/THIRD_PARTY_BROWSER.md ./docs/

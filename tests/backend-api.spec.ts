@@ -131,7 +131,7 @@ it.each(kinds)('%s recovers a reset connection in the same session without repea
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(answer))
  });servers.push(fixture);await new Promise<void>(r=>fixture.listen(0,'127.0.0.1',r))
  const url='http://127.0.0.1:'+(fixture.address() as any).port
- const config=configSchema.parse({stateDir:join(root,'state'),port:0,execution:{backend:'test'},backends:{test:definition(kind,url)},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['alice']}]})
+ const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},execution:{backend:'test'},backends:{test:definition(kind,url)},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['alice']}]})
  const host=new Runtime(config);hosts.push(host)
  host.receive('local','alice',{id:'request',thread:'recovery',text:'Read marker.txt',addressed:true})
  for(let n=0;n<600;n++){await host.tick();await new Promise(r=>setTimeout(r,5));if(host.store.deliveries().some(d=>d.text==='retained-tool-result'&&d.status==='sent'))break}
@@ -328,7 +328,7 @@ it.each(kinds)('%s runs the actual Runtime routing/file/result/follow-up path wi
  expect(host.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('ended')
  await expect(host.takeover(ticket.id)).rejects.toThrow('no native desktop takeover');expect(host.store.get<any>('run',ticket.id).phase).not.toBe('human')
 })
-it.skipIf(!['darwin','linux'].includes(process.platform)).each(kinds)('%s executes a real managed shell through the platform sandbox with no Codex binary',async kind=>{
+it.skipIf(!['darwin','linux'].includes(process.platform)).each(kinds)('%s direct image-capable connection executes a real managed shell through the platform sandbox with no Codex binary',async kind=>{
  const root=mkdtempSync(join(tmpdir(),'api-shell-'));roots.push(root);const cwd=join(root,'files');mkdirSync(cwd);writeFileSync(join(cwd,'input.txt'),'shell-api-marker')
  const f=await server(b=>{
   const instructions=kind==='anthropic'?b.system:kind==='openai-responses'?b.instructions:b.messages[0].content
@@ -337,7 +337,7 @@ it.skipIf(!['darwin','linux'].includes(process.platform)).each(kinds)('%s execut
   if(receipts.includes('shell-api-marker'))return output(kind,JSON.stringify({state:'ready',summary:'Command verified',reply:'shell-api-marker',question:null,askedBy:null,handbacks:[]}))
   return output(kind,'',[{id:'shell',name:'superagent_shell',args:{command:'printf shell-api-marker > result.txt; cat result.txt',requestId:'one',yieldMs:1000}}])
  })
- const config=configSchema.parse({stateDir:join(root,'state'),codex:'/missing/codex',execution:{backend:'api'},backends:{api:definition(kind,f.url)},work:{sandboxDriver:process.platform==='linux'?'bubblewrap':'seatbelt',network:false},sources:[{id:'local',kind:'local',cwd,sandbox:'workspace-write',allowedActors:['operator']}]})
+ const config=configSchema.parse({stateDir:join(root,'state'),codex:'/missing/codex',execution:{backend:'api'},backends:{api:{...definition(kind,f.url),images:true}},work:{sandboxDriver:process.platform==='linux'?'bubblewrap':'seatbelt',network:false},sources:[{id:'local',kind:'local',cwd,sandbox:'workspace-write',allowedActors:['operator']}]})
  const host=new Runtime(config);hosts.push(host);host.receive('local','operator',{id:'one',thread:'shell',addressed:true,text:'Write and read result.txt with a sandboxed command'})
  for(let i=0;i<200&&!host.store.deliveries().some(d=>d.kind==='reply'&&d.status==='sent');i++){await host.tick();await host.flush();await new Promise(r=>setTimeout(r,10))}
  expect(host.work.list()).toEqual([expect.objectContaining({kind:'shell',state:'completed',exitCode:0})])

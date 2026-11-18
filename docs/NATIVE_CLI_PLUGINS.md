@@ -98,31 +98,11 @@ The grant pins the selected entry and lists the Workers allowed to use it. Crede
 
 In **Agent team → Tools**, a hosted Router or Worker can also enable one native capability for its CLI. Codex offers cached web search. Claude Code, Gemini CLI and OpenCode offer their own session task lists (`TodoWrite`, `write_todos`, `todowrite`). These tools are opt-in per role. Roppo records task ownership and completion independently. Inference-only calls, including memory maintenance, receive no native grant. Existing plugin installations need a package declaring the matching `nativeTools` capability. A pinned older session reports an unsupported grant until the operator uses a compatible session or removes that grant. ZCode has no managed native tool grant.
 
-## Use OpenCode with a saved Roppo model connection
+## Built-in tools for API and subscription connections
 
-In **Agent team**, select a Worker or a persistent host Router. Choose its **Model connection**, then choose **OpenCode** under **Execution engine** and save. The engine picker is available when the deployment includes an OpenCode connection. The default engine is Roppo. A Router and its Workers can each use a different combination.
+Choose a model connection for the host Router or Worker. Roppo automatically supplies OpenCode's file tools on eligible managed text tasks. The CLI is included with standard macOS and Linux installations and the Roppo image. It runs with the model and credentials from the selected connection. An OpenCode account or separate CLI connection is unnecessary.
 
-Install `opencode-ai@1.19.5` in the dedicated CLI prefix and pack the OpenCode backend package from this tree (version 1.1.0). Register its directory and digest under `backendPlugins` as described above. The following example uses an existing model connection named `team-api` and adds an engine named `opencode`. Merge these entries into the deployment configuration.
-
-```json
-{
-  "backends": {
-    "opencode": {
-      "kind": "plugin",
-      "plugin": "opencode-cli",
-      "config": {
-        "command": "/absolute/cli-prefix/node_modules/.bin/opencode",
-        "cliVersion": "1.19.5"
-      },
-      "readPaths": ["/absolute/cli-prefix"]
-    }
-  },
-  "execution": {
-    "router": {"mode": "host", "backend": "team-api", "harness": "opencode"},
-    "workers": [{"id": "worker-1", "backend": "team-api", "harness": "opencode"}]
-  }
-}
-```
+Roppo retains its direct model executor for image-enabled connections, hosts without an available bundled CLI or enabled sandbox, and background inference. Explicit CLI model connections use their own executor. Existing conversations keep their original engine and adapter.
 
 The model connection supplies the model ID, upstream address, credentials, provider options and limits. Supported protocols are OpenAI Chat Completions, OpenAI Responses and Anthropic Messages with streaming. A ChatGPT subscription requires a signed-in Roppo account with plan inference permission, background authorization and a matching source and actor. The host rechecks the account before forwarding subscription requests. The CLI receives a per-turn loopback endpoint.
 
@@ -133,10 +113,10 @@ The model connection supplies the model ID, upstream address, credentials, provi
 
 Point searches at a narrower directory when a tree contains private state or exceeds the traversal limit. The engine loads its own isolated configuration. Native tool results appear in task history, and the execution timeline records native and Roppo tool outcomes. Existing sessions retain their original engine and model. After an interruption following a native edit or host action, reconcile the recorded operation before starting fresh work.
 
-Run the end-to-end check with the installed CLI. It exercises file edits, a managed shell job, delivery back to the original local discussion, and recovery after an interrupted edit. Protocol and subscription responses come from a local test provider.
+Run the end-to-end check from a standard installation. It exercises file edits, a managed shell job, delivery back to the original local discussion, and recovery after an interrupted edit. Protocol and subscription responses come from a local test provider.
 
 ```sh
-npx tsx tests/manual/opencode-harness.ts /absolute/cli-prefix
+npx tsx tests/manual/opencode-harness.ts
 ```
 
 ## Isolation, budgeting and recovery

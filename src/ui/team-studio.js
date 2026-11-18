@@ -198,7 +198,7 @@ function teamBasics(current) {
   const name = teamField('team-name', L('Name', '名称'), current.value.label || '', value => teamWrite('label', value.trim() || undefined), { placeholder: current.name })
   name.querySelector('input').maxLength = 100
   fields.append(name)
-  if (current.router && teamFeatures().options) fields.append(teamField('team-router-mode', L('Router mode', 'Router 模式'), current.value.mode || 'assessment', value => { teamWrite('mode', value); if(value!=='host'){teamWrite('nativeTool', undefined);teamWrite('harness', undefined)} render() }, {
+  if (current.router && teamFeatures().options) fields.append(teamField('team-router-mode', L('Router mode', 'Router 模式'), current.value.mode || 'assessment', value => { teamWrite('mode', value); if(value!=='host'){teamWrite('nativeTool', undefined)} render() }, {
     values: [['assessment', L('Task intake', '任务受理')], ['host', L('Persistent host Router', '宿主持久 Router')], ['client', L('Current CLI is Router', '当前 CLI 会话作为 Router')]],
     help: L('Client mode uses the model and session of your connected CLI.', '客户端模式使用已接入 CLI 的模型与会话。')
   }))
@@ -209,15 +209,8 @@ function teamBasics(current) {
   }
 
   fields.append(connectionPickerField('team-backend', backend, value => {
-    if (value !== backend) { teamWrite('harness', undefined); teamWrite('nativeTool', undefined); teamWrite('backend', value); teamWrite('model', undefined); render() }
+    if (value !== backend) { teamWrite('nativeTool', undefined); teamWrite('backend', value); teamWrite('model', undefined); render() }
   }))
-  const definition = S.draft.backends?.[backend]
-  if (['openai-chat', 'openai-responses', 'anthropic'].includes(definition?.kind) && (!current.router || current.value.mode === 'host')) {
-    const engines = Object.entries(S.draft.backends || {}).filter(([, d]) => d.kind === 'plugin' && d.plugin === 'opencode-cli')
-    if (engines.length || current.value.harness) fields.append(teamField('team-harness', L('Execution engine', '执行引擎'), current.value.harness || '', value => teamWrite('harness', value || undefined), {
-      values: [['', L('Roppo', 'Roppo')], ...engines.map(([id,d]) => [id, 'OpenCode · ' + (d.label || id)])]
-    }))
-  }
   const model = current.router ? route.routerModel : current.value.model
   fields.append(teamField('team-model', L('Model', '模型'), model || '', value => teamWrite('model', value.trim() || undefined), {
     placeholder: controlConnections().find(service => service.id === backend)?.model || L('Connection default', '使用连接默认模型')

@@ -1,15 +1,17 @@
 import {it,expect,vi} from 'vitest'
 import {createServer} from 'node:http'
-import {join,resolve} from 'node:path'
+import {join} from 'node:path'
 import {tmpdir} from 'node:os'
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync} from 'node:fs'
 import {fileURLToPath} from 'node:url'
 import {workspaceGuard} from '../plugins/backend-opencode/workspace.ts'
 import {openHarnessProvider} from '../src/backends/harness-provider.ts'
 import {apiBackendDefinition} from '../src/backend-config.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
 import {ProcessBackend} from '../src/backends/plugin-process.ts'
-import {buildBackendPackage} from '../src/backends/plugin-package.ts'
+import {Store} from '../src/store.ts'
+import {Settings} from '../src/settings.ts'
+import {workerProfileSchema} from '../src/backend-config.ts'
 import {configSchema} from '../src/config.ts'
 import type {ModelRequest} from '../src/model.ts'
 
@@ -72,12 +74,9 @@ it('applies the saved API connection, structured output, request budget and step
 
 it('binds subscription harness runs to the authorized principal and original signed-in account',async()=>{
  const root=mkdtempSync(join(tmpdir(),'harness-account-')),stateDir=join(root,'state')
- const manifest=JSON.parse(readFileSync('plugins/backend-opencode/manifest.json','utf8'))
- const pkg=await buildBackendPackage(resolve('plugins/backend-opencode/index.ts'),manifest,join(root,'package'))
- const config=configSchema.parse({stateDir,backendPlugins:[{directory:pkg.directory,digest:pkg.digest}],backends:{
+ const config=configSchema.parse({stateDir,work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},backends:{
   plan:{kind:'openai-responses',model:'m',baseUrl:'https://api.openai.com/v1',subscription:{provider:'chatgpt',account:'plan',owner:{source:'local',actor:'owner'},backgroundAuthorized:true}},
-  engine:{kind:'plugin',plugin:'opencode-cli',config:{command:'opencode',cliVersion:'1.19.5'}}
- },sources:[{id:'local',kind:'local',cwd:root,allowedActors:['owner']}],execution:{backend:'plan',router:{mode:'host',harness:'engine'}}})
+ },sources:[{id:'local',kind:'local',cwd:root,allowedActors:['owner']}],execution:{backend:'plan',router:{mode:'host'}}})
  const records=new Map<string,any>(),store={get:(kind:string,id:string)=>records.get(kind+id),put:(kind:string,id:string,value:any)=>{records.set(kind+id,value)}}
  const accounts=join(stateDir,'subscription-accounts');mkdirSync(accounts,{recursive:true})
  const login=(subject:string)=>writeFileSync(join(accounts,'plan.json'),JSON.stringify({subject,access_token:'synthetic-token',expires_at:Date.now()+100000}))
@@ -93,4 +92,21 @@ it('binds subscription harness runs to the authorized principal and original sig
   login('other');await expect(registry.run({...activation,threadId:'plugin:test'})).rejects.toThrow(/account changed/)
   expect(spy).toHaveBeenCalledTimes(1)
  }finally{spy.mockRestore();rmSync(root,{recursive:true,force:true})}
+})
+
+it('migrates saved role preferences and excludes engine selection from new managed Worker profiles',()=>{
+ const root=mkdtempSync(join(tmpdir(),'roppo-preset-upgrade-'))
+ const store=new Store(join(root,'state.sqlite'))
+ try{
+  const config=configSchema.parse({stateDir:root,execution:{backend:'api'},backends:{api:{kind:'openai-chat',model:'demo',baseUrl:'http://localhost:2080'}},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['alice']}]})
+  const initial=new Settings(store,config).current()
+  const legacy={...config.execution,router:{backend:'api',label:'Coord',mode:'host',harness:'old-engine'},workers:[{id:'one',backend:'api',prompt:'Keep the original instruction.',harness:'old-engine'}]}
+  store.put('settings','current',{...initial,revision:7,config:{...config,execution:legacy}})
+  const settings=new Settings(store,config)
+  expect(settings.current().revision).toBe(7)
+  expect(config.execution.router).toEqual({backend:'api',label:'Coord',mode:'host'})
+  expect(config.execution.workers).toEqual([{id:'one',backend:'api',prompt:'Keep the original instruction.'}])
+  expect(workerProfileSchema.safeParse(legacy.workers[0]).success).toBe(false)
+  expect(new BackendRegistry(config,store).configured().map(b=>b.id)).toEqual(['api'])
+ }finally{store.close();rmSync(root,{recursive:true,force:true})}
 })

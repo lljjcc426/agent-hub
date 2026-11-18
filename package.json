@@ -59,5 +59,8 @@
   "license": "Apache-2.0",
   "overrides": {
     "katex": "$katex"
+  },
+  "optionalDependencies": {
+    "opencode-ai": "1.19.5"
   }
 }

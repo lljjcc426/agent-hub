@@ -30,6 +30,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import {chatScheduleChange} from './chat-schedules.ts'
 import {validTimeZone} from './turn-context.ts'
 import { Runtime } from './runtime.ts'
 import { incomingSchema } from './sources.ts'
@@ -599,7 +600,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,202,runtime.chat.answerDecision(id,owner,input.messageId,input.answer,input.locale,input.timeZone));return
         }
         if(action==='schedules'&&req.method==='PATCH'){
-          const input=z.object({id:z.string().min(1).max(300),active:z.boolean(),operationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(await body(req))
+          const input=chatScheduleChange.parse(await body(req))
           send(res,200,runtime.chat.changeSchedule(id,owner,input));return
         }
         if(action==='memory'&&req.method==='GET'){send(res,200,runtime.chat.memory(id,owner));return}

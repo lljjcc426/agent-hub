@@ -19,7 +19,7 @@ const id=z.string().min(1).max(300)
 const dutySchema=z.object({id,name:id,entryIds:z.array(id).min(1),instruction:z.string().min(1).max(16000),mode:z.enum(['off','observe','auto']).default('observe')}).strict()
 const settingsSchema=z.object({quietHours:quietHoursSchema.nullable().optional(),enabled:z.boolean(),debounceMs:z.number().int().min(0).max(30000).default(1500),maxWaitMs:z.number().int().min(1).max(60000).default(5000),cooldownMs:z.number().int().min(0).max(3600000).default(60000)}).strict().refine(x=>x.maxWaitMs>=x.debounceMs,'maxWaitMs must cover debounceMs')
 const scheduleSchema=z.object({id,name:id,triggerId:id,skill:skillRefSchema.optional(),prompt:z.string().min(1).max(16000),timing:timingSchema,mode:z.enum(['standalone','continue']),ticketId:id.optional(),notification:z.enum(['always','findings','silent']).default('findings'),active:z.boolean().default(true)}).strict().refine(x=>x.mode!=='continue'||!!x.ticketId,'Continuation requires ticketId')
-export const proactiveCommandSchema=z.object({action:z.enum(['list','settings.put','duty.put','schedule.put','schedule.pause','schedule.resume','schedule.run','run.cancel']),scopeId:id,operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),id:id.optional(),settings:settingsSchema.optional(),duty:dutySchema.optional(),schedule:scheduleSchema.optional()}).strict()
+export const proactiveCommandSchema=z.object({action:z.enum(['list','settings.put','duty.put','schedule.put','schedule.retime','schedule.pause','schedule.resume','schedule.run','run.cancel']),scopeId:id,operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),id:id.optional(),settings:settingsSchema.optional(),duty:dutySchema.optional(),schedule:scheduleSchema.optional(),timing:timingSchema.optional()}).strict()
 type Command=z.infer<typeof proactiveCommandSchema>
 type Duty=z.infer<typeof dutySchema>&{scopeId:string;revision:number}
 type Controls=z.infer<typeof settingsSchema>&{scopeId:string;revision:number}
@@ -29,7 +29,7 @@ export interface MessageBatch {id:string;scopeId:string;entryId:string;discussio
 export type Intervention=Assessment|{action:'clarify';reason:string;question:string}
 const terminal=new Set(['completed','failed','cancelled','skipped'])
 const defaults={enabled:false,debounceMs:1500,maxWaitMs:5000,cooldownMs:60000,revision:0}
-export const proactiveSpecs:ToolSpec[]=[{type:'function',name:'router_manage',description:'Manage this Router scope: list duties, batch settings, schedules and run receipts. Mutations require an explicit human scope manager, operationId and current expectedRevision. A schedule requires a real explicit triggerId, prompt, mode standalone or continue, notification always/findings/silent, and timing {kind:once/interval/daily/weekly,timezone:IANA,startAt:ISO with offset,endAt?,intervalSeconds?,time:HH:mm,weekdays?:0=Sunday}. Continue requires ticketId and never restarts ended work. Pausing a schedule only affects future runs; run.cancel stops the selected run. settings.quietHours optionally sets {timezone:IANA,start:HH:mm,end:HH:mm} for scheduled external notifications only; null disables it. Work and direct replies are not delayed. Duties are scoped written instructions, mode off/observe/auto; global observe/off remains a ceiling.',inputSchema:{type:'object',properties:{action:{type:'string',enum:proactiveCommandSchema.shape.action.options},scopeId:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},id:{type:'string'},settings:{type:'object'},duty:{type:'object'},schedule:{type:'object'}},required:['action','scopeId'],additionalProperties:false}}]
+export const proactiveSpecs:ToolSpec[]=[{type:'function',name:'router_manage',description:'Manage this Router scope: list duties, batch settings, schedules and run receipts. Mutations require an explicit human scope manager, operationId and current expectedRevision. A schedule requires a real explicit triggerId, prompt, mode standalone or continue, notification always/findings/silent, and timing {kind:once/interval/daily/weekly,timezone:IANA,startAt:ISO with offset,endAt?,intervalSeconds?,time:HH:mm,weekdays?:0=Sunday}. Use schedule.retime with id and timing to change only the recurrence. Continue requires ticketId and never restarts ended work. Pausing a schedule only affects future runs; run.cancel stops the selected run. settings.quietHours optionally sets {timezone:IANA,start:HH:mm,end:HH:mm} for scheduled external notifications only; null disables it. Work and direct replies are not delayed. Duties are scoped written instructions, mode off/observe/auto; global observe/off remains a ceiling.',inputSchema:{type:'object',properties:{action:{type:'string',enum:proactiveCommandSchema.shape.action.options},scopeId:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},id:{type:'string'},settings:{type:'object'},duty:{type:'object'},schedule:{type:'object'},timing:{type:'object'}},required:['action','scopeId'],additionalProperties:false}}]
 
 /** Durable host extension. Time creates source events; Eval itself never schedules a wake. */
 export class RouterProactive {
@@ -139,6 +139,14 @@ export class RouterProactive {
    store.put('router-schedule',key,next);return next
   }
   if(!old)throw Error('Unknown schedule')
+  if(x.action==='schedule.retime'){
+   if(!x.timing)throw Error('timing required')
+   this.validatePlan(old)
+   const nextAt=nextTime(x.timing,this.now())
+   if(nextAt===undefined)throw Error('No future occurrence in the selected time range')
+   const next={...old,timing:x.timing,nextAt:old.active?nextAt:undefined,revision:old.revision+1}
+   store.put('router-schedule',key,next);return next
+  }
   if(x.action==='schedule.run'){if(!old.active)throw Error('Resume this schedule before running');this.validatePlan(old);return this.launch(old,this.now(),'manual:'+x.operationId)}
   if(!['schedule.pause','schedule.resume'].includes(x.action))throw Error('Unknown action')
   const active=x.action==='schedule.resume'

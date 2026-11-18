@@ -1,3 +1,4 @@
+import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {realpathSync} from 'node:fs'
 import {businessDecision,assertBusinessDecision,decisionActorMatches,type BusinessDecisionView} from './business-decisions.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
@@ -86,6 +87,8 @@ export class ChatSessions {
     this.uploads=new ChatAttachments(host,(id,owner)=>this.get(id,owner))
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_message_page ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message'")
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_call_conversation ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.startedAt')) WHERE kind='chat-call'")
+    host.store.db.exec(`CREATE INDEX IF NOT EXISTS chat_schedule_receipts ON records(json_extract(body,'$.scopeId'),json_extract(body,'$.spec.entryId'),json_extract(body,'$.scheduleId'),json_extract(body,'$.createdAt') DESC) WHERE kind='router-schedule-run';
+      CREATE INDEX IF NOT EXISTS chat_schedule_messages ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.runId'),json_extract(body,'$.sequence')) WHERE kind='chat-message' AND json_extract(body,'$.status')='complete'`)
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.status')='streaming'").all()){const m=JSON.parse(String(row.body));host.store.put('chat-message',m.id,{...m,status:'interrupted'})}
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.state')='running'").all()){const call=JSON.parse(String(row.body));host.store.put('chat-call',call.id,{...call,state:'interrupted',endedAt:Date.now()})}
     this.unsubscribe=host.activity.subscribe(call=>this.recordCall(call))
@@ -416,7 +419,7 @@ export class ChatSessions {
       if(context){this.host.scopes.checkTask(ticketId,context);this.host.scopes.checkTaskEntry(this.host.scopes.ownership(ticketId)!,context.route.entryId,'result')}
       const saved=this.host.store.get<{manifest:ContextManifest}>('task-context',ticketId);if(saved)this.host.memory.validate(saved.manifest)
     }catch{return}
-    return {c,run,worker:this.worker(assignment.workerId)}
+    return {c,run,triggerId,worker:this.worker(assignment.workerId)}
   }
   approvalOrigin(ticketId:string){
     const dest=this.workerDestination(ticketId,true)
@@ -552,8 +555,20 @@ export class ChatSessions {
     const dest=this.workerDestination(message.ticketId);if(!dest)return
     this.message(dest.c,{id:'worker:'+message.id,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
   }
+  scheduledFileTarget(triggerId:string){
+    if(!triggerId.startsWith('scheduled:'))return false
+    return !!this.originRun(triggerId)
+  }
+  private fileTarget(triggerId:string){
+    if(!triggerId.startsWith('scheduled:'))return this.cardTarget(triggerId).c
+    const run=this.originRun(triggerId)
+    if(!run)throw new ChatError('delivery_missing','Scheduled Chat unavailable.',404)
+    const c=this.cardTarget(run.triggerId).c
+    this.host.routerIngress.authority(triggerId)
+    return c
+  }
   deliverText(triggerId:string,value:unknown){
-    const {run,c}=this.cardTarget(triggerId)
+    const c=this.fileTarget(triggerId)
     const {name,content,requireApproval}=routerFileInput.parse(value),id='router-file:'+stableDigest([triggerId,name,content])
     const receipt=(file:ChatDelivery)=>({name:file.name,size:file.size,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id})
     return this.host.store.atomic(()=>{
@@ -563,16 +578,16 @@ export class ChatSessions {
       // A revised draft inherits its review. An old button can only resolve its original bytes.
       const previous=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
         AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.text')=?
-        AND (json_extract(body,'$.fileReview.state')='pending' OR
+        AND ((json_extract(body,'$.fileReview.state')='pending' AND ? NOT GLOB 'scheduled:*' AND json_extract(body,'$.runId') NOT GLOB 'scheduled:*') OR
           (json_extract(body,'$.runId')=? AND json_type(body,'$.fileReview')='object'))
-        ORDER BY (json_extract(body,'$.fileReview.state')='pending') DESC, rowid DESC LIMIT 1`).get(c.id,name,run.id)
+        ORDER BY (json_extract(body,'$.fileReview.state')='pending') DESC, rowid DESC LIMIT 1`).get(c.id,name,triggerId,triggerId)
       const hold=!!(requireApproval||previous)
       if(previous){
         const older=JSON.parse(String(previous.body)) as Message
         if(older.fileReview?.state==='pending')this.closeFileReview(older,'superseded')
       }
-      const file=this.deliveries.text(c.id,run.id,name,content,!hold)
-      this.message(c,{id,runId:run.id,role:'assistant',text:name,status:'complete',
+      const file=this.deliveries.text(c.id,triggerId,name,content,!hold)
+      this.message(c,{id,runId:triggerId,role:'assistant',text:name,status:'complete',
         ...(hold?{fileReview:{fileId:file.id,state:'pending'}}:{deliveries:[file]})})
       this.changed(c.id)
       return hold?{name,messageId:id,state:'pending'}:receipt(file)
@@ -587,7 +602,7 @@ export class ChatSessions {
   private fileReviewMessage(id:string,owner:string,messageId:string){
     const c=this.get(id,owner),m=this.sourceMessage(c,messageId)
     if(!m.fileReview)throw new ChatError('request_missing','File review not found.',404)
-    this.cardTarget(m.runId)
+    this.fileTarget(m.runId)
     return {message:m,review:m.fileReview}
   }
   fileReviewText(id:string,owner:string,messageId:string){
@@ -602,21 +617,21 @@ export class ChatSessions {
       if(review.state===state)return {state}
       if(review.state!=='pending')throw new ChatError('request_closed','This review has closed.')
       this.closeFileReview(message,state)
-      const {run,c}=this.cardTarget(message.runId)
-      this.host.store.enqueue('router:file-review:'+message.id,'router',{triggerId:run.triggerId,discussion:c.discussion,fileReviewId:message.id})
+      const triggerId=message.runId,discussion=this.host.routerIngress.get(triggerId)!.discussion
+      this.host.store.enqueue('router:file-review:'+message.id,'router',{triggerId,discussion,fileReviewId:message.id})
       this.changed(id)
       return {state}
     })
   }
   fileReviewOutcome(triggerId:string,id:string){
-    const {run,c}=this.cardTarget(triggerId),message=this.sourceMessage(c,id)
-    if(message.runId!==run.id||!message.fileReview||!['approved','denied'].includes(message.fileReview.state))throw new ChatError('request_closed','File review is no longer available.')
+    const message=this.sourceMessage(this.fileTarget(triggerId),id)
+    if(message.runId!==triggerId||!message.fileReview||!['approved','denied'].includes(message.fileReview.state))throw new ChatError('request_closed','File review is no longer available.')
     return {messageId:id,name:message.text,state:message.fileReview.state}
   }
 
   captureFiles(ticketId:string,cwd:string,paths:string[]){
     const dest=this.workerDestination(ticketId)
-    return dest?this.deliveries.capture(dest.c.id,dest.run.id,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
+    return dest?this.deliveries.capture(dest.c.id,dest.triggerId,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
   }
   fileEvidence(ticketId:string,id:string){return this.deliveries.evidence(ticketId,id)}
   discardFiles(ids:string[]){this.deliveries.discard(ids)}
@@ -624,7 +639,7 @@ export class ChatSessions {
     const dest=this.workerDestination(ticketId),id='worker-files:'+ids[0]
     if(!ids.length||!dest||this.host.store.get('chat-message',id))return
     const deliveries=this.deliveries.publish(dest.c.id,{ticketId},ids)
-    this.message(dest.c,{id,runId:dest.run.id,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
+    this.message(dest.c,{id,runId:dest.triggerId,role:'assistant',text:deliveries.map(f=>f.name).join(', '),status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,deliveries})
     this.changed(dest.c.id)
   }
   delivery(id:string,owner:string,fileId:string){
@@ -646,18 +661,22 @@ export class ChatSessions {
     if(!c)return []
     return this.schedules(c).filter(s=>s.triggerId===triggerId).map(({id,name,timing,notification,createdAt,active})=>({id,name,timing,notification,createdAt,active}))
   }
-  changeSchedule(id:string,owner:string,input:{id:string;active:boolean;expectedRevision:number;operationId:string}){
+  changeSchedule(id:string,owner:string,input:{id:string;expectedRevision:number;operationId:string}&ScheduleEdit){
     const c=this.get(id,owner),plan=this.schedules(c).find(p=>p.id===input.id)
     const trigger=plan&&this.host.store.triggers.get(plan.triggerId)
     const context=trigger&&this.host.scopes.context(trigger,c.discussion)
     if(!plan||!context)throw new ChatError('schedule_missing','Scheduled task unavailable.',404)
     try{
-      this.host.proactive.command({action:input.active?'schedule.resume':'schedule.pause',scopeId:context.route.scopeId,id:plan.id,operationId:input.operationId,expectedRevision:input.expectedRevision},context)
-    }catch(error){throw new ChatError('schedule_change_failed',error instanceof Error?error.message:String(error))}
+      const change='timing' in input?{action:'schedule.retime',timing:input.timing}:{action:input.active?'schedule.resume':'schedule.pause'}
+      this.host.proactive.command({...change,scopeId:context.route.scopeId,id:plan.id,operationId:input.operationId,expectedRevision:input.expectedRevision},context)
+    }catch(error){
+      const message=error instanceof Error?error.message:String(error)
+      throw new ChatError(message.startsWith('Revision conflict')?'schedule_conflict':'schedule_change_failed',message)
+    }
     this.changed(id);return {schedules:this.publicSchedules(c)}
   }
   private publicSchedules(c:Conversation){
-    return this.schedules(c).map(({id,name,timing,active,nextAt,revision})=>({id,name,timing,active,nextAt,revision}))
+    return chatScheduleCards(this.host.store.db,c.id,this.schedules(c))
   }
   clientContext(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)

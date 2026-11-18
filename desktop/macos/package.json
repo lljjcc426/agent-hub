@@ -1,0 +1,34 @@
+{
+  "name": "roppo-desktop",
+  "productName": "Roppo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The local Roppo workspace in a Mac window",
+  "author": "Roppo",
+  "main": "main.cjs",
+  "scripts": {
+    "package": "electron-builder --mac dir --arm64"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.roppo.studio.desktop",
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "directories": {
+      "output": "../../.local/mac-desktop"
+    },
+    "mac": {
+      "icon": "icon.png",
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false
+    },
+    "npmRebuild": false
+  }
+}

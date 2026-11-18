@@ -1,3 +1,4 @@
+import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { execFile } from 'node:child_process'
 import { readdir } from 'node:fs/promises'
@@ -16,6 +17,7 @@ export interface Choice {
 }
 export interface Suggestions {
   title: string
+  kind?: 'commands' | 'capabilities' | 'files'
   items: Choice[]
   start: number
   end: number
@@ -67,17 +69,19 @@ export function suggestions(
   const before = line.slice(0, cursor)
   if (/^\/[\w-]*$/.test(before) && cursor === line.length) {
     const q = before.slice(1).toLowerCase()
-    const exact = commands.find((c) => c.name === before)
+    const list = commands()
+    const exact = list.find((c) => c.name === before)
     const matches = exact
       ? [exact]
-      : commands
+      : list
           .filter((c) => c.name.includes(q) || c.description.toLowerCase().includes(q))
           .sort((a, b) => Number(b.name.startsWith('/' + q)) - Number(a.name.startsWith('/' + q)))
     return {
-      title: 'Commands',
+      kind: 'commands',
+      title: ui('Commands', '命令'),
       start: 0,
       end: cursor,
-      empty: 'No matching commands',
+      empty: ui('No matching commands', '没有匹配的命令'),
       items: matches.map((c) => ({
         label: c.name,
         detail: c.description,
@@ -109,12 +113,15 @@ export function suggestions(
         )
       })
     return {
-      title: 'Capabilities',
+      kind: 'capabilities',
+      title: ui('Capabilities', '能力库'),
       start: 0,
       end: cursor,
       empty:
         library?.warnings[0] ??
-        (library ? 'No matching capabilities' : 'Loading workspace capabilities…'),
+        (library
+          ? ui('No matching capabilities', '没有匹配的能力')
+          : ui('Loading workspace capabilities…', '正在加载工作区能力…')),
       items: matches.map((item) => ({
         label: item.name,
         detail: (item.sourceGroup ?? item.source) + ' · ' + item.kind,
@@ -138,11 +145,14 @@ export function suggestions(
       )
       .filter((option) => (option.label + ' ' + option.detail).toLowerCase().includes(query))
     return {
-      title: pending.length === 1 ? pending[0]!.decision!.question : 'Open questions',
+      title:
+        pending.length === 1
+          ? pending[0]!.decision!.question
+          : ui('Open questions', '待回答的问题'),
       items,
       start: 0,
       end: cursor,
-      empty: 'No matching choices'
+      empty: ui('No matching choices', '没有匹配的选项')
     }
   }
   const approval = /^\/(approve|decline|answer)\s+(\S+)\s+(\S*)$/.exec(before)
@@ -162,11 +172,11 @@ export function suggestions(
       }))
       .filter((a) => (a.label + ' ' + a.value).toLowerCase().includes(approval[3]!.toLowerCase()))
     return {
-      title: 'Pending requests',
+      title: ui('Pending requests', '待处理请求'),
       items,
       start: 0,
       end: cursor,
-      empty: 'No matching pending requests'
+      empty: ui('No matching pending requests', '没有匹配的待处理请求')
     }
   }
   const match = /^\/(diff|approvals|stop|approve|decline|answer)\s+(\S*)$/.exec(before)
@@ -175,9 +185,10 @@ export function suggestions(
       q = match[2]!.toLowerCase(),
       needsId = ['approve', 'decline', 'answer'].includes(name)
     const showRequests = needsId || name === 'approvals'
-    const candidates = new Map<string, { id: string; title: string; workerId: string; state: string }>(
-      tasks.map((task) => [task.id, task])
-    )
+    const candidates = new Map<
+      string,
+      { id: string; title: string; workerId: string; state: string }
+    >(tasks.map((task) => [task.id, task]))
     if (showRequests && view) {
       for (const a of view.approvals) {
         if (!isApprovalPending(a) || candidates.has(a.ticketId)) continue
@@ -199,11 +210,13 @@ export function suggestions(
         submit: !needsId && name !== 'stop'
       }))
     return {
-      title: showRequests ? 'Tasks and requests' : 'Worker tasks',
+      title: showRequests
+        ? ui('Tasks and requests', '任务与请求')
+        : ui('Worker tasks', 'Worker 任务'),
       items,
       start: 0,
       end: cursor,
-      empty: 'No matching tasks'
+      empty: ui('No matching tasks', '没有匹配的任务')
     }
   }
   const mention = /(?:^|\s)@(?:"([^"\n]*)|([^\s"@]*))$/.exec(before)
@@ -236,10 +249,13 @@ export function suggestions(
     }
   }
   return {
-    title: 'Project files',
+    kind: 'files',
+    title: ui('Project files', '项目文件'),
     items,
     start,
     end: cursor + (tail?.[0].length ?? 0),
-    empty: files ? 'No matching files' : 'Finding project files…'
+    empty: files
+      ? ui('No matching files', '没有匹配的文件')
+      : ui('Finding project files…', '正在查找项目文件…')
   }
 }

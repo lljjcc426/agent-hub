@@ -1,3 +1,4 @@
+import { ui } from './language.ts'
 import { basename } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { Menu } from './editor.ts'
@@ -67,7 +68,7 @@ const wordmark = [
 type Tone = 'title' | 'quiet' | 'accent' | 'success' | 'attention' | 'error' | 'rule' | 'selected'
 const codes: Record<Tone, string> = {
   title: '1',
-  quiet: '90',
+  quiet: '39',
   accent: '36',
   success: '32',
   attention: '33',
@@ -75,15 +76,15 @@ const codes: Record<Tone, string> = {
   rule: '90',
   selected: '1;36'
 }
-const runLabels: Record<string, string> = {
-  queued: 'Queued',
-  running: 'Working',
-  completed: 'Completed',
-  waiting: 'Needs input',
-  failed: 'Failed',
-  cancel_requested: 'Stopping',
-  cancelled: 'Stopped'
-}
+const runLabels = (): Record<string, string> => ({
+  queued: ui('Queued', '排队中'),
+  running: ui('Running', '进行中'),
+  completed: ui('Completed', '已完成'),
+  waiting: ui('Needs input', '等待你的回复'),
+  failed: ui('Failed', '执行失败'),
+  cancel_requested: ui('Stopping', '正在停止'),
+  cancelled: ui('Stopped', '已停止')
+})
 export class TerminalLayout {
   readonly margin: string
   readonly width: number
@@ -92,9 +93,9 @@ export class TerminalLayout {
     columns: number,
     readonly colors: boolean
   ) {
-    const pad = columns >= 74 ? 5 : columns >= 44 ? 2 : 1
-    this.width = Math.max(8, Math.min(94, columns - 2 * pad - 1))
-    this.margin = ' '.repeat(Math.max(0, Math.floor((columns - this.width) / 2)))
+    const pad = columns >= 80 ? 3 : 1
+    this.width = Math.max(8, columns - 2 * pad - 1)
+    this.margin = ' '.repeat(pad)
   }
   ink(text: string, tone: Tone) {
     return this.colors ? '\x1b[' + codes[tone] + 'm' + text + '\x1b[0m' : text
@@ -106,7 +107,7 @@ export class TerminalLayout {
   }
   private context(view: Snapshot) {
     const { conversation, readiness } = view
-    const path = oneLine(conversation.project || 'Workspace')
+    const path = oneLine(conversation.project || ui('Personal chat', '个人对话'))
     const project = basename(path) || path
     const model = oneLine(
       conversation.model ||
@@ -122,7 +123,7 @@ export class TerminalLayout {
     const router = oneLine(readiness.routerLabel || '')
     const team = [
       ...new Set([router, model].filter(Boolean)),
-      workers + (workers === 1 ? ' worker' : ' workers')
+      workers + ui(workers === 1 ? ' worker' : ' workers', ' 位 Worker')
     ].join('  ·  ')
     return { project, team }
   }
@@ -141,7 +142,7 @@ export class TerminalLayout {
       this.margin + this.ink(fit(team, this.width), 'quiet')
     ]
   }
-  private welcome(view: Snapshot, rows: number) {
+  welcome(view: Snapshot, rows: number) {
     const { project, team } = this.context(view)
     const centered = (value: string) =>
       this.margin +
@@ -209,7 +210,7 @@ export class TerminalLayout {
   }
   message(who: string, text: string, user: boolean) {
     if (user) {
-      const parts = wrapAnsi(clean(text).replace(/\t/g, '    '), this.width - 3, {
+      const parts = wrapAnsi(clean(text).replace(/\t/g, '    '), Math.min(110, this.width - 3), {
         hard: true,
         trim: false
       }).split('\n')
@@ -234,7 +235,7 @@ export class TerminalLayout {
           .replace(/^#{1,6} (.+)$/, (_m, h: string) => this.ink(h, 'title'))
         line = this.inline(line)
       }
-      for (const part of wrapAnsi(line, Math.max(4, this.width - (code ? 4 : 2)), {
+      for (const part of wrapAnsi(line, Math.max(4, Math.min(110, this.width - (code ? 4 : 2))), {
         hard: true,
         trim: false
       }).split('\n'))
@@ -269,7 +270,7 @@ export class TerminalLayout {
   }
   task(t: Snapshot['tasks'][number], view: Snapshot) {
     const label = oneLine(view.workers.find((w) => w.id === t.workerId)?.label ?? t.workerId)
-    const state = runLabels[t.state] ?? oneLine(t.state)
+    const state = runLabels()[t.state] ?? oneLine(t.state)
     const tone =
       t.state === 'failed'
         ? 'error'
@@ -296,10 +297,81 @@ export class TerminalLayout {
       (title ? this.ink('  ·  ', 'quiet') + title : '')
     )
   }
+  workStatus(view: Snapshot) {
+    const state = view.run?.state
+    if (state === 'cancel_requested') return runLabels()[state]!
+    const tasks = view.tasks.filter((t) => t.state === 'running' || t.state === 'queued')
+    const calls = view.calls.filter(
+      (c) =>
+        c.state === 'running' &&
+        (c.runId === view.run?.id || tasks.some((t) => t.id === c.ticketId))
+    )
+    const tool = calls.findLast((c) => c.kind === 'tool' && c.name !== 'superagent_status')
+    const call =
+      tool ??
+      calls.filter((c) => c.status).sort((a, b) => b.status!.updatedAt - a.status!.updatedAt)[0] ??
+      calls.at(-1)
+    if (call) {
+      const parent = call.parentId ? calls.find((c) => c.id === call.parentId) : undefined
+      const worker =
+        call.workerId ?? parent?.workerId ?? tasks.find((t) => t.id === call.ticketId)?.workerId
+      const role =
+        worker || call.kind === 'worker' || parent?.kind === 'worker'
+          ? ['Worker', view.workers.find((w) => w.id === worker)?.label ?? worker]
+              .filter(Boolean)
+              .join(' ')
+          : call.kind === 'subagent' || parent?.kind === 'subagent'
+            ? 'Subagent'
+            : 'Router'
+      if (tool) return role + ' · ' + this.toolLabel(tool)
+      if (call.status?.label) return role + ' · ' + call.status.label
+      const task = tasks.find((t) => t.id === call.ticketId)
+      if (task?.title) return role + ' · ' + task.title
+      return (
+        role +
+        ' · ' +
+        (call.name.startsWith('memory.')
+          ? ui('Updating memory', '正在整理记忆')
+          : view.messages?.some(
+                (m) => m.runId === call.runId && !m.recipient && m.status === 'streaming' && m.text
+              )
+            ? ui('Writing reply', '正在回复')
+            : [ui('Calling model', '正在调用模型'), call.model].filter(Boolean).join(' '))
+      )
+    }
+    const task = tasks.find((t) => t.state === 'running') ?? tasks[0]
+    if (task)
+      return (
+        'Worker ' +
+        (view.workers.find((w) => w.id === task.workerId)?.label ?? task.workerId) +
+        ' · ' +
+        (task.state === 'queued' ? ui('Queued', '排队中') + ' · ' : '') +
+        task.title
+      )
+    if (state === 'queued' || state === 'running')
+      return view.reply?.state === 'running'
+        ? ui('Router · Processing message', 'Router · 正在处理消息')
+        : ui('Waiting for Router', '等待 Router 接手')
+    return state ? (runLabels()[state] ?? state) : ui('Ready', '就绪')
+  }
+  private toolLabel(call: Snapshot['calls'][number]) {
+    if (call.trace) {
+      const names = {
+        read: ui('Reading file', '正在读文件'),
+        resource: ui('Reading resource', '正在读资源'),
+        search: ui('Searching', '正在搜索'),
+        command: ui('Running command', '正在执行命令')
+      }
+      return [names[call.trace.kind], call.trace.label].filter(Boolean).join(' · ')
+    }
+    if (call.name === 'worker_manage' && call.action === 'assign')
+      return [ui('Assigning Worker', '正在分派任务'), call.target].filter(Boolean).join(' → ')
+    return [call.name, call.action, call.target].filter(Boolean).join(' · ')
+  }
   activity(call: Snapshot['calls'][number]) {
     const assignment = call.name === 'worker_manage' && call.action === 'assign'
     const desc = assignment
-      ? 'Assign Worker' + (call.target ? '  →  ' + oneLine(call.target) : '')
+      ? ui('Assign Worker', '分派 Worker') + (call.target ? '  →  ' + oneLine(call.target) : '')
       : oneLine([call.name, call.action, call.target].filter(Boolean).join(' · '))
     return (
       this.margin +
@@ -322,7 +394,7 @@ export class TerminalLayout {
       expanded?: boolean
       now?: number
       picker?: boolean
-      home?: boolean
+      history?: boolean
     } = {}
   ) {
     const lines: string[] = []
@@ -331,15 +403,16 @@ export class TerminalLayout {
     const tasks =
       view?.tasks.filter((t) => ['queued', 'running', 'waiting'].includes(t.state)) ?? []
     const calls = view?.calls ?? []
-    const activeCalls = calls.filter((c) => c.state === 'running')
     const live = state === 'running' || state === 'queued' || state === 'cancel_requested'
     const busy = live || tasks.some((t) => t.state === 'running' || t.state === 'queued')
     const showWork = maxRows >= 10 && !options.picker
     if (showWork && view && (state || tasks.length)) {
-      const label = activeCalls.findLast((c) => c.status?.label)?.status?.label
+      const label = this.workStatus(view)
       const elapsed = Math.max(0, Math.floor((now - (view.run?.createdAt ?? now)) / 1000))
       const time =
-        elapsed >= 60 ? Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's' : elapsed + 's'
+        elapsed >= 60
+          ? Math.floor(elapsed / 60) + ui('m ', ' 分 ') + (elapsed % 60) + ui('s', ' 秒')
+          : elapsed + ui('s', ' 秒')
       const glyph = busy
         ? ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
         : state === 'failed'
@@ -347,10 +420,7 @@ export class TerminalLayout {
           : state === 'waiting'
             ? '?'
             : '✓'
-      const status = oneLine(
-        (busy && label) ||
-          (busy && !live ? 'Workers running' : state ? (runLabels[state] ?? state) : 'Working')
-      )
+      const status = oneLine(label)
       const tone = busy
         ? 'accent'
         : state === 'failed'
@@ -369,23 +439,12 @@ export class TerminalLayout {
       if (!menu || maxRows >= 22) {
         for (const t of tasks.slice(0, maxRows >= 18 ? 3 : 1)) lines.push(this.task(t, view))
         const visibleCalls = expanded
-          ? calls.filter((c) => c.kind === 'tool').slice(-4)
-          : activeCalls.filter((c) => c.kind === 'tool').slice(-1)
+          ? calls.filter((c) => c.kind === 'tool' && c.runId === view.run?.id).slice(-4)
+          : []
         for (const call of visibleCalls) lines.push(this.activity(call))
-        const stream = view.messages.findLast(
-          (m) => !m.recipient && m.status === 'streaming' && m.text
-        )
-        if (stream) {
-          const wrapped = wrapAnsi(clean(stream.text), this.width - 3, {
-            hard: true,
-            trim: false
-          }).split('\n')
-          for (const line of wrapped.slice(-Math.min(4, Math.max(1, Math.floor(maxRows / 7)))))
-            lines.push(this.margin + '  ' + line)
-        }
       }
     }
-    if (options.home && view && maxRows >= 12) lines.push(...this.welcome(view, maxRows))
+
     if (expanded && view && !busy && !menu && maxRows >= 15) {
       const team = view.readiness.workers
         .filter((w) => !['paused', 'retiring'].includes(w.state))
@@ -393,12 +452,19 @@ export class TerminalLayout {
       lines.push(
         '',
         this.margin +
-          this.ink('Project  ', 'quiet') +
-          fit(oneLine(view.conversation.project || 'Workspace'), this.width - 9),
-        this.margin + this.ink('Workers  ', 'quiet') + fit(team.join(' · ') || '0', this.width - 9)
+          this.ink(ui('Project  ', '工作区  '), 'quiet') +
+          fit(
+            oneLine(view.conversation.project || ui('Personal chat', '个人对话')),
+            this.width - 9
+          ),
+        this.margin +
+          this.ink(ui('Workers  ', '执行成员  '), 'quiet') +
+          fit(team.join(' · ') || '0', this.width - 9)
       )
     }
     if (maxRows >= 10 || !menu) lines.push('')
+    if (menu && maxRows >= 7)
+      lines.push(...this.menuLines(menu, Math.max(1, maxRows - lines.length - 6)))
     const fieldWidth = Math.max(1, this.width - 7)
     const rim = this.ink('─'.repeat(Math.max(0, this.width - 2)), 'rule')
     lines.push(this.margin + this.ink('╭', 'rule') + rim + this.ink('╮', 'rule'))
@@ -406,15 +472,14 @@ export class TerminalLayout {
       this.draft = { text, cursor, value: draftLines(text, cursor, fieldWidth) }
     }
     const { lines: draft, caret } = this.draft.value
-    const limit = Math.max(
-      1,
-      Math.min(7, Math.floor(maxRows / 3), maxRows - lines.length - (menu ? 7 : 3))
-    )
+    const limit = Math.max(1, Math.min(7, Math.floor(maxRows / 3), maxRows - lines.length - 3))
     const start = Math.max(0, caret.row - limit + 1)
     const row = lines.length + caret.row - start
     for (const [i, line] of draft.slice(start, start + limit).entries()) {
       const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '› ') : '  '
-      const hint = options.picker ? 'Search conversations…' : 'Message Roppo…'
+      const hint = options.picker
+        ? ui('Search conversations…', '搜索项目会话…')
+        : ui('Message Roppo…', '给 Roppo 发消息…')
       const content =
         line || (!text && !continuation ? ' ' + this.ink(fit(hint, fieldWidth - 1), 'quiet') : '')
       const pad = Math.max(0, this.width - 6 - stringWidth(content))
@@ -430,37 +495,51 @@ export class TerminalLayout {
       )
     }
     lines.push(this.margin + this.ink('╰', 'rule') + rim + this.ink('╯', 'rule'))
-    if (menu) lines.push(...this.menuLines(menu, maxRows - lines.length - 2))
     const pending = view?.messages.some(
-      (m) => m.decision && !m.recipient && !m.decision.closed && !m.decision.replyRunId && !m.decision.defaultOption
+      (m) =>
+        m.decision &&
+        !m.recipient &&
+        !m.decision.closed &&
+        !m.decision.replyRunId &&
+        !m.decision.defaultOption
     )
     const needsApproval = view?.approvals.some((a) => isApprovalPending(a, now))
     const actions = menu
       ? options.picker
-        ? '↑↓ select    Enter resume'
-        : '↑↓ select    Enter choose'
+        ? ui('↑↓ select    Enter resume', '↑↓ 选择    Enter 继续')
+        : ui('↑↓ select    Enter choose', '↑↓ 选择    Enter 确认')
       : pending
-        ? '/choose answer question'
+        ? ui('/choose answer question', '/choose 回答问题')
         : needsApproval
-          ? '/approvals review request'
+          ? ui('/approvals review request', '/approvals 查看请求')
           : busy
-            ? (live ? 'Esc interrupt' : '/stop task') + '    Ctrl+O activity'
+            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('/stop task', '/stop 停止任务')) +
+              ui('    Ctrl+O activity', '    Ctrl+O 查看活动')
             : this.width < 40
-              ? '/help   @ files'
-              : '/ commands    @ files'
+              ? ui('/help   @ files', '/help   @ 文件')
+              : ui('/ commands    @ files', '/ 命令    @ 文件')
     const secondary = menu
       ? options.picker
-        ? 'Esc back'
-        : 'Tab complete    Esc close'
+        ? ui('Esc back', 'Esc 返回')
+        : ui('Tab complete    Esc close', 'Tab 补全    Esc 关闭')
       : busy
         ? ''
         : this.width >= 72
-          ? 'Ctrl+O details    Alt+Enter newline'
-          : 'Alt+Enter newline'
+          ? ui('Ctrl+O details    Alt+Enter newline', 'Ctrl+O 详情    Alt+Enter 换行')
+          : ui('Alt+Enter newline', 'Alt+Enter 换行')
     lines.push(
       this.margin +
         '  ' +
-        this.ink(this.across(fit(actions, this.width - 4), secondary, this.width - 4), 'quiet')
+        this.ink(
+          this.across(
+            fit(actions, this.width - 4),
+            (options.history && !menu && this.width >= 95
+              ? ui('PgUp/PgDn history    ', 'PgUp/PgDn 历史    ')
+              : '') + secondary,
+            this.width - 4
+          ),
+          'quiet'
+        )
     )
     return { lines, row, col: this.margin.length + 4 + caret.col }
   }

@@ -1,3 +1,4 @@
+import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { EventEmitter } from 'node:events'
 import { emitKeypressEvents, type Key } from 'node:readline'
@@ -43,6 +44,9 @@ export class TerminalEditor extends EventEmitter {
     input.setRawMode(true)
     input.on('keypress', this.keypress)
     input.once('end', this.close)
+    process.once('SIGTERM', this.close)
+    process.once('SIGHUP', this.close)
+    process.once('SIGINT', this.close)
     this.output.write('\x1b[?2004h')
     this.updateMenu()
   }
@@ -51,7 +55,7 @@ export class TerminalEditor extends EventEmitter {
   }
   setView(view: Snapshot) {
     this.view = view
-    if (this.menu && !['Commands', 'Project files'].includes(this.menu.title)) this.updateMenu()
+    if (this.menu && this.menu.kind !== 'commands' && this.menu.kind !== 'files') this.updateMenu()
   }
   restoreDraft(value: string) {
     if (this.closed || this.line || !value) return
@@ -69,6 +73,9 @@ export class TerminalEditor extends EventEmitter {
     clearTimeout(this.libraryRefresh)
     this.input.off('keypress', this.keypress)
     this.input.off('end', this.close)
+    process.off('SIGTERM', this.close)
+    process.off('SIGHUP', this.close)
+    process.off('SIGINT', this.close)
     this.input.setRawMode(this.raw)
     this.output.write('\x1b[?2004l')
     this.queue.push(null)
@@ -96,7 +103,7 @@ export class TerminalEditor extends EventEmitter {
         }
       : undefined
     if (
-      next?.title === 'Capabilities' &&
+      next?.kind === 'capabilities' &&
       !this.libraryRead &&
       Date.now() >= this.libraryExpiry &&
       this.readLibrary
@@ -117,21 +124,21 @@ export class TerminalEditor extends EventEmitter {
         .finally(() => {
           this.libraryRead = undefined
           this.libraryExpiry = Date.now() + (this.library?.refreshing ? 1500 : 15000)
-          if (!this.closed && this.menu?.title === 'Capabilities') {
+          if (!this.closed && this.menu?.kind === 'capabilities') {
             clearTimeout(this.libraryRefresh)
             if (this.library?.refreshing)
               this.libraryRefresh = setTimeout(() => {
-                if (this.menu?.title === 'Capabilities') this.updateMenu()
+                if (this.menu?.kind === 'capabilities') this.updateMenu()
               }, 1600).unref()
             this.updateMenu()
             this.emit('change')
           }
         })
     }
-    if (next?.title === 'Project files' && !this.loading && !this.files) {
+    if (next?.kind === 'files' && !this.loading && !this.files) {
       this.loading = projectFiles(this.cwd).then((files) => {
         this.files = files
-        if (!this.closed && this.menu?.title === 'Project files') {
+        if (!this.closed && this.menu?.kind === 'files') {
           this.updateMenu()
           this.emit('change')
         }
@@ -141,7 +148,7 @@ export class TerminalEditor extends EventEmitter {
   private edit(value: string, start = this.cursor, end = this.cursor) {
     const room = 100000 - (this.line.length - end + start)
     if (value.length > room) {
-      this.emit('notice', 'Draft exceeds 100,000 characters.')
+      this.emit('notice', ui('Draft exceeds 100,000 characters.', '输入内容超过十万字。'))
       return
     }
     this.line = this.line.slice(0, start) + value + this.line.slice(end)
@@ -198,15 +205,15 @@ export class TerminalEditor extends EventEmitter {
     }
     if (menu && item) {
       const typed = this.line.trimEnd()
-      if (!tab && menu.title === 'Commands' && item.label === typed && typed === '/stop') {
+      if (!tab && menu.kind === 'commands' && item.label === typed && typed === '/stop') {
         this.submit(typed)
       } else if (!tab && item.submit) {
         this.submit(item.value)
       } else {
         this.edit(item.value, menu.start, menu.end)
-        if (menu.title === 'Project files' || !item.value.endsWith(' ')) this.menu = undefined
+        if (menu.kind === 'files' || !item.value.endsWith(' ')) this.menu = undefined
       }
-    } else if (!tab && menu?.title !== 'Capabilities') this.submit(this.line)
+    } else if (!tab && menu?.kind !== 'capabilities') this.submit(this.line)
   }
   private keypress = (text: string | undefined, key: Key) => {
     if (this.closed || !key) return
@@ -219,7 +226,8 @@ export class TerminalEditor extends EventEmitter {
       }
       const parts = this.paste
       this.paste = undefined
-      if (this.pastedLength > 100000) this.emit('notice', 'Paste exceeds 100,000 characters.')
+      if (this.pastedLength > 100000)
+        this.emit('notice', ui('Paste exceeds 100,000 characters.', '粘贴内容超过十万字。'))
       else this.edit(clean(parts.join('').replace(/\r\n?/g, '\n')).replace(/\t/g, '  '))
       if (!this.choices) this.menu = undefined
     } else if (key.name === 'paste-start') {
@@ -239,6 +247,8 @@ export class TerminalEditor extends EventEmitter {
       else if (key.ctrl) this.close()
       else this.emit('interrupt')
     } else if (key.ctrl && key.name === 'd' && !this.line) this.close()
+    else if (key.name === 'pageup' || key.name === 'pagedown')
+      this.emit('page', key.name === 'pageup' ? -1 : 1)
     else if (key.ctrl && key.name === 'o') this.expanded = !this.expanded
     else if (key.name === 'return' || key.name === 'enter' || key.name === 'tab')
       this.enter(key.name === 'tab')

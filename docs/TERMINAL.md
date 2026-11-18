@@ -1,6 +1,6 @@
 # Roppo CLI
 
-Run `roppo` in a project directory to work with the Router and Workers configured in your local Roppo instance. Terminal and web sessions use the same account, messages, tasks and files. Workers run on the host and continue after the terminal exits.
+Run `roppo` from any directory to open your account’s personal Chat and load its recent messages. Page Up and Page Down scroll history. Paging back at the beginning loads earlier messages. Terminal and web sessions use the same account, messages, tasks and files. Workers run on the host and continue after the terminal exits.
 
 ## Install and connect
 
@@ -16,11 +16,13 @@ For a new installation, run `roppo init`, finish personal account and model setu
 
 The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It uses the URL in that file. `--host` and `ROPPO_HOST` take precedence. Credentials are stored per host in private files under `~/.roppo/terminal`. Set `ROPPO_CLI_HOME` to use a separate profile.
 
+Choose `roppo lang zh` for Chinese or `roppo lang en` for English. This preference applies to future launches. Use `--lang zh` or `--lang en` for a single invocation. The setting controls the terminal interface. Replies follow the host’s existing language policy.
+
 ## Work in a project
 
 ```sh
 cd ~/work/my-project
-roppo "Review the change and run the relevant tests"
+roppo --cwd . "Review the change and run the relevant tests"
 roppo -c
 roppo -r
 roppo -r <conversation-id>
@@ -32,9 +34,9 @@ Type `/` to browse commands and `@` to search project files. Use ↑ and ↓ to 
 
 Run `roppo -r` to search this project's conversations by title. Press Enter to resume a match or use `roppo -c` for the most recent conversation.
 
-Interactive startup clears the screen. The project and team appear above the composer. Ctrl+O shows workspace details while idle.
+Interactive startup clears the screen. Messages align left and the composer stays at the bottom through window resizing and incoming replies. Ctrl+O shows workspace details while idle.
 
-During a run, the status shows the current public activity and elapsed time. Ctrl+O expands recent tools. Esc interrupts the current run when the picker is closed. Ctrl+D on an empty prompt or `/exit` leaves work running.
+During a run, the status names the active Router or Worker alongside its public update, observed tool operation, or assigned task. Ctrl+O expands recent tools. Esc interrupts the current run when the picker is closed. Ctrl+D on an empty prompt or `/exit` leaves work running.
 
 Use `/plan` to read published steps or `/choose` to answer an open Router question. Type `/diff` followed by a space to select a Worker task and inspect its changes. `/approvals` shows pending requests for a selected task. `/approve`, `/decline` and `/answer` let you pick a task and request, then submit your response. `/tools Codex` filters the capability picker by source or name. Press Enter to inspect the selected capability. `/open` opens the same conversation in the web workspace.
 

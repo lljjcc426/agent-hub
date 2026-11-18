@@ -12,7 +12,8 @@ afterEach(()=>{for(const r of roots.splice(0))rmSync(r,{recursive:true,force:tru
 function sample(){return createRecoveryPackage({id:'SECRET_TASK',state:'uncertain',unknownEffects:true,observed:'SECRET_OBSERVATION',revision:42,status:{effects:{state:'unknown'},delivery:{state:'uncertain'}},recovery:{session:'unavailable',nextSafeAction:'inspect_state',checkpoints:[{stage:'tool',origin:'transition',cursor:124}],ticketId:'SECRET_TASK'}} as any)}
 it('exports only explicit fields with fresh aliases and conservatively reconciles unknown effects',()=>{
  const value=sample(),text=JSON.stringify(value)
- expect(text).not.toMatch(/SECRET_|cursor|124|revision|observed/)
+ expect(text).not.toMatch(/SECRET_|cursor|revision|observed/)
+ expect(value.payload.checkpoints).toEqual([{stage:'tool',origin:'transition'}])
  expect(sample().payload.taskAlias).not.toBe(value.payload.taskAlias)
  expect(verifyRecoveryPackage(text)).toMatchObject({valid:true,authenticity:'not_verified',unknownEffects:true,nextSafeAction:'reconcile_effects',replayAllowed:false,restorationSupported:false})
  const reordered={sha256:value.sha256,payload:Object.fromEntries(Object.entries(value.payload).reverse())}

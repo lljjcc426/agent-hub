@@ -17,7 +17,7 @@ const roots:string[]=[],hosts:Runtime[]=[]
 afterEach(async()=>{for(const host of hosts.splice(0))await host.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true})})
 function fixture(){
  const root=mkdtempSync(join(tmpdir(),'agenthub-trace-'));roots.push(root)
- const config=configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled',autoRecover:false},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]})
+ const config=configSchema.parse({port:0,stateDir:join(root,'state'),work:{sandboxDriver:'disabled',autoRecover:false},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]})
  const history=vi.fn(async()=>({turns:[{text:'SECRET_PROVIDER_PAYLOAD',reasoning:'PRIVATE_REASONING'}]}))
  const model:Model={describe:()=>({id:'codex',kind:'codex',nativeTakeover:false,images:false,resume:true,tools:true,steering:false,promptRefresh:false}),history,async run(){throw Error('No inference is authorized by this fixture')}}
  const host=new Runtime(config,{model});hosts.push(host)
@@ -214,7 +214,7 @@ it('supports an offline hook rollback without deleting authoritative state or re
 
 it.each(['scheduled','goal_wake','scheduled_dependency_goal_wake'] as const)('keeps snapshot and protected GET read-only for a missing inner %s anchor',async scenario=>{
  const root=mkdtempSync(join(tmpdir(),'trace-inner-route-'));roots.push(root)
- const config=configSchema.parse({stateDir:join(root,'state'),port:0,acceptMode:'auto',work:{sandboxDriver:'disabled',autoRecover:false},execution:{router:{mode:'host'},management:{enabled:true,maxWorkers:1},workers:[{id:'one',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,workspace:{mode:'source'},allowedActors:['operator']}]})
+ const config=configSchema.parse({port:0,stateDir:join(root,'state'),acceptMode:'auto',work:{sandboxDriver:'disabled',autoRecover:false},execution:{router:{mode:'host'},management:{enabled:true,maxWorkers:1},workers:[{id:'one',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,workspace:{mode:'source'},allowedActors:['operator']}]})
  const modelRun=vi.fn(async()=>{throw Error('No inference permitted')}),history=vi.fn(async()=>{throw Error('No history read permitted')})
  const host=new Runtime(config,{model:{describe:()=>({id:'codex',kind:'codex',resume:true,tools:true,images:false,nativeTakeover:false,steering:false,promptRefresh:false}),run:modelRun,history}});hosts.push(host);host.pause(true)
  const deliver=vi.spyOn(host.sources.get('local')!,'deliver')

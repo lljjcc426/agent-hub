@@ -196,7 +196,9 @@ export class RouterGoals {
  }
  get(id:string){return this.host.store.get<RouterGoal>('router-goal',id)}
  context(g:RouterGoal){return this.anchor(g).context}
- forTask(ticketId:string){return this.host.store.list<RouterGoal>('router-goal').find(g=>!terminal.has(g.state)&&g.taskIds?.includes(ticketId))}
+ forTask(ticketId:string){const row=this.host.store.db.prepare(`SELECT r.body FROM goal_reference link JOIN records r ON r.kind='router-goal' AND r.id=link.goal_id
+   WHERE link.kind='task' AND link.ref=? AND json_extract(r.body,'$.state') NOT IN ('completed','cancelled') ORDER BY r.rowid LIMIT 1`).get(ticketId)
+  return row?JSON.parse(String(row.body)) as RouterGoal:undefined}
  effectsSettled(ticketId:string){
   if(!repositoryEffectsSettled(this.host.store,ticketId)||this.host.workflows.unsettled(ticketId))return false
   const run=this.host.store.get<Run>('run',ticketId)

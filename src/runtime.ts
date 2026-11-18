@@ -528,7 +528,7 @@ export class Runtime {
       if(key)this.controllers.get(key)?.abort(Error(reason))
     }
   }
-  private replacedTask(ticketId:string):boolean {return this.store.list<RouterGoal>('router-goal').some(g=>!!g.supersededBy&&this.goals.taskIdsForGoal(g).includes(ticketId))}
+  private replacedTask(ticketId:string):boolean {return this.goals.goalsForTask(ticketId).some(g=>!!g.supersededBy)}
   validWork(owner:WorkOwner):boolean {
     if(this.replacedTask(owner.ticketId))return false
     const ticket=this.store.tickets.get(owner.ticketId),assignment=ticket&&latestAssignment(ticket)

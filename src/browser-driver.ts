@@ -98,6 +98,7 @@ export class AgentBrowserDriver implements BrowserDriver {
     args: string[],
     signal?: AbortSignal,
     input?: string,
+    environment = this.env,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -111,7 +112,7 @@ export class AgentBrowserDriver implements BrowserDriver {
       }
       const child = spawn(this.binary, [...this.prefix, ...args], {
         cwd: this.root,
-        env: this.env,
+        env: environment,
         stdio: ["pipe", "pipe", "pipe"],
       });
       let output = "",
@@ -201,6 +202,7 @@ export class AgentBrowserDriver implements BrowserDriver {
       ],
       signal,
       input,
+      s.cdpPort ? {...this.env, AGENT_BROWSER_IDLE_TIMEOUT_MS:"0"} : this.env,
     );
     let result: any;
     try {

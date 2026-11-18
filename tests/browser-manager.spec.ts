@@ -64,6 +64,7 @@ class Driver implements BrowserDriver {
         .push({ tabId: "t2", index: 1, url: args[2], title: "Second" });
     if (args[0] === "tab" && args[1] === "list")
       return { tabs: this.tabs.get(s.id) ?? [] };
+    if (args[0] === "get" && args[1] === "title") return {title:"Actual page title"};
     if (args[0] === "snapshot") return { snapshot: this.snapshotText };
     if (args[0] === "screenshot") {
       await this.screenshotGate?.();
@@ -1035,7 +1036,7 @@ it("attaches Router and account to one persistent browser, fencing the active co
   await host.browser.action(user,first.id,client,human.epoch,{action:"navigate",url:"https://example.com/"});
   await host.browser.release(user,first.id,client,human.epoch);
   const current = await action("turn-b",{action:"snapshot"});
-  expect(current).toMatchObject({id:first.id,url:"https://example.com/",control:"router"});
+  expect(current).toMatchObject({id:first.id,url:"https://example.com/",title:"Actual page title",control:"router"});
   await expect(action("turn-b",{action:"click",ref:"@e1",revision:first.revision})).rejects.toMatchObject({code:"browser_stale_snapshot"});
   await action("turn-b",{action:"click",ref:"@e1",revision:current.revision});
   expect(driver.calls.some(c=>c.id===first.id&&c.args[0]==="scrollintoview")).toBe(true);

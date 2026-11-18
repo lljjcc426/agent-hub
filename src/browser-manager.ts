@@ -393,6 +393,12 @@ export class BrowserManager {
       active: t.active === true,
     }));
     const active = s.tabs.find((t) => t.active) ?? s.tabs[0];
+    // When attached over CDP the CLI may label tabs with the URL until a navigation
+    // event arrives. Read the active document title from Chromium itself.
+    if (s.cdpPort && active) {
+      const page = await this.driver.run(s, ["get", "title"], signal);
+      if (typeof page.title === "string") active.title = page.title.slice(0, 200);
+    }
     if (s.url !== (active?.url ?? "about:blank")) s.revision++;
     s.url = active?.url ?? "about:blank";
     s.title = active?.title ?? "";
@@ -454,7 +460,7 @@ export class BrowserManager {
       conversationId: principal?.conversationId,
       cdpPort: workspace ? this.host.config.browser.workspace!.cdpPort : undefined,
       control: workspace ? workspace.paused ? "paused" : "router" : personal ? "paused" : "worker",
-      epoch: 0,
+      epoch: workspace ? Date.now() : 0,
       revision: 0,
       leaseUntil: 0,
       ended: false,

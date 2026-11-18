@@ -1,3 +1,4 @@
+import { InputControl, SelectField } from '../ui/controls.tsx'
 import { useEffect, useRef, useState } from "react";
 import { Download, Paperclip, Upload, X, LoaderCircle } from "lucide-react";
 
@@ -150,7 +151,7 @@ export function BrowserFiles({
                   }}
                 >
                   {targets.length > 1 ? (
-                    <select
+                    <SelectField
                       aria-label={L("Upload field", "上传位置")}
                       value={target}
                       onChange={(e) => setTarget(e.target.value)}
@@ -160,9 +161,9 @@ export function BrowserFiles({
                           {t.label}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                   ) : null}
-                  <input
+                  <InputControl
                     aria-label={
                       targets.find((t) => t.id === target)?.label ||
                       L("Choose file", "选择文件")

@@ -1,3 +1,5 @@
+import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
+import { SelectField, InputControl } from '../ui/controls.tsx'
 import {lazy,Suspense,useEffect,useMemo,useRef,useState} from 'react'
 import {ArrowLeft,BookOpen,Boxes,Cable,Check,ChevronRight,Link2,LoaderCircle,Package,Plug,RefreshCw,Search,Wrench,X} from 'lucide-react'
 import {capabilityKinds,type Capability,type CapabilityKind,type CapabilitySnapshot,type CapabilityStatus} from '../../src/capability-types.ts'
@@ -109,14 +111,14 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
   const copy=async()=>{if(!selectedId)return;try{await navigator.clipboard.writeText(location.origin+base+'/item/'+selectedId);setCopied(true)}catch{select(selected!)}}
   return <section className="market-page cap-page" aria-label={L('Capability library','能力库')}>
     <header className="market-heading"><h1>{L('Capability library','能力库')}</h1>
-      <div className="cap-actions"><label className="market-search"><Search size={16}/><input ref={search} aria-label={L('Search capabilities or tool names','搜索能力或工具名')} placeholder={L('Search capabilities or tool names','搜索能力或工具名')} value={query} onChange={e=>changeQuery(e.target.value)}/>{query?<button aria-label={L('Clear search','清空搜索')} onClick={()=>changeQuery('')}><X size={14}/></button>:<kbd>/</kbd>}</label>
+      <div className="cap-actions"><label className="market-search"><Search size={16}/><InputControl ref={search} aria-label={L('Search capabilities or tool names','搜索能力或工具名')} placeholder={L('Search capabilities or tool names','搜索能力或工具名')} value={query} onChange={e=>changeQuery(e.target.value)}/>{query?<button aria-label={L('Clear search','清空搜索')} onClick={()=>changeQuery('')}><X size={14}/></button>:<kbd>/</kbd>}</label>
       <button aria-label={L('Refresh library','刷新能力库')} title={L('Refresh library','刷新能力库')} onClick={()=>setRefresh(v=>v+1)}><RefreshCw size={16}/></button></div></header>
     <MarketNavigation tab="library" language={language}/>
     <div className="cap-toolbar"><nav className="cap-filters" aria-label={L('Capability types','能力类型')}>{(['all',...capabilityKinds] as const).map(k=><button key={k} aria-pressed={k===activeFilter} onClick={()=>filterTo(k)}>{labels[k][i]} <span>{k==='all'?inSource.length:inSource.filter(r=>r.kind===k).length}</span></button>)}</nav>
-      <select aria-label={L('Filter by source','按来源筛选')} value={activeSource} onChange={e=>{setSource(e.target.value);if(id)filterTo(activeFilter)}}>
+      <SelectField aria-label={L('Filter by source','按来源筛选')} value={activeSource} onChange={e=>{setSource(e.target.value);if(id)filterTo(activeFilter)}}>
         <option value="">{L('All sources','全部来源')}</option>
         {sources.map(name=><option key={name} value={name}>{name}</option>)}
-      </select>
+      </SelectField>
     </div>
     {failed?<div role="alert" className="cap-notice">{L('Could not load the library.','未能读取能力库。')} <button onClick={()=>setRefresh(v=>v+1)}>{L('Retry','重试')}</button></div>:null}
     {data?.warnings.length?<div className="cap-notice" role="status">{L('Some sources could not be fully read','部分来源未能完整读取')} · {data.warnings.join('、')}</div>:null}
@@ -143,7 +145,7 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
             {shown.facts?.length?<div><dt>{L('Details','条目信息')}</dt><dd>{shown.facts.join(' · ')}</dd></div>:null}</dl>
           {detailError?<p role="alert">{L('Could not read details.','暂时无法读取详情。')}</p>:null}
           {tools?.length||shown.kind==='mcp'?<section className="cap-section"><h3>{L('Tools','工具清单')} <span>{tools?.length??0}</span>{shown.inspectable?<button onClick={()=>setInspect(selectedId??'')} disabled={inspect===selectedId&&!detailError}>{L('Read server catalog','读取服务目录')}</button>:null}</h3>
-            {tools?.slice(0,toolLimit).map(t=><details key={t.name}><summary><Wrench size={15}/><strong>{t.name}</strong><ChevronRight size={15}/></summary><div className="cap-tool-body">{t.description?<p>{t.description}</p>:null}{t.inputs?.length?t.inputs.map(p=><div className="cap-param" key={p.name}><code>{p.name}</code><span>{p.type}</span><span>{p.required?L('Required','必填'):L('Optional','可选')}</span></div>):<p>{t.inputs?L('No named parameters.','无命名参数。'):L('No parameter details reported.','来源未提供参数详情。')}</p>}</div></details>)}
+            {tools?.slice(0,toolLimit).map(t=><DisclosureRoot key={t.name}><DisclosureSummary><Wrench size={15}/><strong>{t.name}</strong><ChevronRight size={15}/></DisclosureSummary><div className="cap-tool-body">{t.description?<p>{t.description}</p>:null}{t.inputs?.length?t.inputs.map(p=><div className="cap-param" key={p.name}><code>{p.name}</code><span>{p.type}</span><span>{p.required?L('Required','必填'):L('Optional','可选')}</span></div>):<p>{t.inputs?L('No named parameters.','无命名参数。'):L('No parameter details reported.','来源未提供参数详情。')}</p>}</div></DisclosureRoot>)}
             {!tools?.length?<p>{current?L('This source has not reported a tool list.','来源尚未提供工具清单。'):L('Reading tools…','正在读取工具…')}</p>:null}
             {tools&&tools.length>toolLimit?<button onClick={()=>setToolLimit(v=>v+50)}>{L('Show more tools','显示更多工具')}</button>:null}
           </section>:null}

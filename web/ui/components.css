@@ -31,7 +31,6 @@
 .rp-input input::placeholder { color: var(--rp-faint); }
 .rp-input:focus-within, .rp-select:focus-within, .rp-composer:focus-within { border-color: var(--rp-focus); }
 .rp-input :focus-visible, .rp-select :focus-visible, .rp-composer textarea:focus-visible { outline: none; }
-.rp-input:has(input:focus-visible), .rp-select:has(select:focus-visible) { outline: 2px solid var(--rp-focus); outline-offset: 2px; }
 .rp-select select { appearance: none; padding: 0 34px 0 12px; cursor: pointer; }
 .rp-select svg { position: absolute; right: 11px; pointer-events: none; }
 .rp-select option { background: var(--rp-panel); color: var(--rp-ink); }

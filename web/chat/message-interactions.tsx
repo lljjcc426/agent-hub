@@ -1,3 +1,4 @@
+import { InputControl } from '../ui/controls.tsx'
 import {createContext,useContext,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {MoreHorizontal,Reply,Search,Smile,X} from 'lucide-react'
@@ -71,7 +72,7 @@ export function MessageActions({id}:{id:string}){
     {createPortal(<div ref={popover} popover="auto" role="dialog" onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();setPanel(null);anchor.current?.focus({preventScroll:true})}}} className={'message-popover '+(shown==='emoji'?'emoji-popover':'message-menu')} aria-label={shown==='emoji'?L('Choose a reaction','选择表情'):L('Message actions','消息操作')} onToggle={event=>{if(event.newState==='closed')setPanel(null)}}>
       {shown==='emoji'?<>
         <div className="quick-reactions">{quick.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}<button type="button" aria-label={L('More emoji','更多表情')} aria-expanded={expanded} onClick={()=>setExpanded(v=>!v)}><Smile size={19}/></button></div>
-        {expanded?<div className="emoji-search-panel"><label className="emoji-search"><Search size={15}/><input autoFocus value={search} onChange={e=>setSearch(e.target.value)} aria-label={L('Search emoji','搜索表情')} placeholder={L('Search emoji','搜索表情')}/></label><div className="emoji-grid">{hits.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}</div>{!hits.length?<span role="status">{L('No matching emoji','没有匹配的表情')}</span>:null}</div>:null}
+        {expanded?<div className="emoji-search-panel"><label className="emoji-search"><Search size={15}/><InputControl autoFocus value={search} onChange={e=>setSearch(e.target.value)} aria-label={L('Search emoji','搜索表情')} placeholder={L('Search emoji','搜索表情')}/></label><div className="emoji-grid">{hits.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}</div>{!hits.length?<span role="status">{L('No matching emoji','没有匹配的表情')}</span>:null}</div>:null}
       </>:shown==='more'?<>
         <button type="button" className="mobile-only-action" onClick={quote}><Reply size={15}/>{L('Quote reply','引用回复')}</button>
         <button type="button" className="mobile-only-action" onClick={()=>{keyboard.current=true;setPanel('emoji');setExpanded(true)}}><Smile size={15}/>{L('React','表情回应')}</button>

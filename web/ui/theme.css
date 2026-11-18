@@ -1,4 +1,5 @@
 @import '../../src/ui/typography.css';
+@import '../../src/ui/interaction.css';
 
 .roppo-ui {
   color-scheme: light;

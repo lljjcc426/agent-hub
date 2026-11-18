@@ -613,7 +613,8 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           const before=query.has('before')?z.coerce.number().int().positive().parse(query.get('before')):undefined
           const participant=query.has('participant')?z.string().min(1).max(300).parse(query.get('participant')):undefined
           const around=query.has('around')?z.string().min(1).max(500).parse(query.get('around')):undefined
-          send(res,200,runtime.chat.view(id,owner,before,participant,around,query.get('run')||undefined));return
+          const decisionsFrom=query.has('decisionsFrom')?z.coerce.number().int().positive().parse(query.get('decisionsFrom')):undefined
+          send(res,200,runtime.chat.view(id,owner,before,participant,around,query.get('run')||undefined,decisionsFrom));return
         }
         if(action==='files'&&req.method==='GET'){
           const input=z.object({ticket:z.string().min(1).optional(),path:z.string().max(1800).optional(),kind:z.enum(['directory','files']).optional(),offset:z.coerce.number().int().nonnegative().optional(),cursor:z.string().uuid().optional()}).strict().parse(Object.fromEntries(query))

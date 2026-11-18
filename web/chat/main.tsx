@@ -260,6 +260,8 @@ function UserMessage() {
     hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime());
+  const inline=useAuiState(s=>s.message.metadata.custom?.inlineAnswer===true);
+  if(inline)return <WorkflowCards anchor={id}/>;
   return (
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
@@ -794,6 +796,8 @@ function Chat(p: ChatProps) {
     if (!id) return;
     const version = ++fetchVersion.current;
     const query=new URLSearchParams();if(participantFilter)query.set('participant',participantFilter);if(around)query.set('around',around);
+    const oldest = messagesRef.current[0]?.sequence;
+    if (oldest) query.set("decisionsFrom", String(oldest));
     const data = await api<Snapshot>("/conversations/" + id + "?"+query);
     if (!alive.current || version !== fetchVersion.current) return;
     const older = messagesRef.current.filter(
@@ -801,10 +805,16 @@ function Chat(p: ChatProps) {
     );
     const messages = [...older, ...data.messages].map(m=>reactionWrites.current.has(m.id)?{...m,reactions:reactionWrites.current.get(m.id)!.reactions}:m);
     messagesRef.current = messages;
-    setSnapshot({
-      ...data,
-      messages,
-      hasMore: messages[0]?.sequence === 1 ? false : data.hasMore,
+    // A history page can arrive while this refresh is in flight.
+    const newlyLoadedRuns = new Set(older.filter(m => oldest == null || m.sequence < oldest).map(m => m.runId));
+    setSnapshot(previous => {
+      const decisions = new Map(data.decisions.map(q => [q.id, q]));
+      if (previous?.conversation.id === id && newlyLoadedRuns.size) {
+        for (const q of previous.decisions) {
+          if (newlyLoadedRuns.has(q.runId) && !decisions.has(q.id)) decisions.set(q.id,q);
+        }
+      }
+      return {...data, messages, decisions:[...decisions.values()], hasMore:messages[0]?.sequence === 1 ? false : data.hasMore};
     });
     setLoading(false);
     const saved = savedPending(id);
@@ -897,6 +907,17 @@ function Chat(p: ChatProps) {
   }, [id, refresh, refreshList]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
+  const inlineAnswers = new Set<string>();
+  for (const block of blocks.values()) {
+    for (const item of block) {
+      if (item.kind === 'question' && item.question.answerMessageId) inlineAnswers.add(item.question.answerMessageId);
+    }
+  }
+  for (const message of visibleMessages) {
+    if (message.decision?.answer && message.decision.replyRunId && !message.decision.closed)
+      inlineAnswers.add('user:'+message.decision.replyRunId);
+  }
+
   const composerAction=useRef<((action:ChatCommand)=>void)|null>(null);
   const commandAction=useRef<(()=>boolean)|null>(null);
   const runtime = useExternalStoreRuntime({
@@ -915,7 +936,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
-        ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
+        inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1026,7 +1047,7 @@ function Chat(p: ChatProps) {
         ...messagesRef.current,
       ];
       messagesRef.current = messages;
-      setSnapshot((s) => (s ? { ...s, messages, hasMore: data.hasMore } : s));
+      setSnapshot((s) => (s ? { ...s, messages, decisions:[...new Map([...data.decisions,...s.decisions].map(q=>[q.id,q])).values()], hasMore: data.hasMore } : s));
     },
   });
   useEffect(()=>{
@@ -1174,6 +1195,7 @@ function Chat(p: ChatProps) {
     >
       <WorkflowProvider value={{L,blocks,readonly,actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:lang})}finally{await refresh()}},
+        answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
         reviewFile:async(messageId,state)=>{try{await api('/conversations/'+id+'/file-reviews',{messageId,state})}finally{await refresh()}},
         authorize:async(request,value)=>{try{await api('/conversations/'+id+'/approvals',{id:request,value})}finally{await refresh()}}

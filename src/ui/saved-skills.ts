@@ -1,12 +1,12 @@
 /** Shares the proactive workbench's scope selector, table renderer and request helper. */
 export const skillSection=`<section aria-labelledby="skill-heading"><h2 id="skill-heading">可复用技能</h2>
-<label>已验收目标<select id="accepted-goal"></select></label><button type="button" id="draft-skill">从目标保存技能</button>
+<label>已验收目标<select class="rp-select-field" id="accepted-goal"></select></label><button type="button" id="draft-skill">从目标保存技能</button>
 <div id="skills" class="table"></div><form id="skill-editor" hidden>
-<div class="row"><label>名称<input name="title" required></label><label>目标与所需输入<textarea name="objective" required></textarea></label></div>
-<div id="skill-steps"></div><label>验收条件（JSON）<textarea name="criteria" required></textarea></label>
-<label>输入参数（每行 name = 名称）<textarea name="parameters" placeholder="file = 文件路径"></textarea></label><button>保存新版本</button> <button type="button" class="secondary" id="close-skill">收起</button></form>
-<form id="skill-run" hidden><h3>运行选定版本</h3><label>本次授权对话<select name="anchor" required></select></label>
-<label>本次请求原文<input name="quote" required></label><div id="skill-inputs"></div><button>启动实际任务</button></form></section>`
+<div class="row"><label>名称<input class="rp-field-input" name="title" required></label><label>目标与所需输入<textarea class="rp-textarea" name="objective" required></textarea></label></div>
+<div id="skill-steps"></div><label>验收条件（JSON）<textarea class="rp-textarea" name="criteria" required></textarea></label>
+<label>输入参数（每行 name = 名称）<textarea class="rp-textarea" name="parameters" placeholder="file = 文件路径"></textarea></label><button>保存新版本</button> <button type="button" class="secondary" id="close-skill">收起</button></form>
+<form id="skill-run" hidden><h3>运行选定版本</h3><label>本次授权对话<select class="rp-select-field" name="anchor" required></select></label>
+<label>本次请求原文<input class="rp-field-input" name="quote" required></label><div id="skill-inputs"></div><button>启动实际任务</button></form></section>`
 export const skillScript=String.raw`
 let editingSkill,runSkill,skillRequest=0
 const skillKey=s=>JSON.stringify({id:s.id,version:s.version})
@@ -31,9 +31,9 @@ async function editSkill(goalId,version){
   for(const node of template.nodes){
     const row=document.createElement('div');row.className='row'
     const step=document.createElement('label');step.textContent=node.title
-    const input=document.createElement('textarea');input.required=true;input.name='instruction';input.value=node.instruction;step.append(input)
+    const input=document.createElement('textarea');input.classList.add('rp-textarea');input.required=true;input.name='instruction';input.value=node.instruction;step.append(input)
     const label=document.createElement('label');label.textContent='执行 Worker'
-    const worker=document.createElement('select');worker.name='worker';worker.required=true
+    const worker=document.createElement('select');worker.className='rp-select-field';worker.name='worker';worker.required=true
     const allowed=scopes.scopes.find(s=>s.id===scope()).workerIds
     options(worker,catalog.workers.filter(w=>allowed.includes(w.id)).map(w=>[w.id,w.label||w.id]))
     worker.value=node.workerId;label.append(worker);row.append(step,label);steps.append(row)
@@ -46,7 +46,7 @@ function renderSkills(){
   const accepted=new Set(state.acceptedGoals.filter(g=>g.skill).map(g=>skillKey(g.skill)))
   table('#skills',['技能','项目入口','版本','此版运行验收','操作'],state.skills.map(s=>[s.title,scopeName(s.entryId),'v'+s.version,s.state==='retired'?'已停用':s.state==='candidate'?'待试用':accepted.has(skillKey(s))?'已通过':s.validation==='source'?'源任务已验收':'暂无通过记录',actions(
     button('编辑或恢复此版',()=>editSkill(s.goalId,s)),
-    ...(s.state==='retired'?[]:[button('手动运行',()=>{runSkill={...s,operationId:crypto.randomUUID()};const form=$('#skill-run');options(form.elements.anchor,catalog.contexts.filter(c=>c.entryId===s.entryId).map(c=>[c.id,c.label]));const fields=$('#skill-inputs');fields.replaceChildren();for(const p of s.parameters||[]){const label=document.createElement('label');label.textContent=p.label;const input=document.createElement('input');input.name='input:'+p.name;input.required=true;input.maxLength=2000;label.append(input);fields.append(label)}form.hidden=false;form.elements.quote.focus()}),
+    ...(s.state==='retired'?[]:[button('手动运行',()=>{runSkill={...s,operationId:crypto.randomUUID()};const form=$('#skill-run');options(form.elements.anchor,catalog.contexts.filter(c=>c.entryId===s.entryId).map(c=>[c.id,c.label]));const fields=$('#skill-inputs');fields.replaceChildren();for(const p of s.parameters||[]){const label=document.createElement('label');label.textContent=p.label;const input=document.createElement('input');input.classList.add('rp-field-input');input.name='input:'+p.name;input.required=true;input.maxLength=2000;label.append(input);fields.append(label)}form.hidden=false;form.elements.quote.focus()}),
     button('停用此版',async()=>{await api('/router-skills',{action:'retire',skill:{id:s.id,version:s.version},scopeId:scope(),entryId:s.entryId,expectedRevision:s.revision||0});await load()})]),
     ...((!s.state||s.state==='active')&&!s.parameters?.length?[button('绑定事件',()=>{location.href='/webhook-workbench?'+new URLSearchParams({skill:s.id,version:s.version,scope:scope(),entry:s.entryId})})]:[])
   )]))

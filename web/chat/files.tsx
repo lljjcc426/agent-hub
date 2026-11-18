@@ -1,3 +1,4 @@
+import { SelectField } from '../ui/controls.tsx'
 import { useEffect, useState } from "react";
 import {
   Folder,
@@ -152,7 +153,7 @@ function TaskFiles({
   return (
     <div className="files-panel">
       <div className="files-toolbar">
-        <select
+        <SelectField
           aria-label={L("Task files", "任务文件")}
           value={ticket}
           onChange={(event) => {
@@ -168,7 +169,7 @@ function TaskFiles({
               {task.title || task.workerId}
             </option>
           ))}
-        </select>
+        </SelectField>
         <button
           className="icon-button"
           aria-label={L("Refresh files", "刷新文件")}

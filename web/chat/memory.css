@@ -88,3 +88,7 @@
 .memory-file-tabs{min-width:0;max-width:100%}
 
 .management-content .operator-workspace .memory-settings .memory-list .memory-learned-heading{margin:20px 16px 4px;font-size:var(--roppo-font-body);color:var(--c-muted)}
+
+.review-provenance {margin:1.2rem 0;display:grid;gap:.6rem}
+.review-provenance>div {display:grid;grid-template-columns:minmax(5rem,auto) 1fr;gap:1rem}
+.review-provenance dt {color:var(--muted)} .review-provenance dd {margin:0;overflow-wrap:anywhere}

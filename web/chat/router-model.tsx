@@ -1,3 +1,4 @@
+import { SelectField } from '../ui/controls.tsx'
 import {useEffect,useRef,useState,type RefObject} from 'react';
 import {createPortal} from 'react-dom';
 import {Check,ChevronRight,LoaderCircle} from 'lucide-react';
@@ -69,8 +70,8 @@ export function RouterModelControl({anchor:trigger,shown,onClose,busy,L,onSaved}
    {config?<form onSubmit={e=>{e.preventDefault();e.stopPropagation();void save()}}>
     <fieldset disabled={saving||busy}>
      <label htmlFor="router-connection">{L('Model connection','模型连接')}</label>
-     <select autoFocus id="router-connection" value={backend} onChange={e=>{setBackend(e.target.value);setEffort('')}}>{Object.entries(definitions).map(([id,d])=><option key={id} value={id}>{d.label??(id==='codex'?'Codex':id)}{'model' in d&&d.model?' · '+d.model:''}</option>)}</select>
-     {supportsEffort?<><label htmlFor="router-effort">{L('Reasoning effort','思考强度')}</label><select id="router-effort" value={effort} onChange={e=>setEffort(e.target.value as Effort|'')}><option value="">{L('Model default','模型默认')}</option>{[...new Set([...efforts,...(effort?[effort]:[])])].map(value=><option key={value} value={value}>{labels[value]??value}</option>)}</select></>:<a className="router-thinking-link" href="/configure#execution/configuration" onClick={close}>{L('Configure model thinking','配置模型思考参数')}<ChevronRight size={14}/></a>}
+     <SelectField autoFocus id="router-connection" value={backend} onChange={e=>{setBackend(e.target.value);setEffort('')}}>{Object.entries(definitions).map(([id,d])=><option key={id} value={id}>{d.label??(id==='codex'?'Codex':id)}{'model' in d&&d.model?' · '+d.model:''}</option>)}</SelectField>
+     {supportsEffort?<><label htmlFor="router-effort">{L('Reasoning effort','思考强度')}</label><SelectField id="router-effort" value={effort} onChange={e=>setEffort(e.target.value as Effort|'')}><option value="">{L('Model default','模型默认')}</option>{[...new Set([...efforts,...(effort?[effort]:[])])].map(value=><option key={value} value={value}>{labels[value]??value}</option>)}</SelectField></>:<a className="router-thinking-link" href="/configure#execution/configuration" onClick={close}>{L('Configure model thinking','配置模型思考参数')}<ChevronRight size={14}/></a>}
     </fieldset>
     {busy?<p className="router-model-notice">{L('Available when this run finishes.','本次任务结束后可切换。')}</p>:null}
     <div className="router-model-actions"><a href="/configure#models" onClick={close}>{L('Manage connections','管理连接')}<ChevronRight size={14}/></a><button disabled={saving||busy} className="router-model-save" type="submit">{saving?<LoaderCircle size={14} className="spin"/>:<Check size={14}/>} {saving?L('Saving…','正在保存…'):L('Apply','应用')}</button></div>

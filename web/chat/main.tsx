@@ -56,7 +56,6 @@ import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
-import { BrowserPanel } from "./browser.tsx";
 import { AgentAvatar } from "./agent-avatar.tsx";
 import {RouterModelControl} from './router-model.tsx';
 
@@ -1609,6 +1608,8 @@ function Chat(p: ChatProps) {
               {panel ? (
                 <ResourceWorkspace
                   state={resources}
+                  browser={id && !configuring ? {conversationId:id, requestedSession:browserRequest,
+                    requestedUrl:pendingWebsite, onUrlConsumed:consumeWebsite} : undefined}
                   onChange={setResources}
                   onOpen={(kind, url) => void choosePanel(kind, url)}
                   expanded={panelExpanded}
@@ -1618,8 +1619,6 @@ function Chat(p: ChatProps) {
                 >
                   {panel === "files" ? (
                     <FilesPanel conversationId={id} L={L} />
-                  ) : panel === "browser" && id && !configuring ? (
-                    <BrowserPanel key={id} L={L} conversationId={id} requestedSession={browserRequest} requestedUrl={pendingWebsite} onUrlConsumed={consumeWebsite} />
                   ) : panel === "activity" ? (
                     <TeamPanel workers={workers}
                       calls={snapshot?.calls?.filter((c) => c.runId === run?.id) ?? []}

@@ -1,4 +1,4 @@
-.resource-tabbar{display:flex;align-items:center;gap:4px;height:48px;flex-shrink:0;background:var(--c-side);border-bottom:1px solid var(--c-line);padding:6px 8px 0}
+.resource-tabbar{display:flex;align-items:center;gap:4px;height:40px;flex-shrink:0;background:var(--c-side);border-bottom:1px solid var(--c-line);padding:6px 8px 0}
 .resource-tabs{display:flex;align-items:stretch;gap:4px;min-width:0;overflow-x:auto;scrollbar-width:none;align-self:stretch}
 .resource-tabs::-webkit-scrollbar{display:none}
 .resource-tab{display:flex;align-items:center;flex-shrink:0;max-width:190px;min-width:94px;border-radius:9px 9px 0 0;color:var(--c-muted);position:relative}
@@ -9,8 +9,10 @@
 .resource-tab>[role=tab]>svg{flex-shrink:0}
 .resource-tab>[role=tab]>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .resource-tab-close{display:grid;place-items:center;width:25px;height:26px;margin-right:3px;flex-shrink:0;border-radius:5px;color:var(--c-muted)}
-.resource-tab-close:hover{background:var(--c-hover);color:var(--c-text)}
-.resource-add{margin:0 2px 5px;width:28px;height:30px}
+.resource-tab button:disabled{cursor:default;color:var(--c-muted)}
+.resource-tab-close:disabled{opacity:.4}
+.resource-tab-close:hover:enabled{background:var(--c-hover);color:var(--c-text)}
+.resource-add{flex-shrink:0;margin:0 2px 5px;width:28px;height:30px}
 .resource-window-actions{display:flex;gap:2px;margin:0 0 5px auto;padding-left:4px}
 .resource-window-actions .icon-button{width:28px;height:30px}
 .resource-workspace .session-panel-content{position:relative}

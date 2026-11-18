@@ -385,20 +385,22 @@ export class BrowserManager {
   }
   private async capture(s: Session, signal?: AbortSignal) {
     const data = await this.driver.run(s, ["tab", "list"], signal);
-    s.tabs = (data.tabs ?? []).map((t: any, i: number) => ({
-      id: t.tabId,
-      index: t.index ?? i,
-      url: cleanUrl(t.url ?? "about:blank"),
-      title: String(t.title ?? "").slice(0, 200),
-      active: t.active === true,
-    }));
-    const active = s.tabs.find((t) => t.active) ?? s.tabs[0];
-    // When attached over CDP the CLI may label tabs with the URL until a navigation
-    // event arrives. Read the active document title from Chromium itself.
+    const tabs: Session["tabs"] = (data.tabs ?? []).map((t: any, i: number) => {
+      const url = cleanUrl(t.url ?? "about:blank");
+      let title = String(t.title ?? "").slice(0, 200);
+      // The CDP driver can report a URL placeholder even for a previously inspected document.
+      if (s.cdpPort && (!title || title === url || title === url.replace(/^https?:\/\//, ""))) {
+        const previous = s.tabs.find(tab => tab.id === t.tabId && tab.url === url);
+        if (previous?.title) title = previous.title;
+      }
+      return {id: t.tabId, index: t.index ?? i, url, title, active: t.active === true};
+    });
+    const active = tabs.find(tab => tab.active) ?? tabs[0];
     if (s.cdpPort && active) {
       const page = await this.driver.run(s, ["get", "title"], signal);
       if (typeof page.title === "string") active.title = page.title.slice(0, 200);
     }
+    s.tabs = tabs;
     if (s.url !== (active?.url ?? "about:blank")) s.revision++;
     s.url = active?.url ?? "about:blank";
     s.title = active?.title ?? "";

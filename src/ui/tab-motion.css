@@ -17,9 +17,9 @@
 .operator-workspace [data-tab-motion=ready] > .prompt-rules-tab[aria-selected=true],
 .market-tabs[data-tab-motion=ready] > a[aria-current],
 .automation-tabs[data-tab-motion=ready] > button[aria-current] { border-bottom-color: transparent; }
-:is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab,.browser-tabs>div) {
+:is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab) {
   transition: color 140ms ease, background-color 140ms ease;
 }
 @media (prefers-reduced-motion: reduce) {
-  :is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab,.browser-tabs>div) { transition: none; }
+  :is(.workspace-tab,.prompt-rules-tab,.market-tabs>a,.automation-tabs>button,.resource-tab) { transition: none; }
 }

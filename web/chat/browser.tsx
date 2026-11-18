@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Globe,
   Plus,
@@ -44,6 +44,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   return data;
 }
 const messages: Record<string, [string, string]> = {
+  browser_tab_limit: ["This browser has reached its tab limit.", "浏览器标签页数量已达上限。"],
+  browser_tab_missing: ["This page has already closed.", "此网页已经关闭。"],
   browser_workspace_offline: ["Connecting to workspace Chromium…","正在连接工作区 Chromium…"],
   browser_profile_in_use: ["This browser is open in another conversation. Create another browser, or close it there first.","此浏览器正在另一会话中使用。请创建另一个浏览器，或先在原会话中关闭。"],
   browser_control_busy: [
@@ -114,7 +116,28 @@ const messages: Record<string, [string, string]> = {
     </button>
   );
 
-export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,requestedSession,settingsOnly=false}: {L:L;conversationId?:string;requestedUrl?:string;onUrlConsumed?:()=>void;requestedSession?:{id:string;takeover:boolean;key:number};settingsOnly?:boolean}) {
+export type BrowserPages = {
+  sessionId: string;
+  tabs: Session['tabs'];
+  canEdit: boolean;
+  select: (id: string) => Promise<void>;
+  close: (id: string) => Promise<void>;
+  create: () => Promise<void>;
+};
+
+export type BrowserPanelProps = {
+  L: L;
+  conversationId?: string;
+  requestedUrl?: string;
+  onUrlConsumed?: () => void;
+  requestedSession?: {id: string; takeover: boolean; key: number};
+  settingsOnly?: boolean;
+  visible?: boolean;
+  renderWorkspace?: (pages: BrowserPages | undefined, content: ReactNode) => ReactNode;
+};
+
+export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsumed, requestedSession,
+  settingsOnly=false, visible=true, renderWorkspace}: BrowserPanelProps) {
   const client = browserClient;
   const [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
@@ -232,7 +255,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
     };
   }, [selected]);
   useEffect(() => {
-    if (!session?.controlledByYou) return;
+    if (!visible || !session?.controlledByYou) return;
     const timer = setInterval(
       () =>
         void request<Session>("/sessions/" + session.id + "/renew", {
@@ -244,7 +267,7 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
       20000,
     );
     return () => clearInterval(timer);
-  }, [session?.id, session?.epoch, session?.controlledByYou]);
+  }, [visible, session?.id, session?.epoch, session?.controlledByYou]);
   useEffect(() => {
     if (!dialog) return;
     triggerRef.current = document.activeElement as HTMLElement;
@@ -253,9 +276,11 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
   }, [dialog]);
   const operation = (operation: Partial<BrowserAction>) =>
     act(async () => {
-      await viewportDrain.current();
       const s = sessionRef.current;
       if (!s) return;
+      await viewportDrain.current();
+      if (s.id !== sessionRef.current?.id || s.epoch !== sessionRef.current.epoch)
+        throw Error('browser_control_changed');
       update(
         await request<Session>("/sessions/" + s.id + "/action", {
           client,
@@ -328,7 +353,15 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
       : (data?.workers.find((w) => w.id === s.workerId)?.label ?? "Worker") +
         " · " +
         (s.title || L("Browser", "浏览器"));
-  return (
+  const pages: BrowserPages | undefined = session && {
+    sessionId: session.id,
+    tabs: session.tabs,
+    canEdit: !!session.controlledByYou && !busy,
+    select: tab => operation({action: 'select_tab', tab}),
+    close: tab => operation({action: 'close_tab', tab}),
+    create: () => operation({action: 'new_tab', url: 'about:blank'}),
+  };
+  const content = (
     <aside
       className={'browser-panel'+(settingsOnly?' browser-settings':'')} aria-label={L("Browser", "浏览器")} id="browser-panel">
       {settingsOnly && <div className="browser-select">
@@ -412,49 +445,6 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
               <Power size={15} />
             </Button>}
           </form>
-          <div
-            className="browser-tabs"
-            role="tablist"
-            aria-label={L("Browser tabs", "浏览器标签页")}
-          >
-            {session.tabs.map((t) => (
-              <div key={t.index} className={t.active ? "active" : ""}>
-                <button
-                  role="tab"
-                  data-motion-key={t.id}
-                  aria-selected={!!t.active}
-                  disabled={!controlled || busy}
-                  onClick={() =>
-                    void operation({ action: "select_tab", tab: t.id })
-                  }
-                >
-                  {t.url === 'about:blank' ? L("New tab", "新标签页") : t.title || L("New tab", "新标签页")}
-                </button>
-                <button
-                  aria-label={
-                    L("Close tab", "关闭标签页") +
-                    " " +
-                    (t.url === "about:blank" ? L("New tab", "\u65b0\u6807\u7b7e\u9875") : t.title || String(t.index + 1))
-                  }
-                  disabled={!controlled || busy}
-                  onClick={() =>
-                    void operation({ action: "close_tab", tab: t.id })
-                  }
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-            <Button
-              label={L("New tab", "新建标签页")}
-              onClick={() =>
-                void operation({ action: "new_tab", url: "about:blank" })
-              }
-              disabled={!controlled || busy}
-            >
-              <Plus size={15} />
-            </Button>
-          </div>
           <BrowserViewport key={session.id} id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={!busy} input={input} drainRef={viewportDrain}
             resize={(width,height)=>request('/sessions/'+session.id+'/viewport',{client,epoch:session.epoch,width,height})}
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
@@ -801,4 +791,5 @@ export function BrowserPanel({L,conversationId='',requestedUrl='',onUrlConsumed,
       )}
     </aside>
   );
+  return renderWorkspace ? renderWorkspace(pages, content) : content;
 }

@@ -47,8 +47,8 @@ async def main():
    transfer=page.get_by_role('button',name='Take over here',exact=True)
    if await transfer.count():await transfer.click()
    address=page.get_by_label('Website address',exact=True);await expect(address).to_be_enabled()
-   while await page.locator('.browser-tabs [role=tab]').count()>1:
-    count=await page.locator('.browser-tabs [role=tab]').count();await page.locator('.browser-tabs > div > button:last-child').last.click();await expect(page.locator('.browser-tabs [role=tab]')).to_have_count(count-1)
+   while await page.locator('.resource-tabs [data-webpage] [role=tab]').count()>1:
+    count=await page.locator('.resource-tabs [data-webpage] [role=tab]').count();await page.locator('.resource-tabs [data-webpage] .resource-tab-close').last.click();await expect(page.locator('.resource-tabs [data-webpage] [role=tab]')).to_have_count(count-1)
    await address.fill(info['site']+'/login');await address.press('Enter');await expect(address).to_be_enabled(timeout=30000)
    await page.get_by_role('button',name='Saved accounts',exact=True).click()
    await page.get_by_label('Account name',exact=True).fill('Browser Lab account')
@@ -80,8 +80,8 @@ async def main():
    print('PASS persistence',flush=True)
    await page.get_by_role('button',name='Saved accounts',exact=True).click();await page.keyboard.press('Escape');await expect(page.locator('dialog')).to_have_count(0);await expect(page.locator('.browser-panel')).to_be_visible()
    await page.get_by_label('Browser keyboard input',exact=True).focus();await page.keyboard.press('Escape');await expect(page.locator('.browser-panel')).to_be_visible();await page.keyboard.press('F6');await expect(address).to_be_focused()
-   await page.get_by_role('button',name='New tab',exact=True).click();await expect(page.locator('.browser-tabs [role=tab]')).to_have_count(len(restored['tabs'])+1);await page.locator('.browser-tabs [role=tab]').first.click();await expect(address).to_have_value(info['site']+'/dashboard')
-   await page.get_by_role('button',name='Close tab New tab',exact=True).click();await expect(page.locator('.browser-tabs [role=tab]')).to_have_count(len(restored['tabs']))
+   await page.get_by_role('button',name='New workspace tab',exact=True).click();await page.get_by_role('button',name='New webpage',exact=True).click();await expect(page.locator('.resource-tabs [data-webpage] [role=tab]')).to_have_count(len(restored['tabs'])+1);await page.locator('.resource-tabs [data-webpage] [role=tab]').first.click();await expect(address).to_have_value(info['site']+'/dashboard')
+   await page.get_by_role('button',name='Close tab Blank page',exact=True).click();await expect(page.locator('.resource-tabs [data-webpage] [role=tab]')).to_have_count(len(restored['tabs']))
    await page.screenshot(path=str(out/'browser-light.png'))
    await page.get_by_label('Message Router',exact=True).fill('Open the browser lab using both Workers.');await page.get_by_role('button',name='Send message',exact=True).click()
    data=await wait_state(lambda d:len([s for s in d['sessions'] if not s['personal'] and s['control']=='paused'])==2,60)

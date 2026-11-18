@@ -1041,3 +1041,17 @@ it("attaches Router and account to one persistent browser, fencing the active co
   await action("turn-b",{action:"click",ref:"@e1",revision:current.revision});
   expect(driver.calls.some(c=>c.id===first.id&&c.args[0]==="scrollintoview")).toBe(true);
 });
+
+it("preserves the inspected CDP page title in background tabs until the document URL changes", async () => {
+  const {host, driver, config} = await fixture();
+  const user = randomUUID(), client = randomUUID();
+  config.browser.workspace = {owner:user, cdpPort:9222};
+  const s = await host.browser.openDefault(user,client,randomUUID());
+  const run = (operation: Parameters<typeof host.browser.action>[4]) => host.browser.action(user,s.id,client,s.epoch,operation);
+  await run({action:"navigate",url:"https://example.com/first"});
+  const background = {tabId:"t1",url:"https://example.com/first",title:"example.com/first",active:false};
+  driver.tabs.set(s.id,[background,{tabId:"t2",url:"https://example.com/next",title:"example.com/next",active:true}]);
+  expect((await run({action:"reload"})).tabs[0]?.title).toBe("Actual page title");
+  Object.assign(background,{url:"https://example.com/third",title:"example.com/third"});
+  expect((await run({action:"reload"})).tabs[0]?.title).toBe("example.com/third");
+});

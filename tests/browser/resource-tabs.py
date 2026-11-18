@@ -24,20 +24,29 @@ with sync_playwright() as p:
   open_resource(page,'Team activity');expect(page.locator('.worker-node')).to_have_count(2);button('New workspace tab').click();expect(page.locator('.resource-recent>button')).to_have_count(2);shot('recent-light')
   page.locator('.resource-recent').get_by_role('button',name=__import__('re').compile('Files')).click();expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');button('Close Files view').click();expect(tab('Files')).to_have_count(0);open_resource(page,'Files');expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');expect(tab('Files')).to_have_count(1)
   page.reload();expect(tab('Files')).to_have_attribute('aria-selected','true');expect(page.locator('.file-preview')).to_contain_text('Two independent Worker browsers');checks.append('launcher search, real files/team, independent tab closing/reopening, recent records and reload persistence')
-  button('New workspace tab').click();search.fill(website);search.press('Enter');expect(tab('Browser')).to_have_attribute('aria-selected','true');expect(page.locator('.browser-pending-site')).to_be_visible();button('Browser Lab').click()
-  if button('Take over here').count():button('Take over here').click()
+  button('New workspace tab').click();search.fill(website);search.press('Enter')
   expect(page.get_by_alt_text('Live browser page')).to_be_visible(timeout=30000)
-  address=page.get_by_label('Website address',exact=True);expect(address).to_have_value(website,timeout=30000);expect(page.locator('.browser-pending-site')).to_have_count(0);expect(address).to_be_enabled(timeout=30000)
-  sid=page.get_by_label('Browser session',exact=True).input_value();tabs_before=next(s for s in state()['sessions'] if s['id']==sid)['tabs'];assert sum(t['url']==website for t in tabs_before)==1
-  button('Switch to dark mode').click();expect(page.locator('html')).to_have_attribute('data-theme','dark');page.wait_for_timeout(200);shot('browser-dark')
-  button('Close Browser view').click();expect(tab('Browser')).to_have_count(0)
+  address=page.get_by_label('Website address',exact=True);expect(address).to_have_value(website,timeout=30000);expect(address).to_be_enabled(timeout=30000)
+  webpages=page.locator('.resource-tabs [data-webpage] [role=tab]')
+  current=webpages.locator('xpath=self::*[@aria-selected="true"]')
+  page_id=current.get_attribute('id');assert page_id
+  sid=page.get_by_label('Browser session',exact=True).input_value()
+  tabs_before=next(s for s in state()['sessions'] if s['id']==sid)['tabs'];assert sum(t['url']==website for t in tabs_before)==1
+  expect(webpages).to_have_count(len(tabs_before));expect(page.locator('#session-panel [role=tablist]')).to_have_count(1)
+  button('Switch to dark mode').click();expect(page.locator('html')).to_have_attribute('data-theme','dark');shot('browser-dark')
+  tab('Files').click();expect(page.locator('.browser-viewport')).to_have_count(0)
   for _ in range(40):
    session=next(s for s in state()['sessions'] if s['id']==sid)
    if not session['streaming']:break
    time.sleep(.2)
-  else:raise AssertionError('closed view still streaming')
-  assert len(session['tabs'])==len(tabs_before)
-  open_resource(page,'Browser');expect(page.get_by_label('Browser session',exact=True)).to_have_value(sid);expect(page.get_by_alt_text('Live browser page')).to_be_visible(timeout=30000);assert len(next(s for s in state()['sessions'] if s['id']==sid)['tabs'])==len(tabs_before);checks.append('launcher URL opens one real browser tab; closing its view stops streaming and preserves the live browser')
+  else:raise AssertionError('hidden page still streaming')
+  page.locator('[id="'+page_id+'"]').click();expect(address).to_have_value(website)
+  button('New workspace tab').click();button('New webpage').click();expect(webpages).to_have_count(len(tabs_before)+1)
+  blank_id=current.get_attribute('id');assert blank_id and blank_id!=page_id
+  tab('Files').click();page.locator('[id="'+page_id+'"]').click();expect(address).to_have_value(website)
+  page.locator('[id="'+blank_id+'"]').locator('..').get_by_role('button').click()
+  expect(webpages).to_have_count(len(tabs_before));expect(address).to_have_value(website)
+  checks.append('real webpages share the resource row with Files, stop streaming when hidden and close independently')
   # A malformed address is a search, never an executable navigation.
   button('New workspace tab').click();search.fill('javascript:alert(1)');search.press('Enter');expect(tab('New tab')).to_have_attribute('aria-selected','true');expect(page.locator('.resource-no-results')).to_be_visible();search.fill('')
   tab('New tab').focus();page.keyboard.press('End');expect(page.locator('.resource-tabs [role=tab]').last).to_be_focused();page.keyboard.press('Home');expect(tab('New tab')).to_be_focused();page.keyboard.press('Delete');expect(tab('New tab')).to_have_count(0);expect(page.locator('.resource-tabs [aria-selected=true]')).to_be_focused();button('New workspace tab').click()

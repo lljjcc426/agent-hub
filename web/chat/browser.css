@@ -84,9 +84,9 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 4px 10px;
   background: var(--c-soft);
-  border-block: 1px solid var(--c-line);
+  border-bottom: 1px solid var(--c-line);
 }
 .browser-address input {
   flex: 1;
@@ -103,42 +103,6 @@
 .browser-address .icon-button {
   width: 28px;
   height: 28px;
-}
-.browser-tabs {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  overflow: auto;
-  padding: 7px 10px;
-  flex-shrink: 0;
-  background: var(--c-soft);
-  border-bottom: 1px solid var(--c-line);
-}
-.browser-tabs > div {
-  display: flex;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  min-width: 85px;
-  max-width: 170px;
-}
-.browser-tabs > div.active {
-  background: var(--c-bg);
-  border-color: var(--c-line);
-}
-.browser-tabs [role="tab"] {
-  padding: 8px;
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-align: left;
-  min-width: 0;
-  flex: 1;
-}
-.browser-tabs > div > button:last-child {
-  display: flex;
-  padding: 6px;
 }
 .browser-viewport {
   position: relative;
@@ -380,9 +344,6 @@
   cursor: default;
   opacity: 0.45;
 }
-.browser-panel [role="tab"]:disabled {
-  opacity: 0.75;
-}
 @media (max-width: 1150px) {
   .browser-panel {
     position: absolute;
@@ -441,7 +402,6 @@
 .browser-viewport{touch-action:none;overscroll-behavior:contain;background:var(--c-bg)}
 .browser-viewport img{object-fit:contain}
 .browser-disconnected button{display:flex;align-items:center;gap:8px;background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-line);border-radius:7px;padding:8px 12px}
-.browser-tabs [role=tab]{font-size:var(--roppo-font-meta)}
 .browser-settings{width:100%;min-width:0;max-width:760px;border:0;flex:initial}
 .browser-settings .browser-select{padding:0 0 16px;gap:8px}
 .browser-settings h2{flex:1;font-size:var(--roppo-font-section);font-weight:600;margin:0}

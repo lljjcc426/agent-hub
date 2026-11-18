@@ -9,7 +9,10 @@ export const DELEGATED_GOALS_DB_SCHEMA=11
 export const WORKFLOW_DB_SCHEMA=12
 export const EVOLUTION_DB_SCHEMA=14
 export const REFLECTION_DB_SCHEMA=15
-export const MAX_DB_SCHEMA=REFLECTION_DB_SCHEMA
+export const WEBHOOK_REHEARSAL_DB_SCHEMA=16
+export const GOAL_REPLACEMENT_DB_SCHEMA=17
+export const ASYNC_WORKER_DB_SCHEMA=18
+export const MAX_DB_SCHEMA=ASYNC_WORKER_DB_SCHEMA
 
 export interface Job { id: string; kind: string; payload: unknown; state: string; attempts: number; nextAt: number }
 export interface Delivery extends OutboundMessage { status: string; attempts: number; nextAt: number; error?: string }
@@ -50,9 +53,47 @@ export class Store implements Repositories {
       CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
         attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, error TEXT);
       CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY, at TEXT NOT NULL, body TEXT NOT NULL);
+      -- Valid-JSON partial index also upgrades existing databases on open. The
+      -- equality prefix plus seq avoids per-task full audit scans and sorting.
+      CREATE INDEX IF NOT EXISTS audit_trace_checkpoint ON audit (
+        json_extract(body,'$.type'), json_extract(body,'$.schema'),
+        json_extract(body,'$.ticketId'), json_extract(body,'$.stage'), seq DESC
+      ) WHERE json_valid(body);
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(id UNINDEXED, body, tokenize='trigram');
       PRAGMA user_version=${Math.max(version,6)};
     `)
+    this.ensureGoalReferences()
+  }
+  // Derived only from authoritative goal records. Triggers also cover restores,
+  // direct maintenance writes and rollbacks within an existing transaction.
+  private ensureGoalReferences(){
+    this.atomic(()=>{
+      if(this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='goal_reference'").get())return
+      this.db.exec(`
+        CREATE TABLE goal_reference(goal_id TEXT, kind TEXT, ref TEXT,
+          PRIMARY KEY(goal_id,kind,ref)) WITHOUT ROWID;
+        CREATE INDEX goal_reference_lookup ON goal_reference(kind,ref,goal_id);
+        CREATE INDEX goal_receipt_anchor ON records(json_extract(body,'$.triggerId')) WHERE kind='goal-receipt';
+        CREATE INDEX goal_receipt_goal ON records(json_extract(body,'$.goalId')) WHERE kind='goal-receipt';
+        CREATE VIEW goal_reference_source AS
+          SELECT r.id AS goal_id,'task' AS kind,t.value AS ref FROM records r,json_each(r.body,'$.taskIds') t
+            WHERE r.kind='router-goal' AND t.type='text'
+          UNION ALL SELECT id,'trigger',json_extract(body,'$.triggerId') FROM records WHERE kind='router-goal'
+          UNION ALL SELECT id,'trigger',json_extract(body,'$.contract.triggerId') FROM records WHERE kind='router-goal';
+        INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE ref IS NOT NULL;
+        CREATE TRIGGER goal_reference_insert AFTER INSERT ON records WHEN NEW.kind='router-goal' BEGIN
+          DELETE FROM goal_reference WHERE goal_id=NEW.id;
+          INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE goal_id=NEW.id AND ref IS NOT NULL;
+        END;
+        CREATE TRIGGER goal_reference_update AFTER UPDATE ON records WHEN OLD.kind='router-goal' OR NEW.kind='router-goal' BEGIN
+          DELETE FROM goal_reference WHERE goal_id=OLD.id AND OLD.kind='router-goal';
+          INSERT OR IGNORE INTO goal_reference SELECT * FROM goal_reference_source WHERE goal_id=NEW.id AND NEW.kind='router-goal' AND ref IS NOT NULL;
+        END;
+        CREATE TRIGGER goal_reference_delete AFTER DELETE ON records WHEN OLD.kind='router-goal' BEGIN
+          DELETE FROM goal_reference WHERE goal_id=OLD.id;
+        END;
+      `)
+    })
   }
   atomic<T>(work: () => T): T {
     const level = this.depth
@@ -74,6 +115,8 @@ export class Store implements Repositories {
     return row ? JSON.parse(String(row.body)) as T : undefined
   }
   /** An older verifier would ignore an unknown check and could release a waiting goal. */
+  requireAsyncWorkerSchema(){this.db.exec('PRAGMA user_version='+Math.max(ASYNC_WORKER_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
+  requireGoalReplacementSchema(){this.db.exec('PRAGMA user_version='+Math.max(GOAL_REPLACEMENT_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   requireWorkflowSchema(){this.db.exec('PRAGMA user_version='+Math.max(WORKFLOW_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   requireCodeProjectSchema(){this.db.exec('PRAGMA user_version='+Math.max(13,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   requireEvolutionSchema(){this.db.exec('PRAGMA user_version='+Math.max(EVOLUTION_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}

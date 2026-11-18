@@ -71,6 +71,8 @@ it.each([false,true])('restores unchanged protected state after telemetry-only r
 })
 it.each(['revoke','keys','wait','callback'])('still rejects stale restore after protected %s state changes',async kind=>{
  const url=await receiver((_req,res)=>{res.writeHead(204);res.end()}),f=fixture(url,kind==='wait'),backup=join(f.root,'protected-backup')
+ // Isolate protected-state rollback from the independently enforced schema downgrade fence.
+ f.h.store.requireAsyncWorkerSchema()
  if(kind==='wait')f.receive()
  await backupState(f.config,backup)
  if(kind==='revoke')f.h.webhooks.control({id:f.grant.id,action:'revoke',operationId:'revoke-after-backup'})
@@ -144,4 +146,22 @@ it('routes a signed raw event through the packaged normalizer and preserves its 
  const g=f.h.webhooks.create({...f.spec,operationId:'normalizer-grant',namespace:'normalized',normalizerSourceId:c.id}),listener=await serveWebhooks(()=>f.h,0);cleanups.push(listener.close)
  const send=async(extra=false)=>{const input={...f.event(),data:{build:{batch:' batch-7 ',...(extra?{unused:'changed'}:{})}}},signed=f.signed(input);return fetch(listener.url+'/webhooks/'+g.id,{method:'POST',headers:signed.headers,body:signed.body})}
  expect((await send()).status).toBe(202);expect(f.h.webhooks.receipts()[0]?.event.data).toEqual({batch:'batch-7'});expect(await (await send()).json()).toMatchObject({duplicate:true});expect((await send(true)).status).toBe(409);f.h.webhooks.dispatch();expect(f.h.store.list('router-goal')).toHaveLength(1)
+})
+
+it.each(['failed-rehearsal','stop-and-rehearse','rotation'])('rejects a late normalized event after strict rehearsal changes: %s',async change=>{
+ const f=fixture(),pkg=await buildPluginPackage(join(process.cwd(),'plugins/webhook-normalizer/index.ts'),JSON.parse(readFileSync('plugins/webhook-normalizer/manifest.json','utf8')),join(f.root,'fenced-package'))
+ const c=configSchema.parse({sources:[{id:'normalizer',kind:'webhook-normalizer',cwd:f.root,options:{scopes:['test']}}]}).sources[0]!,source=new ProcessSource(c,pkg,{sandboxDriver:'disabled',codex:'codex',stateDir:f.config.stateDir});source.attach(f.h.store,()=>c);f.config.sources.push(c);f.h.sources.set(c.id,source)
+ const scope=f.h.scopes.scope('team'),{revision,routerId,epoch,...fields}=scope;f.h.scopes.command({action:'scope.put',operationId:'fenced-normalizer-scope',expectedRevision:revision,scope:{...fields,sourceIds:['local','normalizer']}})
+ const g=f.h.webhooks.create({...f.spec,operationId:'fenced-grant',namespace:'normalized',normalizerSourceId:c.id,receiving:false})
+ f.h.webhooks.dryRun({id:g.id,event:f.event()});f.h.webhooks.control({id:g.id,action:'start_receiving',operationId:'first-start'})
+ let release!:()=>void,arrive!:()=>void;const gate=new Promise<void>(r=>{release=r}),started=new Promise<void>(r=>{arrive=r})
+ // Controlled adapter response exercises the real host's asynchronous admission
+ // fence without starting a plugin process or making a platform call.
+ source.invoke=async()=>{arrive();await gate;return {batch:'batch-1'}}
+ const signed=f.signed(),pending=f.h.webhooks.ingest(g.id,signed.headers,signed.body);await started
+ if(change==='failed-rehearsal')expect(()=>f.h.webhooks.dryRun({id:g.id,event:{}})).toThrow()
+ if(change==='stop-and-rehearse'){f.h.webhooks.control({id:g.id,action:'stop_receiving',operationId:'stop'});f.h.webhooks.dryRun({id:g.id,event:f.event()});f.h.webhooks.control({id:g.id,action:'start_receiving',operationId:'second-start'})}
+ if(change==='rotation')f.h.webhooks.rotate({id:g.id,operationId:'rotate',expectedRevision:0,inbound:f.inEnv,outbound:f.outEnv})
+ const checked=expect(pending).rejects.toThrow(/webhook_rehearsal_required|endpoint_not_receiving/);release();await checked
+ expect(f.h.webhooks.receipts()).toHaveLength(0);expect(f.h.store.list('router-goal')).toHaveLength(0);expect(f.workerCalls).toBe(0)
 })

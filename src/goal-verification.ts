@@ -123,7 +123,7 @@ export class GoalVerification {
   }
   return items
  }
- private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true):Snapshot {
+ private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean}={}):Snapshot {
   const c=this.host.goals.context(g),criteria=this.criteria(g,node)
   const closure=(ids:string[])=>{const selected=new Set(ids);let grew=true;while(grew){grew=false;for(const n of g.nodes??[])if(selected.has(n.id))for(const id of n.dependsOn)if(!selected.has(id)){selected.add(id);grew=true}}return selected}
   // A dependent result may describe work performed by its prerequisites. Include
@@ -196,7 +196,7 @@ export class GoalVerification {
    const files=[...new Set(fileCriteria.flatMap(cr=>[...(cr.files??[]),...(cr.check?[cr.check.path]:[])]))]
    for(const path of files){
     if(!run)throw Error('Task workspace is missing')
-    const data=this.host.artifacts.evidence(g,n.id,n.ticketId,run.cwd,path,fileCriteria,code?.head)
+    const data=this.host.artifacts.evidence(g,n.id,n.ticketId,run.cwd,path,fileCriteria,code?.head,options)
     add({kind:'file',ticketId:n.ticketId,key:path,...data,...(!node&&code?.head?{commit:code.head}:{}),criterionIds:citeIds(fileCriteria.filter(cr=>cr.files?.includes(path)||cr.check?.path===path).map(cr=>cr.id))})
    }
    for(const documentId of [...new Set(assigned.flatMap(cr=>cr.documents??[]))]){
@@ -206,10 +206,16 @@ export class GoalVerification {
    }
   }
   if(Buffer.byteLength(JSON.stringify(evidence))>512*1024)throw Error('Acceptance evidence exceeds 512 KiB; declare smaller artifacts')
-  return {contract:stableDigest({objective:g.objective,criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
+  return {contract:stableDigest({objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
  }
- current(round:VerificationRound,g:RouterGoal):boolean {
-  try{return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false))===stableDigest(round.snapshot)}catch{return false}
+ current(round:VerificationRound,g:RouterGoal,options:{readOnly?:boolean}={}):boolean {
+  const compare=()=>{
+   // Context lookup may create a route when one is missing. Observation must
+   // fail closed rather than establish a new authorization fact on a GET.
+   if(options.readOnly&&!this.host.store.get('router-route',g.triggerId))return false
+   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,options))===stableDigest(round.snapshot)
+  }
+  try{return options.readOnly?this.host.scopes.readOnly(()=>this.host.memory.readOnly(compare)):compare()}catch{return false}
  }
  ensure(g:RouterGoal,node?:GoalNode):VerificationRound {
   const snapshot=this.snapshot(g,node,false),id='verify-'+stableDigest([g.id,node?.id??'goal',snapshot])
@@ -270,7 +276,7 @@ export class GoalVerification {
     const toStored=new Map(presented.map((e,i)=>[e.id,snapshot.evidence[i]!.id])),toPresented=new Map([...toStored].map(([alias,stored])=>[stored,alias]))
     const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:presented.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:presented.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
     const previous=round.attempts>1?this.host.store.get<{error?:string}>('goal-verification-attempt',round.id+':'+(round.attempts-1))?.error:undefined
-    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),evidence:presented.map(({content,...meta})=>meta)}
+    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),evidence:presented.map(({content,...meta})=>meta)}
     const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
     const result=await this.host.runGoalVerifier(g,id,{
      input:access.input(modelInput),

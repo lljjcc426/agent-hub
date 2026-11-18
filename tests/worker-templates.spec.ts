@@ -1,0 +1,108 @@
+import {afterEach,expect,it,vi} from 'vitest'
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs'
+import {join} from 'node:path'
+import {tmpdir} from 'node:os'
+import {serve} from '../src/server.ts'
+import {Runtime} from '../src/runtime.ts'
+import {configSchema} from '../src/config.ts'
+import {WorkerTemplates,sealWorkerTemplate,readWorkerTemplate,TEMPLATE_MAX_BYTES} from '../src/worker-templates.ts'
+const roots:string[]=[],hosts:Runtime[]=[]
+afterEach(async()=>{vi.restoreAllMocks();for(const h of hosts.splice(0))await h.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true})})
+function fixture(enabled=true){const root=mkdtempSync(join(tmpdir(),'worker-templates-'));roots.push(root);const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled',network:false},backends:{fixture:{kind:'openai-chat',baseUrl:'http://127.0.0.1:9/v1',model:'fixture'}},execution:{management:{enabled,maxWorkers:5},workers:[{id:'existing',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]});let calls=0;const h=new Runtime(config,{model:{async run(){calls++;throw Error('No model call should occur')}}});hosts.push(h);return {h,library:new WorkerTemplates(()=>h),calls:()=>calls,config}}
+const recipe=(extra:Record<string,unknown>={})=>sealWorkerTemplate({apiVersion:1,type:'worker-template',id:'reviewer',version:'1.0.0',label:'Reviewer',description:'Review supplied evidence.',instructions:'Check each acceptance criterion against supplied evidence.',requirements:{capabilities:['managed','tools','resume','history','contextBudget'],tools:['superagent_read']},examples:[{request:'Review the report.',expected:'List supported and missing criteria.'}],acceptance:['Cite evidence for each conclusion.'],source:{name:'Original test recipe',url:'https://example.test/recipes',license:'Apache-2.0'},...extra} as any)
+const install=(library:WorkerTemplates,manifest=recipe(),requestId='install')=>library.install({manifest,digest:manifest.digest,revision:library.snapshot().revision,requestId})
+const create=(library:WorkerTemplates,manifest=recipe(),requestId='create')=>({id:manifest.id,version:manifest.version,digest:manifest.digest,revision:library.snapshot().revision,settingsRevision:library.snapshot().settingsRevision,workerId:'reviewer-one',label:'Review worker',backend:'codex',requestId})
+it('previews bounded original recipes, verifies digest, and never writes or runs during preview',()=>{const {h,library,calls}=fixture(),m=recipe();expect(readWorkerTemplate(JSON.stringify(m))).toEqual(m);expect(library.preview({manifest:m})).toMatchObject({manifest:m,grants:[],startsWorker:false,installed:false});expect(h.store.list('worker-template')).toEqual([]);expect(h.manager.list().workers).toHaveLength(1);expect(calls()).toBe(0);expect(()=>readWorkerTemplate({...m,instructions:'Changed'})).toThrow('template_digest_mismatch')})
+it('rejects archives, path traversal, link entries, executable payloads and credential fields without extracting anything',()=>{for(const extra of [{id:'../../outside'},{id:'/absolute'},{id:'name\\outside'},{files:[{path:'../x',body:'code'}]},{files:[{path:'safe',symlink:'/etc/passwd'}]},{scripts:{install:'echo unauthorized'}},{secrets:{token:'hidden'}},{history:[]},{memory:[]},{environment:{API_KEY:'value'}}]){expect(()=>readWorkerTemplate({...recipe(),...extra})).toThrow('template_validation_failed')};expect(()=>readWorkerTemplate('PK\u0003\u0004compressed')).toThrow('template_json_required')})
+it('rejects oversized and deeply nested data, duplicate fields, and recognizable pasted secrets',()=>{expect(()=>readWorkerTemplate('x'.repeat(TEMPLATE_MAX_BYTES+1))).toThrow('template_size_exceeded');expect(()=>readWorkerTemplate('{"x":'+ '['.repeat(20)+'0'+']'.repeat(20)+'}')).toThrow('template_depth_exceeded');expect(()=>readWorkerTemplate('['.repeat(50000)+'0'+']'.repeat(50000))).toThrow('template_depth_exceeded');expect(()=>readWorkerTemplate('{"id":"safe","id":"other"}')).toThrow('template_duplicate_field');const secret=recipe({instructions:'An accidental token sk-'+'a'.repeat(30)});expect(()=>readWorkerTemplate(secret)).toThrow('template_secret_detected')})
+it('uses immutable versions, library revisions and request receipts to fence conflicting installs',()=>{const {library}=fixture(),m=recipe(),input={manifest:m,digest:m.digest,revision:0,requestId:'one'};expect(library.install(input)).toMatchObject({revision:1,installed:true});expect(library.install(input)).toMatchObject({revision:1});expect(()=>library.install({...input,requestId:'two'})).toThrow('template_revision_conflict');expect(()=>library.install({...input,digest:'0'.repeat(64)})).toThrow('template_request_conflict');const changed=recipe({instructions:'A different role.'});expect(()=>install(library,changed,'new')).toThrow('template_version_conflict');expect(library.export({id:m.id,version:m.version})).toEqual(m);expect(()=>library.install({...input,revision:1,requestId:'bad-digest',digest:'0'.repeat(64)})).toThrow('template_preview_changed')})
+it('creates through existing Worker management, pinned to a recipe, paused with zero automatic tools or calls',async()=>{const {h,library,calls}=fixture(),m=recipe();install(library,m);const command=create(library,m);const spy=vi.spyOn(h.manager,'call');const result=await library.create(command);expect(spy).toHaveBeenCalledWith(expect.objectContaining({action:'create',revision:0,profile:expect.objectContaining({state:'paused',tools:[],toolConnections:[]})}));expect(result).toMatchObject({started:false,requiresConfiguration:true,requires:{operatorConfiguration:true,activation:true,tools:['superagent_read']},grants:[],template:{id:m.id,version:m.version,digest:m.digest}});expect(h.manager.list().workers.find(w=>w.id===command.workerId)).toMatchObject({prompt:m.instructions,state:'paused',tools:[],toolConnections:[]});expect(h.store.tickets.list()).toEqual([]);expect(h.store.jobs()).toEqual([]);expect(calls()).toBe(0);expect(await library.create(command)).toEqual(result);expect(h.manager.list().workers).toHaveLength(2)})
+it('retains versioned Workers, provenance, and history across recipe upgrades and removal',async()=>{const {h,library}=fixture(),m=recipe();install(library,m);await library.create(create(library,m));const worker=structuredClone(h.manager.list().workers.find(w=>w.id==='reviewer-one'));h.store.put('example-history','retained',{workerId:'reviewer-one',text:'history'});const next=recipe({version:'2.0.0',instructions:'New instructions.'});install(library,next,'upgrade');expect(h.manager.list().workers.find(w=>w.id==='reviewer-one')).toEqual(worker);const removal={id:m.id,version:m.version,revision:library.snapshot().revision,requestId:'remove'};expect(library.remove(removal)).toMatchObject({historyRetained:true,workersChanged:false});expect(library.remove(removal)).toMatchObject({removed:true});expect(()=>library.export({id:m.id,version:m.version})).toThrow('template_not_installed');expect(h.manager.list().workers.find(w=>w.id==='reviewer-one')).toEqual(worker);expect(h.store.get('worker-template-origin','reviewer-one')).toMatchObject({digest:m.digest});expect(h.store.get('example-history','retained')).toBeDefined();expect(()=>install(library,recipe({instructions:'Collision after removal.'}),'collision')).toThrow('template_version_conflict')})
+it('preserves existing policy, rejects duplicate Worker IDs, and does not auto-grant capability requirements',async()=>{const {h,library,calls}=fixture(false),m=recipe();install(library,m);await expect(library.create(create(library,m))).rejects.toThrow('Worker management is disabled');expect(h.manager.list().workers).toHaveLength(1);expect(calls()).toBe(0);const f=fixture(),images=recipe({requirements:{capabilities:['images'],tools:[]}});install(f.library,images);await expect(f.library.create({...create(f.library,images),backend:'fixture'})).rejects.toThrow('template_capabilities_unavailable');await expect(f.library.create({...create(f.library,images),workerId:'existing',requestId:'duplicate'})).rejects.toThrow('Duplicate Worker id');expect(f.h.manager.list().workers).toHaveLength(1)})
+it('reconciles interrupted provenance persistence using the original Worker command receipt',async()=>{const {h,library}=fixture(),m=recipe();install(library,m);const command=create(library,m),original=h.store.put.bind(h.store);let failed=false;vi.spyOn(h.store,'put').mockImplementation((kind,id,value)=>{if(kind==='worker-template-origin'&&!failed){failed=true;throw Error('interrupted provenance transaction')}return original(kind,id,value)});await expect(library.create(command)).rejects.toThrow('interrupted provenance');expect(h.manager.list().workers).toHaveLength(2);library.remove({id:m.id,version:m.version,revision:library.snapshot().revision,requestId:'remove-after-interrupt'});expect(await library.create(command)).toMatchObject({started:false,template:{digest:m.digest}});expect(h.manager.list().workers).toHaveLength(2);expect(h.store.get('worker-template-origin','reviewer-one')).toMatchObject({digest:m.digest})})
+it('persists the template library and pinned Worker across a host restart',async()=>{const {h,library,config}=fixture(),m=recipe();install(library,m);await library.create(create(library,m));await h.close();hosts.splice(hosts.indexOf(h),1);const restored=new Runtime(config,{model:{async run(){throw Error('not invoked')}}});hosts.push(restored);const next=new WorkerTemplates(()=>restored);expect(next.snapshot().revision).toBe(1);expect(next.export({id:m.id,version:m.version})).toEqual(m);expect(restored.manager.list().workers.find(w=>w.id==='reviewer-one')).toMatchObject({state:'paused',prompt:m.instructions,tools:[]});expect(restored.store.get('worker-template-origin','reviewer-one')).toMatchObject({digest:m.digest})})
+it('rejects recognizable credentials even when imported JSON escapes their prefix',()=>{const secret=recipe({instructions:'An accidental token sk-'+'a'.repeat(30)}),encoded=JSON.stringify(secret).replace('sk-',String.raw`\u0073\u006b\u002d`);expect(encoded).not.toContain('sk-');expect(()=>readWorkerTemplate(encoded)).toThrow('template_secret_detected')})
+
+const compatibility=(library:WorkerTemplates,m=recipe(),backend='codex')=>({id:m.id,version:m.version,digest:m.digest,revision:library.snapshot().revision,settingsRevision:library.snapshot().settingsRevision,backend})
+it('preflights the exact template with no writes or calls and separates tool presence from grants',async()=>{
+ const {h,library,calls}=fixture(),m=recipe({requirements:{capabilities:['images'],tools:['superagent_read','superagent_shell','not_installed']}});install(library,m)
+ const before=JSON.stringify(h.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all()),jobs=JSON.stringify(h.store.jobs())
+ const result=library.compatibility(compatibility(library,m,'fixture'))
+ expect(result).toMatchObject({compatible:false,backendState:'available',managementEnabled:true,grants:[],startsWorker:false})
+ expect(result.capabilities).toEqual(expect.arrayContaining([{name:'images',requiredByTemplate:true,requiredByHost:false,available:false},{name:'managed',requiredByTemplate:false,requiredByHost:true,available:true}]))
+ expect(result.tools).toEqual([{name:'superagent_read',available:true,requiresAuthorization:true},{name:'superagent_shell',available:false,requiresAuthorization:true},{name:'not_installed',available:false,requiresAuthorization:true}])
+ expect(JSON.stringify(h.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all())).toBe(before);expect(JSON.stringify(h.store.jobs())).toBe(jobs);expect(calls()).toBe(0)
+ await expect(library.create({...create(library,m),backend:'fixture'})).rejects.toThrow('template_capabilities_unavailable')
+ expect(library.compatibility(compatibility(library,m))).toMatchObject({compatible:true})
+ await expect(library.create(create(library,m))).resolves.toMatchObject({started:false,grants:[]})
+})
+it('explains disabled management, missing backend and unavailable packages without granting or executing',()=>{
+ const f=fixture(false),m=recipe();install(f.library,m)
+ expect(f.library.compatibility(compatibility(f.library,m))).toMatchObject({compatible:false,managementEnabled:false,backendState:'available'})
+ expect(f.library.compatibility(compatibility(f.library,m,'missing'))).toMatchObject({compatible:false,backendState:'missing'})
+ f.h.config.backends.plugin={kind:'plugin',plugin:'missing',env:{},options:{}} as any
+ expect(f.library.compatibility({...compatibility(f.library,m),backend:'plugin'})).toMatchObject({compatible:false,backendState:'package_unavailable'})
+ f.h.config.backendPlugins=[{directory:'/missing/SECRET_PACKAGE',digest:'a'.repeat(64)}]
+ expect(f.library.snapshot().backends.find(b=>b.id==='plugin')).toMatchObject({eligible:false})
+ const result=f.library.compatibility({id:m.id,version:m.version,digest:m.digest,revision:1,settingsRevision:0,backend:'plugin'})
+ expect(result.backendState).toBe('package_unavailable');expect(JSON.stringify(result)).not.toContain('SECRET_PACKAGE')
+})
+it('requires current revisions and digest for preflight but never adds a token to original create recovery',async()=>{
+ const {h,library}=fixture(),m=recipe();install(library,m);const input=compatibility(library,m)
+ expect(()=>library.compatibility({...input,revision:0})).toThrow('template_revision_conflict')
+ expect(()=>library.compatibility({...input,settingsRevision:99})).toThrow('settings_conflict')
+ expect(()=>library.compatibility({...input,digest:'0'.repeat(64)})).toThrow('template_preview_changed')
+ const command=create(library,m),created=await library.create(command)
+ expect(()=>library.compatibility(input)).toThrow('settings_conflict')
+ expect(await library.create(command)).toEqual(created);expect(h.manager.list().workers).toHaveLength(2)
+ library.remove({id:m.id,version:m.version,revision:1,requestId:'remove-preflight'})
+ expect(()=>library.compatibility({...input,revision:2,settingsRevision:1})).toThrow('template_not_installed')
+})
+
+it('requires operator and same-origin for HTTP preflight, rejects selectors, and never creates a Worker',async()=>{
+ const {h,library}=fixture(),m=recipe();install(library,m)
+ const http=await serve(h),base=`http://127.0.0.1:${(http.server.address() as any).port}`,headers={authorization:'Bearer '+readFileSync(http.tokenPath,'utf8').trim(),'content-type':'application/json'},body=JSON.stringify(compatibility(library,m))
+ try{
+  const url=base+'/api/worker-templates/compatibility'
+  expect((await fetch(url,{method:'POST',body})).status).toBe(401)
+  expect((await fetch(url,{method:'POST',headers:{...headers,origin:'https://untrusted.invalid'},body})).status).toBe(403)
+  expect((await fetch(url+'?workspace=other',{method:'POST',headers,body})).status).toBe(400)
+  const before=JSON.stringify(h.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all())
+  const response=await fetch(url,{method:'POST',headers,body});expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({compatible:true,digest:m.digest,grants:[],startsWorker:false})
+  expect(JSON.stringify(h.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all())).toBe(before)
+  expect(h.manager.list().workers).toHaveLength(1)
+ }finally{await new Promise<void>(resolve=>http.server.close(()=>resolve()))}
+})
+
+it('matches live dispatch admission for unsupported limits and over-budget defaults',async()=>{
+ const {checkWorkerAdmission}=await import('../src/backend-admission.ts')
+ const {h,library}=fixture(),m=recipe()
+ install(library,m)
+ h.config.backends.codex={kind:'codex',limits:{maxSteps:2}}
+ for(const [backend,reason] of [['codex','unsupported'],['fixture','quota_exhausted']] as const){
+  if(backend==='fixture')Object.assign(h.config.backends.fixture!,{defaults:{timeoutMs:6000},limits:{timeoutMs:5000}})
+  expect(()=>checkWorkerAdmission(h.config,backend)).toThrow(reason)
+  expect(library.snapshot().backends.find(b=>b.id===backend)?.eligible).toBe(false)
+  expect(library.compatibility(compatibility(library,m,backend))).toMatchObject({compatible:false,admission:{eligible:false,reason}})
+ }
+})
+
+it('migrates starter templates, paused worker provenance and replay receipts, while rejecting unknown formats',async()=>{
+ const {applyScopeMigration,previewScopeMigration}=await import('../src/scope-migration.ts')
+ const {h,library}=fixture(),m=library.snapshot().starters[0]!
+ install(library,m)
+ await library.create(create(library,m))
+ const config=h.settings.current().config,spec={operationId:'templates',commands:[]}
+ h.store.put('unknown-plugin-format','x',{})
+ expect(previewScopeMigration(config,spec).canApply).toBe(false)
+ h.store.db.prepare("DELETE FROM records WHERE kind='unknown-plugin-format'").run()
+ const plan=previewScopeMigration(config,spec)
+ expect(plan.items.filter(i=>i.kind.startsWith('worker-template')).map(i=>i.kind).sort()).toEqual(['worker-template','worker-template-command','worker-template-create','worker-template-library','worker-template-origin'])
+ expect(plan.items.filter(i=>i.status==='conflict')).toEqual([])
+ hosts.splice(hosts.indexOf(h),1)
+ await h.close()
+ const result=await applyScopeMigration(config,spec,plan.fingerprint)
+ expect(result.phase).toBe('verified_paused')
+ expect(await applyScopeMigration(config,spec,plan.fingerprint)).toEqual(result)
+})

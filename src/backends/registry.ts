@@ -5,12 +5,13 @@ import {join,resolve} from 'node:path'
 import {realpathSync,existsSync} from 'node:fs'
 import {stableDigest} from '../sources.ts'
 import {nativeToolFor} from '../cli-native-tools.ts'
+import {boundedBackendOptions} from '../backend-admission.ts'
 import {ProcessBackend,pluginIdentity} from './plugin-process.ts'
 import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from './bundled-opencode.ts'
 import {backendObjects,backendPackages,readBackendPackage,type BackendPackage} from './plugin-package.ts'
 import type {Config} from '../config.ts'
 import {validateBackendSelection,type BackendDefinition,type AgentOptions,type ApiDefinition,isApiBackend} from '../backend-config.ts'
-import {mergeOptions,apiOptions} from '../agent-options.ts'
+import {apiOptions} from '../agent-options.ts'
 import {appendAgentPrompt} from '../managed-instructions.ts'
 import {SubscriptionAccounts} from './subscription.ts'
 import {CodexModel,nativeContextProfile} from '../../plugins/backend-codex/model.ts'
@@ -119,7 +120,7 @@ export class BackendRegistry implements Model {
  async run(r:ModelRequest,onPrepared?:(request:ModelRequest)=>void):Promise<ModelResult>{
   const id=r.threadId?this.forThread(r.threadId):r.backendId??this.selected(r.role??(r.ephemeral?'router':'worker'))
   const definition=structuredClone(this.definition(id)),role=r.role??(r.ephemeral?'router':'worker')
-  const options=mergeOptions(definition.defaults,r.options??(role==='router'?this.config.execution.router:undefined))
+  const options=boundedBackendOptions(id,definition,r.options??(role==='router'?this.config.execution.router:undefined),this.config.turnTimeoutMs)
   const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
   const profileBackend=profile?.backend??this.selected(role)
   const {allowNativeTools,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,...activation}=r

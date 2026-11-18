@@ -6,7 +6,7 @@ import {realpathSync,existsSync} from 'node:fs'
 import {stableDigest} from '../sources.ts'
 import {nativeToolFor} from '../cli-native-tools.ts'
 import {boundedBackendOptions} from '../backend-admission.ts'
-import {ProcessBackend,pluginIdentity} from './plugin-process.ts'
+import {ProcessBackend,pluginIdentity,type PluginThread} from './plugin-process.ts'
 import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from './bundled-opencode.ts'
 import {backendObjects,backendPackages,readBackendPackage,type BackendPackage} from './plugin-package.ts'
 import type {Config} from '../config.ts'
@@ -42,7 +42,7 @@ export class BackendRegistry implements Model {
   if(threadId.startsWith('api:')||threadId.startsWith('plugin:'))throw Error('Thread has no backend binding')
   return 'codex' // Pre-registry native Codex conversations retain their original executor.
  }
- private harness(id:string,engineId:string,bundled?:BackendPackage){
+ private harness(id:string,engineId:string,bundled?:BackendPackage,threadId?:string,saved?:Binding){
   const api=this.definition(id)
   if(!isApiBackend(api))throw Error('A harness requires an API model connection')
   if(engineId===bundledEngineId&&(!bundled||!bundledCLI))throw Error('This conversation requires the OpenCode runtime shipped with Roppo')
@@ -55,8 +55,25 @@ export class BackendRegistry implements Model {
   const {command,args,cliVersion}=engine.config
   const definition={kind:'plugin' as const,plugin:engine.plugin,env:{},readPaths:engine.readPaths,writePaths:[],
    config:{command,...(args?{args}:{}),cliVersion,apiProtocol:api.kind}}
-  const identity=stableDigest([engineId,pluginIdentity(definition,pkg),api.headers,api.headerEnv,api.apiKeyEnv,api.subscription?.account])
-  return {api,identity,digest:pkg.digest,model:new ProcessBackend(id,definition,pkg,this.config,this.store,true)}
+  const shipped=engineId===bundledEngineId
+  // The shipped binary moves with every release. Only the launch definition needs its absolute path.
+  const identityDefinition=shipped?{...definition,config:{...definition.config,command:bundledEngineId},
+   readPaths:definition.readPaths.map(path=>path===command?bundledEngineId:path)}:definition
+  let sessionIdentity=pluginIdentity(identityDefinition,pkg)
+  const bind=(key:string)=>stableDigest([engineId,key,api.headers,api.headerEnv,api.apiKeyEnv,api.subscription?.account])
+  let identity=(shipped?'v2:':'')+bind(sessionIdentity)
+  if(saved&&identity!==saved.harnessIdentity){
+   // Pre-v2 sessions keep their original native data directory and binding, including across rollback.
+   const native=shipped&&threadId&&/^[a-f0-9]{64}$/.test(saved.harnessIdentity??'')
+    ?this.store.get<PluginThread>('backend-plugin-thread',threadId):undefined
+   if(!native||native.id!==threadId||native.backendId!==id||native.digest!==pkg.digest||native.pluginId!==pkg.manifest.id||
+      native.stateVersion!==pkg.manifest.stateVersion||!/^[a-f0-9]{64}$/.test(native.identity)||bind(native.identity)!==saved.harnessIdentity){
+    throw Error('Bound harness configuration changed; explicit migration required')
+   }
+   sessionIdentity=native.identity
+   identity=saved.harnessIdentity
+  }
+  return {api,identity,digest:pkg.digest,model:new ProcessBackend(id,definition,pkg,this.config,this.store,sessionIdentity)}
  }
  private harnessSubscription(id:string,subscription:NonNullable<ApiDefinition['subscription']>,principal:ModelRequest['principal'],previous?:Binding){
   const accounts=new SubscriptionAccounts(this.config.stateDir)
@@ -99,9 +116,7 @@ export class BackendRegistry implements Model {
  private threadModel(threadId:string,deleting=false,id=this.forThread(threadId,deleting)){
   const saved=this.store.get<Binding>('backend-binding',threadId)
   if(!saved?.harness)return this.model(id)
-  const engine=this.harness(id,saved.harness,this.pinnedBundle(saved))
-  if(engine.identity!==saved.harnessIdentity)throw Error('Bound harness configuration changed; explicit migration required')
-  return engine.model
+  return this.harness(id,saved.harness,this.pinnedBundle(saved),threadId,saved).model
  }
  private model(id:string,options:AgentOptions={}):Model{
   const d=this.definition(id)
@@ -149,8 +164,7 @@ export class BackendRegistry implements Model {
    let executor:Model,runOptions=options
    if(engineId){
     const pkg=previous?this.pinnedBundle(previous):await this.prepareBundle()
-    const engine=this.harness(id,engineId,pkg)
-    if(previous&&engine.identity!==previous.harnessIdentity)throw Error('Bound harness configuration changed; explicit migration required')
+    const engine=this.harness(id,engineId,pkg,r.threadId,previous)
     const d=apiOptions(engine.api,options)
     const model=previous?.harnessModel??r.model??profile?.model??d.model
     Object.assign(binding,{harness:engineId,harnessIdentity:engine.identity,harnessModel:model,...(engineId===bundledEngineId?{harnessDigest:engine.digest}:{})})
@@ -178,7 +192,20 @@ export class BackendRegistry implements Model {
  }
  async probe(id:string){const model=this.model(id);if(!(model instanceof ProcessBackend))throw Error('Probe requires an execution backend package');return model.probe()}
  async history(threadId:string,cwd:string){return this.threadModel(threadId).history!(threadId,cwd)}
- async purge(threadId:string,cwd:string){if(this.writers.has(threadId))throw Error('Thread writer must stop before deletion');const model=this.threadModel(threadId,true);if(!model.purge)throw Error('Backend cannot verify local history deletion');const result=await model.purge(threadId,cwd);this.store.put('backend-deleted',threadId,{threadId,at:Date.now()});return result}
+ async purge(threadId:string,cwd:string){
+  if(this.writers.has(threadId))throw Error('Thread writer must stop before deletion')
+  const id=this.forThread(threadId,true)
+  // Once native history has been erased, the paired receipt is all that a retry needs.
+  if(this.store.get<Binding>('backend-binding',threadId)?.harness===bundledEngineId){
+   const completed=ProcessBackend.completedPurge(this.store,id,threadId,cwd)
+   if(completed)return completed
+  }
+  const model=this.threadModel(threadId,true,id)
+  if(!model.purge)throw Error('Backend cannot verify local history deletion')
+  const result=await model.purge(threadId,cwd)
+  this.store.put('backend-deleted',threadId,{threadId,at:Date.now()})
+  return result
+ }
  async expose(threadId:string,cwd:string){const model=this.threadModel(threadId);if(!model.describe?.().nativeTakeover)throw Error('This backend has no native desktop chat; inspect its history in the AgentHub resource panel');await model.expose!(threadId,cwd)}
  async catalog(provider?:string){
   // Preserve the pre-registry models/<native-provider> resource in Codex setups.

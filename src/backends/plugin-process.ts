@@ -19,7 +19,7 @@ import {normalizeUsage} from '../model-usage.ts'
 import {backendEnvelope,backendResult,backendDiagnosticSchema,backendWorkerActivitySchema,BackendPluginError,type BackendDiagnostic} from './plugin-contract.ts'
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
 
-interface Thread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
+export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
 interface Effect {fingerprint:string;state:'running'|'complete';result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>;failure?:BackendDiagnostic}
 const text=z.string().min(1).max(1000)
 const healthSchema=z.object({available:z.boolean(),authenticated:z.union([z.boolean(),z.literal('unknown')]),remoteVerified:z.literal(false),accountIdentity:z.string().regex(/^[a-f0-9]{64}$/).optional(),version:z.string().max(200).optional()}).strict()
@@ -32,19 +32,23 @@ export const pluginIdentity=(definition:PluginBackendDefinition,pkg:BackendPacka
 
 /** Native IDs never escape this adapter. Host thread bindings retain an immutable package digest. */
 export class ProcessBackend implements Model {
- constructor(readonly id:string,readonly definition:PluginBackendDefinition,readonly pkg:BackendPackage,private config:Pick<Config,'stateDir'|'codex'|'work'|'turnTimeoutMs'>,private store:ThreadStore,private readonly hostHarness=false){
-  if(pkg.manifest.id==='opencode-cli'&&definition.config.apiProtocol&&!hostHarness)throw Error('API protocol is supplied by the selected model connection')
+ private readonly sessionIdentity:string
+ private readonly hostHarness:boolean
+ constructor(readonly id:string,readonly definition:PluginBackendDefinition,readonly pkg:BackendPackage,private config:Pick<Config,'stateDir'|'codex'|'work'|'turnTimeoutMs'>,private store:ThreadStore,harnessSessionIdentity?:string){
+  this.hostHarness=harnessSessionIdentity!==undefined
+  this.sessionIdentity=harnessSessionIdentity??pluginIdentity(definition,pkg)
+  if(pkg.manifest.id==='opencode-cli'&&definition.config.apiProtocol&&!this.hostHarness)throw Error('API protocol is supplied by the selected model connection')
   validatePluginValue(pkg.manifest.configSchema,definition.config,'configuration')
   if(Object.keys(definition.env).some(k=>!pkg.manifest.environment.includes(k)||['HOME','PATH','NODE_OPTIONS','NODE_PATH','TMPDIR','TMP','TEMP'].includes(k)))throw Error('Execution backend environment is not declared or is host-owned')
  }
  describe():BackendDescription{return {id:this.id,kind:'plugin',model:this.definition.model,...this.pkg.manifest.capabilities}}
  private record(id:string){
-  const record=this.store.get<Thread>('backend-plugin-thread',id)
-  if(!record||record.backendId!==this.id||record.identity!==pluginIdentity(this.definition,this.pkg)||record.pluginId!==this.pkg.manifest.id||record.stateVersion!==this.pkg.manifest.stateVersion)throw Error('Execution backend session identity changed; explicit migration required')
+  const record=this.store.get<PluginThread>('backend-plugin-thread',id)
+  if(!record||record.id!==id||record.backendId!==this.id||record.identity!==this.sessionIdentity||record.pluginId!==this.pkg.manifest.id||record.stateVersion!==this.pkg.manifest.stateVersion)throw Error('Execution backend session identity changed; explicit migration required')
   return record
  }
- private pinned(record?:Thread){return record?readBackendPackage(join(backendObjects(this.config.stateDir),record.digest),record.digest):installBackendPackage(this.pkg.directory,this.config.stateDir,this.pkg.digest)}
- private save(record:Thread){this.store.put('backend-plugin-thread',record.id,record)}
+ private pinned(record?:PluginThread){return record?readBackendPackage(join(backendObjects(this.config.stateDir),record.digest),record.digest):installBackendPackage(this.pkg.directory,this.config.stateDir,this.pkg.digest)}
+ private save(record:PluginThread){this.store.put('backend-plugin-thread',record.id,record)}
  async run(request:ModelRequest):Promise<ModelResult>{
   const hasHarnessTransport=Boolean(request.harnessProviderUrl)
   if(this.hostHarness!==hasHarnessTransport||!this.hostHarness&&(request.harnessWorkspace||request.harnessPrivateFiles)){
@@ -58,7 +62,7 @@ export class ProcessBackend implements Model {
   validatePluginValue(pkg.manifest.parametersSchema,request.options?.parameters??{},'parameters')
   const cwd=canonical(request.cwd)
   if(old&&old.cwd!==cwd)throw Error('Execution backend workspace changed; explicit migration required')
-  const record:Thread=old??{id:'plugin:'+randomUUID(),backendId:this.id,pluginId:pkg.manifest.id,digest:pkg.digest,stateVersion:pkg.manifest.stateVersion,identity:pluginIdentity(this.definition,pkg),cwd,state:'running',effectIds:[]}
+  const record:PluginThread=old??{id:'plugin:'+randomUUID(),backendId:this.id,pluginId:pkg.manifest.id,digest:pkg.digest,stateVersion:pkg.manifest.stateVersion,identity:this.sessionIdentity,cwd,state:'running',effectIds:[]}
   if(record.effectIds.some(id=>this.store.get<Effect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
   let transport:Awaited<ReturnType<ProcessBackend['launch']>>|undefined
   try{
@@ -84,14 +88,18 @@ export class ProcessBackend implements Model {
   finally{await transport?.close()}
  }
  async history(threadId:string,cwd:string){return this.inspect('history',threadId,cwd)}
- async purge(threadId:string,cwd:string){
-  const tombstone=this.store.get<Thread&{deleted?:boolean}>('backend-plugin-thread',threadId)
+ static completedPurge(store:ThreadStore,backendId:string,threadId:string,cwd:string){
+  const tombstone=store.get<PluginThread&{deleted?:boolean}>('backend-plugin-thread',threadId)
   // A completed cleanup erases the native mapping. Its paired durable receipt
   // permits retries/replayed cleanup without inventing a replacement identity.
-  if(tombstone?.deleted&&this.store.get('backend-deleted',threadId)){
-   if(tombstone.id!==threadId||tombstone.backendId!==this.id||canonical(cwd)!==tombstone.cwd)throw Error('Execution backend workspace or identity changed')
+  if(tombstone?.deleted&&store.get('backend-deleted',threadId)){
+   if(tombstone.id!==threadId||tombstone.backendId!==backendId||canonical(cwd)!==tombstone.cwd)throw Error('Execution backend workspace or identity changed')
    return {local:'verified' as const,provider:'not_managed' as const}
   }
+ }
+ async purge(threadId:string,cwd:string){
+  const completed=ProcessBackend.completedPurge(this.store,this.id,threadId,cwd)
+  if(completed)return completed
   const value=await this.inspect('purge',threadId,cwd)
   return z.object({local:z.literal('verified'),provider:z.literal('not_managed')}).strict().parse(value)
  }
@@ -120,8 +128,8 @@ export class ProcessBackend implements Model {
   const transport=await this.launch(this.pinned(),this.config.stateDir)
   try{return healthSchema.parse(await transport.call('probe',{args:[]}))}finally{await transport.close()}
  }
- private async launch(pkg:BackendPackage,cwd:string,request?:ModelRequest,record?:Thread){
-  const scratch=mkdtempSync(join(tmpdir(),'agenthub-backend-')),dataDirectory=join(this.config.stateDir,'backend-plugin-data',this.id,pluginIdentity(this.definition,pkg))
+ private async launch(pkg:BackendPackage,cwd:string,request?:ModelRequest,record?:PluginThread){
+  const scratch=mkdtempSync(join(tmpdir(),'agenthub-backend-')),dataDirectory=join(this.config.stateDir,'backend-plugin-data',this.id,this.sessionIdentity)
   mkdirSync(dataDirectory,{recursive:true,mode:0o700})
   let child:ChildProcessWithoutNullStreams|undefined,closed=false,sequence=0,toolCalls=0,lastBudget:BudgetReceipt|undefined,buffer=''
   const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>(),readReceipts=new Map<number,()=>void>(),inflightTools=new Set<string>(),callbackIds=new Set<number>()

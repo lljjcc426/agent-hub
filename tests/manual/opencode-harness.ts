@@ -1,14 +1,14 @@
 /** Exercise the real pinned CLI with a deterministic, local OpenAI-compatible endpoint. */
 import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs'
+import {constants,copyFileSync,mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {Runtime} from '../../src/runtime.ts'
 import {configSchema} from '../../src/config.ts'
 import {Store} from '../../src/store.ts'
 import {BackendRegistry} from '../../src/backends/registry.ts'
-import {bundledEngineId} from '../../src/backends/bundled-opencode.ts'
+import {bundledCLI,bundledEngineId} from '../../src/backends/bundled-opencode.ts'
 import type {ModelRequest} from '../../src/model.ts'
 
 const root=mkdtempSync(join(tmpdir(),'roppo-harness-'))
@@ -18,7 +18,7 @@ let step=0,router=false,writes=0,runtimeTask=false,subscription=false,hostRouter
 const protocols=new Set<string>()
 const events:string[]=[],errors:string[]=[]
 const sequence=[['glob',{pattern:'*.txt'}],['grep',{pattern:'old-address'}],['read',{filePath:'endpoint.txt'}],['edit',{filePath:'endpoint.txt',oldString:'old-address',newString:'new-address'}],['roppo_superagent_shell',{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]] as const
-const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,handbacks:[]})
+const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,decision:null,handbacks:[]})
 const server=createServer(async(req,res)=>{
  try{
   let raw='';for await(const chunk of req)raw+=chunk
@@ -111,7 +111,13 @@ try{
  const connection=config.backends.api!;assert(connection.kind==='openai-chat')
  connection.images=true // Changing the fresh-session preset must preserve this active session.
  store.close();store=new Store(join(config.stateDir,'state.sqlite'));registry=new BackendRegistry(config,store)
- assert.equal((await registry.run({...request,threadId:result.threadId,input:'Confirm the previous result.'})).threadId,result.threadId)
+ const oldCommand=bundledCLI!.command,newCommand=join(root,'new-release','opencode')
+ mkdirSync(join(root,'new-release'));copyFileSync(oldCommand,newCommand,constants.COPYFILE_FICLONE)
+ bundledCLI!.command=newCommand
+ try{
+  assert.equal((await registry.run({...request,threadId:result.threadId,input:'Confirm the previous result.'})).threadId,result.threadId)
+  assert.equal((await registry.history(result.threadId,cwd)).turns.length,2)
+ }finally{bundledCLI!.command=oldCommand}
  connection.images=false
  assert.equal(writes,1);assert((await registry.history(result.threadId,cwd)).turns[0].items.some((i:any)=>i.name==='opencode/edit'))
  writes=0;step=0;writeFileSync(file,'old-address\n')

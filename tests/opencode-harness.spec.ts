@@ -4,11 +4,14 @@ import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync} from 'node:fs'
 import {fileURLToPath} from 'node:url'
+import {digest} from '../plugins/cli-shared/files.ts'
 import {workspaceGuard} from '../plugins/backend-opencode/workspace.ts'
 import {openHarnessProvider} from '../src/backends/harness-provider.ts'
 import {apiBackendDefinition} from '../src/backend-config.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
-import {ProcessBackend} from '../src/backends/plugin-process.ts'
+import {ProcessBackend,pluginIdentity} from '../src/backends/plugin-process.ts'
+import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from '../src/backends/bundled-opencode.ts'
+import {stableDigest} from '../src/sources.ts'
 import {Store} from '../src/store.ts'
 import {Settings} from '../src/settings.ts'
 import {workerProfileSchema} from '../src/backend-config.ts'
@@ -92,6 +95,55 @@ it('binds subscription harness runs to the authorized principal and original sig
   login('other');await expect(registry.run({...activation,threadId:'plugin:test'})).rejects.toThrow(/account changed/)
   expect(spy).toHaveBeenCalledTimes(1)
  }finally{spy.mockRestore();rmSync(root,{recursive:true,force:true})}
+})
+
+it('resumes a bundled session created in a removed release while retaining its original storage and connection',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'harness-relocation-')))
+ const stateDir=join(root,'state'),cwd=join(root,'workspace')
+ mkdirSync(stateDir);mkdirSync(cwd)
+ const store=new Store(join(stateDir,'state.sqlite'))
+ try{
+  const api=apiBackendDefinition.parse({kind:'openai-chat',model:'sample',baseUrl:'http://localhost:2080',headers:{'X-Tenant':'original'}})
+  const config=configSchema.parse({stateDir,work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},execution:{backend:'api'},backends:{api},sources:[{id:'local',kind:'local',cwd,allowedActors:['alice']}]})
+  const pkg=await prepareBundledOpenCode(stateDir)
+  const command=join(root,'removed-release/node_modules/opencode-ai/bin/opencode')
+  const oldIdentity=pluginIdentity({kind:'plugin',plugin:'opencode-cli',env:{},readPaths:[command],writePaths:[],
+   config:{command,cliVersion:bundledCLI!.cliVersion,apiProtocol:api.kind}},pkg)
+  const threadId='plugin:existing',nativeId='ses_existing'
+  const binding={id:'api',kind:api.kind,endpoint:api.baseUrl,harness:bundledEngineId,harnessModel:'sample',harnessDigest:pkg.digest,
+   harnessIdentity:stableDigest([bundledEngineId,oldIdentity,api.headers,api.headerEnv,api.apiKeyEnv,api.subscription?.account])}
+  const record={id:threadId,backendId:'api',pluginId:'opencode-cli',digest:pkg.digest,stateVersion:pkg.manifest.stateVersion,
+   nativeId,cwd,identity:oldIdentity,state:'completed',effectIds:[]}
+  store.put('backend-binding',threadId,binding)
+  store.put('backend-plugin-thread',threadId,record)
+  const registry=new BackendRegistry(config,store)
+  expect(registry.describe(threadId,'router')).toMatchObject({id:'api',model:'sample'})
+  const folder='00000000-0000-0000-0000-000000000001'
+  const data=join(stateDir,'backend-plugin-data','api',oldIdentity)
+  const session=join(data,'sessions',folder)
+  mkdirSync(join(data,'index'),{recursive:true});mkdirSync(session,{recursive:true})
+  writeFileSync(join(data,'index',digest(nativeId)+'.json'),JSON.stringify({id:nativeId,folder}))
+  writeFileSync(join(session,'session.json'),JSON.stringify({nativeId,cwd,cliVersion:bundledCLI!.cliVersion,turns:[{id:'before-upgrade',state:'completed',input:'Original question',tools:[],text:'Original reply'}]}))
+  expect(await registry.history(threadId,cwd)).toMatchObject({id:threadId,turns:[{id:'before-upgrade',items:[{text:'Original question'},{text:'Original reply'}]}]})
+  for(const patch of [{digest:'0'.repeat(64)},{id:'plugin:someone-else'},{identity:'0'.repeat(64)}]){
+   store.put('backend-plugin-thread',threadId,{...record,...patch})
+   expect(()=>registry.describe(threadId)).toThrow(/migration/)
+  }
+  store.put('backend-plugin-thread',threadId,record)
+  store.put('backend-binding',threadId,{...binding,harnessIdentity:'v2:'+binding.harnessIdentity})
+  expect(()=>registry.describe(threadId)).toThrow(/migration/)
+  store.put('backend-binding',threadId,binding)
+  config.backends.api={...api,headers:{'X-Tenant':'changed'}}
+  const attempt={...request,threadId,cwd}
+  await expect(registry.run(attempt)).rejects.toThrow(/migration/)
+  config.backends.api=api
+  expect(store.get('backend-binding',threadId)).toEqual(binding)
+  expect(await registry.purge(threadId,cwd)).toEqual({local:'verified',provider:'not_managed'})
+  store.put('backend-plugin-thread',threadId,{id:threadId,backendId:'api',cwd,deleted:true})
+  expect(await new BackendRegistry(config,store).purge(threadId,cwd)).toEqual({local:'verified',provider:'not_managed'})
+  await expect(registry.purge(threadId,stateDir)).rejects.toThrow(/workspace or identity/)
+  expect(()=>registry.describe(threadId)).toThrow(/deletion fence/)
+ }finally{store.close();rmSync(root,{recursive:true,force:true})}
 })
 
 it('migrates saved role preferences and excludes engine selection from new managed Worker profiles',()=>{

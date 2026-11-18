@@ -20,8 +20,7 @@
 .conversation-body .assistant-body {padding-inline-start:32px;max-width:680px}
 .conversation-body .assistant-body [data-message-body] {line-height:1.66}
 .conversation-body .user-bubble {padding:8px 14px;background:var(--team-fill);color:var(--team-ink);border-radius:15px 15px 5px 15px}
-.conversation-body .user-message .message-footer {align-self:flex-end;justify-content:flex-end}
-.conversation-body .message-time,.conversation-body .message-footer {color:var(--team-muted)}
+.conversation-body .message-time,.conversation-body .message-status {color:var(--team-muted)}
 .conversation-body .message-tool-activity {max-width:680px}
 .conversation-body .composer-area {background:var(--team-paper)}
 .conversation-body .composer:not(.worker-readonly) {

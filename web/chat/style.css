@@ -40,10 +40,8 @@ html,body,#root{height:100%;overflow:hidden}
 @keyframes chat-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .message-time{font-size:11px;line-height:1.5;color:var(--c-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .user-message>.message-time{padding-inline:4px}
-.message-footer{display:flex;align-items:center;gap:12px;min-height:30px;margin-top:10px;color:var(--c-muted)}
 .message-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;line-height:1.5;min-width:0}
 .message-status svg{flex-shrink:0;width:14px;height:14px}
-.message-footer .message-actions{margin-left:0}
 .assistant-identity{flex-wrap:wrap;row-gap:4px}
 .assistant-identity strong{overflow-wrap:anywhere;min-width:0}
 .composer-agent-name{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -53,7 +51,7 @@ html,body,#root{height:100%;overflow:hidden}
 .tool-call .message-time{font-size:11px}
 .tool-activity::details-content,.tool-call::details-content{interpolate-size:allow-keywords;transition:height 200ms ease-out,opacity 160ms ease-out,content-visibility 200ms allow-discrete;height:0;opacity:0;overflow:clip}
 .tool-activity[open]::details-content,.tool-call[open]::details-content{height:auto;opacity:1}
-@media(max-width:700px){.message-footer{gap:10px}.assistant-identity{column-gap:8px}.assistant-identity strong{max-width:70%}.tool-call>summary{gap:7px}.composer-agent-name{max-width:80px}}
+@media(max-width:700px){.assistant-identity{column-gap:8px}.assistant-identity strong{max-width:70%}.tool-call>summary{gap:7px}.composer-agent-name{max-width:80px}}
 @media(prefers-reduced-motion:reduce){.message[data-arrival=true],.tool-activity[data-arrival=true],.tool-call[data-arrival=true]{animation:none}.tool-activity>summary>svg,.tool-call>summary>svg,.tool-activity::details-content,.tool-call::details-content{transition:none}}
 
 .agent-contact .agent-name{display:flex;align-items:baseline;gap:8px}.agent-contact .agent-label{min-width:0;overflow:hidden;text-overflow:ellipsis}

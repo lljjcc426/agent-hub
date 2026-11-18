@@ -1,7 +1,7 @@
 import { InputControl } from '../ui/controls.tsx'
 import {createContext,useContext,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
-import {MoreHorizontal,Reply,Search,Smile,X} from 'lucide-react'
+import {FileCode2,Reply,Search,Smile,X} from 'lucide-react'
 import type {ChatQuote,ChatQuoteView,AgentReaction} from '../../src/chat-interactions.ts'
 import {CopyButton} from './copy-button.tsx'
 
@@ -44,40 +44,37 @@ export function InteractionProvider({children,...value}:React.ComponentProps<typ
 }
 
 export function MessageActions({id}:{id:string}){
-  const {L,messages,reply,react}=useInteractions(),message=messages.find(m=>m.id===id)!
-  const [panel,setPanel]=useState<'emoji'|'more'|null>(null),[expanded,setExpanded]=useState(false),[search,setSearch]=useState('')
-  const popover=useRef<HTMLDivElement>(null),anchor=useRef<HTMLButtonElement|null>(null),last=useRef(panel),keyboard=useRef(false)
-  if(panel)last.current=panel
-  const shown=panel??last.current
+  const {L,messages,reply,react}=useInteractions(),message=messages.find(m=>m.id===id)
+  const [open,setOpen]=useState(false),[expanded,setExpanded]=useState(false),[search,setSearch]=useState('')
+  const popover=useRef<HTMLDivElement>(null),anchor=useRef<HTMLButtonElement>(null),keyboard=useRef(false)
   useLayoutEffect(()=>{
     const node=popover.current;if(!node)return
-    if(!panel){if(node.matches(':popover-open'))node.hidePopover();return}
+    if(!open){if(node.matches(':popover-open'))node.hidePopover();return}
     node.showPopover()
     if(keyboard.current){Array.from(node.querySelectorAll<HTMLElement>('input,button')).find(el=>el.getClientRects().length)?.focus({preventScroll:true});keyboard.current=false}
     const rect=anchor.current!.getBoundingClientRect(),box=node.getBoundingClientRect(),above=rect.top-box.height-8
     node.style.left=Math.max(10,Math.min(innerWidth-box.width-10,rect.left-8))+'px'
     node.style.top=Math.max(10,above>10?above:Math.min(innerHeight-box.height-10,rect.bottom+8))+'px'
     node.style.transformOrigin=above>10?'24px bottom':'24px top'
-  },[panel,expanded,search])
-  useEffect(()=>{const close=()=>setPanel(null);window.addEventListener('resize',close);return()=>window.removeEventListener('resize',close)},[])
-  const open=(kind:'emoji'|'more',event:React.MouseEvent<HTMLButtonElement>)=>{anchor.current=event.currentTarget;keyboard.current=event.detail===0;setSearch('');setExpanded(false);setPanel(p=>p===kind?null:kind)}
-  const quote=()=>{setPanel(null);reply(toQuote(message))}
-  const choose=(emoji:string)=>{setPanel(null);react(id,emoji);anchor.current?.focus({preventScroll:true})}
+  },[open,expanded,search])
+  useEffect(()=>{const close=()=>setOpen(false);window.addEventListener('resize',close);return()=>window.removeEventListener('resize',close)},[])
+  const toggleEmoji=(event:React.MouseEvent<HTMLButtonElement>)=>{
+    keyboard.current=event.detail===0
+    setSearch('');setExpanded(false);setOpen(!open)
+  }
+  const choose=(emoji:string)=>{setOpen(false);react(id,emoji);anchor.current?.focus({preventScroll:true})}
   const hits=search?emojis.filter(([emoji,keywords])=>(emoji+' '+keywords).toLowerCase().includes(search.toLowerCase())):emojis
-  return <div className="message-actions" aria-label={L('Message actions','消息操作')} data-open={!!panel}>
-    <button type="button" className="icon-button primary-action" title={L('Quote reply','引用回复')} aria-label={L('Quote reply','引用回复')} onClick={quote}><Reply size={15}/></button>
-    <button type="button" className="icon-button primary-action" title={L('React','表情回应')} aria-label={L('React','表情回应')} aria-expanded={panel==='emoji'} onClick={e=>open('emoji',e)}><Smile size={15}/></button>
+  if (!message) return null
+  return <div className="message-actions" role="group" aria-label={L('Message actions','消息操作')} data-open={open}>
     <CopyButton value={()=>bodyText(message)} L={L} label={L('Copy message','复制消息')}/>
-    <button type="button" className="icon-button more-action" title={L('More actions','更多操作')} aria-label={L('More actions','更多操作')} aria-expanded={panel==='more'} onClick={e=>open('more',e)}><MoreHorizontal size={16}/></button>
-    {createPortal(<div ref={popover} popover="auto" role="dialog" onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();setPanel(null);anchor.current?.focus({preventScroll:true})}}} className={'message-popover '+(shown==='emoji'?'emoji-popover':'message-menu')} aria-label={shown==='emoji'?L('Choose a reaction','选择表情'):L('Message actions','消息操作')} onToggle={event=>{if(event.newState==='closed')setPanel(null)}}>
-      {shown==='emoji'?<>
+    <button type="button" className="icon-button" title={L('Quote reply','引用回复')} aria-label={L('Quote reply','引用回复')} onClick={()=>reply(toQuote(message))}><Reply size={15}/></button>
+    <button type="button" ref={anchor} className="icon-button" title={L('React','表情回应')} aria-label={L('React','表情回应')} aria-expanded={open} onClick={toggleEmoji}><Smile size={15}/></button>
+    {message.text && <CopyButton value={message.text} L={L} label={L('Copy Markdown','复制 Markdown')} icon={FileCode2}/>}
+    {createPortal(<div ref={popover} popover="auto" role="dialog" onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();setOpen(false);anchor.current?.focus({preventScroll:true})}}} className="message-popover emoji-popover" aria-label={L('Choose a reaction','选择表情')} onToggle={event=>{if(event.newState==='closed')setOpen(false)}}>
+      {open && <>
         <div className="quick-reactions">{quick.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}<button type="button" aria-label={L('More emoji','更多表情')} aria-expanded={expanded} onClick={()=>setExpanded(v=>!v)}><Smile size={19}/></button></div>
         {expanded?<div className="emoji-search-panel"><label className="emoji-search"><Search size={15}/><InputControl autoFocus value={search} onChange={e=>setSearch(e.target.value)} aria-label={L('Search emoji','搜索表情')} placeholder={L('Search emoji','搜索表情')}/></label><div className="emoji-grid">{hits.map(([emoji,keywords])=><button type="button" key={emoji} aria-label={emoji} title={keywords} aria-pressed={message.reactions?.includes(emoji!)} onClick={()=>choose(emoji!)}>{emoji}</button>)}</div>{!hits.length?<span role="status">{L('No matching emoji','没有匹配的表情')}</span>:null}</div>:null}
-      </>:shown==='more'?<>
-        <button type="button" className="mobile-only-action" onClick={quote}><Reply size={15}/>{L('Quote reply','引用回复')}</button>
-        <button type="button" className="mobile-only-action" onClick={()=>{keyboard.current=true;setPanel('emoji');setExpanded(true)}}><Smile size={15}/>{L('React','表情回应')}</button>
-        <CopyButton value={message.text} L={L} label={L('Copy Markdown','复制 Markdown')} menu/>
-      </>:null}
+      </>}
     </div>,document.body)}
   </div>
 }

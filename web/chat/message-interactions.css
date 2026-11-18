@@ -3,13 +3,59 @@
 .user-message[data-arrival=true]{transform-origin:right top}
 @keyframes message-arrival{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
 .user-bubble{line-height:1.65;padding-block:9px;white-space:normal;min-width:0}
-.user-message{gap:4px;margin-bottom:26px}
-.user-message .message-footer{justify-content:flex-end;margin-top:1px;gap:10px}
-.message-footer{gap:10px;flex-wrap:wrap}
-.message-actions{gap:2px;position:relative;opacity:0;transform:translateY(3px);transition:opacity 150ms ease,transform 220ms var(--chat-ease)}
-.message:hover .message-actions,.message:focus-within .message-actions,.message-actions[data-open=true],.message:not(:has(~ .message)) .message-actions{opacity:1;transform:none}
-.message-actions:has(.copy-button:not([data-state=idle])){opacity:1;transform:none}
-.message-actions .icon-button{width:29px;min-width:29px;height:29px;padding:0;border-radius:8px;transition:background 140ms,color 140ms,transform 160ms var(--chat-spring)}
+.transcript .message { margin-bottom: 12px; }
+.transcript .user-message { gap: 2px; }
+.transcript .assistant-identity { margin-bottom: 2px; }
+.conversation-body .assistant-message .assistant-body { max-width: 100%; }
+.message-line {
+  display: flex;
+  align-items: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+}
+.message-surface { min-width: 0; max-width: 648px; overflow-wrap: anywhere; }
+.message-surface [data-message-body] > div > :first-child { margin-top: 0; }
+.message-surface [data-message-body] > div > :last-child { margin-bottom: 0; }
+.message-surface .message-attachments:last-child { margin-bottom: 0; }
+.user-message .message-line { flex-direction: row-reverse; align-items: center; }
+.user-message .message-surface { display: flex; flex-direction: column; align-items: flex-end; }
+.user-message .message-surface .user-bubble { max-width: 100%; }
+.message-actions {
+  display: flex;
+  flex: none;
+  gap: 1px;
+  padding-inline: 4px;
+  color: var(--c-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 130ms ease;
+}
+.message-line:has(:focus-visible) .message-actions,
+.message-actions[data-open=true] { opacity: 1; pointer-events: auto; }
+@media (hover: hover) {
+  .message-line:hover .message-actions { opacity: 1; pointer-events: auto; }
+}
+@media (hover: none) {
+  .message-line:focus-within .message-actions { opacity: 1; pointer-events: auto; }
+}
+.message-actions .icon-button {
+  width: 25px; min-width: 25px; height: 25px; padding: 0; border-radius: 7px;
+  transition: background 140ms, color 140ms, transform 160ms var(--chat-spring);
+}
+@container chat-thread (max-width: 440px) {
+  .message-line { position: relative; max-width: calc(100% - 59px); }
+  .message-actions {
+    position: absolute;
+    inset: 0 auto auto 100%;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(2, 25px);
+    background: var(--c-bg);
+    border-radius: 8px;
+  }
+  .user-message .message-actions { inset: 0 100% auto auto; }
+}
 .message-actions .icon-button:hover{background:var(--c-hover)}
 .message-actions .icon-button:active,.send-button:active:not(:disabled){transform:scale(.9)}
 .message :focus-visible,.message-popover :focus-visible,.composer-quote :focus-visible{outline:2px solid var(--c-muted);outline-offset:3px}
@@ -19,6 +65,7 @@
 .copy-button:not([data-state=idle]) .copy-idle{opacity:0;transform:scale(.5)}
 .copy-button[data-state=copied] .copy-done,.copy-button[data-state=failed] .copy-failed{opacity:1;transform:none}
 .copy-feedback{position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);padding:4px 8px;border:1px solid var(--c-line);border-radius:7px;background:var(--c-bg);color:var(--c-text);font-size:11px;line-height:1.5;box-shadow:0 3px 12px #0000000a;pointer-events:none;z-index:4;animation:feedback-in 180ms ease-out}
+.copy-feedback:empty { padding: 0; border: 0; box-shadow: none; }
 @keyframes feedback-in{from{opacity:0;translate:0 3px}to{opacity:1;translate:0 0}}
 .message-popover{position:fixed;inset:auto;margin:0;padding:7px;border:1px solid var(--c-line);border-radius:14px;background:var(--c-bg);color:var(--c-text);box-shadow:0 10px 35px #00000014,0 2px 7px #00000008;max-width:calc(100vw - 20px);opacity:0;transform:translateY(5px) scale(.96);transition:opacity 140ms ease,transform 220ms cubic-bezier(.16,1.25,.35,1),display 220ms allow-discrete,overlay 220ms allow-discrete;font-size:13px}
 .message-popover:popover-open{opacity:1;transform:none}
@@ -35,8 +82,6 @@
 .emoji-search input{border:0;outline:none;background:transparent;min-width:0;width:100%;color:var(--c-text);font:inherit}
 .emoji-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:2px}
 .emoji-search-panel>span{display:block;text-align:center;padding:12px;color:var(--c-muted)}
-.message-menu{min-width:176px}.message-menu>button{display:flex;align-items:center;gap:10px;width:100%;height:36px;padding:0 10px;font:inherit}
-@media(min-width:701px){.message-menu>.mobile-only-action{display:none}}
 .message-menu .menu-copy{width:100%;justify-content:flex-start}.menu-copy .copy-feedback{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;padding:0;border:0}
 .reaction-reveal{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows 280ms var(--chat-ease),opacity 170ms}
 .reaction-reveal[data-open=true]{grid-template-rows:1fr;opacity:1}.reaction-reveal>div{min-height:0;overflow:hidden}
@@ -67,6 +112,6 @@
 .tool-activity::details-content,.tool-call::details-content{transition:height 280ms var(--chat-ease),opacity 180ms ease,content-visibility 280ms allow-discrete}
 .tool-state{display:inline-flex;flex-shrink:0;width:17px;animation:tool-state-in 220ms var(--chat-spring)}
 @keyframes tool-state-in{from{opacity:.3;scale:.7}to{opacity:1;scale:1}}
-@media(max-width:700px){.message-actions{opacity:1;transform:none}.message-actions .primary-action{display:none}.message-footer{gap:8px}.quoted-message{max-width:94%}.user-bubble{max-width:94%}.message-actions .icon-button{width:32px;height:32px}.emoji-search:focus-within{outline:2px solid var(--c-muted);outline-offset:2px}.emoji-search input:focus-visible{outline:none}
+@media(max-width:700px){.quoted-message{max-width:94%}.user-bubble{max-width:94%}.emoji-search:focus-within{outline:2px solid var(--c-muted);outline-offset:2px}.emoji-search input:focus-visible{outline:none}
 .emoji-search input{font-size:16px}}
 @media(prefers-reduced-motion:reduce){.thread *,.message-popover,.message-popover *,.selection-reply{animation:none!important;transition:none!important;scroll-behavior:auto!important}.message[data-arrival=true]{transform:none}.copy-feedback{animation:none}}

@@ -33,7 +33,6 @@ import {
   Settings,
   X,
   ChevronRight,
-  Check,
   LoaderCircle,
   Square,
   AlertCircle,
@@ -244,7 +243,7 @@ function Timestamp({ at }: { at: Date | number }) {
   return <time className="message-time" dateTime={date.toISOString()} title={new Intl.DateTimeFormat(lang, {dateStyle:'medium', timeStyle:'medium'}).format(date)}>{new Intl.DateTimeFormat(lang, {hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)}</time>;
 }
 function runLabel(state: string, L: (en: string, zh: string) => string) {
-  return ({waiting:L('Waiting for your input','等待你的补充'),completed:L('Complete','已完成'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
+  return ({waiting:L('Waiting for your input','等待你的补充'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
   const { L } = useUI(),
@@ -259,10 +258,15 @@ function UserMessage() {
     <>
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
         <UserQuote/>
-        <MessageAttachments files={attachments??[]} L={L}/>
-        {hasText?<div className="user-bubble" data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>:null}
+        <div className="message-line" tabIndex={-1}>
+          <div className="message-surface">
+            <MessageAttachments files={attachments??[]} L={L}/>
+            {hasText && <div className="user-bubble" data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>}
+          </div>
+          <MessageActions id={id}/>
+        </div>
         <Reactions id={id}/>
-        <div className="message-footer"><MessageActions id={id}/><Timestamp at={createdAt}/></div>
+        <Timestamp at={createdAt}/>
       </MessagePrimitive.Root>
       <WorkflowCards anchor={id}/>
     </>
@@ -322,23 +326,23 @@ function AssistantMessage() {
         ) : null}
       </div>
       <div className="assistant-body">
-        {recipient ? <div className="addressed-message">
-          <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
-        </div> : body}
-        <MessageAttachments files={attachments??[]} L={L}/>
-        <Reactions id={id}/>
-        <div className="message-footer">
-          {run && footerStatus ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
-        <MessageActions id={id}/>
+        <div className="message-line" tabIndex={-1}>
+          <div className="message-surface">
+            {recipient ? <div className="addressed-message">
+              <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
+            </div> : body}
+            <MessageAttachments files={attachments??[]} L={L}/>
+          </div>
+          <MessageActions id={id}/>
         </div>
+        <Reactions id={id}/>
+        {run && footerStatus ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
       </div>
     </MessagePrimitive.Root><WorkflowCards anchor={id}/></>
   );
 }
 function StatusIcon({ state }: { state: string }) {
-  return state === "completed" ? (
-    <Check className="success" size={17} />
-  ) : ["waiting", "failed", "interrupted"].includes(state) ? (
+  return ["waiting", "failed", "interrupted"].includes(state) ? (
     <AlertCircle size={17} />
   ) : state === "cancelled" ? (
     <Square size={12} />
@@ -794,9 +798,8 @@ function Chat(p: ChatProps) {
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
-  const reactionOnly = run?.state==='completed' && snapshot?.messages.some(m=>m.runId===run.id && m.role==='user' && m.agentReactions?.length);
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
-  const standaloneStatus = run && !readonly && !runMessageId && !reactionOnly ? runLabel(run.state,L) : undefined;
+  const standaloneStatus = run && !readonly && !runMessageId ? runLabel(run.state,L) : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");

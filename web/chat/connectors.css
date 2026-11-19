@@ -140,3 +140,24 @@
   .connectors-heading .rp-input { width: 100%; }
   .connectors-filter { margin-top: 20px; }
 }
+.connector-github-fields {
+  display: grid;
+  gap: 14px;
+}
+.connector-github-field {
+  display: grid;
+  gap: 6px;
+}
+.connector-github-field > label[for] {
+  font-weight: 600;
+}
+.connector-github-fields p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.connector-github-fields a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-end: 14px;
+}

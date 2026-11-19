@@ -14,6 +14,7 @@ import {bodyDigest,stableDigest} from './sources.ts'
 import type {Runtime} from './runtime.ts'
 import type {WorkOwner} from './work.ts'
 import type {ToolContent} from './model.ts'
+import type {ToolConnection} from './connector-config.ts'
 
 interface Receipt {id:string;ticketId:string;agentId?:string;connection:string;tool:string;fingerprint:string;state:'running'|'complete'|'uncertain';result?:any;reason?:string}
 type ToolResult={success:boolean;contentItems:ToolContent[]}
@@ -70,16 +71,16 @@ export class ToolConnections {
     }
     return connection
   }
-  private connect(id:string):Promise<Client>{
+  private connect(id:string,c:ToolConnection=this.host.config.toolConnections[id]!,headers?:Record<string,string>):Promise<Client>{
     const existing=this.clients.get(id);if(existing)return existing.ready
-    const c=this.host.config.toolConnections[id]!,client=new Client({name:'agenthub-tools',version:'1.0.0'},{capabilities:{},jsonSchemaValidator:schemas})
+    const client=new Client({name:'agenthub-tools',version:'1.0.0'},{capabilities:{},jsonSchemaValidator:schemas})
     const entry:Connection={client,ready:Promise.resolve(client),controller:new AbortController()}
     entry.ready=(async()=>{
       try{
         const resolveEnv=(refs:Record<string,string>)=>Object.fromEntries(Object.entries(refs).map(([key,env])=>{const value=process.env[env];if(!value)throw new OperationError('tool_initialize','configuration_invalid');return [key,value]}))
         const t=c.transport
         if(t.kind==='plugin')throw Error('Native plugin tools do not use an MCP transport')
-        const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:maxWireBytes}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:resolveEnv(t.headerEnv),redirect:'error'}})
+        const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:maxWireBytes}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:headers??resolveEnv(t.headerEnv),redirect:'error'}})
         client.onclose=()=>{if(this.clients.get(id)===entry)this.clients.delete(id)}
         await client.connect(transport,{timeout:c.timeoutMs,signal:entry.controller.signal});if(this.closing)throw Error('Host is stopping');return client
       }catch(error){await client.close().catch(()=>{});throw toolFailure('tool_initialize',error,entry.controller.signal)}
@@ -101,14 +102,14 @@ export class ToolConnections {
     check()
     return this.listDeclared(id,config!,check,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config!.timeoutMs)]))
   }
-  private async listDeclared(id:string,config:import('./connector-config.ts').ToolConnection,check:()=>void,signal?:AbortSignal):Promise<Tool[]>{
+  private async listDeclared(id:string,config:ToolConnection,check:()=>void,signal?:AbortSignal,headers?:Record<string,string>):Promise<Tool[]>{
     if(config.transport.kind==='plugin'){
       const source=this.host.sources.get(config.transport.sourceId)
       if(!(source instanceof ProcessSource)||!this.host.config.sources.find(s=>s.id===source.config.id)?.enabled)throw Error('Plugin connection is unavailable')
       return source.pkg.manifest.tools.filter(t=>config.allowedTools.includes(t.name)).map(t=>({name:t.name,description:t.description,inputSchema:t.inputSchema as Tool['inputSchema']}))
     }
     let client:Client
-    try{client=await abortable(this.connect(id),signal)}catch(error){throw toolFailure('tool_initialize',error,signal)}
+    try{client=await abortable(this.connect(id,config,headers),signal)}catch(error){throw toolFailure('tool_initialize',error,signal)}
     const result:Tool[]=[],seen=new Set<string>();let cursor:string|undefined
     do{
       signal?.throwIfAborted();check()
@@ -118,6 +119,31 @@ export class ToolConnections {
       if(cursor)seen.add(cursor)
     }while(cursor)
     return result.filter(t=>config.allowedTools.includes(t.name))
+  }
+  // These sessions belong to a host connector and never appear in a Worker's
+  // raw MCP catalogue. The caller applies repository and operation grants.
+  inspectManaged(id:string,config:ToolConnection,headers:Record<string,string>,signal?:AbortSignal){
+    return this.listDeclared('@managed:'+id,config,()=>this.shutdown.signal.throwIfAborted(),
+      AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs),...(signal?[signal]:[])]),headers)
+  }
+  async invokeManaged(id:string,config:ToolConnection,headers:Record<string,string>,tool:Tool,input:Record<string,unknown>,beforeSend:()=>void,signal?:AbortSignal){
+    if(!config.allowedTools.includes(tool.name)||tool.execution?.taskSupport==='required')throw new OperationError('tool_initialize','unsupported')
+    const valid=schemas.getValidator(tool.inputSchema)(input)
+    if(!valid.valid)return {invalid:true} as const
+    const key='@managed:'+id
+    const bound=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs),...(signal?[signal]:[])])
+    const client=await abortable(this.connect(key,config,headers),bound)
+    bound.throwIfAborted()
+    beforeSend()
+    try{return {result:await client.callTool({name:tool.name,arguments:input},undefined,{signal:bound,timeout:config.timeoutMs})} as const}
+    catch(error){void this.closeManaged(id);throw error}
+  }
+  async closeManaged(id:string){
+    const key='@managed:'+id,entry=this.clients.get(key)
+    if(!entry)return
+    this.clients.delete(key)
+    entry.controller.abort()
+    await entry.client.close().catch(()=>{})
   }
   async permission(owner:WorkOwner,id:string,name:string){
     const config=this.allowed(owner,id)

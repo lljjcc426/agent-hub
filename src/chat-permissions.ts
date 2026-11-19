@@ -143,7 +143,7 @@ export class ChatPermissions {
           ? receipt
           : { ...result('complete', id), success: receipt.success }
       const shell = shellReceipt({...action, receipt})
-      this.save({ ...action, phase: 'complete', receipt: short, ...(shell?.id ? {jobId:shell.id} : {}) })
+      this.save({ ...action, phase: receipt.permission==='uncertain'?'uncertain':'complete', receipt: short, ...(shell?.id ? {jobId:shell.id} : {}) })
       return receipt
     } catch (error) {
       this.save({ ...action, phase: 'uncertain' })

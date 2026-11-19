@@ -7,7 +7,7 @@ export const pendingNoticeSchema = z.string().trim().min(1).max(360).describe(pe
 export const pendingNoticeProperty = { type: 'string', maxLength: 360, description: pendingNoticeDescription }
 export const permissionNoticeTools = new Set([
   'superagent_shell','superagent_browser','superagent_publish','superagent_review','superagent_workflow','superagent_tool',
-  'workspace_browser','worker_manage','router_manage','router_goal','router_knowledge',
+  'workspace_browser','worker_manage','router_manage','router_goal','router_knowledge','github_write','github_git',
 ])
 
 export function withPendingNotice(spec:ToolSpec):ToolSpec {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { ArrowUpRight, Check, ChevronRight, LoaderCircle, Search } from 'lucide-react'
 import { renderSVG } from 'uqr'
 import { Button, CheckField, ChoiceGroup, Dialog, TextField } from '../ui'
@@ -11,9 +11,11 @@ type Translate = (en: string, zh: string) => string
 type Tab = 'available' | 'connected'
 type Definition = { kind: string; label: string; pluginId?: string; setupAvailable: boolean }
 type Connection = { id: string; kind: string; label: string; enabled: boolean; scopeCount: number }
-type Inventory = { definitions: Definition[]; instances: Connection[] }
+type GithubAccess = { status: string; account?: string; repositories?: string[]; tools?: string[] }
+type Inventory = { definitions: Definition[]; instances: Connection[]; github?: GithubAccess }
 type Connected = Extract<FeishuPairingView, { stage: 'connected' }>
 const setup = '/api/connectors/feishu/setup'
+const githubSetup = '/api/connectors/github/setup'
 const entryKinds = ['feishu', 'github', 'wecom']
 const appNames: Record<string, [string, string]> = {
   feishu: ['Feishu', '飞书'], wecom: ['WeCom', '企业微信'], webhook: ['Event automations', '事件自动化'],
@@ -52,6 +54,7 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
   const [tab, setTab] = useState<Tab>('available')
   const [query, setQuery] = useState('')
   const [pairing, setPairing] = useState(false)
+  const [githubDialog, setGithubDialog] = useState(false)
   const [notice, setNotice] = useState<Connected>()
   useEffect(() => {
     const controller = new AbortController()
@@ -72,6 +75,9 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
   const instances = data?.instances ?? []
   const available = providers.filter(item => matches(item.kind, item.label, nameFor(item.kind, item.label, L)))
   const connected = instances.filter(item => matches(item.kind, item.label, nameFor(item.kind, item.label, L)))
+  const github = data?.github
+  const githubConnected = !!github?.account
+  const showGithub = githubConnected && matches('GitHub', github.account ?? '', ...(github.repositories ?? []))
   const startFeishu = () => { setNotice(undefined); setPairing(true) }
   const finishFeishu = (result: Connected) => {
     setPairing(false)
@@ -105,7 +111,7 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
         <Button onClick={() => setVersion(value => value + 1)}>{L('Retry', '重试')}</Button>
       </div> : !data ? <p className="connector-empty" role="status"><LoaderCircle size={18} className="rp-spin" />
         {L('Loading connectors…', '正在读取连接器…')}
-      </p> : (tab === 'available' ? available : connected).length === 0 ? <p className="connector-empty" role="status">
+      </p> : (tab === 'available' ? available.length === 0 : !connected.length && !showGithub) ? <p className="connector-empty" role="status">
         {term ? L('No matching connectors', '没有找到匹配的连接器') : L('No connectors connected', '还没有连接的应用')}
       </p> : tab === 'available' ? <ul className="connector-list">
         {available.map(item => {
@@ -115,15 +121,29 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
             <ConnectorMark kind={item.kind} />
             <div className="connector-identity">
               <strong>{name}</strong>
-              {related.length > 0 && <span>{L('Added', '已添加')}</span>}
+              {item.kind === 'github'
+                ? <span>{L('Repository access', '仓库读写')}</span>
+                : related.length > 0 && <span>{L('Added', '已添加')}</span>}
             </div>
             {item.kind === 'feishu'
               ? <Button aria-label={L('Connect Feishu', '连接飞书')} onClick={startFeishu}>{related.length ? L('Add', '添加') : L('Connect', '连接')}</Button>
+              : item.kind === 'github' ? <Button aria-label={githubConnected ? L('Manage GitHub', '管理 GitHub') : L('Connect GitHub', '连接 GitHub')}
+                onClick={() => setGithubDialog(true)}>{githubConnected ? L('Manage', '管理') : L('Connect', '连接')}</Button>
               : <a className="rp-button connector-link" data-tone="secondary" href={manageLink(item.kind, related[0]?.id, item.pluginId)}
                 aria-label={(related.length ? L('Manage ', '管理') : L('Connect ', '连接')) + name}>{related.length ? L('Manage', '管理') : L('Connect', '连接')}</a>}
           </li>
         })}
       </ul> : <ul className="connector-list">
+        {showGithub && <li className="connector-row">
+          <ConnectorMark kind="github" />
+          <div className="connector-identity">
+            <strong>GitHub</strong>
+            <span>{github.status === 'connected' ? '@' + github.account + ' · ' + (github.repositories?.length ?? 0) + L(' repositories', ' 个仓库')
+              : L('Reconnect required', '需要重新连接')}</span>
+          </div>
+          <Button tone="quiet" aria-label={L('Manage GitHub repository access', '管理 GitHub 仓库权限')}
+            onClick={() => setGithubDialog(true)}>{L('Manage', '管理')}<ChevronRight size={16} /></Button>
+        </li>}
         {connected.map(item => {
           const name = prettyLabel(item, L)
           const definition = data.definitions.find(value => value.kind === item.kind)
@@ -140,7 +160,79 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
       </ul>}
     </section>
     <FeishuDialog open={pairing} L={L} close={() => setPairing(false)} finish={finishFeishu} />
+    {githubDialog && <GithubDialog github={github} L={L} close={() => setGithubDialog(false)} finish={result => {
+      setGithubDialog(false)
+      setData(value => value && {...value, github:result})
+      setQuery('')
+      setTab(result.status === 'disconnected' ? 'available' : 'connected')
+      setVersion(value => value + 1)
+    }} />}
   </div>
+}
+
+function GithubDialog({ github, L, close, finish }: { github?: GithubAccess; L: Translate; close: () => void; finish: (result: GithubAccess) => void }) {
+  const tokenId = useId()
+  const reposId = useId()
+  const tokenLabel = L('GitHub access token', 'GitHub 访问令牌')
+  const reposLabel = L('Repositories', '仓库')
+  const [token, setToken] = useState('')
+  const [repos, setRepos] = useState(github?.repositories?.join(', ') ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const repositories = repos.trim().split(/[\s,，]+/).filter(Boolean)
+  const save = async (disconnect = false) => {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await request<GithubAccess>(disconnect ? '/api/connectors/github/disconnect' : githubSetup,
+        disconnect ? {} : { token: token.trim(), repositories })
+      setToken('')
+      finish(result)
+    } catch (problem) {
+      const code = problem instanceof Error ? problem.message : ''
+      setError(githubSetupError(code, L))
+    } finally { setBusy(false) }
+  }
+  return <Dialog open title={github?.account ? L('GitHub repository access', 'GitHub 仓库权限') : L('Connect GitHub', '连接 GitHub')}
+    closeLabel={L('Close', '关闭')} onClose={() => { if (!busy) close() }}
+    footer={<>
+      {github?.account && <Button tone="quiet" disabled={busy} onClick={() => void save(true)}>{L('Disconnect', '断开连接')}</Button>}
+      <Button tone="primary" busy={busy} disabled={!token.trim() || !repositories.length}
+        onClick={() => void save()}>{github?.account ? L('Update connection', '更新连接') : L('Verify and connect', '验证并连接')}</Button>
+    </>}>
+    <div className="connector-github-fields">
+      {github?.account && <p>{L('Connected as ', '当前账号 ')}<strong>@{github.account}</strong></p>}
+      <div className="connector-github-field">
+        <label htmlFor={tokenId}>{tokenLabel}</label>
+        <TextField id={tokenId} label={tokenLabel} type="password" value={token}
+          autoComplete="off" disabled={busy} onChange={event => setToken(event.target.value)} />
+      </div>
+      <div className="connector-github-field">
+        <label htmlFor={reposId}>{reposLabel}</label>
+        <TextField id={reposId} label={reposLabel} value={repos} placeholder="owner/repo, owner/another-repo" autoComplete="off" spellCheck={false}
+          disabled={busy} onChange={event => setRepos(event.target.value)} />
+      </div>
+      <p>{L('Select the same repositories when creating the token. Enable Contents, Issues and Pull requests write access for the actions you want to use.',
+        '创建令牌时选择相同的仓库，并按需要开启 Contents、Issues 和 Pull requests 的读写权限。')}</p>
+      <p><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">
+        {L('Create a GitHub token', '创建 GitHub 令牌')}<ArrowUpRight size={14} />
+      </a><a href={manageLink('github')}>{L('Configure GitHub events', '配置 GitHub 事件')}</a></p>
+      {error && <p className="connector-pairing-error" role="alert">{error}</p>}
+    </div>
+  </Dialog>
+}
+
+function githubSetupError(code: string, L: Translate) {
+  switch (code) {
+    case 'auth_required': return L('GitHub rejected the token. Check that it is active.', 'GitHub 拒绝了这个令牌，请确认令牌仍有效。')
+    case 'access_denied': case 'not_found': return L('A selected repository could not be accessed. Check its name and token permissions.', '无法访问所选仓库，请检查仓库名和令牌权限。')
+    case 'unsupported': return L('GitHub did not expose write tools for this credential.', 'GitHub 未向这个令牌提供写入工具。')
+    case 'conflict': return L('The connection changed. Refresh and try again.', '连接已变化，请刷新后重试。')
+    case 'invalid_request': return L('Enter a token and up to 12 GitHub repositories.', '请填写有效令牌和最多 12 个 GitHub 仓库。')
+    case 'rate_limited': return L('GitHub is rate limiting requests. Try again later.', 'GitHub 正在限流，请稍后重试。')
+    case 'preview_restricted': return L('Open your Roppo workspace to connect GitHub.', '请在正式工作区连接 GitHub。')
+    default: return L('Couldn’t connect to GitHub. Try again.', 'GitHub 暂未连接，请重试。')
+  }
 }
 
 function pairingError(code: string, L: Translate) {

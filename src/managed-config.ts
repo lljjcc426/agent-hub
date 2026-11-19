@@ -27,7 +27,7 @@ export function managedConnections(state:string):ManagedConnections{
  const text=read(managedFiles(state).connections);return text?overlaySchema.parse(JSON.parse(text)):{format:1,backends:{},sources:[]}
 }
 export function managedSecrets(state:string){const text=read(managedFiles(state).secrets);return text?secretsSchema.parse(JSON.parse(text)):{} }
-interface Journal {id:string;connections?:string;secrets?:string;restore?:boolean}
+interface Journal {id:string;connections?:string;secrets?:string;restore?:boolean;github?:boolean}
 /** Decide crash recovery from the atomic DB commit marker, not a second file phase. */
 export function recoverManagedFiles(state:string){
  const files=managedFiles(state),text=read(files.journal);if(!text)return
@@ -38,7 +38,7 @@ export function recoverManagedFiles(state:string){
   try{
    if(Number(db.prepare('PRAGMA user_version').get()!.user_version)>MAX_DB_SCHEMA)throw Error('Database is newer than this program')
    const table=db.prepare("SELECT name FROM sqlite_master WHERE name='records'").get()
-   committed=!!table&&!!db.prepare('SELECT id FROM records WHERE kind=? AND id=?').get(journal.restore?'restore-commit':'onboarding-deployment',journal.id)
+   committed=!!table&&!!db.prepare('SELECT id FROM records WHERE kind=? AND id=?').get(journal.restore?'restore-commit':journal.github?'github-connection-change':'onboarding-deployment',journal.id)
   }finally{db.close()}
  }
  if(!committed){restore(files.connections,journal.connections);restore(files.secrets,journal.secrets)}
@@ -64,14 +64,14 @@ export function loadManagedConfig(config:Config){
   if(existing&&!same(deployment(existing),deployment(source)))throw Error('Managed workspace conflicts with startup source: '+source.id)
   if(!existing)next.sources.push(source)
  }
- for(const [key,value] of Object.entries(managedSecrets(config.stateDir)))process.env[key]=value
+ for(const [key,value] of Object.entries(managedSecrets(config.stateDir)))if(!key.startsWith('AGENTHUB_SETUP_GITHUB_ACCESS_'))process.env[key]=value
  Object.assign(config,next)
 }
 /** Files are reversible until the matching settings revision is committed. */
-export function prepareManagedFiles(state:string,id:string,next:{connections?:string;secrets?:string;restore?:boolean}){
+export function prepareManagedFiles(state:string,id:string,next:{connections?:string;secrets?:string;restore?:boolean;github?:boolean}){
  const files=managedFiles(state)
  if(existsSync(files.journal))throw Error('A configuration change needs recovery before another can start')
- const journal:Journal={id,connections:read(files.connections),secrets:read(files.secrets),restore:next.restore}
+ const journal:Journal={id,connections:read(files.connections),secrets:read(files.secrets),restore:next.restore,github:next.github}
  atomicPrivateFile(files.journal,JSON.stringify(journal))
  try{restore(files.secrets,next.secrets);restore(files.connections,next.connections)}
  catch(error){restore(files.connections,journal.connections);restore(files.secrets,journal.secrets);unlinkSync(files.journal);throw error}
@@ -80,7 +80,7 @@ export function prepareManagedFiles(state:string,id:string,next:{connections?:st
   rollback(){restore(files.connections,journal.connections);restore(files.secrets,journal.secrets);if(existsSync(files.journal))unlinkSync(files.journal)},
  }
 }
-export function prepareManagedConfig(state:string,id:string,connections:ManagedConnections,secrets:Record<string,string>){return prepareManagedFiles(state,id,{connections:JSON.stringify(overlaySchema.parse(connections)),secrets:JSON.stringify(secretsSchema.parse(secrets))})}
+export function prepareManagedConfig(state:string,id:string,connections:ManagedConnections,secrets:Record<string,string>,github=false){return prepareManagedFiles(state,id,{connections:JSON.stringify(overlaySchema.parse(connections)),secrets:JSON.stringify(secretsSchema.parse(secrets)),github})}
 export function validateManagedSnapshot(config:Config,connections?:string,secrets?:string){
  const overlay=connections?overlaySchema.parse(JSON.parse(connections)):{backends:{},sources:[]},keys=secrets?secretsSchema.parse(JSON.parse(secrets)):{}
  for(const [id,backend]of Object.entries(overlay.backends)){

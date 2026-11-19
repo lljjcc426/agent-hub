@@ -10,6 +10,7 @@ import {LocalDiagnostics,LocalDiagnosticError} from './local-diagnostics.ts'
 import {artifactCatalog,ArtifactCatalogCursorError} from './artifact-catalog.ts'
 import {WorkerTemplates,WorkerTemplateError} from './worker-templates.ts'
 import {ConnectorManagement,ConnectorError} from './connector-management.ts'
+import {GithubError} from './github-errors.ts'
 import {FeishuPairing,feishuGroupSelection} from './feishu-pairing.ts'
 import {ExecutionTrace,TraceError} from './execution-trace.ts'
 import {ResourceUsage} from './resource-usage.ts'
@@ -101,6 +102,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   const server = createServer((request, response) => { void handle(request, response).catch(error => {
     if(response.headersSent){response.end();return}
     if(error instanceof ConnectorError){send(response,error.status,{code:error.code,error:error.code,...(error.issues?.length?{issues:error.issues}:{})});return}
+    if(error instanceof GithubError){send(response,error.code==='conflict'?409:error.code==='rate_limited'?429:400,{code:error.code,error:error.message});return}
     if(error instanceof WorkerTemplateError||error instanceof TraceError||error instanceof LocalDiagnosticError){send(response,error.status,{code:error.code,error:error.code});return}
     if(error instanceof DeploymentError){send(response,error.status,{code:error.code,error:error.message});return}
     if(error instanceof MarketError){if(error.code==='market_recovery_required')unavailable=true;send(response,error.status,{error:error.message,code:error.code});return}
@@ -334,8 +336,16 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       requireCurrentOperator(req)
       if(path==='/api/connectors'&&req.method==='GET'){send(res,200,connectors.snapshot());return}
       if(path==='/api/connectors/feishu/setup'&&req.method==='GET'){send(res,200,options.configurationPreview?{stage:'idle'}:feishuPairing.status());return}
+      if(path==='/api/connectors/github/setup'&&req.method==='GET'){send(res,200,runtime.github.snapshot());return}
       if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
       const input=await operatorBody(req)
+      if(path==='/api/connectors/github/setup'||path==='/api/connectors/github/disconnect'){
+        if(options.configurationPreview){send(res,403,{code:'preview_restricted'});return}
+        const authorize=()=>requireCurrentOperator(req)
+        if(path.endsWith('/setup'))send(res,200,await runtime.github.connect(input,authorize))
+        else{z.object({}).strict().parse(input);send(res,200,runtime.github.disconnect(authorize))}
+        return
+      }
       if(path==='/api/connectors/feishu/setup/start'){z.object({}).strict().parse(input);send(res,200,feishuPairing.start());return}
       if(path==='/api/connectors/feishu/setup/refresh'){const {id}=z.object({id:z.string().uuid()}).strict().parse(input);send(res,200,await feishuPairing.refresh(id));return}
       if(path==='/api/connectors/feishu/setup/apply'){

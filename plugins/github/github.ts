@@ -7,6 +7,7 @@ import type { SourceConfig } from '../../src/config.ts'
 import type { Trigger, OutboundMessage } from '../../src/vendor/dsh-core/index.ts'
 import {record,recordPages} from '../records.ts'
 import type {RepositoryAccess} from '../../src/repository-source.ts'
+import {GithubError,githubHttpError} from '../../src/github-errors.ts'
 // GitHub list visibility can lag its single-item read. Re-read a bounded
 // overlap; immutable event identities let the host discard duplicates.
 const pollingOverlapMs=120_000
@@ -35,11 +36,11 @@ export class GithubHttpApi implements GithubApi {
       signal?.throwIfAborted()
       try{
         const response=await fetch(url,{method,headers:{authorization:'Bearer '+token,accept:'application/vnd.github+json','x-github-api-version':'2022-11-28','user-agent':'agent-hub/0.5.0',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(15000)]):AbortSignal.timeout(15000)})
-        if(!response.ok){if(response.status===401)this.expires=0;throw Error('GitHub API HTTP '+response.status)}
+        if(!response.ok){if(response.status===401)this.expires=0;throw githubHttpError(response.status,response.headers)}
         if(response.status===204)return null
         return await response.json()
       }catch(error){
-        if(method!=='GET'||signal?.aborted||attempt>=2||String(error).includes('GitHub API HTTP'))throw error
+        if(method!=='GET'||signal?.aborted||attempt>=2||error instanceof GithubError)throw error
         await new Promise(resolve=>setTimeout(resolve,250*2**attempt))
       }
     }
@@ -190,6 +191,12 @@ export class GithubSource extends MessageSource {
   }
   async context(thread:string){const number=Number(thread.split('#').at(-1));if(!Number.isSafeInteger(number)||thread!==this.thread(number))throw Error('Thread is outside configured repository');return {issue:await this.api.request('GET','repos/'+this.repo+'/issues/'+number),comments:await this.pages('repos/'+this.repo+'/issues/'+number+'/comments')}}
   async read(request:{resource:string;pageSize:number}):Promise<any>{
+    try{return await this.readResource(request)}catch(error){
+      if(error instanceof GithubError)throw error
+      throw new GithubError('unavailable')
+    }
+  }
+  private async readResource(request:{resource:string;pageSize:number}):Promise<any>{
     const resource=request.resource.replace(/^github\//,''),message=(x:any)=>({id:String(x.id??x.number),from:x.user?.login??'github',at:x.submitted_at??x.created_at,text:x.body??'',bot:x.user?.type==='Bot',url:x.html_url,...(x.path?{path:x.path,line:x.line??x.original_line}:{}),...(x.in_reply_to_id?{reply_to:String(x.in_reply_to_id)}:{})})
     const file=/^(file|directory)\/(.*)$/.exec(resource)
     if(file){

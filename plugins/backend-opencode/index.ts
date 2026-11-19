@@ -47,15 +47,19 @@ export const opencodeDriver:CliDriver={
   const permission={'*':'deny','roppo_*':'allow',...Object.fromEntries(allowed.map(tool=>[tool,'allow'])),
    ...(guardPlugin?{external_directory:{'*':'deny',[cwd]:'allow',[join(cwd,'**')]:'allow'}}:{})}
   const tools={'*':false,'roppo_*':true,...Object.fromEntries(allowed.map(tool=>[tool,true]))}
+  const agentPrompt=request.instructions+(allowed.includes('webfetch_batch')
+   ?'\nFor two or more known URLs, use one webfetch_batch call in OpenCode. It fetches each requested URL in parallel and returns source evidence for each page. If the user also asks for a search and the URLs are supplied independently of search results, send websearch and webfetch_batch together in the same tool-calling step. When the URLs must come from search results, search first, then batch the chosen URLs.'
+   :'')
   const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
   const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
   const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
-   agent:{roppo:{mode:'primary',prompt:request.instructions,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
+   agent:{roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
    mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},
    ...(config.baseUrl?{provider:{[provider]:providerOptions}}:{})}
   privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))
   const env={...isolatedEnvironment(root),OPENCODE_DISABLE_DEFAULT_PLUGINS:'1',...(config.apiProtocol?{npm_config_offline:'true',npm_config_fetch_retries:'0',npm_config_registry:'http://127.0.0.1:1/',OPENCODE_DISABLE_MODELS_FETCH:'1',OPENCODE_DISABLE_LSP_DOWNLOAD:'1'}:{}),...(config.apiProtocol?{}:{OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings)}),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}
+  if (allowed.includes('websearch')) Object.assign(env,{OPENCODE_ENABLE_EXA:'1'})
   const args=['run',...(guardPlugin?[]:['--pure']),'--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]
   const variant=request.options?.parameters?.variant;if(variant)args.push('--variant',String(variant))
   return {args,env,stdin:prompt}

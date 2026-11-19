@@ -35,6 +35,8 @@ export interface ModelRequest {
   workerMcp?:{command:string;args:string[]}
   /** Set only on foreground coordination and assigned Worker turns. */
   allowNativeTools?:boolean
+  /** Current task text for ranking excerpts in the managed OpenCode adapter. */
+  webEvidenceQuery?:string
   /** Ephemeral host transport, only supplied to the selected OpenCode adapter. */
   harnessProviderUrl?:string
   harnessWorkspace?:'read'|'edit'

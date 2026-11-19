@@ -54,8 +54,9 @@ it('grants the stock OpenCode tools with the task network and workspace bounds',
  const task:ModelRequest={...request,cwd,role:'worker',sandbox:'workspace-write',opencodeNativeTools:{network:true}}
  const guards=[workspaceGuard(root,task,'normal'),workspaceGuard(root,{...task,sandbox:'read-only',opencodeNativeTools:{network:false}},'restricted')]
  try{
-  expect(nativeTools(task)).toEqual(openCodeBuiltins)
+  expect(nativeTools(task)).toEqual([...openCodeBuiltins,'webfetch_batch'])
   expect(nativeTools({...task,opencodeNativeTools:{network:false}})).not.toContain('webfetch')
+  expect(nativeTools({...task,opencodeNativeTools:{network:false}})).not.toContain('webfetch_batch')
   const invoke=async(index:number)=>{
    const plugin=await import(guards[index]!.url+'/index.mjs')
    const hooks=await plugin.default.server()
@@ -77,6 +78,43 @@ it('grants the stock OpenCode tools with the task network and workspace bounds',
   await expect(normal('unregistered',{})).rejects.toThrow(/unavailable/)
  }finally{
   for(const guard of guards)rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
+  rmSync(root,{recursive:true,force:true})
+ }
+})
+
+
+it('ranks focused passages from the CLI archive so links and navigation cannot crowd out definitions',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'opencode-web-evidence-')))
+ const directory=join(root,'data','opencode','tool-output')
+ mkdirSync(directory,{recursive:true})
+ const archive=join(directory,'tool_sample')
+ const definitions=[
+  ['Request','no-cache','A no-cache request asks the cache to revalidate before it reuses a stored response.'],
+  ['Request','no-store','A no-store request forbids storing the request and any response to it.'],
+  ['Response','no-cache','A stored response with no-cache must be successfully validated before reuse.'],
+  ['Response','no-store','A response with no-store must not be stored in any cache.'],
+ ]
+ writeFileSync(archive,[
+  '# HTTP Caching',
+  '## [Table of Contents](#contents)',
+  Array(8).fill('- [no-cache and no-store](#nav) Navigation link').join('\n'),
+  'Garden irrigation information that should never enter the model context.\n\n'.repeat(1200),
+  ...definitions.flatMap(([context,topic,text])=>['## '+context+' directives','### '+topic,text]),
+ ].join('\n\n'))
+ const task:ModelRequest={...request,webEvidenceQuery:'Compare the no-cache and no-store HTTP directives.',opencodeNativeTools:{network:true}}
+ const guard=workspaceGuard(root,task,'web-evidence')
+ try{
+  const plugin=await import(guard.url+'/index.mjs')
+  const hooks=await plugin.default.server()
+  const output={title:'Web page',output:'The preview stopped before the definitions.',metadata:{truncated:true,outputPath:archive}}
+  const url='https://example.org/cache'
+  await hooks['tool.execute.after']({tool:'webfetch',args:{url}},output)
+  expect(output.output).toContain('Source: '+url)
+  for(const [, , text] of definitions)expect(output.output).toContain(text)
+  expect(output.output).not.toMatch(/Navigation link|Garden irrigation/)
+  expect(Buffer.byteLength(output.output)).toBeLessThanOrEqual(4000)
+ }finally{
+  rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
   rmSync(root,{recursive:true,force:true})
  }
 })

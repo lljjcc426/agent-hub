@@ -96,7 +96,7 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     if(manifest&&supportsOpenCodeTools(manifest)){
       const roles=[...(id===routerBackend&&router?.mode==='host'&&assigned(router,id,'tools')===undefined?['Router']:[]),
         ...workers.filter(w=>w.backend===id&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,id,'tools')===undefined).map(w=>w.id)]
-      for(const name of openCodeTools(config.work.network))put('CLI · '+id,name,{kind:'tool',name,status:roles.length?'conditional':'disabled',roles,version:manifest.version})
+      for(const name of openCodeTools(config.work.network,supportsOpenCodeTools(manifest,3)))put('CLI · '+id,name,{kind:'tool',name,status:roles.length?'conditional':'disabled',roles,version:manifest.version})
       continue
     }
     const roles=[...(id===routerBackend&&router?.nativeTool===native?['Router']:[]),...workers.filter(w=>w.backend===id&&w.nativeTool===native&&w.state!=='paused'&&w.state!=='retiring').map(w=>w.id)]

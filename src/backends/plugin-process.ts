@@ -11,7 +11,7 @@ import type {Config} from '../config.ts'
 import type {PluginBackendDefinition} from '../backend-config.ts'
 import type {Model,ModelRequest,ModelResult,BackendDescription} from '../model.ts'
 import type {ThreadStore} from './api.ts'
-import {sandboxCommand} from '../sandbox.ts'
+import {networkEnvironment,sandboxCommand} from '../sandbox.ts'
 import {supportsOpenCodeTools} from '../../plugins/backend-opencode/native-tools.ts'
 import {hostPrivateFiles} from '../private-files.ts'
 import {stableDigest} from '../sources.ts'
@@ -59,8 +59,10 @@ export class ProcessBackend implements Model {
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
   const defaultOpenCodeTools=supportsOpenCodeTools(pkg.manifest)&&request.allowNativeTools===true&&request.managed===true&&
    !request.ephemeral&&request.options?.tools===undefined&&!!request.onTool&&!!request.tools?.length&&(request.role==='router'||request.role==='worker')
-  const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,...activation}=request
-  request=defaultOpenCodeTools?{...activation,opencodeNativeTools:{network:this.config.work.network}}:activation
+  const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,webEvidenceQuery,...activation}=request
+  request=defaultOpenCodeTools?{...activation,opencodeNativeTools:{network:this.config.work.network},
+   ...(this.config.work.network&&webEvidenceQuery&&supportsOpenCodeTools(pkg.manifest,3)?{webEvidenceQuery}:{}),
+  }:activation
   if(request.nativeTool&&!caps.nativeTools?.includes(request.nativeTool))throw new BackendPluginError('unsupported',this.id)
   if(old&&!caps.resume)throw new BackendPluginError('unsupported',this.id)
   if(request.managed&&(!caps.managed||!caps.tools||!caps.resume||!caps.history||!caps.contextBudget))throw new BackendPluginError('unsupported',this.id)
@@ -216,7 +218,13 @@ export class ProcessBackend implements Model {
   const close=async()=>{clearTimeout(timer);request?.signal?.removeEventListener('abort',abort);fail(new BackendPluginError('process_failed',this.id));readReceipts.clear();await exited;rmSync(scratch,{recursive:true,force:true})}
   try{
    const runner=fileURLToPath(new URL('./plugin-worker.mjs',import.meta.url)),env:Record<string,string>={PATH:process.env.PATH??'',HOME:scratch,TMPDIR:scratch,LANG:process.env.LANG??'en_US.UTF-8'}
+   const openCodeWeb=request?.opencodeNativeTools?.network&&supportsOpenCodeTools(pkg.manifest,3)
+   if(openCodeWeb)Object.assign(env,networkEnvironment())
    for(const [key,reference] of Object.entries(this.definition.env)){if(process.env[reference]===undefined)throw new BackendPluginError('auth_required',this.id);env[key]=process.env[reference]!}
+   if(openCodeWeb){
+    const bypass=['127.0.0.1','localhost',env.NO_PROXY,env.no_proxy].filter(Boolean).join(',')
+    env.NO_PROXY=env.no_proxy=bypass
+   }
    for(const path of [...this.definition.readPaths,...this.definition.writePaths])if(!isAbsolute(path))throw Error('Execution backend paths must be absolute')
    const state=canonical(this.config.stateDir)
    for(const path of this.definition.writePaths)if(inside(canonical(path),state)||inside(state,canonical(path)))throw Error('Execution plugin cannot request writes to host state')

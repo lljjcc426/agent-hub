@@ -30,9 +30,13 @@ const server=createServer(async(req,res)=>{
    const timing={start:performance.now(),end:0};webRequests.set(path,timing)
    await new Promise(ok=>setTimeout(ok,650))
    timing.end=performance.now()
-   res.writeHead(200,{'content-type':'text/plain'}).end('Body of '+path)
+   res.writeHead(200,{'content-type':'text/html'}).end(
+    '<html><body>'+('<p>Unrelated garden inventory and irrigation settings.</p>').repeat(2400)+
+    '<h2 id="conditional-requests">Conditional cache requests</h2><p>Body of '+path+' describes<br>how the endpoint handles a conditional cache request.</p></body></html>',
+   )
    return
   }
+  if(req.method==='GET'&&req.url==='/unavailable'){res.writeHead(503).end();return}
   let raw='';for await(const chunk of req)raw+=chunk
   const input=JSON.parse(raw)
   if(input.model==='assessment'){
@@ -47,7 +51,7 @@ const server=createServer(async(req,res)=>{
    const anthropic=path.endsWith('/messages')
    if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
    else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
-   if(input.tools?.length){for(const name of ['read','bash','webfetch','task','todowrite'])assert(input.tools.some((t:any)=>t.name===name),name)}
+   if(input.tools?.length){for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert(input.tools.some((t:any)=>t.name===name),name)}
    res.writeHead(200,{'content-type':'text/event-stream'})
    let n=0
    const event=(type:string,data:any)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data,...(anthropic?{}:{sequence_number:n++})})+'\n\n')
@@ -55,10 +59,11 @@ const server=createServer(async(req,res)=>{
     event('message_start',{message:{id:'msg_sample',type:'message',role:'assistant',model:'sample',content:[],stop_reason:null,usage:{input_tokens:10,output_tokens:0}}})
     event('content_block_start',{index:0,content_block:{type:'text',text:''}});event('content_block_delta',{index:0,delta:{type:'text_delta',text:answer}})
     event('content_block_stop',{index:0});event('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:5}});event('message_stop',{})
-   }else if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch')&&!requestedFetch){
+   }else if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch_batch')&&!requestedFetch){
     requestedFetch=true
     const origin='http://127.0.0.1:'+(server.address() as {port:number}).port
-    const output=webPaths.map((path,i)=>({type:'function_call',id:'fc_'+i,call_id:'fetch_'+i,name:'webfetch',status:'completed',arguments:JSON.stringify({url:origin+path,format:'text',timeout:5})}))
+    const output=[{type:'function_call',id:'fc_fetch',call_id:'fetch_pages',name:'webfetch_batch',status:'completed',
+     arguments:JSON.stringify({urls:[...webPaths,webPaths[0],'/unavailable'].map(path=>origin+path)})}]
     const response={id:'resp_fetch',object:'response',model:'sample',created_at:1,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
     event('response.created',{response:{...response,status:'in_progress',output:[]}})
     for(const [output_index,item] of output.entries()){
@@ -69,7 +74,15 @@ const server=createServer(async(req,res)=>{
     }
     event('response.completed',{response})
    }else{
-    if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch'))for(const page of webPaths)assert(raw.includes('Body of '+page))
+    if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch_batch')){
+     const results=input.input.filter((item:any)=>item.type==='function_call_output')
+     assert.equal(results.length,1)
+     for(const page of webPaths)assert(raw.includes('Body of '+page)&&raw.includes('Source: http://127.0.0.1:'))
+     assert(Buffer.byteLength(JSON.stringify(results[0].output))<8400)
+     assert(raw.includes('Fetch failed: HTTP 503'))
+     assert(raw.includes('/article-one#conditional-requests'))
+     assert(!raw.includes('Unrelated garden inventory'))
+    }
     const item={type:'message',id:'msg_sample',role:'assistant',status:'completed',content:[{type:'output_text',text:answer,annotations:[]}]}
     const response={id:'resp_sample',object:'response',model:'sample',created_at:1,status:'completed',output:[item],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
     event('response.created',{response:{...response,status:'in_progress',output:[]}})
@@ -92,7 +105,7 @@ const server=createServer(async(req,res)=>{
   }
   const hasTools=names.length>0
   if(hasTools){
-   for(const name of ['read','write','edit','bash','task','webfetch','todowrite'])assert(names.includes(name),name)
+   for(const name of ['read','write','edit','bash','task','websearch','webfetch','todowrite'])assert(names.includes(name),name)
    const previous=input.messages.at(-1)
    if(previous?.role==='tool'){
     if((previous.tool_call_id==='call-1'||previous.tool_call_id==='call-2')&&!router)assert(JSON.stringify(previous.content).includes('endpoint.txt'))
@@ -161,15 +174,15 @@ try{
   const api=config.backends.api!;assert(api.kind==='openai-chat');config.backends[kind]={...api,kind}
   config.execution.router!.backend=kind
   checkParallelFetch=kind==='openai-responses'
-  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.'})
+  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.',webEvidenceQuery:'Find evidence about conditional cache requests.'})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
   if(checkParallelFetch){
    const timings=[...webRequests.values()]
    assert.equal(timings.length,2)
    const overlap=Math.min(...timings.map(t=>t.end))-Math.max(...timings.map(t=>t.start))
    assert(overlap>0,'Native webfetch calls ran serially')
-   assert.equal((await registry.history(response.threadId,cwd)).turns[0].items.filter((i:any)=>i.name==='opencode/webfetch').length,2)
-   console.log(JSON.stringify({tool:'opencode/webfetch',calls:2,overlapMs:Math.round(overlap),verified:true}))
+   assert.equal((await registry.history(response.threadId,cwd)).turns[0].items.filter((i:any)=>i.name==='opencode/webfetch_batch').length,1)
+   console.log(JSON.stringify({tool:'opencode/webfetch_batch',calls:1,pages:timings.length,overlapMs:Math.round(overlap),verified:true}))
   }
  }
  checkParallelFetch=false

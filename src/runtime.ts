@@ -501,6 +501,7 @@ export class Runtime {
     const defaults=this.model instanceof BackendRegistry?this.model.definition(request.threadId?this.model.describe(request.threadId).id:request.backendId??this.model.selected(role)).defaults:undefined
     const options=agentOptionsSchema.parse(mergeOptions(defaults,request.options??(profile?Object.fromEntries(Object.entries(profile).filter(([key])=>key in agentOptionsSchema.shape)):{})))
     const trigger=context.triggerId?this.store.triggers.get(context.triggerId):undefined
+    if(request.allowNativeTools&&trigger?.text)request={...request,webEvidenceQuery:trigger.text.slice(0,4000)}
     const manifest=request.contextId?this.store.get<ContextManifest>('context-manifest',request.contextId):context.ticketId?this.store.get<{manifest:ContextManifest}>('task-context',context.ticketId)?.manifest:undefined
     const scopeId=manifest?.scopeId??(context.ticketId?this.scopes.ownership(context.ticketId)?.scopeId:undefined)??(context.triggerId?this.store.get<any>('router-route',context.triggerId)?.scopeId:undefined)
     if(scopeId)request={...request,contextBudget:scopeBudget(this.scopes.scope(scopeId).contextBytes)}

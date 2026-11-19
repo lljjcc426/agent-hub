@@ -9,13 +9,15 @@ export const openCodeBuiltins = [
 
 const networkTools = new Set(['bash','webfetch','websearch','lsp'])
 
-export function supportsOpenCodeTools(manifest: {id: string; version: string}): boolean {
+export function supportsOpenCodeTools(manifest: {id: string; version: string}, minimumMinor = 2): boolean {
   const [major = 0, minor = 0] = manifest.version.split('.').map(Number)
-  return manifest.id === 'opencode-cli' && (major > 1 || major === 1 && minor >= 2)
+  return manifest.id === 'opencode-cli' && (major > 1 || major === 1 && minor >= minimumMinor)
 }
 
-export function openCodeTools(network: boolean): string[] {
-  return openCodeBuiltins.filter(name => network || !networkTools.has(name))
+export function openCodeTools(network: boolean, batch = true): string[] {
+  const tools: string[] = openCodeBuiltins.filter(name => network || !networkTools.has(name))
+  if (network && batch) tools.push('webfetch_batch')
+  return tools
 }
 
 export function workspaceTools(mode: ModelRequest['harnessWorkspace']): string[] {

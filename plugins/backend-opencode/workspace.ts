@@ -6,6 +6,8 @@ import {existsSync,readFileSync,mkdtempSync} from 'node:fs'
 import {privateFile} from '../cli-shared/files.ts'
 import type {ModelRequest} from '../backend-sdk.ts'
 import {nativeTools} from './native-tools.ts'
+import {webEvidenceModule} from './web-evidence.ts'
+import {webFetchBatchModule} from './web-fetch-batch.ts'
 
 /** OpenCode runs in a private project. Its own builtins resolve paths against the task,
  * without loading plugins, settings, instructions or custom tools from that task. */
@@ -13,9 +15,12 @@ export function workspaceGuard(root:string,request:ModelRequest,turnId:string){
  const directory=mkdtempSync(join(tmpdir(),'roppo-workspace-')),script=join(directory,'index.mjs'),ready=join(root,turnId+'.ready'),journal=join(root,turnId+'.operations')
  const policy={cwd:request.cwd,hidden:[...(request.harnessPrivateFiles??[]),...(request.privateState?[request.privateState]:[])],tools:nativeTools(request),
   native:!!request.opencodeNativeTools,writable:request.sandbox==='workspace-write'&&request.role==='worker',
-  limit:request.options?.maxToolCalls??modelToolCalls.default,ready,journal}
+  limit:request.options?.maxToolCalls??modelToolCalls.default,ready,journal,sessionDirectory:root,
+  evidenceQuery:(request.webEvidenceQuery??request.input).slice(0,4000)}
  const source=`import fs from 'node:fs'
 import path from 'node:path'
+import { focusWebFetch } from './web-evidence.mjs'
+import { webFetchBatch } from './web-fetch-batch.mjs'
 const policy = `+JSON.stringify(policy)+`
 const root = policy.cwd
 const inside = (parent, child) => {
@@ -89,23 +94,46 @@ async function checkSearchTree(directory, content) {
  }
 }
 let count = 0
+let searchQuery = ''
 export default {id:'roppo-workspace',server:async function () {
  fs.writeFileSync(policy.ready, 'ready', {mode:0o600})
  return {
+  ...(policy.tools.includes('webfetch_batch') ? {
+   tool:{webfetch_batch:webFetchBatch(policy.evidenceQuery,()=>searchQuery)},
+  } : {}),
+  'tool.definition': async (input,output) => {
+   if (input.toolID==='webfetch' && policy.tools.includes('webfetch')) {
+    output.description += '\\nReturns relevant passages and the source URL for one page. Use webfetch_batch for several known URLs.'
+   }
+  },
   'tool.execute.before': async (input,output) => {
-   if (++count > policy.limit) throw Error('Task tool-call limit reached')
+   count += input.tool==='webfetch_batch' && Array.isArray(output.args.urls) ? Math.max(1,output.args.urls.length) : 1
+   if (count > policy.limit) throw Error('Task tool-call limit reached')
    if (input.tool.startsWith('roppo_')) return
    if (!policy.tools.includes(input.tool)) throw Error('Tool unavailable for this role')
+   if (input.tool==='websearch') {
+    output.args.numResults ??= 3
+    output.args.contextMaxCharacters ??= 6000
+   }
+   if (input.tool==='webfetch') output.args.format = 'markdown'
    const operation = workspacePath(input.tool,output.args)
    if (operation) {
     if (operation.scan) await checkSearchTree(operation.target,input.tool==='grep')
     output.args[operation.field]=operation.target
    }
    fs.appendFileSync(policy.journal, JSON.stringify({id:input.callID,tool:input.tool,path:operation&&path.relative(root,operation.target)})+'\\n',{mode:0o600})
-  }
+  },
+  'tool.execute.after': async (input,output) => {
+   if (input.tool==='websearch' && typeof input.args.query==='string') {
+    searchQuery = (searchQuery + ' ' + input.args.query).slice(-2000)
+   }
+   if (input.tool==='webfetch') focusWebFetch(policy.sessionDirectory,policy.evidenceQuery,searchQuery,input.args,output)
+  },
  }
 }}`
  privateFile(join(directory,'package.json'),JSON.stringify({name:'roppo-workspace',type:'module',exports:{'./server':'./index.mjs'}}))
+ privateFile(join(directory,'web-evidence.mjs'),webEvidenceModule)
+ privateFile(join(directory,'web-fetch-batch.mjs'),webFetchBatchModule)
  privateFile(script,source)
  return {url:pathToFileURL(directory).href,ready:()=>existsSync(ready),operations:()=>existsSync(journal)?readFileSync(journal,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line) as {tool:string;path?:string;id:string}):[]}
 }

@@ -7,9 +7,6 @@
   overflow: visible;
 }
 .chat-float-center [data-handoff] .companion-lens { overflow: hidden; }
-.chat-float-center .chat-companion[data-handoff] .companion-label {
-  display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 .companion-actor {
   position: absolute; left: 50%; bottom: 0;
   width: 46px; height: 42px; margin-left: -23px;

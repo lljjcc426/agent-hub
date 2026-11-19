@@ -72,13 +72,6 @@
   text-align: center;
 }
 .chat-float-center .companion-copy { max-width: 100%; }
-.chat-float-center .companion-label {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 /* Measure the resting caption independently of truncation and the handoff caption. */
 .chat-float-center .companion-ruler {
   position: absolute;

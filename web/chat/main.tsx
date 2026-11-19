@@ -34,7 +34,6 @@ import {
   Inbox,
   Menu,
   Settings,
-  Plug,
   X,
   ChevronRight,
   LoaderCircle,
@@ -1391,7 +1390,6 @@ function Chat(p: ChatProps) {
             >
               <div className="conversation-lane">
                 <div className="chat-float chat-float-start roppo-ui">
-                  <a href="/configure#connectors" className="icon-button" aria-label={L("Connectors","连接器")} title={L("Connectors","连接器")}><Plug size={19}/></a>
                   <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>

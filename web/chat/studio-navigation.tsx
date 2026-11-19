@@ -11,6 +11,7 @@ import {
   FileSliders,
   Layers,
   LayoutGrid,
+  Link2,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
@@ -52,6 +53,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     {
       name: L('Connections', '连接'),
       rows: [
+        row('connectors', L('Connectors', '连接器'), Link2),
         row('integrations/library', L('Tools & MCP', '工具与 MCP'), Plug, (h) => h.startsWith('integrations')),
         row('connections', L('Conversation entries', '会话入口'), Cable),
         row('automations', L('Automations', '自动化'), Workflow),
@@ -157,11 +159,6 @@ export function StudioRail({
             <ArrowLeft size={17} />
             <span>{L('Back to chat', '返回对话')}</span>
           </a>
-          <NavLink href="/configure#connectors" icon={<Plug size={17} />}
-            title={L('Connectors', '连接器')} aria-label={L('Connectors', '连接器')}
-            current={hash === 'connectors'} onClick={() => { if (mobile) close() }}>
-            {L('Connectors', '连接器')}
-          </NavLink>
           <h2 className="rail-title">{L('Settings', '设置')}</h2>
           <label className="settings-find">
             <Search size={16} />

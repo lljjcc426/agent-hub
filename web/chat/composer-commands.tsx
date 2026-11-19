@@ -1,4 +1,4 @@
-import { ArrowUpRight, Check, ChevronRight, CircleGauge, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronRight, CircleGauge, GitCommitHorizontal, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { ChatSpace } from './chat-settings.tsx'
 import type { CurrentContext } from './context-card.tsx'
@@ -9,12 +9,14 @@ export const commands = [
   { id: 'attach', title: (L: Localize) => L('Add files', '添加文件'), Icon: Paperclip },
   { id: 'permissions', title: (L: Localize) => L('Approval policy', '审批策略'), Icon: ShieldCheck },
   { id: 'context', title: (L: Localize) => L('Context usage', '上下文用量'), Icon: CircleGauge },
+  { id: 'commits', title: (L: Localize) => L('Commit trail', '提交轨迹'), Icon: GitCommitHorizontal },
 ] as const
 export type ChatCommand = (typeof commands)[number]['id']
 export type Mode = ChatSpace['approvalMode']
 
-export function matchingCommands(query: string, L: Localize) {
-  return commands.filter(command => command.id.startsWith(query) || command.title(L).toLowerCase().includes(query))
+export function matchingCommands(query: string, L: Localize, commits = false) {
+  return commands.filter(command => (commits || command.id !== 'commits') &&
+    (command.id.startsWith(query) || command.title(L).toLowerCase().includes(query)))
 }
 
 export function approvalLabel(mode: Mode, L: Localize) {
@@ -42,7 +44,7 @@ export function CommandList({ items, active, slash, listId, uploadDisabled, mode
         onClick={() => onChoose(id)}>
         <Icon size={16}/><span>{title(L)}</span>
         {slash ? <small>/{id}</small> : id === 'permissions' && mode && <small data-mode={mode}>{approvalLabel(mode, L)}</small>}
-        {id !== 'attach' && <ChevronRight size={13} className="palette-trailing"/>}
+        {id !== 'attach' && id !== 'commits' && <ChevronRight size={13} className="palette-trailing"/>}
       </button>
     ))}
   </div>

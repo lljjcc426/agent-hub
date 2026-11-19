@@ -1,57 +1,8 @@
+import { ChevronRight } from 'lucide-react'
 import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
-import { useState } from 'react'
-import {
-  BookOpen,
-  ChevronDown,
-  CircleAlert,
-  Globe,
-  ListChecks,
-  LoaderCircle,
-  MessagesSquare,
-  Search,
-  SquareTerminal,
-  UsersRound,
-  Wrench,
-} from 'lucide-react'
 import type { ExecutionCall } from '../../src/execution-activity.ts'
 
 type Localize = (en: string, zh: string) => string
-type Group = 'read' | 'resource' | 'search' | 'command' | 'team' | 'browser' | 'tool'
-const icons = {
-  read: BookOpen,
-  resource: BookOpen,
-  search: Search,
-  command: SquareTerminal,
-  team: UsersRound,
-  browser: Globe,
-  tool: Wrench,
-}
-function group(call: ExecutionCall): Group {
-  if (call.trace) return call.trace.kind
-  if (call.name === 'router_read' || call.name === 'superagent_read') return 'resource'
-  if (call.name === 'superagent_shell') return 'command'
-  if (call.name === 'worker_manage' || call.name === 'superagent_spawn') return 'team'
-  if (call.name.endsWith('_browser')) return 'browser'
-  return 'tool'
-}
-function summary(group: Group, L: Localize, done: boolean) {
-  switch (group) {
-    case 'read':
-      return done ? L('Read files', '读取了文件') : L('Reading files', '读取文件')
-    case 'resource':
-      return done ? L('Read resources', '读取了资料') : L('Reading resources', '读取资料')
-    case 'search':
-      return done ? L('Searched', '进行了搜索') : L('Searching', '搜索')
-    case 'command':
-      return done ? L('Ran commands', '运行了命令') : L('Running commands', '运行命令')
-    case 'team':
-      return done ? L('Worked with the team', '处理了团队事务') : L('Working with the team', '处理团队事务')
-    case 'browser':
-      return done ? L('Used the browser', '使用了浏览器') : L('Using the browser', '使用浏览器')
-    case 'tool':
-      return done ? L('Used tools', '调用了工具') : L('Using tools', '调用工具')
-  }
-}
 export function toolLabel(c: ExecutionCall, L: Localize) {
   const item = c.trace
   if (item?.kind === 'read')
@@ -84,7 +35,6 @@ export function toolLabel(c: ExecutionCall, L: Localize) {
     router_read: ['Read resource', '读取资源'],
     superagent_tool: ['Call connected tool', '调用连接工具'],
     code_mode: ['Compose tools in Code Mode', '用 Code Mode 编排工具'],
-    chat_opening: ['Share opening', '发送开场白'],
     'opencode/websearch': ['Search the web', '搜索网页'],
     'opencode/webfetch': ['Read a web page', '读取网页'],
     'opencode/webfetch_batch': ['Fetch pages in parallel', '并行抓取网页'],
@@ -130,97 +80,25 @@ export function toolStatus(c: ExecutionCall, L: Localize) {
     interrupted: L('Interrupted', '已中断'),
   }[c.state]
 }
-export function ToolTrace({
-  calls,
-  L,
-  locale,
-  actor,
-  arrival,
-}: {
-  calls: ExecutionCall[]
-  L: Localize
-  locale: string
-  actor: (id?: string) => string
-  arrival?: boolean
+export function ToolCallDetail({call,label,active,locale,L,actor}: {
+  call: ExecutionCall; label:string; active:boolean; locale:string; L:Localize; actor:(id?:string)=>string
 }) {
-  const [open, setOpen] = useState(false)
-  const current = calls.find((c) => c.state === 'running'),
-    problem = calls.some((c) => c.state === 'failed' || c.state === 'interrupted')
-  const categories = [...new Set(calls.map(group))]
-  const Icon = current ? LoaderCircle : problem ? CircleAlert : icons[categories[0]!]
-  const labels = categories.map((g) => summary(g, L, !current && !problem))
-  const joined = new Intl.ListFormat(locale, { style: 'short', type: 'conjunction' }).format(labels)
-  const only = calls.every((c) => c.action === calls[0]?.action) ? calls[0]?.action : undefined
-  const finished =
-    categories.length === 1 && categories[0] === 'team' && only === 'list'
-      ? L('Checked the team', '查看了团队')
-      : categories.length === 1 && categories[0] === 'team' && only === 'assign'
-        ? L('Delegated work', '分派了任务')
-        : joined
-  const label = calls.every((c) => c.permission === 'pending')
-    ? L('Requested approval', '已请求批准')
-    : current
-      ? summary(group(current), L, false)
-      : problem
-        ? L('Tool activity · needs attention', '工具调用有异常')
-        : calls.some(c => c.permission === 'pending') ? L('Tool activity', '工具调用') : finished
-  const clock = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-  return (
-    <DisclosureRoot
-      className="trace-inline"
-      data-arrival={arrival}
-      open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
-    >
-      <DisclosureSummary title={L('Tool activity', '工具调用')}>
-        <Icon aria-hidden size={16} className={current ? 'spin' : undefined} />
-        <span>{label}</span>
-        <ChevronDown className="trace-chevron" size={13} aria-hidden />
-      </DisclosureSummary>
-      <div className="trace-steps">
-        {calls.map((c) => {
-          const Icon =
-            c.state === 'running'
-              ? LoaderCircle
-              : c.state === 'failed' || c.state === 'interrupted'
-                ? CircleAlert
-                : c.action === 'assign'
-                  ? MessagesSquare
-                  : c.action === 'list'
-                    ? ListChecks
-                    : icons[group(c)]
-          const text = toolLabel(c, L),
-            target = c.target ? actor(c.target) : undefined
-          return (
-            <DisclosureRoot key={c.id} className="trace-step" data-state={c.state}>
-              <DisclosureSummary>
-                <Icon aria-hidden size={15} className={c.state === 'running' ? 'spin' : undefined} />
-                <span>
-                  {text}
-                  {target ? ' · ' + target : ''}
-                </span>
-                <small>
-                  {c.permission || c.state === 'failed' || c.state === 'interrupted' ? toolStatus(c,L) : null}
-                </small>
-                <time dateTime={new Date(c.startedAt).toISOString()}>{clock.format(c.startedAt)}</time>
-              </DisclosureSummary>
-              <div className="trace-meta">
-                <code>{c.name}</code>
-                <span>{actor(c.workerId)}</span>
-                <span>{toolStatus(c,L)}</span>
-                {c.endedAt != null && (
-                  <span>
-                    {new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(
-                      Math.max(0, c.endedAt - c.startedAt) / 1000
-                    )}{' '}
-                    s
-                  </span>
-                )}
-              </div>
-            </DisclosureRoot>
-          )
-        })}
-      </div>
-    </DisclosureRoot>
-  )
+  const clock=new Intl.DateTimeFormat(locale,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
+  const flagged=call.permission || call.state==='failed' || call.state==='interrupted'
+  const start=new Date(call.startedAt)
+  return <DisclosureRoot className="trace-step" data-state={call.state}>
+    <DisclosureSummary>
+      <span className={active?'rv-thinking-sheen':undefined}>{label}{call.target?' · '+actor(call.target):''}</span>
+      {flagged && <small>{toolStatus(call,L)}</small>}
+      <time dateTime={start.toISOString()}>{clock.format(start)}</time>
+      <ChevronRight size={12} aria-hidden="true"/>
+    </DisclosureSummary>
+    <div className="trace-meta">
+      <code>{call.name}</code>
+      <span>{actor(call.workerId)}</span>
+      <span>{toolStatus(call,L)}</span>
+      {call.endedAt != null && <span>{new Intl.NumberFormat(locale,{maximumFractionDigits:1}).format(
+        Math.max(0,call.endedAt-call.startedAt)/1000)} {L('s','秒')}</span>}
+    </div>
+  </DisclosureRoot>
 }

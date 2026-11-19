@@ -9,12 +9,23 @@ export interface TaskExecutionEvent {
   kind: 'created' | 'received' | 'started' | 'plan' | 'report' | 'closed' | 'result' | 'files' | 'reply' | 'opening'
   at: number
   ticketId?: string
+  runId?: string
   state?: string
   waitMs?: number
 }
 
+export interface TaskExecutionHandoff {
+  id: string
+  at: number
+  ticketId: string
+  kind: 'assignment' | 'result' | 'files'
+  from: TaskActor
+  to: TaskActor
+}
+type TaskActor = { id: string; label: string; kind: 'router' | 'worker' }
+
 export type TaskExecutionCall = Pick<ExecutionCall,
-  'id' | 'kind' | 'name' | 'action' | 'trace' | 'ticketId' | 'workerId' | 'agentId' |
+  'id' | 'kind' | 'name' | 'action' | 'target' | 'trace' | 'ticketId' | 'workerId' | 'agentId' | 'parentId' |
   'state' | 'permission' | 'startedAt' | 'endedAt' | 'backend' | 'model'
 > & { reported?: true }
 
@@ -22,6 +33,7 @@ export interface TaskExecutionDetail {
   activity: TaskActivity
   events: TaskExecutionEvent[]
   calls: TaskExecutionCall[]
+  handoffs?: TaskExecutionHandoff[]
   callsTruncated: boolean
   span: { from: number; to: number; complete: boolean } | null
 }
@@ -29,7 +41,7 @@ export interface TaskExecutionDetail {
 export const taskCallLimit = 200
 type Visible = (kind: 'chat-call' | 'chat-message' | 'ticket', id: string, value: unknown) => boolean
 type Milestone = { id: string; runId: string; ticketId?: string; createdAt: number; role: 'user' | 'assistant';
-  opening?: string; handoff?: 'result' | 'files'; decision?: ChatDecision }
+  opening?: string; handoff?: TaskExecutionHandoff['kind']; speaker?: TaskActor; recipient?: TaskActor; decision?: ChatDecision }
 
 const ms = (value?: string) => value === undefined ? NaN : Date.parse(value)
 const valid = (value?: number): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -83,9 +95,10 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
     events.push({ id: 'plan:' + activity.id, kind: 'plan', at: plan.updatedAt })
   }
   let awaitingAnswer = false
+  const handoffs: TaskExecutionHandoff[] = []
   for (const row of store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
     AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=?
-    AND ((json_extract(body,'$.handoff') IN ('result','files')
+    AND ((json_extract(body,'$.handoff') IN ('assignment','result','files')
         AND json_extract(body,'$.status')='complete'
         AND json_extract(body,'$.ticketId') IN (SELECT value FROM json_each(?)))
       OR (json_extract(body,'$.runId') IN (SELECT value FROM json_each(?))
@@ -94,8 +107,11 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
     .iterate(conversationId,ticketIds,turnIds)) {
     const message = JSON.parse(String(row.body)) as Milestone
     if (!visible('chat-message',message.id,message)) continue
+    if (message.handoff && message.ticketId && message.speaker && message.recipient && valid(message.createdAt))
+      handoffs.push({id:message.id,kind:message.handoff,at:message.createdAt,ticketId:message.ticketId,from:message.speaker,to:message.recipient})
+    if(message.handoff==='assignment')continue
     const kind = message.handoff ?? (message.role === 'user' ? 'received' : message.opening ? 'opening' : 'reply')
-    events.push({id:message.id,kind,at:message.createdAt,ticketId:message.ticketId})
+    events.push({id:message.id,kind,at:message.createdAt,ticketId:message.ticketId,runId:message.runId})
     const decision = message.decision
     if (turns.has(message.runId) && decision && !decision.closed && !decision.replyRunId && !decision.defaultOption) {
       const run = store.get<{cancelRequested?: boolean; cancelled?: boolean}>('chat-run',message.runId)
@@ -125,11 +141,12 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
     const call = JSON.parse(String(row.body)) as ExecutionCall
     if (!valid(call.startedAt) || !visible('chat-call',call.id,call)) continue
     if (calls.length === taskCallLimit) { callsTruncated = true; break }
-    const { id, kind, name, action, trace, ticketId, workerId, agentId,
+    const { id, kind, name, action, target, trace, ticketId, workerId, agentId, parentId,
       state, permission, startedAt, endedAt, backend, model } = call
     // Native OpenCode progress is recorded only when a tool reports its outcome.
     const reported = kind === 'tool' && name.startsWith('opencode/')
-    calls.push({ id, kind, name, action, trace, ticketId, workerId, agentId,
+    calls.push({ id, kind, name, action, target:name==='worker_manage'&&action==='assign'?target:undefined,
+      trace, ticketId, workerId, agentId, parentId,
       state, permission, startedAt, endedAt: valid(endedAt) && endedAt >= startedAt ? endedAt : undefined,
       backend, model, reported: reported || undefined })
   }
@@ -144,5 +161,5 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
   const needsInput = awaitingAnswer && ['planned','running'].includes(activity.state)
     && !activity.tickets.some(ticket => ['queued','running'].includes(ticket.state))
     && !calls.some(call => call.state === 'running')
-  return { activity:needsInput ? {...activity,state:'needs_input'} : activity, events:ordered, calls, callsTruncated, span }
+  return { activity:needsInput ? {...activity,state:'needs_input'} : activity, events:ordered, calls, callsTruncated, span, ...(handoffs.length ? {handoffs} : {}) }
 }

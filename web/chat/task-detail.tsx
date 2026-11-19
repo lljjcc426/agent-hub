@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, Wrench, X } from 'lucide-react'
 import { taskCallLimit, type TaskExecutionCall, type TaskExecutionDetail, type TaskExecutionEvent } from '../../src/chat-task-detail.ts'
 import { Button, IconButton } from '../ui/controls.tsx'
@@ -6,6 +6,7 @@ import { taskStatus } from '../ui/task-activity.tsx'
 import { AgentIdentity } from '../ui/work.tsx'
 import type { Localize } from './composer-commands.tsx'
 import { toolLabel, toolStatus } from './tool-trace.tsx'
+import { TaskHandoffSequence } from './task-handoff-sequence.tsx'
 
 type Tab = 'progress' | 'tools'
 type LoadTask = (id: string, signal: AbortSignal) => Promise<TaskExecutionDetail>
@@ -13,6 +14,7 @@ type Entry = { id: string; at: number; event?: TaskExecutionEvent; call?: TaskEx
 type Tone = 'working' | 'problem' | 'done'
 const problems = new Set(['failed', 'interrupted', 'blocked', 'cancelled', 'held'])
 const terminal = new Set(['completed', 'cancelled', 'failed'])
+const taskListPreviewLimit = 10
 
 function useTaskRecord(id: string, load: LoadTask, active: boolean) {
   const [record, setRecord] = useState<TaskExecutionDetail>()
@@ -97,10 +99,14 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   const [tab, setTab] = useState<Tab>('progress')
   const [expanded, setExpanded] = useState<string>()
   const [tool, setTool] = useState<string>()
+  const [showAll, setShowAll] = useState({progress:false, tools:false})
+  const progressListId = useId()
+  const toolListId = useId()
+  const revealedList = useRef<HTMLElement | null>(null)
   const toolsTab = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const { activity, span } = record
-  const tools = record.calls.filter(call => call.kind === 'tool')
+  const tools = record.calls.filter(call => call.kind === 'tool' && call.name !== 'chat_opening')
   const ticketById = new Map(activity.tickets.map(ticket => [ticket.id,ticket]))
   const executors = new Map<string,TaskExecutionCall>()
   for (const call of record.calls) {
@@ -110,9 +116,8 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   }
   const entries = useMemo(() => {
     const milestones = new Set(record.events.map(event => event.kind))
-    const visibleCalls = record.calls.filter(call => call.kind !== 'tool' || call.state !== 'completed' ||
-      !(call.name === 'chat_opening' && milestones.has('opening') ||
-        call.name === 'superagent_plan' && milestones.has('plan')))
+    const visibleCalls = record.calls.filter(call => call.name !== 'chat_opening' &&
+      !(call.kind === 'tool' && call.state === 'completed' && call.name === 'superagent_plan' && milestones.has('plan')))
     const all: Entry[] = [
       ...record.events.map(event => ({id:'event:'+event.id,at:event.at,event})),
       ...visibleCalls.map(call => ({id:'call:'+call.id,at:call.startedAt,call})),
@@ -127,7 +132,35 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
     if (tab === 'tools' && tool) list.current?.querySelector('.task-run-tool[data-selected]')?.scrollIntoView({block:'nearest'})
   }, [tab, tool])
 
+  useLayoutEffect(() => {
+    const revealed = revealedList.current
+    revealedList.current = null
+    if (!revealed) return
+    const firstNew = revealed.children.item(taskListPreviewLimit)?.querySelector<HTMLButtonElement>('.task-run-record')
+    firstNew?.focus({preventScroll:true})
+    firstNew?.scrollIntoView({block:'nearest'})
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const easing = getComputedStyle(revealed).getPropertyValue('--team-ease').trim() || 'ease-out'
+    const rows = Array.from(revealed.children).slice(taskListPreviewLimit,taskListPreviewLimit+8)
+    const animations = rows.map((row,index) => row.animate([
+      { opacity: .25, transform: 'translateY(9px)' },
+      { opacity: 1, transform: 'translateY(0)' },
+    ], { duration: 260, delay: index*26, easing, fill: 'backwards' }))
+    return () => animations.forEach(animation => animation.cancel())
+  }, [showAll])
+
+  function showAllButton(kind: Tab, count: number, listId: string) {
+    if (showAll[kind] || count <= taskListPreviewLimit) return null
+    return <button type="button" className="task-run-more" aria-controls={listId} aria-expanded={false}
+      onClick={event => {
+        revealedList.current = event.currentTarget.ownerDocument.getElementById(listId)
+        setShowAll(current => ({...current,[kind]:true}))
+      }}>{L('Show all','展开全部')} <ChevronDown size={13} aria-hidden="true"/></button>
+  }
+
   function jump(id: string) {
+    if (!showAll.tools && tools.findIndex(call => call.id === id) >= taskListPreviewLimit)
+      setShowAll(current => ({...current,tools:true}))
     setTool(id)
     setTab('tools')
     toolsTab.current?.focus({preventScroll:true})
@@ -163,6 +196,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
         <strong>{duration(span.to-span.from)}</strong>
       </> : <span>{L('No recorded duration','暂无耗时记录')}</span>}
     </div>
+    <TaskHandoffSequence record={record} L={L} agentName={agentName}/>
     <div className="team-tabs task-run-tabs" role="tablist" aria-label={L('Task record tabs','执行详情分组')} data-tab={tab} onKeyDown={keys}>
       <button id="task-run-tab-progress" role="tab" type="button" aria-controls="task-run-progress" aria-selected={tab==='progress'}
         tabIndex={tab==='progress'?0:-1} onClick={() => setTab('progress')}><Clock3 size={16} aria-hidden="true"/>{L('Progress','进度')}</button>
@@ -171,8 +205,8 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
     </div>
     {record.callsTruncated && <p className="task-run-note">{L('Showing the latest '+taskCallLimit+' calls for this task.','显示此任务最近 '+taskCallLimit+' 条调用。')}</p>}
     <div id="task-run-progress" role="tabpanel" aria-labelledby="task-run-tab-progress" hidden={tab!=='progress'} className="task-run-arrive">
-      {entries.length ? <ol className="task-run-timeline">
-        {entries.map(({id,at:time,event,call}) => {
+      {entries.length ? <ol id={progressListId} className="task-run-timeline">
+        {(showAll.progress ? entries : entries.slice(0,taskListPreviewLimit)).map(({id,at:time,event,call}) => {
           const callStatus = call && callState(call,L)
           const tone = callStatus?.tone ?? (event?.state && problems.has(event.state) ? 'problem' : 'done')
           const wait = event?.waitMs
@@ -196,6 +230,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
           </li>
         })}
       </ol> : <p className="task-run-note">{L('No progress timestamps were recorded for this task.','这个任务暂无进度时间记录。')}</p>}
+      {showAllButton('progress',entries.length,progressListId)}
       {!!activity.steps.length && <div className="task-run-plan">
         <h4>{L('Task plan','任务计划')}</h4><ol>{activity.steps.map(step => <li key={step.id}>{step.title}
           {step.state && <small>{taskStatus(step.state,L)}</small>}</li>)}</ol>
@@ -212,7 +247,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
       </div>}
     </div>
     <div ref={list} id="task-run-tools" role="tabpanel" aria-labelledby="task-run-tab-tools" hidden={tab!=='tools'} className="task-run-arrive">
-      {tools.length ? <ul className="task-run-tools">{tools.map(call => {
+      {tools.length ? <ul id={toolListId} className="task-run-tools">{(showAll.tools ? tools : tools.slice(0,taskListPreviewLimit)).map(call => {
         const status = callState(call,L), took = recordedDuration(call)
         return <li className="task-run-tool" data-selected={tool===call.id || undefined} key={call.id}>
           <RecordRow label={toolLabel(call,L)} meta={status.label} tone={status.tone} open={tool===call.id}
@@ -222,6 +257,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
           </RecordRow>
         </li>
       })}</ul> : <p className="task-run-note">{L('No tool calls were recorded for this task.','这个任务暂无工具调用记录。')}</p>}
+      {showAllButton('tools',tools.length,toolListId)}
     </div>
   </>
 }

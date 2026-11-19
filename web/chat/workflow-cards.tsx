@@ -21,13 +21,16 @@ type Plan = {
   steps: { id: string; title: string; state?: PublicPlan['steps'][number]['state']; workerId?: string }[]
   live: boolean
 }
+type ChatCall = Snapshot['calls'][number]
+type CallItem = {kind:'call'; at:number; call:ChatCall; parentId?:string; model?:ChatCall}
 type FlowItem =
   | {kind:'plan'; at:number; plan:Plan}
-  | {kind:'call'; at:number; call:Snapshot['calls'][number]}
+  | CallItem
   | {kind:'question'; at:number; question:Snapshot['decisions'][number]}
   | {kind:'approval'; at:number; approval:Request}
 type Block=FlowItem[]
 const internalTools = new Set([
+  'chat_opening',
   'chat_request_decision',
   'chat_deliver_file',
   'chat_preview_cards',
@@ -54,9 +57,10 @@ export function groupWorkflow(
     // Place the event after the preceding visible message, also when the Worker transcript is filtered.
     const before=turn.filter(m=>m.createdAt<=item.at)
     const anchor=(ticketId&&before.findLast(m=>m.ticketId===ticketId)?.id)||before.at(-1)?.id||turn[0]?.id||(active?'pending':undefined)
-    if(!anchor)return
+    if(!anchor)return false
     const block=blocks.get(anchor)??[]
     block.push(item);blocks.set(anchor,block)
+    return true
   }
   const graphs=new Set<string>()
   for(const goal of snapshot.plans){
@@ -68,10 +72,25 @@ export function groupWorkflow(
     if(workerId&&workerId!==p.workerId||!p.workerId&&graphs.has(p.runId))continue
     add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
   }
+  const models=new Map(snapshot.calls.filter(call=>call.kind!=='tool' && (call.kind===call.name||call.status)
+    && (!workerId||call.workerId===workerId)).map(call=>[call.id,call]))
+  const attached=new Set<string>()
   for(const call of snapshot.calls){
     if(call.kind!=='tool'||internalTools.has(call.name)||workerId&&workerId!==call.workerId)continue
     if(call.permission==='pending' && snapshot.approvals.some(a=>a.runId===call.runId && a.workerId===call.workerId))continue
-    add(call.runId,call.ticketId,{kind:'call',at:call.startedAt,call},call.state==='running')
+    const candidates=call.parentId ? [] : [...models.values()].filter(model=>
+      model.runId===call.runId&&model.workerId===call.workerId&&model.ticketId===call.ticketId&&
+      model.startedAt<=call.startedAt&&(model.endedAt===undefined||model.endedAt>=call.startedAt))
+    const parent=call.parentId ? models.get(call.parentId) : candidates.length===1?candidates[0]:undefined
+    const model=parent?.runId===call.runId && !attached.has(parent.id) ? parent : undefined
+    if(add(call.runId,call.ticketId,{kind:'call',at:call.startedAt,call,parentId:call.parentId??parent?.id,model},call.state==='running') && model)
+      attached.add(model.id)
+  }
+  // A model that called a visible tool shares that tool’s existing position.
+  // Keep tool-free activity while it is live or has a recorded public update.
+  for(const model of models.values()){
+    if(attached.has(model.id) || (model.state!=='running'&&!model.status)) continue
+    add(model.runId,model.ticketId,{kind:'call',at:model.startedAt,call:model},model.state==='running')
   }
   for(const approval of snapshot.approvals){
     if(workerId&&workerId!==approval.workerId)continue
@@ -98,7 +117,7 @@ type FlowProps = {
   readDraft: (id: string) => Promise<{ text: string }>
   reviewFile: (id: string, state: 'approved' | 'denied') => Promise<void>
   authorize: (id: string, value: unknown) => Promise<void>
-  tools: (calls: Snapshot['calls']) => ReactNode
+  thinking: (calls: ChatCall[], model?: ChatCall) => ReactNode
 }
 const Flow = createContext<FlowProps | null>(null)
 export const WorkflowProvider = Flow.Provider
@@ -304,7 +323,7 @@ function NativeCard({ request: a }: { request: Request }) {
   </section>
 }
 export function WorkflowCards({ anchor }: { anchor: string }) {
-  const { L, blocks, tools } = useContext(Flow)!,
+  const { L, blocks, thinking } = useContext(Flow)!,
     b = blocks.get(anchor)
   if (!b) return null
   const states = {
@@ -314,16 +333,21 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
     blocked: L('Blocked', '受阻'),
   }
   const rows:ReactNode[]=[]
-  let previous:Snapshot['calls']=[]
+  let previous:CallItem[]=[]
   function flush(){
-    if(previous.length)rows.push(<div key={previous[0]!.id}>{tools(previous)}</div>)
+    const first=previous[0]
+    if(first){
+      const model=first.call.kind==='tool' ? first.model : first.call
+      rows.push(<div key={model?.id??first.call.id}>{thinking(first.call.kind==='tool'?previous.map(item=>item.call):[],model)}</div>)
+    }
     previous=[]
   }
   for(const item of b){
     if(item.kind==='call'){
       const last=previous.at(-1)
-      if(last&&(last.parentId!==item.call.parentId||last.workerId!==item.call.workerId))flush()
-      previous.push(item.call)
+      if(last&&(last.call.kind!=='tool'||item.call.kind!=='tool'||last.call.runId!==item.call.runId||
+        last.parentId!==item.parentId||last.call.workerId!==item.call.workerId||last.call.ticketId!==item.call.ticketId))flush()
+      previous.push(item)
       continue
     }
     flush()

@@ -54,7 +54,7 @@
 .chat-float-center {
   left: 50%;
   transform: translateX(-50%);
-  --capsule-space: max(0px, calc(100% - 196px));
+  --capsule-space: max(0px, calc(100% - 270px));
   width: min(var(--capsule-space), clamp(68px, calc(var(--resting-caption, 46px) + 22px), 240px));
   transition: width 1000ms cubic-bezier(.42, 0, .35, 1);
   border-radius: 18px;
@@ -175,4 +175,11 @@
 @media (max-width: 600px) {
   .chat-shell.studio-shell.floating-chat { --float-gap: 8px; }
   .chat-float :is(.icon-button, .rp-icon-button) { width: 38px; height: 38px; }
+}
+
+@media (max-width: 520px) {
+  .chat-float-center {
+    left: calc(50% - 19px);
+    --capsule-space: max(0px, calc(100% - 232px));
+  }
 }

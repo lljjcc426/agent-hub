@@ -1,0 +1,13 @@
+.run-gallery-note {
+  margin: -11px 0 18px;
+  font-size: 12px;
+  color: var(--rp-muted);
+}
+.run-example:has(.rv-sequence) { grid-column: 1 / -1; }
+.run-example > header h2 { line-height: 1.35; }
+.run-example > header .rp-button {
+  min-height: 31px;
+  padding: 4px 9px;
+  border: 1px solid var(--rp-line);
+  font-size: 12px;
+}

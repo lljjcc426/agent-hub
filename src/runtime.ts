@@ -1548,7 +1548,15 @@ export class Runtime {
         run.phase = 'uncertain'; run.error = String(error).slice(0, 500)
         persist()
         const humanInputs=inputs.filter((i):i is Extract<TicketInput,{kind:'trigger'}>=>i.kind==='trigger'&&!!i.human&&!i.context)
-        const apply=(receipt?:WorkerEventReceipt)=>{const previousMessages=new Set(this.store.deliveries().map(d=>d.id));this.reportWork(ticket.id, { state: 'blocked', summary: run.error!, question: 'Execution could not be confirmed. Review task records and the actual outcome before continuing.',...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{}) });if(receipt)this.bindWorkerEventMessages(receipt,previousMessages)}
+        const apply=(receipt?:WorkerEventReceipt)=>{
+          const previousMessages=new Set(this.store.deliveries().map(d=>d.id))
+          const attention=this.goals.awaitingReadRecovery(run)?{}:{
+            question:'Execution could not be confirmed. Review task records and the actual outcome before continuing.',
+            ...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{})
+          }
+          this.reportWork(ticket.id,{state:'blocked',summary:run.error!,...attention})
+          if(receipt)this.bindWorkerEventMessages(receipt,previousMessages)
+        }
         if(eventAttempt){const receipt=observeWorkerEvent(this,eventAttempt,{kind:'blocked',payload:run.error,nativeTurnId:run.turnId??null},apply);if(receipt.disposition==='archived')continueChangedInput()}else apply()
       }
     } finally {

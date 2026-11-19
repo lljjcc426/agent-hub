@@ -25,6 +25,9 @@ export const goalCommandSchema=z.object({action:z.enum(['list','inspect','start'
 export interface RouterGoal {supersedes?:string;supersededBy?:string;project?:GoalProject;id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerId:string;bindingRevision:number;revision:number;title:string;objective:string;criteria:z.infer<typeof criterion>[];plan:string[];state:'active'|'waiting'|'needs_input'|'paused'|'held'|'completed'|'cancelled';taskIds:string[];delegationIds?:string[];contextIds?:string[];nextAction:string;reason?:string;nextAt?:number;turns:number;maxTurns:number;failures:number;lastFingerprint?:string;checks?:z.infer<typeof verification>[];at:number;nodes?:GoalNode[];maxParallel?:number;maxRepairs?:number;finalRoundId?:string;recovery?:GoalFailure;recoveryAttempts?:number;managed?:boolean;contract?:GoalContract;planRevision?:number;replans?:number;maxReplans?:number;replanId?:string}
 interface Wake {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;triggerHash:string;goalRevision:number;state:'queued'|'running'|'done'|'failed';at:number}
 const terminal=new Set(['completed','cancelled'])
+const githubReadContinuation='The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
+const heldReason=(nodes:GoalNode[])=>nodes.filter(n=>n.state==='held').map(n=>n.title+': '+n.reason).join('; ')
+type GithubReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedGithubRead>>}
 export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. inspect returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
 
 export class RouterGoals {
@@ -201,39 +204,85 @@ export class RouterGoals {
    WHERE link.kind='task' AND link.ref=? AND json_extract(r.body,'$.state') NOT IN ('completed','cancelled') ORDER BY r.rowid LIMIT 1`).get(ticketId)
   return row?JSON.parse(String(row.body)) as RouterGoal:undefined}
  effectsSettled(ticketId:string){
+  return this.effectsSettledAtPhase(ticketId,'idle')
+ }
+ private effectsSettledAtPhase(ticketId:string,phase:'idle'|'uncertain'){
   if(!repositoryEffectsSettled(this.host.store,ticketId)||this.host.workflows.unsettled(ticketId))return false
   const run=this.host.store.get<Run>('run',ticketId)
-  return !run||run.phase==='idle'&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
+  return !run||run.phase===phase&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
  }
- private reconcileInterruptedGithubRead(task:Ticket,run:Run|undefined,c:ScopeContext){
+ private interruptedGithubRead(task:Ticket,run:Run|undefined):GithubReadRecovery|undefined{
   const {store}=this.host
-  if(!run?.threadId||run.ticketId!==task.id||run.assignmentId!==task.assignments.at(-1)?.id||this.host.work.list(task.id).length)return false
+  if(run?.phase!=='uncertain'||!run.threadId||run.ticketId!==task.id||run.assignmentId!==task.assignments.at(-1)?.id||
+   this.host.executionActive(task.id)||!this.effectsSettledAtPhase(task.id,'uncertain')||this.host.work.list(task.id).length)return
   // Approval effects can execute outside the adapter's tool journal.
   const otherActivity=store.db.prepare(`SELECT 1 FROM records WHERE
    (kind='model-session' AND id<>? AND json_extract(body,'$.ticketId')=?)
    OR (kind='approval' AND json_extract(body,'$.ticketId')=?)
    OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=?) LIMIT 1`).get(run.threadId,task.id,task.id,task.id)
-  if(otherActivity)return false
+  if(otherActivity)return
   const proof=proveInterruptedGithubRead(store,this.host.config.stateDir,run)
-  if(!proof)return false
+  if(!proof)return
   const assigned=store.get<{workerId:string}>('worker-assignment',task.id)
   const worker=workerProfiles(this.host.config).find(profile=>profile.id===assigned?.workerId)
-  if(!worker||worker.id!==run.workerId||worker.backend!==run.backendId)return false
+  if(!worker||worker.id!==run.workerId||worker.backend!==run.backendId)return
   const model=worker.model??this.host.config.backends[worker.backend]?.model??this.host.config.models.worker
-  if(run.model&&run.model!==model)return false
+  if(run.model&&run.model!==model)return
   // Reuse the normal binding check for changed endpoints, accounts and connectors.
   this.host.model.describe?.(run.threadId)
-  // The caller's goal transaction also checks all other effects before it can retry.
+  return {run,proof}
+ }
+ private settleInterruptedGithubRead({run,proof}:GithubReadRecovery,c:ScopeContext,mode:'automatic'|'requested'){
+  const {store}=this.host
   const {id,receipt}=proof.interrupted
   store.put('backend-plugin-tool',id,{...receipt,state:'complete',
    result:{success:false,contentItems:[{type:'inputText',text:'The interrupted GitHub resource read failed before returning a result.'}]},
-   reconciliation:{reason:'interrupted_github_read_failed',previousState:receipt.state,ticketId:task.id,
+   reconciliation:{reason:'interrupted_github_read_failed',mode,previousState:receipt.state,ticketId:run.ticketId,
     assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,at:this.now()},
   })
   // The old adapter turn still has an interrupted journal. Start a new model session on the same task.
   const {threadId,turnId,error,result,toolsVersion,toolsDigest,waitingForWriter,...retained}=run
-  store.put('run',task.id,{...retained,phase:'idle'} satisfies Run)
-  return true
+  store.put('run',run.ticketId,{...retained,phase:'idle'} satisfies Run)
+ }
+ private automaticReadRecoveryAllowed(g:RouterGoal){
+  return this.host.config.work.autoRecover&&g.managed&&g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
+ }
+ awaitingReadRecovery(run:Run){
+  const g=this.forTask(run.ticketId)
+  return !!g&&this.automaticReadRecoveryAllowed(g)&&['active','waiting'].includes(g.state)&&
+   !!proveInterruptedGithubRead(this.host.store,this.host.config.stateDir,run)
+ }
+ private recoverInterruptedGithubReads(g:RouterGoal,c:ScopeContext,nodes:GoalNode[]){
+  if(!this.automaticReadRecoveryAllowed(g))return false
+  const {store}=this.host
+  return store.atomic(()=>{
+   const recoveries=new Map<GoalNode,{task:Ticket;summary:string;recovery:GithubReadRecovery}>()
+   for(const node of nodes){
+    if(!node.ticketId||node.recoveries>=5||node.teamTargetId||node.dependsOn.some(id=>g.nodes?.find(n=>n.id===id)?.state!=='passed'))return false
+    const task=store.tickets.get(node.ticketId),assignment=task?.assignments.at(-1),report=assignment?.report
+    if(!task||task.ended||task.undelivered.length||!assignment||!report||!['blocked','failed'].includes(report.state)||
+     store.get('goal-delivery',task.id)||!this.host.scopes.taskRunnable(task.id)||!this.host.webhooks.taskExecutionAllowed(task.id)||
+     this.host.webhooks.continuations.pending(task.id,assignment.id))return false
+    this.host.scopes.checkTask(task.id,c,true)
+    const manifest=store.get<{manifest:ContextManifest}>('task-context',task.id)?.manifest
+    if(manifest)this.host.memory.validate(manifest)
+    const recovery=this.interruptedGithubRead(task,store.get<Run>('run',task.id))
+    if(!recovery)return false
+    recoveries.set(node,{task,summary:report.summary,recovery})
+   }
+   for(const {task,summary,recovery} of recoveries.values()){
+    this.settleInterruptedGithubRead(recovery,c,'automatic')
+    this.host.retry(task.id)
+    this.host.engine.note(task.id,JSON.stringify({instruction:githubReadContinuation,previousReport:summary}))
+    allowNewTaskInputs(store,task.id,task.inputs.map(i=>i.id))
+   }
+   const resumed=g.state==='held'?{state:'active' as const,reason:undefined,nextAt:undefined}:{}
+   const restarted=g.nodes?.map(node=>recoveries.has(node)?{...node,state:'running' as const,reason:undefined,failure:undefined,retryAt:undefined,recoveries:node.recoveries+1}:node)
+   this.save({...g,...resumed,nodes:restarted})
+   Object.assign(g,resumed)
+   for(const [index,node] of (g.nodes??[]).entries())if(recoveries.has(node))Object.assign(node,restarted![index])
+   return true
+  })
  }
  recoverFromWatchdog(g:RouterGoal,ticketId:string,recoveryId:string,reason:string){
   const c=this.context(g),n=g.nodes?.find(n=>n.ticketId===ticketId),task=this.host.store.tickets.get(ticketId)
@@ -404,13 +453,20 @@ export class RouterGoals {
     const code=this.host.projectCode.receipt(saved.project!.review!.deliveryId)
     if(code)this.reviewNotice(saved,code)
    }
+   const held=saved.state==='held'&&this.automaticReadRecoveryAllowed(saved)&&(saved.nextAt??0)<=this.now()
+    ? saved.nodes?.filter(n=>n.state==='held') : undefined
+   const checkHeldRead=held?.length&&held.every(n=>n.failure?.kind==='uncertain')&&saved.reason===heldReason(saved.nodes!)
    const runnable=['active','waiting'].includes(saved.state)||refreshReview
-   if(!runnable||!saved.objective||!saved.nodes?.length)continue
+   if((!runnable&&!checkHeldRead)||!saved.objective||!saved.nodes?.length)continue
    if(saved.project&&this.holdBudget(saved))continue
    if(this.host.replanning.active(saved))continue
    let g=saved
    try{
+    // Established goals may already be held when a compatible release starts.
+    // Back off repeated evidence checks while a hold has no safe recovery.
+    if(checkHeldRead){g.nextAt=this.now()+60_000;this.host.store.put('router-goal',g.id,g)}
     const c=this.context(g)
+    if(checkHeldRead){this.recoverInterruptedGithubReads(g,c,held);continue}
     if(refreshReview){
      this.host.store.atomic(()=>{
       const review=g.project!.review!
@@ -480,6 +536,10 @@ export class RouterGoals {
      const report=task.assignments.at(-1)?.report
      if(['blocked','failed'].includes(report?.state??'')){
       if(task.undelivered.length||run?.phase==='running'||run?.phase==='starting')continue // A replacement turn has not reported yet.
+      if(run?.phase==='uncertain'){
+       if(this.host.executionActive(task.id))continue
+       if(this.recoverInterruptedGithubReads(g,c,[n]))continue
+      }
       // A just-finished Worker can still have a Router-inbox report awaiting flush.
       // Let that bounded delivery/turn settle before deciding that replanning is unavailable.
       if(run?.phase==='idle'&&(this.host.activity.list().some(a=>a.ticketId===n.ticketId&&a.state==='running')||this.host.store.deliveries().some(d=>d.ticketId===n.ticketId&&['pending','sending'].includes(d.status))))continue
@@ -567,7 +627,7 @@ export class RouterGoals {
      }else if(round.state==='stale'){g.state='held';g.reason='Overall verification requires recovery: stale evidence';this.save(g);this.notice(g,g.reason)}
     }else if(g.nodes!.some(n=>n.state==='held')&&!g.nodes!.some(n=>['running','verifying'].includes(n.state)||n.state==='pending'&&n.dependsOn.every(id=>g.nodes!.find(d=>d.id===id)?.state==='passed'))){
      if(this.host.replanning.consider(g))continue
-     g.state='held';g.reason=g.nodes!.filter(n=>n.state==='held').map(n=>n.title+': '+n.reason).join('; ');this.save(g);this.notice(g,g.reason)
+     g.state='held';g.reason=heldReason(g.nodes!);g.nextAt=undefined;this.save(g);this.notice(g,g.reason)
     }
    }catch(error){const latest=this.get(g.id);if(latest&&['active','waiting'].includes(latest.state)){g={...latest,state:'held',reason:String(error),nextAt:undefined};this.save(g);if(g.project)this.host.stopProject(g,g.reason!);this.notice(g,g.reason!)}}
   }
@@ -686,15 +746,16 @@ export class RouterGoals {
       if(!task||task.ended||!report||!['blocked','failed'].includes(report.state)||store.get('goal-delivery',task.id))continue
       this.host.scopes.checkTask(task.id,c,true)
       const uncertain=node.failure?.kind==='uncertain'||run?.phase==='uncertain'
-      const recovered=uncertain&&!task.undelivered.length&&this.reconcileInterruptedGithubRead(task,run,c)
+      const recovered=uncertain&&!task.undelivered.length?this.interruptedGithubRead(task,run):undefined
       if(uncertain&&!recovered)throw Error('Reconcile the current task or its effects before resuming')
       if(task.undelivered.length)continue
+      if(recovered)this.settleInterruptedGithubRead(recovered,c,'requested')
       if(!this.effectsSettled(task.id))throw Error('Reconcile the current task or its effects before resuming')
       const prior=task.inputs.map(i=>i.id)
       this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
       this.host.retry(task.id)
       const instruction=recovered
-       ?'The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
+       ?githubReadContinuation
        :'Continue the existing task from its retained work and check the outstanding blocker against the current request.'
       this.host.engine.note(task.id,JSON.stringify({instruction,previousReport:report.summary,userInput:c.trigger.text}))
       allowNewTaskInputs(store,task.id,prior)

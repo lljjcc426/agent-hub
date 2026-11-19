@@ -23,7 +23,7 @@ import {DatabaseSync} from 'node:sqlite'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
 import {BackendPluginError} from '../src/backends/plugin-contract.ts'
 import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
-import type {Run} from '../src/store.ts'
+import type {Run,Store} from '../src/store.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[]
 afterEach(async()=>{for(const h of hosts.splice(0))await h.close();for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true})})
@@ -271,27 +271,7 @@ it('dispatches an explicit resume of a settled blocked Worker with the human cla
  expect([...f.attempts.values()]).toEqual([2])
 })
 
-async function interruptedGithubGoal(){
- const f=fixture((request,attempt)=>{
-  request.onBackend?.('codex')
-  if(attempt===1){
-   request.onTurn?.(randomUUID())
-   writeFileSync(join(request.cwd,'checkpoint.txt'),'retained artifact')
-   throw new BackendPluginError('outcome_unknown','codex')
-  }
-  expect(request.threadId).toBeUndefined()
-  expect(request.input).toContain('Use github_read')
-  expect(request.input).toContain('Continue the repository research')
-  expect(readFileSync(join(request.cwd,'checkpoint.txt'),'utf8')).toBe('retained artifact')
-  writeFileSync(join(request.cwd,'result.json'),'{"total":42}')
-  return ready()
- })
- f.start()
- await until(f,()=>f.goal().state==='held'&&f.h.activeExecutions===0)
- const goal=f.goal(),ticketId=goal.taskIds[0]!,store=f.h.store
- const ticket=store.tickets.get(ticketId)!,run=store.get<Run>('run',ticketId)!
- expect(run.phase).toBe('uncertain')
- expect(ticket.undelivered).toEqual([])
+function recordInterruptedGithubRead(store:Store,stateDir:string,run:Run){
  const turnId=run.turnId!,threadId=run.threadId!,nativeId='ses_interrupted'
  const folder=randomUUID(),identity=stableDigest('opencode config'),digest=stableDigest('opencode package')
  const result={success:true,contentItems:[{type:'inputText' as const,text:'read result'}]}
@@ -311,7 +291,7 @@ async function interruptedGithubGoal(){
   identity,state:'failed',effectIds,turnId,lastFailure:{code:'outcome_unknown',at:Date.now()}}
  store.put('backend-plugin-thread',threadId,thread)
  store.put('backend-binding',threadId,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
- const data=join(f.config.stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
+ const data=join(stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
  const journalRoot=join(data,'sessions',folder),sessionPath=join(journalRoot,'session.json'),operations=join(journalRoot,turnId+'.operations')
  mkdirSync(journalRoot,{recursive:true})
  mkdirSync(join(data,'index'))
@@ -320,11 +300,50 @@ async function interruptedGithubGoal(){
  writeFileSync(sessionPath,JSON.stringify({format:1,cwd:thread.cwd,folder,nativeId,turns:[{id:turnId,state:'interrupted',tools:calls}]}))
  writeFileSync(join(journalRoot,turnId+'.ready'),'ready')
  writeFileSync(operations,JSON.stringify({id:'web-call',tool:'webfetch_batch'})+'\n')
+ return {thread,effectId:effectIds.at(-1)!,journalRoot,sessionPath,operations}
+}
 
- const message=f.h.receive('local','alice',{id:'continue-research',thread:'test',scope:'test',text:'Continue the repository research',addressed:true}) as {triggerId:string}
- const context=f.h.scopes.context(store.triggers.get(message.triggerId)!,'local:test')!
- const resume=()=>f.h.goals.command({action:'resume',id:goal.id,expectedRevision:goal.revision,operationId:'continue-github-read'},context)
- return {f,store,goal,ticket,run,thread,effectId:effectIds.at(-1)!,journalRoot,sessionPath,operations,resume}
+function githubReadRecoveryFixture(mode:'requested'|'held'|'new'){
+ let initial:{run:Run;evidence:ReturnType<typeof recordInterruptedGithubRead>}|undefined
+ const f:ReturnType<typeof fixture>=fixture((request,attempt)=>{
+  request.onBackend?.('codex')
+  if(attempt===1){
+   request.onTurn?.(randomUUID())
+   writeFileSync(join(request.cwd,'checkpoint.txt'),'retained artifact')
+   if(mode==='new'){
+    const run=f.h.store.get<Run>('run',request.activity!.ticketId!)!
+    initial={run,evidence:recordInterruptedGithubRead(f.h.store,f.config.stateDir,run)}
+   }
+   throw new BackendPluginError('outcome_unknown','codex')
+  }
+  expect(request.threadId).toBeUndefined()
+  expect(request.input).toContain('Use github_read')
+  if(mode==='requested')expect(request.input).toContain('Continue the repository research')
+  expect(readFileSync(join(request.cwd,'checkpoint.txt'),'utf8')).toBe('retained artifact')
+  writeFileSync(join(request.cwd,'result.json'),'{"total":42}')
+  return ready()
+ })
+ return {f,initial:()=>initial!}
+}
+
+async function interruptedGithubGoal(mode:'requested'|'held'='requested'){
+ const {f}=githubReadRecoveryFixture(mode)
+ f.start()
+ await until(f,()=>f.goal().state==='held'&&f.h.activeExecutions===0)
+ const goal=f.goal(),ticketId=goal.taskIds[0]!,store=f.h.store
+ const ticket=store.tickets.get(ticketId)!,run=store.get<Run>('run',ticketId)!
+ expect(run.phase).toBe('uncertain')
+ expect(ticket.undelivered).toEqual([])
+ const evidence=recordInterruptedGithubRead(store,f.config.stateDir,run)
+ let context:ReturnType<typeof f.context>|undefined
+ const resume=()=>{
+  if(!context){
+   const message=f.h.receive('local','alice',{id:'continue-research',thread:'test',scope:'test',text:'Continue the repository research',addressed:true}) as {triggerId:string}
+   context=f.h.scopes.context(store.triggers.get(message.triggerId)!,'local:test')!
+  }
+  return f.h.goals.command({action:'resume',id:goal.id,expectedRevision:goal.revision,operationId:'continue-github-read'},context)
+ }
+ return {f,store,goal,ticket,run,...evidence,resume}
 }
 
 it('reconciles a proven interrupted GitHub read and resumes the original goal in a fresh session',async()=>{
@@ -346,6 +365,44 @@ it('reconciles a proven interrupted GitHub read and resumes the original goal in
   failure:{operation:'tool',reason:'exception'},reconciliation:{reason:'interrupted_github_read_failed',ticketId:ticket.id,threadId:thread.id,turnId:run.turnId}})
  expect(store.get('backend-plugin-thread',thread.id)).toEqual(thread)
  expect(readFileSync(sessionPath,'utf8')).toBe(journal)
+})
+
+it('repairs a newly interrupted read before asking for user input and completes the same goal',async()=>{
+ const {f,initial}=githubReadRecoveryFixture('new'),goal=f.start()
+ await until(f,()=>f.goal().state==='completed')
+ const {run,evidence}=initial(),ticket=f.h.store.tickets.get(run.ticketId)!
+ expect(f.goal()).toMatchObject({id:goal.id,triggerId:goal.triggerId,contract:goal.contract,taskIds:[run.ticketId],
+  nodes:[expect.objectContaining({recoveries:1,state:'passed'})]})
+ expect(ticket.assignments).toHaveLength(2)
+ expect(f.h.store.get('backend-plugin-tool',evidence.effectId)).toMatchObject({state:'complete',result:{success:false},
+  reconciliation:{mode:'automatic',triggerId:goal.triggerId}})
+ expect(f.h.store.deliveries().some(d=>d.text.includes('Execution could not be confirmed'))).toBe(false)
+})
+
+it('recovers a retained held read across a restart without new user input or duplicate assignments',async()=>{
+ const {f,goal,ticket,run,effectId}=await interruptedGithubGoal('held')
+ await f.restart()
+ await until(f,()=>f.goal().state==='completed')
+ const continued=f.h.store.tickets.get(ticket.id)!
+ expect(f.goal()).toMatchObject({id:goal.id,triggerId:goal.triggerId,contract:goal.contract,taskIds:[ticket.id]})
+ expect(continued.mandate).toEqual(ticket.mandate)
+ expect(continued.assignments).toHaveLength(2)
+ expect(f.h.store.get<Run>('run',ticket.id)).toMatchObject({cwd:run.cwd})
+ expect(f.h.store.get('backend-plugin-tool',effectId)).toMatchObject({state:'complete',reconciliation:{mode:'automatic',triggerId:goal.triggerId}})
+ expect([...f.attempts.values()]).toEqual([2])
+})
+
+it.each(['uncertain repository effect','explicit pause','operator disabled automatic recovery'] as const)('honors %s during automatic read recovery',async blocker=>{
+ const {f,store,goal,ticket,run,effectId}=await interruptedGithubGoal('held')
+ if(blocker==='uncertain repository effect')store.put('pr-delivery',ticket.id+':1',{phase:'uncertain'})
+ if(blocker==='explicit pause')f.h.goals.command({action:'pause',id:goal.id,expectedRevision:goal.revision,operationId:'pause-held-read'},f.context())
+ if(blocker==='operator disabled automatic recovery')f.h.config.work.autoRecover=false
+ f.advance(60_000)
+ await f.h.tick()
+ expect(f.goal().state).toBe(blocker==='explicit pause'?'paused':'held')
+ expect(store.get('backend-plugin-tool',effectId)).toMatchObject({state:'running'})
+ expect(store.get('run',ticket.id)).toEqual(run)
+ expect(store.tickets.get(ticket.id)?.assignments).toEqual(ticket.assignments)
 })
 
 it.each(['native write','receipt mismatch','active writer','uncertain repository effect'] as const)('holds GitHub recovery with %s',async blocker=>{

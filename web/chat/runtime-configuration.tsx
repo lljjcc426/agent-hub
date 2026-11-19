@@ -3,7 +3,8 @@ import { ArchiveRestore, Code2, Ellipsis } from 'lucide-react';
 import { workerPoolDefault } from '../../src/execution-limits.ts';
 import { AgentAvatar, CheckField, InputControl, Popover, SelectField } from '../ui';
 import { DecisionConfiguration } from './decision-configuration.tsx';
-import type { AgentEffort, RouterMode, SettingsLabels, StructuredSettings } from './structured-settings.ts';
+import { effortLabel, useModelCapabilities } from './model-capabilities.ts';
+import type { RouterMode, SettingsLabels, StructuredSettings } from './structured-settings.ts';
 import './runtime-configuration.css';
 
 function LimitControl({ id, label, defaultLabel, value, buffer, start, unit, error, step, disabled, change, L }: {
@@ -40,8 +41,6 @@ function LimitControl({ id, label, defaultLabel, value, buffer, start, unit, err
   );
 }
 
-const efforts: AgentEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
-
 export function RuntimeConfiguration({ settings, blocked, L }: {
   settings: StructuredSettings; blocked: boolean; L: SettingsLabels;
 }) {
@@ -53,11 +52,9 @@ export function RuntimeConfiguration({ settings, blocked, L }: {
   const memberPath = memberId === null ? 'execution.router' : 'execution.workers.' + index;
   const timePath = memberPath + '.timeoutMs';
   const workerPath = 'execution.management.maxWorkers';
-  const connection = settings.connections.find(item => item.id === member.backend);
-  const supportedEffort = connection?.effort ?? efforts;
-  const effortValues = member.effort && !supportedEffort.includes(member.effort)
-    ? [...supportedEffort, member.effort] : supportedEffort;
   const clientRouter = memberId === null && settings.routerMode === 'client';
+  const capability = useModelCapabilities(clientRouter ? '' : member.backend, member.displayModel, settings.loadModelCapabilities, settings.scope);
+  const effort = capability.efforts.find(value => value === member.effort) ?? '';
   const disabled = blocked || !settings.canEditTeam;
   const modes: { value: RouterMode; label: string; description: string }[] = [
     { value: 'host', label: L('Coordinate continuously', '持续协作'),
@@ -67,10 +64,6 @@ export function RuntimeConfiguration({ settings, blocked, L }: {
     { value: 'client', label: L('Use a connected client', '交给已连接的客户端'),
       description: L('Assign and follow up on work from the connected client.', '从已连接的客户端分派任务并跟进。') },
   ];
-  const effortLabels: Record<AgentEffort, string> = {
-    none: L('Off', '关闭'), minimal: L('Minimal', '最少'), low: L('Low', '低'),
-    medium: L('Medium', '中'), high: L('High', '高'), xhigh: L('Extra high', '最高'),
-  };
   return (
     <form className="settings-directory run-config-page roppo-ui" onSubmit={event => event.preventDefault()}>
       <header className="run-config-header">
@@ -103,12 +96,12 @@ export function RuntimeConfiguration({ settings, blocked, L }: {
                 <a href="/configure#connections">{L('Conversation entries', '会话入口')}</a>
               </div>
             : <div key={memberPath}>
-                {!clientRouter && connection?.kind !== 'anthropic' && (effortValues.length > 0) && <div className="run-config-row">
+                {!clientRouter && <div className="run-config-row" aria-busy={capability.pending}>
                   <label htmlFor={prefix + '-effort'}>{L('Reasoning effort', '思考强度')}</label>
-                  <SelectField id={prefix + '-effort'} value={member.effort ?? ''} disabled={disabled}
-                    onChange={event => settings.setEffort(memberId, (event.target.value || undefined) as AgentEffort | undefined)}>
-                    <option value="">{L('Follow the model', '跟随模型')}</option>
-                    {effortValues.map(value => <option key={value} value={value}>{effortLabels[value] ?? value}</option>)}
+                  <SelectField id={prefix + '-effort'} value={effort} disabled={disabled || !capability.efforts.length}
+                    onChange={event => settings.setEffort(memberId, capability.efforts.find(level => level === event.target.value) ?? null)}>
+                    <option value="">{effortLabel(null, L)}</option>
+                    {capability.efforts.map(value => <option key={value} value={value}>{effortLabel(value, L)}</option>)}
                   </SelectField>
                 </div>}
                 <div className="run-config-row">

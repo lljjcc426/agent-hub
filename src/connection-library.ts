@@ -10,7 +10,7 @@ interface CheckRecord {fingerprint:string;at:number;result:ConnectionCheck}
 
 // Private digest: changing credentials, a CLI profile, or a subscription session
 // must invalidate old success. Neither values nor their digest enter the UI.
-function fingerprint(host:Runtime,definition:BackendDefinition){
+export function connectionFingerprint(host:Runtime,definition:BackendDefinition){
  const {label,...config}=definition
  const env=isApiBackend(definition)?[definition.apiKeyEnv,...Object.values(definition.headerEnv??{})]:Object.values(definition.env??{})
  const subscription=isApiBackend(definition)&&definition.subscription
@@ -19,12 +19,12 @@ function fingerprint(host:Runtime,definition:BackendDefinition){
 }
 export function recordConnectionCheck(host:Runtime,id:string,definition:BackendDefinition,result:ConnectionCheck){
  if(result.preview)return
- host.store.put('connection-check',id,{fingerprint:fingerprint(host,definition),at:Date.now(),result} satisfies CheckRecord)
+ host.store.put('connection-check',id,{fingerprint:connectionFingerprint(host,definition),at:Date.now(),result} satisfies CheckRecord)
 }
 export function connectionChecks(host:Runtime){
  return Object.fromEntries(Object.entries({codex:{kind:'codex' as const},...host.config.backends}).flatMap(([id,definition])=>{
   const record=host.store.get<CheckRecord>('connection-check',id)
-  return record&&record.fingerprint===fingerprint(host,definition)?[[id,{at:record.at,...record.result}]]:[]
+  return record&&record.fingerprint===connectionFingerprint(host,definition)?[[id,{at:record.at,...record.result}]]:[]
  }))
 }
 /** An unambiguous local principal may be selected automatically, never an arbitrary external actor. */

@@ -5,6 +5,8 @@ declare module "virtual:configuration-content" {
     memory: () => HTMLElement;
     chat: () => HTMLElement;
     browser: () => HTMLElement;
+    configuredReasoningEffort: typeof import("../../src/agent-options.ts").configuredReasoningEffort;
+    reasoningOverride: typeof import("../../src/agent-options.ts").reasoningOverride;
     settings: (state: import("./settings-editor.tsx").SettingsEditorState) => void;
   }): {
     activate: (language: string) => void;

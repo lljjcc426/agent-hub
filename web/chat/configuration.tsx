@@ -4,6 +4,7 @@ import {BrowserPanel} from './browser.tsx';
 import { IntakeEditor, SettingsFeedback, publishSettings, useSettingsEditor } from './settings-editor.tsx';
 import {ChatSettings} from './chat-settings.tsx';
 import {MemorySettings} from "./memory.tsx";
+import {configuredReasoningEffort, reasoningOverride} from '../../src/agent-options.ts';
 import type { mount } from "virtual:configuration-content";
 const TeamConfiguration = lazy(async () => ({ default: (await import('./team-configuration.tsx')).TeamConfiguration }));
 const RuntimeConfiguration = lazy(async () => ({ default: (await import('./runtime-configuration.tsx')).RuntimeConfiguration }));
@@ -32,6 +33,7 @@ async function prepare() {
         browserElement = document.createElement("div");
         controller = module.mount({
           element, active, settings: publishSettings,
+          configuredReasoningEffort, reasoningOverride,
           memory: () => memoryElement!,
           chat: () => chatElement!,
           browser: () => browserElement!,

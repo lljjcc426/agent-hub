@@ -2,6 +2,7 @@ import type { ApiDefinition, WorkerProfile } from '../../src/backend-config.ts';
 import type { Config } from '../../src/config.ts';
 import type { DecisionConfig } from '../../src/decision-config.ts';
 import type { DecisionRecord } from '../../src/decision.ts';
+import type { LoadModelCapabilities } from './model-capabilities.ts';
 
 export type SettingsLabels = (en: string, zh: string) => string;
 export type RouterMode = NonNullable<NonNullable<Config['execution']['router']>['mode']>;
@@ -16,7 +17,7 @@ export type SettingsMember = {
   model?: string;
   displayModel?: string;
   state?: WorkerState;
-  effort?: AgentEffort;
+  effort?: AgentEffort | null;
   timeoutMs?: number;
   browserAccess?: boolean;
 };
@@ -25,7 +26,6 @@ export type ModelConnection = {
   label: string;
   model?: string;
   kind: string;
-  effort?: AgentEffort[];
   decisionEligible: boolean;
 };
 
@@ -66,7 +66,8 @@ export interface StructuredSettings {
   setRouterMode: (mode: RouterMode) => void;
   setWorkerLimit: (value?: string) => void;
   setRouterManagesWorkers: (enabled: boolean) => void;
-  setEffort: (id: string | null, value?: AgentEffort) => void;
+  loadModelCapabilities: LoadModelCapabilities;
+  setEffort: (id: string | null, value: AgentEffort | null) => void;
   setTimeout: (id: string | null, minutes?: string) => void;
   setBrowserAccess: (id: string, allowed?: boolean) => void;
   setDecision: (value: DecisionDraft, problem?: SettingsProblem) => void;

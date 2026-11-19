@@ -65,6 +65,7 @@
 .model-connection-list .model-option strong, .model-connection-list .model-option small { display: block; overflow-wrap: anywhere; }
 .model-option strong { font-size: 13px; font-weight: 550; }
 .model-option small { margin-top: 1px; }
+.model-picker-results { max-height: min(45dvh, 320px); overflow-y: auto; overscroll-behavior: contain; }
 .model-connection-list .model-manage { border-top: 1px solid var(--rp-line); border-radius: 0 0 10px 10px; margin-top: 4px; font-size: 12px; }
 a.model-manage { text-decoration: none; }
 .router-model-notice, .composer-palette .router-model-error { margin: 7px 10px; font-size: 12px; }

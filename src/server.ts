@@ -3,6 +3,7 @@ import {TerminalPairing,pairingPage} from './terminal/pairing.ts'
 import {projectRoot,projectSource} from './terminal/project.ts'
 import {terminalTask} from './terminal/tasks.ts'
 import {CapabilityLibrary} from './capability-library.ts'
+import {ModelCapabilityCatalog} from './model-capabilities.ts'
 import {workerProfiles} from './worker-pool.ts'
 import {cliMcpPreview} from './cli-mcp-profile.ts'
 import {homedir} from 'node:os'
@@ -76,6 +77,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   const tokenPath = join(runtime.config.stateDir, 'access-token')
   const connectionFile=join(runtime.config.stateDir,'connection.json')
   const library=new CapabilityLibrary(options.clientHome)
+  const modelCapabilities=new ModelCapabilityCatalog()
   const account=new PersonalAccount(runtime.config.stateDir,Date.now,runtime.config.http?.publicOrigin)
   const terminalPairs=new TerminalPairing()
   let changing=false,unavailable=false,runtimeClosed=false,endpoint='',stopping=false,closingRuntime:Promise<void>|undefined
@@ -756,6 +758,12 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(req.method==='POST'&&path==='/entry-setup/model/check'){const input=z.object({id:z.string().uuid()}).strict().parse(await body(req));send(res,200,await onboarding.check(input.id));return}
     if(req.method==='POST'&&path==='/model-connections/check'){send(res,200,await onboarding.checkConnection(await body(req)));return}
     if(req.method==='POST'&&path==='/model-connections/models'){send(res,200,await onboarding.models(await body(req)));return}
+    if(req.method==='GET'&&path==='/model-connections/capabilities'){
+      const query=new URL(req.url!,requestOrigin).searchParams
+      const input=z.object({backend:z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),model:z.string().trim().min(1).max(300).optional()}).strict().parse(Object.fromEntries(query))
+      res.setHeader('cache-control','no-store')
+      send(res,200,await modelCapabilities.read(runtime,input.backend,input.model,options.configurationPreview===true));return
+    }
     if(req.method==='POST'&&(path==='/entry-setup/apply'||path==='/entry-setup/model/apply')){
       const input=z.object({id:z.string().uuid()}).strict().parse(await operatorBody(req));changing=true
       try{send(res,200,await entries.apply(input.id,rebuild,()=>requireApplyOperator(req)))}finally{changing=false}return

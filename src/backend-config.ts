@@ -5,6 +5,7 @@ import {teamTargetSchema} from './delegation/contract.ts'
 import type {DecisionConfig} from './decision-config.ts'
 import {browserOptionsSchema} from './browser-contract.ts'
 import {personaSchema} from './persona.ts'
+import {reasoningEfforts} from './reasoning-effort.ts'
 const envName=z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 const name=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)
 const apiBase=z.string().url().superRefine((s,ctx)=>{
@@ -16,10 +17,11 @@ export const parametersSchema=z.record(z.string(),z.unknown()).superRefine((p,ct
  if(Object.keys(p).some(k=>reserved.includes(k)))ctx.addIssue({code:'custom',message:'Provider parameters cannot replace managed model, history, tools or output configuration'})
  for(const key of ['output_config','text'])if(key in p){const value=p[key];if(!value||typeof value!=='object'||Array.isArray(value)||'format'in value)ctx.addIssue({code:'custom',message:key+' accepts provider options but its format is managed by AgentHub'})}
 })
-export const effortSchema=z.enum(['none','minimal','low','medium','high','xhigh'])
+export const effortSchema=z.enum(reasoningEfforts)
 export const agentOptionsSchema=z.object({
  persona:personaSchema.optional(),
- effort:effortSchema.optional(),parameters:parametersSchema.optional(),prompt:z.string().max(messageCharacters).optional(),
+ // Omission inherits the connection setting. Null lets the selected model choose.
+ effort:effortSchema.nullable().optional(),parameters:parametersSchema.optional(),prompt:z.string().max(messageCharacters).optional(),
  maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).optional(),maxSteps:z.number().int().min(1).max(modelSteps.max).optional(),
  maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).optional(),timeoutMs:z.number().int().min(1000).max(maxTurnMs).optional(),
  tools:z.array(z.string().min(1)).optional().describe('Host tool names from worker_manage list. Omit to inherit connection defaults; with no default, all available host tools are enabled. An empty array disables tools.'),

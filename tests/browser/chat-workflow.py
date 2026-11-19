@@ -479,7 +479,7 @@ with sync_playwright() as pw:
     assert result.value.ok
     expect(reset).to_be_disabled()
     expect(effort).to_have_attribute('aria-valuetext', 'Model default')
-    assert 'effort' not in current_settings()['config']['execution']['router']
+    assert current_settings()['config']['execution']['router']['effort'] is None
     page.keyboard.press('Escape')
     expect(direct_model).to_be_focused()
     assert not errors, errors

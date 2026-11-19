@@ -36,7 +36,7 @@ it.each([true,false])('lets personal Chat discover and use a configured API desp
  expect(list.policy).toMatchObject({backends:['codex','deepseek','anthropic'],connectionScope:'personal_chat'})
  expect(list.connections.find(c=>c.id==='deepseek')).toMatchObject({label:'DeepSeek',model:'deepseek-test',options:expect.arrayContaining(['effort','parameters','maxSteps','tools','browser'])})
  expect(list.connections.find(c=>c.id==='codex')?.unsupportedOptions).toEqual(['maxOutputTokens','maxSteps','maxToolCalls'])
- expect(list.connections.find(c=>c.id==='anthropic')).toMatchObject({options:expect.not.arrayContaining(['effort'])})
+ expect(list.connections.find(c=>c.id==='anthropic')).toMatchObject({options:expect.arrayContaining(['effort'])})
  expect(JSON.stringify(list)).not.toMatch(/private-header|PRIVATE_KEY_NAME|private-endpoint/)
  const profile={id:'dedicated',label:'Researcher',backend:'deepseek',model:'deepseek-test',effort:'low' as const,prompt:'Own the whole task',parameters:{temperature:0.2},maxOutputTokens:1200,maxSteps:8,maxToolCalls:12,timeoutMs:10000,tools:['superagent_read'],toolConnections:[],browser:{enabled:true,maxTabs:3}}
  await h.manager.call({action:'create',requestId:'create',revision:list.revision,profile},context)
@@ -161,12 +161,15 @@ it('publishes the same nested Worker options and constraints used by runtime val
  for(const action of ['create','configure']){
   const key=action==='create'?'profile':'patch',profile={id:'test',backend:'deepseek',label:'Writer',effort:'high',parameters:{temperature:0.2},tools:['superagent_read'],toolConnections:['docs'],browser:{enabled:true,maxTabs:4},maxOutputTokens:2048,maxSteps:4,maxToolCalls:10,timeoutMs:20000},command={action,[key]:profile}
   expect(validate(command)).toBe(true);expect(workerCommandSchema.safeParse(command).success).toBe(true)
+  for(const effort of [null,'max','ultra']){
+   const submitted={...command,[key]:{...profile,effort}}
+   expect(validate(submitted)).toBe(true);expect(workerCommandSchema.safeParse(submitted).success).toBe(true)
+  }
   expect(validate({...command,[key]:{...profile,apiKey:'not-a-worker-option'}})).toBe(false)
   expect(validate({...command,[key]:{...profile,maxSteps:2048}})).toBe(true)
   expect(validate({...command,[key]:{...profile,maxSteps:2049}})).toBe(false)
  }
  expect(schema.properties.profile.properties.browser.properties.maxTabs.maximum).toBe(64)
- expect(schema.properties.patch.properties.effort.enum).toContain('high')
 })
 
 

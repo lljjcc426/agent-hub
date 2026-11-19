@@ -17,6 +17,8 @@ it('routes MCP calls through native approval review with only the Router tool ex
  expect(s).toMatchObject({approval_policy:'on-request',approvals_reviewer:'auto_review',model_reasoning_effort:'medium','mcp_servers.agenthub-router.tools.worker_manage.approval_mode':'prompt','mcp_servers.agenthub-router.enabled_tools':['worker_manage']})
  expect(c.args).toContain('--approve-for-me');expect(c.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');expect(c.args).not.toContain('approval_policy="never"')
  expect(c.model).toBe('gpt-6.1-terra');expect(s.developer_instructions).toContain('sole user-facing Router');expect(c.args).not.toContain('gpt-6.1-sol')
+ config.execution.router!.effort=null
+ expect(settings(codexRouterCommand(config,launch).args)).not.toHaveProperty('model_reasoning_effort')
 })
 it('resumes an explicitly selected Router conversation while retaining its approval mechanism',()=>{
  const {config}=fixture(),id='00000000-0000-0000-0000-000000000001',c=codexRouterCommand(config,{...launch,resume:id})

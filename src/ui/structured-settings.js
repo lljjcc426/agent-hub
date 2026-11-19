@@ -27,21 +27,39 @@ function structuredFinishTeamEdit(hadDraft) {
   if (!hadDraft) void save()
   return true
 }
+function structuredModelCapabilities(backend, model, signal) {
+  const query = new URLSearchParams({ backend, ...(model ? { model } : {}) })
+  return api('/model-connections/capabilities?' + query, undefined, false, workspaceContext.activeId, signal)
+}
+function structuredModelEffort(connections, from, to, parameters) {
+  const kind = id => connections.find(connection => connection.id === id)?.kind || ''
+  const previous = configurationHost.reasoningOverride(kind(from), parameters, null)
+  if (from === to) return previous
+  const cleaned = Object.hasOwn(previous, 'parameters') ? previous.parameters : parameters
+  return { ...previous, ...configurationHost.reasoningOverride(kind(to), cleaned, null) }
+}
 function structuredEditMember(id, edit) {
   if (!structuredWritable('execution')) return false
   const current = structuredProfile(id)
   if (!current) return false
   const hadDraft = dirty(), route = executionDraft()
   const activeBackend = id === null ? route.router : current.profile.backend
-  const changes = {}
+  const changes = {}, connections = controlConnections()
   if (Object.hasOwn(edit, 'label')) changes.label = edit.label?.trim() || undefined
   if (Object.hasOwn(edit, 'state') && id !== null) changes.state = edit.state
   if (edit.backend !== undefined && edit.backend !== activeBackend) {
-    if (!controlConnections().some(connection => connection.id === edit.backend)) return false
+    if (!connections.some(connection => connection.id === edit.backend)) return false
     changes.backend = edit.backend
     changes.nativeTool = undefined
   }
   if (Object.hasOwn(edit, 'model')) changes.model = edit.model?.trim() || undefined
+  const nextBackend = changes.backend ?? activeBackend
+  const connection = connections.find(item => item.id === nextBackend)
+  const activeModel = id === null ? route.routerModel : current.profile.model
+  if (changes.backend || Object.hasOwn(changes, 'model') &&
+    (changes.model || connection?.model) !== (activeModel || connection?.model)) {
+    Object.assign(changes, structuredModelEffort(connections, activeBackend, nextBackend, current.profile.parameters))
+  }
   if (id === null && Object.hasOwn(changes, 'model') && !changes.model && S.draft.models?.router) {
     structuredWrite('models.router', undefined)
   }
@@ -51,14 +69,21 @@ function structuredEditMember(id, edit) {
 function structuredAddWorker(edit, copyId) {
   if (!structuredWritable('execution')) return false
   const workers = teamWorkers(), source = workers.find(worker => worker.id === copyId)
+  const connections = controlConnections(), connection = connections.find(item => item.id === edit.backend)
   if (workers.length >= teamWorkerLimit() || (copyId && !source) || !edit.label.trim() ||
-    !controlConnections().some(connection => connection.id === edit.backend)) return false
+    !connection) return false
   const hadDraft = dirty()
   const profile = source ? clone(source) : {}
-  if (profile.backend !== edit.backend) delete profile.nativeTool
+  const model = edit.model?.trim() || undefined
+  if (source) {
+    if (source.backend !== edit.backend) delete profile.nativeTool
+    if (source.backend !== edit.backend || (source.model || connection.model) !== (model || connection.model)) {
+      Object.assign(profile, structuredModelEffort(connections, source.backend, edit.backend, profile.parameters))
+    }
+  }
   const id = teamNextWorkerId(workers)
   Object.assign(profile, {
-    id, backend: edit.backend, label: edit.label.trim(), model: edit.model?.trim() || undefined,
+    id, backend: edit.backend, label: edit.label.trim(), model,
     state: 'enabled'
   })
   workers.push(profile)
@@ -93,11 +118,16 @@ function structuredSettings() {
     !(entryState.page === 'execution' && executionView.mode === 'configuration' ||
       entryState.page === 'advanced' && ['configuration', 'browser'].includes(entryState.advancedPage))) return null
   const route = executionDraft(), execution = S.draft.execution, connectionCatalog = controlConnections()
-  const projectMember = (profile, id, kind, name, backend, model) => ({
-    id, kind, name, label: profile.label, backend, model,
-    displayModel: model || connectionCatalog.find(connection => connection.id === backend)?.model,
-    state: profile.state, effort: profile.effort, timeoutMs: profile.timeoutMs, browserAccess: profile.browser?.enabled
-  })
+  const projectMember = (profile, id, kind, name, backend, model) => {
+    const connection = connectionCatalog.find(item => item.id === backend)
+    const definition = connection?.definition
+    return {
+      id, kind, name, label: profile.label, backend, model, displayModel: model || connection?.model,
+      state: profile.state, effort: configurationHost.configuredReasoningEffort(connection?.kind || '', profile,
+        definition?.defaults, definition?.parameters, S.draft.effort),
+      timeoutMs: profile.timeoutMs, browserAccess: profile.browser?.enabled
+    }
+  }
   const updateAgent = (id, values) => {
     if (!structuredWritable('execution')) return
     structuredWriteAgent(id, values)
@@ -114,7 +144,6 @@ function structuredSettings() {
       worker.label || L('Worker ', '执行者 ') + (index + 1), worker.backend, worker.model)),
     connections: connectionCatalog.map(connection => ({
       id: connection.id, label: connection.label, model: connection.model, kind: connection.kind,
-      effort: S.snap?.agentCapabilities?.[connection.id]?.efforts,
       decisionEligible: connection.connectionType === 'api'
     })),
     defaultWorkerBackend: execution.roles?.worker ?? route.router,
@@ -129,6 +158,7 @@ function structuredSettings() {
     decisionCalls: S.snap?.decisionCalls || [],
     problems: Object.fromEntries([...S.errors].map(([path, labels]) => [path, L(...labels)])),
     buffers: Object.fromEntries([...S.buffers].map(([path, buffer]) => [path, buffer.text])),
+    loadModelCapabilities: structuredModelCapabilities,
     editMember: structuredEditMember,
     addWorker: structuredAddWorker,
     removeWorker: structuredRemoveWorker,
@@ -155,7 +185,12 @@ function structuredSettings() {
       structuredWrite('execution.management.enabled', enabled)
       updateBar()
     },
-    setEffort: (id, value) => updateAgent(id, { effort: value }),
+    setEffort: (id, value) => {
+      const current = structuredProfile(id)
+      const backend = id === null ? executionDraft().router : current?.profile.backend
+      const connection = controlConnections().find(item => item.id === backend)
+      if (current) updateAgent(id, configurationHost.reasoningOverride(connection?.kind || '', current.profile.parameters, value))
+    },
     setTimeout: (id, minutes) => {
       if (!structuredWritable('execution')) return
       const current = structuredProfile(id)

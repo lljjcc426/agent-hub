@@ -31,6 +31,7 @@ const login = existsSync(privateFile)
     };
 if (!existsSync(privateFile)) writeFileSync(privateFile, JSON.stringify(login), { mode: 0o600 });
 const base = 'http://localhost:' + port;
+const reasoningPreview = process.env.ROPPO_REASONING_PREVIEW === '1';
 const config = configSchema.parse({
   stateDir: join(root, 'state'),
   port,
@@ -42,10 +43,19 @@ const config = configSchema.parse({
       baseUrl: base + '/preview-model/v1',
       model: 'studio-local',
     },
+    ...(reasoningPreview ? {
+      openai: {
+        kind: 'openai-responses',
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-6.1-terra',
+        apiKeyEnv: 'ROPPO_STUDIO_NO_PROVIDER_KEY',
+      },
+    } : {}),
   },
   execution: {
     backend: 'studio',
-    router: { mode: 'host', backend: 'studio', model: 'studio-local', label: 'Roppo' },
+    router: { mode: 'host', backend: 'studio', model: 'studio-local', label: 'Roppo', ...(reasoningPreview ? {effort:'high'} : {}) },
     management: { enabled: true, maxWorkers: 6 },
     workers: [
       { id: 'editor', label: '文档助手', backend: 'studio', model: 'studio-local' },
@@ -246,7 +256,12 @@ host.server.on('request', (req, res) => {
       res.end(
         JSON.stringify({
           object: 'list',
-          data: [{ id: 'studio-local', object: 'model', owned_by: 'studio' }],
+          data: reasoningPreview ? [
+            { id: 'studio-local', effort: {supported_levels:['low','high','max'],default_level:'high'} },
+            { id: 'studio-fast', effort: {supported_levels:['none','minimal','low'],default_level:'low'} },
+            { id: 'studio-default' },
+          ] : [{ id: 'studio-local', object: 'model', owned_by: 'studio',
+            effort: {supported_levels:['low','medium','high'],default_level:'medium'} }],
         }),
       );
       return;

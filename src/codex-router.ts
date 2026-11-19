@@ -19,7 +19,7 @@ export function codexRouterCommand(config:Config,launch:RouterLaunch){
  if(!source)throw Error('An enabled local operator source is required')
  const model=profile.model??config.models.router??definition.model??config.model
  if(!model)throw Error('Select an explicit Router model')
- const effort=profile.effort??definition.defaults?.effort??config.effort
+ const effort=profile.effort===undefined?(definition.defaults?.effort===undefined?config.effort:definition.defaults.effort):profile.effort
  // Native exec has its own configuration surface. Do not silently drop app-server-only options.
  for(const p of [definition.defaults,profile])if(p){
   if(p.parameters&&Object.keys(p.parameters).length||p.maxSteps!==undefined||p.maxToolCalls!==undefined||p.maxOutputTokens!==undefined||p.timeoutMs!==undefined)throw Error('CLI Router supports model, effort and prompt; use the native CLI configuration for other frontend parameters')
@@ -28,7 +28,8 @@ export function codexRouterCommand(config:Config,launch:RouterLaunch){
  const bridge=clientConfig({client:'codex',url:launch.url,tokenFile:launch.tokenFile,name:'agenthub-router',tagged:true})
  const args=[...(definition.args??[]),'exec','--ignore-user-config','--skip-git-repo-check','--approve-for-me','--model',model]
  const set=(key:string,value:unknown)=>args.push('-c',key+'='+JSON.stringify(value))
- set('model_reasoning_effort',effort);set('approval_policy','on-request');set('approvals_reviewer','auto_review')
+ if(effort!==null)set('model_reasoning_effort',effort)
+ set('approval_policy','on-request');set('approvals_reviewer','auto_review')
  set('mcp_servers.agenthub-router.command',bridge.server.command);set('mcp_servers.agenthub-router.args',bridge.server.args)
  set('mcp_servers.agenthub-router.enabled_tools',['worker_manage']);set('mcp_servers.agenthub-router.required',true)
  set('mcp_servers.agenthub-router.tools.worker_manage.approval_mode','prompt')

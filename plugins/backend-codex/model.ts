@@ -152,7 +152,7 @@ export class CodexModel implements Model {
       for(const key of [...Object.keys(threadOptions),...Object.keys(turnOptions)])if(owned.includes(key))throw Error('Codex parameter is managed by the host: '+key)
       for(const key of Object.keys(configOptions))if(!codexParameterNames.config.includes(key))throw Error('Unsupported or host-owned Codex config parameter: '+key)
       for(const key of Object.keys(configOptions))if(/^(mcp_servers|plugins|features|permissions|approval_policy|sandbox|model|developer_instructions|base_instructions)(\.|$)/.test(key))throw Error('Codex configuration is managed by the host: '+key)
-      const effort=options.effort??this.config.effort
+      const effort=options.effort===null?undefined:options.effort??this.config.effort
       if(options.effort==='none'||options.effort==='minimal'){
         const catalog=await client.call('model/list',{}),model=catalog.data?.find((m:any)=>m.model===(request.model??this.config.model)||m.id===(request.model??this.config.model))
         if(!model?.supportedReasoningEfforts?.some((e:any)=>e.reasoningEffort===effort))throw Error('Codex model has not confirmed support for reasoning effort '+effort)

@@ -151,11 +151,14 @@ class ApiError extends Error {
     this.payload = payload
   }
 }
-async function api(path, body, publicRead = false, scope = workspaceContext.activeId) {
+async function api(path, body, publicRead = false, scope = workspaceContext.activeId, signal) {
   const epoch = workspaceContext.epoch
   const headers = {}
   if (!publicRead && S.token) headers.authorization = 'Bearer ' + S.token
   if (body !== undefined) headers['content-type'] = 'application/json'
+  const deadline = AbortSignal.timeout(
+    ['/setup-check', '/onboarding/check', '/onboarding/apply', '/entry-setup/probe', '/entry-setup/apply', '/entry-setup/install', '/entry-setup/model/check', '/entry-setup/model/apply'].includes(path) ? 120000 : 30000
+  )
   const res = await fetch(workspacePath(path, publicRead, scope), {
     method: body === undefined ? 'GET' : 'POST',
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -163,9 +166,7 @@ async function api(path, body, publicRead = false, scope = workspaceContext.acti
     cache: 'no-store',
     redirect: 'error',
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(
-      ['/setup-check', '/onboarding/check', '/onboarding/apply', '/entry-setup/probe', '/entry-setup/apply', '/entry-setup/install', '/entry-setup/model/check', '/entry-setup/model/apply'].includes(path) ? 120000 : 30000
-    )
+    signal: signal ? AbortSignal.any([deadline, signal]) : deadline,
   })
   const payload = await res.json().catch(() => null)
   if (epoch !== workspaceContext.epoch) throw new ApiError(409, { code: 'workspace_obsolete', error: 'Workspace changed during request' })

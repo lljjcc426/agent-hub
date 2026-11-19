@@ -17,7 +17,7 @@ export const claudeDriver:CliDriver={
  },
  prepare({config,root,nativeId,newId,request,mcp,prompt}){
   const taskList=request.nativeTool==='task-list'
-  const effort=request.options?.parameters?.effort??request.options?.effort
+  const effort=request.options?.effort===null?undefined:request.options?.parameters?.effort??request.options?.effort
   if(effort&&!['low','medium','high','xhigh','max'].includes(String(effort))||request.options?.effort&&request.options?.parameters?.effort&&request.options.effort!==request.options.parameters.effort)throw new BackendAdapterError('unsupported')
   const env={...isolatedEnvironment(root),...(taskList?{CLAUDE_CODE_ENABLE_TASKS:'false',ENABLE_TOOL_SEARCH:'false'}:{}),CLAUDE_CODE_TMPDIR:join(root,'tmp'),CLAUDE_CONFIG_DIR:join(root,'home','.claude'),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',DISABLE_AUTOUPDATER:'1',DISABLE_TELEMETRY:'1',...(config.baseUrl?{ANTHROPIC_BASE_URL:endpoint(config.baseUrl)!}:{})}
   privateFile(join(root,'mcp.json'),JSON.stringify({mcpServers:{roppo:{type:'http',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token}}}}))

@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import { ChevronRight, Ellipsis, Plus } from 'lucide-react';
 import { AgentAvatar, Button, CheckField, Dialog, InputControl, Popover, SelectField } from '../ui';
+import { useModelCapabilities } from './model-capabilities.ts';
 import type { MemberEdit, SettingsLabels, SettingsMember, StructuredSettings, WorkerState } from './structured-settings.ts';
 import './team-configuration.css';
 
@@ -43,7 +44,9 @@ export function TeamConfiguration({ settings, memberId, blocked, hasDraft, L }: 
   const canAdd = canEdit && settings.workers.length < settings.workerLimit;
   const clientRouter = member?.kind === 'router' && settings.routerMode === 'client';
   const connection = settings.connections.find(item => item.id === draft?.backend);
-  const models = new Set([connection?.model, settings.router.backend === draft?.backend ? settings.router.model : undefined,
+  const catalog = useModelCapabilities(open && !clientRouter ? draft?.backend ?? '' : '', connection?.model,
+    settings.loadModelCapabilities, settings.scope);
+  const models = new Set([connection?.model, ...catalog.models, settings.router.backend === draft?.backend ? settings.router.model : undefined,
     ...settings.workers.filter(worker => worker.backend === draft?.backend).map(worker => worker.model)]);
   const edit: MemberEdit = {};
   if (member && draft) {

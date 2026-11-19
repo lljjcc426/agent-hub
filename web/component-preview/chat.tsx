@@ -32,7 +32,11 @@ function previewConnections(): ModelConnectionStore {
     },
   }
   return {
-    load: async () => ({current, agentCapabilities: {deepseek: {efforts: ['low', 'high']}}}),
+    load: async () => ({current}),
+    capabilities: async (backend, model) => ({
+      models: [model ?? 'gpt-6.1-terra'],
+      reasoning: {source: 'catalog', efforts: backend === 'deepseek' ? ['low', 'high'] : ['low', 'medium', 'high', 'xhigh']},
+    }),
     save: async (revision, patch) => {
       if (revision !== current.revision) throw Error('settings_conflict')
       current = {revision: revision + 1, config: {...current.config, ...patch}}
@@ -144,7 +148,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
           onModelSaved={async () => {
             const {current: {config}} = await modelStore.load()
             const backend = config.execution.router?.backend ?? config.execution.backend
-            draft.setModel(config.backends[backend]?.model ?? backend)
+            draft.setModel(config.execution.router?.model ?? config.backends[backend]?.model ?? backend)
           }}/>
       </form>
     </div>

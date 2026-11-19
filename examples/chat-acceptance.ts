@@ -14,7 +14,12 @@ mkdirSync(join(root,'workspace'),{recursive:true})
 const config=configSchema.parse({stateDir:join(root,'state'),port:Number(process.env.ROPPO_CHAT_PORT??0),work:{sandboxDriver:'disabled',network:false},turnTimeoutMs:180000,
   execution:{router:{mode:'host',model:'gpt-6.1-terra',effort:'medium'},management:{enabled:true,maxWorkers:4},workers:[{id:'research',label:'Research',backend:'codex',model:'gpt-6.1-sol',effort:'high'},{id:'planning',label:'Planning',backend:'codex',model:'gpt-6.1-sol',effort:'high'},{id:'review',label:'Review',backend:'codex',model:'gpt-6.1-sol',effort:'high'},{id:'worker-4',label:'Worker 4',backend:'codex',model:'gpt-6.1-sol',effort:'high'}]},
   sources:[{id:'local',kind:'local',cwd:join(root,'workspace'),allowedActors:['operator'],workspace:{mode:'source'}}]})
-const model={async run(r:ModelRequest){
+const model={
+ async catalog(){return {data:['gpt-6.1-terra','gpt-6.1-sol'].map(model=>({
+  model,supportedReasoningEfforts:['low','medium','high','xhigh'].map(reasoningEffort=>({reasoningEffort})),
+  defaultReasoningEffort:'medium',
+ }))}},
+ async run(r:ModelRequest){
   const threadId=r.threadId??randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
   const wait=(ms=2800)=>new Promise<void>((resolve,reject)=>{const timer=setTimeout(done,ms);function done(){r.signal?.removeEventListener('abort',stop);resolve()}function stop(){clearTimeout(timer);reject(Error('Fixture cancelled'))}r.signal?.addEventListener('abort',stop,{once:true});if(r.signal?.aborted)stop()})
   const reply=async(text:string)=>{const raw=JSON.stringify({reply:text});r.onOutput?.({id:turnId,type:'start',phase:'answer'});for(let i=0;i<raw.length;i+=9){r.onOutput?.({id:turnId,type:'delta',phase:'answer',text:raw.slice(i,i+9)});await wait(120)}return {threadId,turnId,text:raw}}

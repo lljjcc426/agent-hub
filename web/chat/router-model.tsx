@@ -2,31 +2,32 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { ArrowLeft, Check, ChevronRight, LoaderCircle, RotateCcw } from 'lucide-react'
 import type { Config } from '../../src/config.ts'
 import type { AgentOptions, BackendDefinition } from '../../src/backend-config.ts'
-import { mergeParameters } from '../../src/agent-options.ts'
+import { configuredReasoningEffort, reasoningOverride } from '../../src/agent-options.ts'
+import type { ReasoningEffort } from '../../src/reasoning-effort.ts'
 import type { Localize } from './composer-commands.tsx'
+import { effortLabel, useModelCapabilities, type LoadModelCapabilities } from './model-capabilities.ts'
 import './router-model.css'
 
-type Effort = NonNullable<AgentOptions['effort']>
-type Choice = { backend: string; effort: Effort | '' }
+type Effort = ReasoningEffort | null
+type Choice = { backend: string; model?: string; effort: Effort }
 type ModelDefinition = Pick<BackendDefinition, 'kind' | 'model' | 'label' | 'defaults'> & {parameters?: AgentOptions['parameters']}
 type ModelConfig = Pick<Config, 'model' | 'models'> & {
+  effort?: Config['effort']
   backends: Record<string, ModelDefinition>
   execution: Pick<Config['execution'], 'roles' | 'router' | 'backend'>
 }
 type Version = { revision: number; config: ModelConfig }
-type Configuration = { current: Version; agentCapabilities?: Record<string, { efforts?: Effort[] }> }
+type Configuration = { current: Version }
 export type ModelConnectionStore = {
   load: (signal?: AbortSignal) => Promise<Configuration>
   save: (revision: number, patch: ReturnType<typeof modelPatch>) => Promise<Version>
+  capabilities?: LoadModelCapabilities
   connectionsUrl?: string
-  thinkingUrl?: string
 }
 type Props = {
   store?: ModelConnectionStore
   onClose: () => void; onBack?: () => void; busy: boolean; model?: string; L: Localize; onSaved: () => Promise<void>
 }
-const effortOrder: Effort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin', signal, ...(body ? {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -40,43 +41,29 @@ function selectedBackend(config: ModelConfig) {
   return config.execution.router?.backend ?? config.execution.roles.router ?? config.execution.backend
 }
 
-function configuredEffort(config: ModelConfig) {
-  const router = config.execution.router
-  const kind = config.backends[selectedBackend(config)]?.kind
-  const parameters = router?.parameters
-  const provider = kind === 'openai-chat' ? parameters?.reasoning_effort
-    : kind === 'openai-responses' ? (parameters?.reasoning as { effort?: unknown } | undefined)?.effort : undefined
-  return router?.effort ?? (typeof provider === 'string' ? provider : '')
+function selectedModel(config: ModelConfig, backend = selectedBackend(config)) {
+  const definition = config.backends[backend]
+  return config.execution.router?.model ?? config.models.router ?? definition?.model ??
+    (definition?.kind === 'codex' || backend === 'codex' && !definition ? config.model : undefined)
 }
 
-function modelPatch(config: ModelConfig, { backend, effort }: Choice) {
-  const changed = selectedBackend(config) !== backend
-  const router = { ...config.execution.router, backend }
-  if (changed) { delete router.model; delete router.parameters }
-  if (effort) router.effort = effort
-  else delete router.effort
+function configuredEffort(config: ModelConfig) {
+  const backend = selectedBackend(config), definition = config.backends[backend]
+  const kind = definition?.kind ?? (backend === 'codex' ? 'codex' : '')
+  return configuredReasoningEffort(kind, config.execution.router, definition?.defaults, definition?.parameters, config.effort)
+}
 
-  const definition = config.backends[backend]
-  if (definition?.kind === 'openai-chat' || definition?.kind === 'openai-responses') {
-    // Keep explicit provider fields and the generic effort override in agreement.
-    const parameters = mergeParameters(mergeParameters(definition.parameters, definition.defaults?.parameters), router.parameters)
-    if (effort) {
-      if (definition.kind === 'openai-chat' && parameters.reasoning_effort !== undefined)
-        router.parameters = { ...router.parameters, reasoning_effort: effort }
-      const reasoning = parameters.reasoning as { effort?: string } | undefined
-      if (definition.kind === 'openai-responses' && reasoning?.effort !== undefined)
-        router.parameters = mergeParameters(router.parameters, { reasoning: { effort } })
-    } else if (router.parameters) {
-      router.parameters = structuredClone(router.parameters)
-      const reasoning = router.parameters.reasoning as { effort?: string } | undefined
-      if (definition.kind === 'openai-chat') delete router.parameters.reasoning_effort
-      else if (reasoning?.effort !== undefined) {
-        delete reasoning.effort
-        if (!Object.keys(reasoning).length) delete router.parameters.reasoning
-      }
-      if (!Object.keys(router.parameters).length) delete router.parameters
-    }
-  }
+function changesModel(config: ModelConfig, {backend, model}: Choice) {
+  return selectedBackend(config) !== backend || model !== undefined && model !== selectedModel(config)
+}
+
+function modelPatch(config: ModelConfig, choice: Choice) {
+  const {backend, model, effort} = choice
+  const changed = changesModel(config, choice)
+  const router = { ...config.execution.router, backend }
+  if (selectedBackend(config) !== backend) delete router.parameters
+  if (changed) router.model = model
+  Object.assign(router, reasoningOverride(config.backends[backend]?.kind ?? '', router.parameters, effort))
   return { execution: { ...config.execution, router }, ...(changed ? {
     models: Object.fromEntries(Object.entries(config.models).filter(([key]) => key !== 'router')),
   } : {}) }
@@ -139,13 +126,14 @@ function EffortSlider({ stops, index, valueText, L, disabled, onPreview, onCommi
 const hostSettings: ModelConnectionStore = {
   load: signal => request<Configuration>('/configuration', undefined, signal),
   save: (revision, patch) => request<Version>('/settings', {revision, patch}),
-  connectionsUrl: '/configure#models', thinkingUrl: '/configure#execution/configuration',
+  connectionsUrl: '/configure#models',
 }
 
 export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, store = hostSettings }: Props) {
   const [data, setData] = useState<Configuration | null>(null)
-  const [list, setList] = useState(false), [saving, setSaving] = useState(false), [error, setError] = useState('')
-  const [draft, setDraft] = useState<Choice['effort'] | null>(null)
+  const [list, setList] = useState<'connections' | 'models' | null>(null)
+  const [saving, setSaving] = useState(false), [error, setError] = useState('')
+  const [draft, setDraft] = useState<Effort>()
   const version = useRef<Version | null>(null), pending = useRef<Choice | null>(null), writing = useRef(false)
   const modelButton = useRef<HTMLButtonElement>(null), choices = useRef<HTMLDivElement>(null), wasList = useRef(false)
 
@@ -155,7 +143,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
       const next = await store.load(signal)
       version.current = next.current
       setData(next)
-      setDraft(null)
+      setDraft(undefined)
     } catch (e) { if (!signal?.aborted) setError((e as Error).message) }
   }
   useEffect(() => {
@@ -164,9 +152,13 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
     return () => controller.abort()
   }, [store])
   useLayoutEffect(() => {
-    if (list) choices.current?.querySelector<HTMLButtonElement>('[aria-checked=true]')?.focus({ preventScroll: true })
+    if (list) {
+      const selected = choices.current?.querySelector<HTMLButtonElement>('[aria-checked=true]')
+      selected?.focus({ preventScroll: true })
+      if (list === 'models') selected?.scrollIntoView({block: 'nearest'})
+    }
     else if (wasList.current) modelButton.current?.focus({ preventScroll: true })
-    wasList.current = list
+    wasList.current = !!list
   }, [list])
 
   async function save(choice: Choice) {
@@ -185,17 +177,18 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
         lastChoice = next
         pending.current = null
         const current: Version = version.current
-        if (selectedBackend(current.config) === next.backend && configuredEffort(current.config) === next.effort) continue
+        const switching = changesModel(current.config, next)
+        if (!switching && configuredEffort(current.config) === next.effort) continue
         version.current = await store.save(current.revision, modelPatch(current.config, next))
         const saved = version.current
         setData(previous => previous && { ...previous, current: saved })
-        if (selectedBackend(current.config) !== next.backend) setList(false)
+        if (switching) setList(null)
         updated = true
       }
-      setDraft(value => value === lastChoice.effort ? null : value)
+      setDraft(value => value === lastChoice.effort ? undefined : value)
     } catch (e) {
       pending.current = null
-      setDraft(null)
+      setDraft(undefined)
       setError((e as Error).message)
     } finally {
       writing.current = false
@@ -210,32 +203,41 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
   }
   const config = data?.current.config, backend = config ? selectedBackend(config) : ''
   const definitions: Record<string, ModelDefinition> = { codex: { kind: 'codex' }, ...config?.backends }
-  const definition = definitions[backend]
   const connectionLabel = (id: string) => definitions[id]?.label ?? (id === 'codex' ? 'Codex' : id)
-  const modelName = config?.execution.router?.model ?? config?.models.router ?? definition?.model ??
-    (definition?.kind === 'codex' ? config?.model : undefined) ?? model ?? connectionLabel(backend)
-  const configured = config ? configuredEffort(config) : ''
-  const effort = effortOrder.find(level => level === configured) ?? ''
-  const reported = data?.agentCapabilities?.[backend]?.efforts
-  const options = reported ?? (definition?.kind === 'codex' ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'medium', 'high'])
-  const stops: Choice['effort'][] = ['', ...effortOrder.filter(level => options.includes(level) || level === effort)]
-  const adjustable = definition?.kind !== 'anthropic' && stops.length > 1
-  const labels = { '': L('Model default', '模型默认'), none: L('Off', '关闭'), minimal: L('Minimal', '最少'),
-    low: L('Low', '低'), medium: L('Medium', '中等'), high: L('High', '高'), xhigh: L('Extra high', '最高') }
-  const displayed = draft ?? effort
-  const valueText = draft === null && configured && !effort ? configured : labels[displayed]
-  const canReset = !busy && !saving && !!configured
+  const configuredModel = config ? selectedModel(config, backend) : undefined
+  const capabilities = useModelCapabilities(backend, configuredModel, store.capabilities)
+  const activeModel = configuredModel ?? capabilities.model
+  const modelName = activeModel ?? model ?? connectionLabel(backend)
+  const stops: Effort[] = [null, ...capabilities.efforts]
+  const configured = config ? configuredEffort(config) : undefined
+  const displayed = stops.find(level => level === (draft === undefined ? configured : draft)) ?? null
+  const valueText = effortLabel(displayed, L)
+  const canReset = !busy && !saving && configured != null
   const backButton = (back: () => void, label: string) => <button type="button" className="model-icon" aria-label={label}
     onClick={back}><ArrowLeft size={16}/></button>
   return <div className="router-model-options" onKeyDown={event => {
-    if (list && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setList(false) }
+    if (list && event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation()
+      setList(list === 'models' ? 'connections' : null)
+    }
   }}>
     {!config && onBack && <div className="palette-heading">
       {backButton(onBack, L('Back to chat actions', '返回对话操作'))}<strong>{L('Model connection', '模型连接')}</strong>
     </div>}
     {!config && !error && <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…', '正在读取连接…')}</div>}
-    {config && (list ? <div className="model-connection-list">
-      <div className="palette-heading">{backButton(() => setList(false), L('Back to model', '返回模型'))}
+    {config && (list === 'models' ? <div className="model-connection-list">
+      <div className="palette-heading">{backButton(() => setList('connections'), L('Back to connections', '返回连接'))}
+        <strong>{L('Choose a model', '选择模型')}</strong></div>
+      <div ref={choices} role="menu" className="model-picker-results" aria-label={L('Models', '模型')} aria-busy={saving}>
+        {capabilities.models.map(id => <button key={id} type="button" role="menuitemradio" aria-checked={id === activeModel}
+          className="palette-row model-option" aria-disabled={busy || saving} onClick={() => {
+            if (busy || saving) return
+            if (id === activeModel) setList(null)
+            else void save({backend, model: id, effort: null})
+          }}><strong>{id}</strong>{id === activeModel && <Check size={15}/>}</button>)}
+      </div>
+    </div> : list === 'connections' ? <div className="model-connection-list">
+      <div className="palette-heading">{backButton(() => setList(null), L('Back to model', '返回模型'))}
         <strong>{L('Model connections', '模型连接')}</strong></div>
       <div ref={choices} role="menu" aria-label={L('Model connections', '模型连接')} aria-busy={saving}>
         {Object.entries(definitions).map(([id, d]) => {
@@ -244,33 +246,34 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
             className="palette-row model-option" aria-disabled={busy || saving}
             onClick={() => {
               if (busy || saving) return
-              if (id === backend) setList(false)
-              else void save({ backend: id, effort: '' })
+              if (id === backend) setList(null)
+              else void save({ backend: id, effort: null })
             }}>
             <span><strong>{name}</strong>{detail && detail !== name && <small>{detail}</small>}</span>
             {id === backend && <Check size={15}/>}
           </button>
         })}
       </div>
+      {capabilities.models.length > 1 && <button type="button" className="palette-row model-manage"
+        aria-haspopup="menu" onClick={() => setList('models')}>
+        <span>{L('Choose a model', '选择模型')}</span><ChevronRight size={14}/></button>}
       {store.connectionsUrl && <a className="palette-row model-manage" href={store.connectionsUrl} onClick={onClose}>
         <span>{L('Manage connections', '管理连接')}</span><ChevronRight size={14}/></a>}
-    </div> : <div className="model-dial">
+    </div> : <div className="model-dial" aria-busy={capabilities.pending}>
       <div className="model-dial-head">
         {onBack && backButton(onBack, L('Back to chat actions', '返回对话操作'))}
         <div className="model-dial-title">
-          <strong key={adjustable ? valueText : ''}>{adjustable ? valueText : L('Model thinking', '模型思考')}</strong>
+          <strong key={valueText}>{valueText}</strong>
           <button ref={modelButton} type="button" className="model-name-button" aria-haspopup="menu"
-            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setList(true)}>
+            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setList('connections')}>
             <span>{modelName}</span><ChevronRight size={13}/></button>
         </div>
-        {adjustable && <button type="button" className="model-icon model-reset" aria-disabled={!canReset}
+        {(stops.length > 1 || !capabilities.pending && configured != null) && <button type="button" className="model-icon model-reset" aria-disabled={!canReset}
           aria-label={L('Reset reasoning to model default', '恢复模型默认思考强度')} title={L('Reset to model default', '恢复模型默认')}
-          onClick={() => { if (canReset) void save({ backend, effort: '' }) }}><RotateCcw size={15}/></button>}
+          onClick={() => { if (canReset) void save({ backend, effort: null }) }}><RotateCcw size={15}/></button>}
       </div>
-      {adjustable ? <EffortSlider stops={stops} index={stops.indexOf(displayed)} valueText={valueText} L={L} disabled={busy}
-        onPreview={setDraft} onCommit={value => void save({ backend, effort: value })}/>
-        : store.thinkingUrl && <a className="palette-row model-manage" href={store.thinkingUrl} onClick={onClose}>
-          <span>{L('Configure model thinking', '配置模型思考参数')}</span><ChevronRight size={14}/></a>}
+      {stops.length > 1 && <EffortSlider stops={stops} index={stops.indexOf(displayed)} valueText={valueText} L={L} disabled={busy}
+        onPreview={setDraft} onCommit={value => void save({ backend, effort: value })}/>}
     </div>)}
     {busy && config && <p className="router-model-notice">{L('Available when this run finishes.', '本次任务结束后可切换。')}</p>}
     {error && <div className="router-model-error" role="alert">

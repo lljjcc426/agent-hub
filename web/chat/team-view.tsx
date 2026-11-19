@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClock,
   ChevronRight,
@@ -17,6 +17,7 @@ import { deliveryFile } from './delivery-links.ts'
 import { DeliveryFileCard } from '../ui/delivery-files.tsx'
 import { TaskActivityRow } from '../ui/task-activity.tsx'
 import { AgentAvatar, teamName } from './agent-avatar.tsx'
+import { RoppoCharacter } from './roppo-character.tsx'
 import { taskActivities } from './task-activity.ts'
 
 type View = ReturnType<ChatSessions['view']>
@@ -30,6 +31,7 @@ const tabs = [
 
 
 interface TeamOverviewProps {
+  active: boolean
   cards?: ReactNode
   focusOnOpen: boolean
   snapshot: View | null
@@ -47,6 +49,7 @@ interface TeamOverviewProps {
   changeSchedule: (id: string, revision: number, change: ScheduleEdit) => Promise<void>
 }
 export function TeamOverview({
+  active,
   cards,
   focusOnOpen,
   snapshot,
@@ -62,6 +65,16 @@ export function TeamOverview({
   resource,
   changeSchedule, locateMessage,
 }: TeamOverviewProps) {
+  const [greeting, setGreeting] = useState(0)
+  const wasActive = useRef(false)
+  const closeButton = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    const opened = active && !wasActive.current
+    wasActive.current = active
+    if (!opened) return
+    setGreeting(previous => previous + 1)
+    if (focusOnOpen) closeButton.current?.focus({ preventScroll: true })
+  }, [active, focusOnOpen])
   const titles = { activity: L('Overview', '概览'), agents: 'Agents', schedules: L('Schedules', '定时') }
   const activities = snapshot ? taskActivities(snapshot) : []
   const files = snapshot?.deliveries ?? [],
@@ -70,26 +83,20 @@ export function TeamOverview({
     <>
       <div className="team-drawer-head">
         <div className="team-profile">
-          <span className="team-portrait">
-            <AgentAvatar size={54} />
-          </span>
-          <div>
-            <div className="team-profile-name">
-              <strong>{teamName(routerLabel)}</strong>
-              <a
-                className="icon-button"
-                href="/configure#execution/configuration/router"
-                aria-label={L('Edit profile', '编辑资料')}
-                title={L('Edit profile', '编辑资料')}
-              >
-                <Pencil size={13} />
-              </a>
-            </div>
-          </div>
+          <button type="button" className="team-portrait" aria-label={L('Greet Roppo', '和 Roppo 打招呼')}
+            onClick={() => setGreeting(previous => previous + 1)}>
+            <RoppoCharacter phase="idle" greeting={greeting} />
+          </button>
+          <strong>{teamName(routerLabel)}</strong>
+          <a className="team-profile-edit" href="/configure#execution/configuration/router">
+            <Pencil size={12} aria-hidden="true" />
+            {L('Edit profile', '编辑资料')}
+          </a>
         </div>
         <button
+          ref={closeButton}
+          type="button"
           className="icon-button"
-          autoFocus={focusOnOpen}
           aria-label={L('Close panel', '收起面板')}
           onClick={close}
         >

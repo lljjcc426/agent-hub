@@ -1,4 +1,4 @@
-import {useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import body from '../../src/ui/assets/agents/roppo-body.webp';
 import type {CompanionPhase} from './companion-state.ts';
 import {workerColorIndex} from './agent-avatar.tsx';
@@ -9,11 +9,50 @@ const spiralEye=Array.from({length:65},(_,i)=>{
  return `${i?'L':'M'}${(12+radius*Math.cos(angle)).toFixed(2)} ${(12+radius*Math.sin(angle)).toFixed(2)}`;
 }).join(' ');
 
-export function RoppoCharacter({phase,paused=false,workerId}:{phase:CompanionPhase;paused?:boolean;workerId?:string}){
+export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:CompanionPhase;paused?:boolean;workerId?:string;greeting?:number}){
  const [visualPhase,setVisualPhase]=useState(phase);
+ const characterRef=useRef<HTMLSpanElement>(null);
+ const poseRef=useRef<HTMLSpanElement>(null);
+ const waveHand=useRef<HTMLSpanElement>(null);
+ const gesture=useRef<Animation[]>([]);
  const bodyRef=useRef<HTMLSpanElement>(null);
  const previousPose=useRef<string|null>(null);
  const bridge=useRef<Animation|null>(null);
+ const stopGreeting=useCallback(()=>{
+  for(const animation of gesture.current)animation.cancel();
+  gesture.current=[];
+  if(characterRef.current)delete characterRef.current.dataset.greeting;
+ },[]);
+ useLayoutEffect(()=>{
+  const character=characterRef.current,pose=poseRef.current,hand=waveHand.current;
+  if(!greeting||!character||!pose||!hand||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const liftFrom=getComputedStyle(pose).transform;
+  const handStyle=getComputedStyle(hand);
+  const handFrom={transform:handStyle.transform,opacity:Number(handStyle.opacity)};
+  stopGreeting();
+  character.dataset.greeting='true';
+  const options={duration:760,easing:'ease-in-out'};
+  const lift=pose.animate([
+   {transform:liftFrom,offset:0},
+   {transform:'translateY(-3px)',offset:.25},
+   {transform:'translateY(-3px)',offset:.72},
+   {transform:'none',offset:1},
+  ],options);
+  const wave=hand.animate([
+   {...handFrom,offset:0},
+   {transform:'rotate(-37deg)',opacity:1,offset:.24},
+   {transform:'rotate(-59deg)',opacity:1,offset:.38},
+   {transform:'rotate(-28deg)',opacity:1,offset:.52},
+   {transform:'rotate(-54deg)',opacity:1,offset:.68},
+   {transform:'rotate(32deg)',opacity:0,offset:1},
+  ],options);
+  gesture.current=[lift,wave];
+  wave.onfinish=()=>{
+   if(!gesture.current.includes(wave))return;
+   gesture.current=[];
+   delete character.dataset.greeting;
+  };
+ },[greeting,stopGreeting]);
  // Read the displayed pose before changing the CSS animation, including any
  // unfinished transition. Rapid status changes then continue from this pose.
  useLayoutEffect(()=>{
@@ -42,12 +81,12 @@ export function RoppoCharacter({phase,paused=false,workerId}:{phase:CompanionPha
  },[paused]);
  useEffect(()=>{
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');
-  const stop=()=>{if(reduced.matches){bridge.current?.cancel();bridge.current=null}};
+  const stop=()=>{if(reduced.matches){bridge.current?.cancel();bridge.current=null;stopGreeting()}};
   reduced.addEventListener('change',stop);
-  return ()=>{reduced.removeEventListener('change',stop);bridge.current?.cancel()};
- },[]);
- return <span className="roppo-character" data-phase={visualPhase} data-skin={workerId ? workerColorIndex(workerId) : undefined} data-paused={paused||undefined} aria-hidden="true">
-  <span className="roppo-pose"><span className="roppo-body" ref={bodyRef}>
+  return ()=>{reduced.removeEventListener('change',stop);bridge.current?.cancel();stopGreeting()};
+ },[stopGreeting]);
+ return <span ref={characterRef} className="roppo-character" data-phase={visualPhase} data-skin={workerId ? workerColorIndex(workerId) : undefined} data-paused={paused||undefined} aria-hidden="true">
+  <span className="roppo-pose" ref={poseRef}><span className="roppo-body" ref={bodyRef}>
    <img src={body} width="512" height="512" alt="" draggable={false}/>
    <span className="roppo-eyes">
     <span className="roppo-eye-layer roppo-eyes-open"><i/><i/></span>
@@ -55,7 +94,9 @@ export function RoppoCharacter({phase,paused=false,workerId}:{phase:CompanionPha
     <span className="roppo-eye-layer roppo-eyes-spiral">{[0,1].map(eye=><svg key={eye} className="roppo-spiral" viewBox="0 0 24 24"><path d={spiralEye}/></svg>)}</span>
    </span>
    <span className="roppo-arm roppo-arm-left"/><span className="roppo-arm roppo-arm-right"/>
-  </span></span>
+  </span>
+   {greeting!==undefined&&<span className="roppo-greeting-hand" ref={waveHand}/>}
+  </span>
   <span className="roppo-laptop"><span className="roppo-laptop-screen"><i/></span><span className="roppo-laptop-base"/></span>
   <span className="roppo-review"><span/><span/><span/><i/></span>
   <span className="roppo-signal"><i/><i/><i/></span>

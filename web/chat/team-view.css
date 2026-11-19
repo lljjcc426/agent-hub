@@ -53,14 +53,33 @@
 .team-row small {color:var(--team-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .team-row>svg:last-child {color:var(--team-muted)}
 .session-panel.chat-inspector {width:min(360px,32vw);min-width:290px;flex:0 0 auto;padding:0 19px;display:flex;flex-direction:column;border-left:1px solid var(--team-line);background:var(--team-paper);color:var(--team-ink);animation:team-drawer-in .28s var(--team-ease)}
-.team-drawer-head,.team-profile,.team-drawer-foot {display:flex;align-items:center}
-.team-drawer-head {justify-content:space-between;padding:24px 0 19px;gap:8px}
-.team-drawer-head>.icon-button {align-self:flex-start}
-.team-profile {gap:12px;min-width:0}
-.team-portrait {display:grid;place-items:center;width:61px;height:64px;border-radius:17px;background:var(--team-fill);flex:none}
-.team-profile>div {display:grid;gap:2px;min-width:0}
-.team-profile strong {font-size:22px;letter-spacing:-.04em;overflow:hidden;text-overflow:ellipsis}
-.team-profile small,.team-tab-content>p {font-size:13px;color:var(--team-muted)}
+.team-drawer-head {position:relative;padding:18px 34px 14px}
+.team-drawer-head>.icon-button {position:absolute;inset:12px 0 auto auto}
+.team-profile {display:grid;justify-items:center;gap:5px;min-width:0;text-align:center}
+.team-portrait {
+  display:grid;place-items:center;width:82px;height:78px;margin-bottom:2px;
+  padding:0;border:0;background:transparent;
+}
+.team-portrait:focus-visible {outline:none}
+.team-portrait:focus-visible+strong {text-decoration:underline;text-underline-offset:4px}
+@layer roppo-interaction {
+  .team-portrait:focus-visible {box-shadow:none!important}
+}
+.team-profile strong {max-width:100%;font-size:21px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-profile-edit {display:inline-flex;align-items:center;gap:5px;min-height:26px;padding:0 6px;border-radius:5px;font-size:12px;color:var(--team-muted)}
+.team-profile-edit:is(:hover,:focus-visible) {color:var(--team-ink);text-decoration:underline;text-underline-offset:3px}
+.team-portrait .roppo-character {width:82px;height:74px}
+.team-portrait .roppo-body {inset:0 4px;width:74px;height:74px}
+.team-portrait .roppo-greeting-hand {
+  position:absolute;left:82%;top:54%;width:14%;aspect-ratio:1;border-radius:50%;transform-origin:-75% 57%;
+  background:radial-gradient(ellipse at 56% 24%,#505154,#2a2b2d 72%);
+  box-shadow:0 1px 1px #0002;transform:rotate(32deg);opacity:0;
+}
+:root[data-theme=dark] .team-portrait .roppo-greeting-hand {background:radial-gradient(ellipse at 40% 24%,#dedee0,#aeb0b4 75%)}
+.team-portrait [data-greeting] .roppo-eyes-open {opacity:0;transform:scale(.85)}
+.team-portrait [data-greeting] .roppo-eyes-happy {opacity:1;transform:none}
+.team-drawer-foot {display:flex;align-items:center}
+.team-tab-content>p {font-size:13px;color:var(--team-muted)}
 .team-tabs {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));position:relative;border-bottom:1px solid var(--team-line)}
 .team-tabs button {display:flex;min-height:40px;gap:5px;align-items:center;justify-content:center;color:var(--team-muted);font-size:13px}
 .team-tabs button[aria-selected=true] {color:var(--team-action);font-weight:650}
@@ -90,9 +109,6 @@
   .session-panel.chat-inspector,.team-tab-content {animation:none}
   .team-tabs::after {transition:none}
 }
-
-.team-profile-name {display:flex;gap:5px;align-items:center;min-width:0}
-.team-profile-name .icon-button {width:26px;height:26px;color:var(--team-muted)}
 
 .conversation-body,.conversation-sidebar {--c-success:var(--c-text)}
 .conversation-body .agent-portrait[data-kind=worker],.conversation-sidebar .agent-portrait[data-kind=worker] {filter:grayscale(1)}

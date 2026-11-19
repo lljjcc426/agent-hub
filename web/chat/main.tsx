@@ -62,6 +62,7 @@ import { initialResources, openResource, resourceKey, type ResourceKind } from "
 import { ChatMemberPicker, StudioRail, General, TeamSettings } from "./studio-navigation.tsx";
 import { SwitchView, switchView } from "../ui";
 import { SidebarSeparator } from "./sidebar-separator.tsx";
+import { usePanelPresence } from './panel-presence.ts';
 import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
@@ -79,6 +80,7 @@ import {useChatMotion} from './chat-motion.ts';
 import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
+import {carryInitialDraft,draftKey,forgetPending,read,savedPending,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
 import "../../src/ui/typography.css";
@@ -99,42 +101,13 @@ type Ready = Snapshot["readiness"] & { user?: { displayName: string } };
 type Worker = Snapshot["workers"][number];
 type Language = "en" | "zh-CN";
 type Arrivals = {conversationId:string;since:number;seen:Set<string>};
-const read = (key: string, fallback = "") => {
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    return fallback;
-  }
-};
-const write = (key: string, value: string) => {
-  try {
-    localStorage.setItem(key, value);
-  } catch {}
-};
-const draftKey = (id: string | null) => "roppo.chat.draft." + (id ?? "new");
-const pendingKey = (id: string) => "roppo.chat.pending." + id;
-function savedPending(
-  id: string | null,
-): { text: string; id: string; conversationId: string;attachments?:string[];quote?:ChatQuote } | null {
-  try {
-    const value = id ? JSON.parse(read(pendingKey(id), "null")) : null;
-    return value &&
-      typeof value.text === "string" &&
-      typeof value.id === "string" &&
-      value.conversationId === id
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
-}
 const quoteKey=(id:string|null)=>"roppo.chat.draft.quote."+(id??"new");
 function savedQuote(id:string|null):DraftQuote|null {
   try{return JSON.parse(read(quoteKey(id),'null'))}catch{return null}
 }
 const quoteReference=(quote:DraftQuote|null):ChatQuote|undefined=>quote?{messageId:quote.messageId,...(quote.excerpt?{excerpt:quote.excerpt}:{})}:undefined;
 class ApiError extends Error {
-  constructor(readonly code: string) {
+  constructor(readonly code: string, readonly status?:number) {
     super(code);
   }
 }
@@ -160,7 +133,7 @@ async function api<T>(
     throw new ApiError("login_required");
   }
   const result = await response.json();
-  if (!response.ok) throw new ApiError(result.code ?? "request_failed");
+  if (!response.ok) throw new ApiError(result.code ?? "request_failed",response.status);
   return result;
 }
 const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
@@ -276,6 +249,27 @@ function UserMessage() {
       <WorkflowCards anchor={id}/>
     </>
   );
+}
+function OutgoingBubble({message,retry,edit,draftQuoted}:{message:OutgoingMessage;retry:()=>void;edit:()=>void;draftQuoted:boolean}){
+  const {L}=useUI();
+  const canEdit=useAuiState(s=>!s.composer.text.trim()&&!s.composer.attachments.length);
+  const {stage,input,files,quote,createdAt}=message;
+  const waiting=stage==='slow'||stage==='unconfirmed';
+  const status=stage==='sending'?L('Sending…','发送中…'):
+    waiting?L('Delivery not confirmed yet.','还未确认送达。'):
+    stage==='rejected'?L('Message not sent. Your draft is saved.','发送失败，草稿已保留。'):'';
+  return <div className="message user-message" data-outgoing={stage}>
+    <QuotedMessage quote={quote??undefined}/>
+    <div className="message-line"><div className="message-surface">
+      {!!files.length&&<div className="message-attachments">{files.map(file=><span key={file.id} className="chat-attachment"><FileText size={22}/><span className="attachment-info"><strong>{file.name}</strong></span></span>)}</div>}
+      {input.text&&<div className="user-bubble">{input.text}</div>}
+    </div></div>
+    {status&&<div className="chat-send-status"><span role="status">{status}</span>
+      {waiting&&<button type="button" className="text-button" onClick={retry}>{L('Retry send','重试')}</button>}
+      {stage==='rejected'&&<button type="button" className="text-button" disabled={!canEdit||draftQuoted} onClick={edit}>{L('Edit message','编辑消息')}</button>}
+    </div>}
+    <Timestamp at={createdAt}/>
+  </div>;
 }
 function UserQuote(){const quote=useAuiState(s=>s.message.metadata.custom?.quote) as ChatQuoteView|undefined;return <QuotedMessage quote={quote}/>}
 function ComposerAttachment(){const {L}=useUI();return <DraftAttachment L={L}/>}
@@ -421,6 +415,27 @@ function App() {
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
     [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>(),
     [ready, setReady] = useState<Ready | null>(null);
+  const spaceVersion=useRef(0);
+  const currentId=useRef(id);currentId.current=id;
+  const sendTransport=useMemo<Parameters<typeof useMessageSend>[0]>(()=>({
+    open:async signal=>{
+      const {conversation}=await api<ChatSpace>('/space',{},'POST',signal);
+      if(!conversation)throw new ApiError('conversation_missing');
+      if(!signal.aborted)handoffCursor.current={id:conversation.id,sequence:conversation.sequence};
+      return conversation.id;
+    },
+    post:(target,input,signal)=>api('/conversations/'+target+'/messages',input,'POST',signal),
+    rejection:error=>error instanceof ApiError&&error.status&&error.status>=400&&error.status<500&&![408,429].includes(error.status)?error.code:undefined,
+  }),[]);
+  const adoptConversation=useCallback((target:string)=>{
+    if(currentId.current)return;
+    carryInitialDraft(target);
+    spaceVersion.current++;
+    setId(current=>current??target);
+  },[]);
+  const sends=useMessageSend(sendTransport,adoptConversation);
+  const {recoverInitial,reset:resetSends}=sends;
+  const lastReset=useRef(read('roppo.chat.reset'));
   const [navExpanded, setNavExpanded] = useState(read("roppo.navigation.expanded") !== "false");
   useEffect(() => write("roppo.navigation.expanded", String(navExpanded)), [navExpanded]);
   const [lang, setLang] = useState<Language>(
@@ -431,7 +446,6 @@ function App() {
     (en: string, zh: string) => (lang === "zh-CN" ? zh : en),
     [lang],
   );
-  const spaceVersion=useRef(0);
   const saveApprovalMode = async (mode: ChatSpace["approvalMode"]) => {
     const saved = await spaceRequest({approvalMode: mode}, "PATCH");
     spaceVersion.current++;
@@ -439,10 +453,17 @@ function App() {
   };
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
-    if(space.cleanup && read("roppo.chat.reset") !== space.cleanup.id){clearChatDrafts();write("roppo.chat.reset",space.cleanup.id)}
+    if(space.cleanup && lastReset.current!==space.cleanup.id){
+      lastReset.current=space.cleanup.id;resetSends();
+      if(read('roppo.chat.reset')!==space.cleanup.id){clearChatDrafts();write('roppo.chat.reset',space.cleanup.id)}
+    }
     const linked=location.pathname==="/chat" ? chatLocation(location.hash) : undefined;
+    if(!linked?.conversation&&space.conversation){
+      recoverInitial(space.conversation.id);
+      if(!currentId.current)carryInitialDraft(space.conversation.id);
+    }
     setId(linked?.conversation || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
-  }, []);
+  }, [recoverInitial,resetSends]);
   useEffect(()=>{const change=()=>void refreshList();window.addEventListener('roppo:chat-space',change);return()=>window.removeEventListener('roppo:chat-space',change)},[refreshList]);
   const navigate = useCallback((next: string | null) => {
     setId(next);
@@ -557,6 +578,7 @@ function App() {
       <Chat
         handoffCursor={handoffCursor}
         arrivals={chatArrivals}
+        sends={sends}
         key={id ?? "new"}
         {...{
           id,
@@ -584,6 +606,7 @@ function App() {
 type ChatProps = {
   handoffCursor:HandoffCursor;
   arrivals: React.RefObject<Arrivals>;
+  sends: ReturnType<typeof useMessageSend>;
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
@@ -672,6 +695,10 @@ function Chat(p: ChatProps) {
   },[route]);
   const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
   const [panelExpanded, setPanelExpanded] = useState(false);
+  const sessionView = useMemo(() => panel && !configuring ? { overview, expanded:panelExpanded, cards:sidebarCards, tab:teamTab } : null,
+    [panel, configuring, overview, panelExpanded, sidebarCards, teamTab]);
+  const sessionPresence = usePanelPresence(sessionView);
+  const displayedSession = sessionPresence.view;
   const [pickerRequest,setPickerRequest]=useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
@@ -746,7 +773,6 @@ function Chat(p: ChatProps) {
     [loading, setLoading] = useState(!!id),
     [error, setError] = useState(""),
     [connected, setConnected] = useState(true),
-    [sending, setSending] = useState(false),
     [menu, setMenu] = useState(false),
     [selectedAgent, setSelectedAgent] = useState("router"),
     [panelOverlay, setPanelOverlay] = useState(false),
@@ -756,19 +782,16 @@ function Chat(p: ChatProps) {
   const alive = useRef(true),
     fetchVersion = useRef(0),
     messagesRef = useRef<Snapshot["messages"]>([]),
-    pending = useRef<{
-      text: string;
-      id: string;
-      conversationId: string;
-      attachments?:string[];
-      quote?:ChatQuote;
-    } | null>(savedPending(id)),
+    restoredPending = useRef<ReturnType<typeof savedPending>>(null),
     bodyRef = useRef<HTMLDivElement>(null),
     threadRef = useRef<HTMLDivElement>(null),
     panelOpener = useRef<HTMLElement|null>(null),
     teamButton = useRef<HTMLButtonElement>(null),
     menuButton = useRef<HTMLButtonElement>(null);
-  const [quote,setQuote]=useState<DraftQuote|null>(()=>savedQuote(id)),[around,setAround]=useState<string>();
+  const [quote,setQuote]=useState<DraftQuote|null>(()=>{
+    const saved=savedPending(id),draft=read(draftKey(id));
+    return savedQuote(id)??(saved&&!p.sends.has(saved.id)&&(!draft||draft.trim()===saved.text)?saved.draftQuote??null:null);
+  }),[around,setAround]=useState<string>();
   const locateAfterLoad=useRef<{messageId:string;workflowId?:string}|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
   const queuedEnter=useRef<string|null>(null);
   const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
@@ -815,6 +838,13 @@ function Chat(p: ChatProps) {
   const selected=participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter);
   const readonly = selected.kind === "worker";
   const participantFilter = readonly ? selected.id : undefined;
+  const {confirm,has,hasAttachment,reset:resetSends}=p.sends;
+  const outgoing=p.sends.messages.filter(m=>(m.conversationId===id||(!m.conversationId&&!requestedItem?.conversation))&&
+    !snapshot?.messages.some(message=>message.clientMessageId===m.id));
+  const localMessages=readonly||around?[]:outgoing;
+  const outstanding=outgoing.find(m=>m.stage!=='accepted');
+  const sending=!!outstanding;
+  const accepted=outgoing.findLast(m=>m.stage==='accepted')?.id;
   const handoff=useHandoffPlayer(p.handoffCursor,id,snapshot,!configuring&&!around,participantFilter);
   const companionActor=handoff.event?.to??handoff.holder??selected;
   const companionWorker=companionActor.kind==="worker"?companionActor.id:undefined;
@@ -832,6 +862,7 @@ function Chat(p: ChatProps) {
       loadingAttachments ||
       attachmentBlocked ||
       sending;
+  const welcome=!readonly&&!loading&&!snapshot?.messages.length&&!localMessages.length&&!running;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
     routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext);
@@ -876,13 +907,24 @@ function Chat(p: ChatProps) {
     });
     setLoading(false);
     setError(code=>code==='sent_refresh_failed'?'':code);
+    const received=new Set(messages.flatMap(m=>m.clientMessageId?[m.clientMessageId]:[]));
+    confirm(id,received);
     const saved = savedPending(id);
-    if (saved && messages.some((m) => m.clientMessageId === saved.id)) {
-      write(pendingKey(id), "null");
+    if (saved && received.has(saved.id)) {
+      forgetPending(id,saved.id);
       if (read(draftKey(id)) === saved.text) write(draftKey(id), "");
     }
-  }, [id, participantFilter, around]);
+  }, [id, participantFilter, around, confirm]);
   const refreshCurrent=useRef(refresh);refreshCurrent.current=refresh;
+  useEffect(()=>{
+    if(!id||!accepted||readonly||around)return;
+    const controller=new AbortController();
+    const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(5000)]);
+    void refreshCurrent.current(signal).catch(()=>{
+      if(alive.current&&!controller.signal.aborted)setError('sent_refresh_failed');
+    });
+    return ()=>controller.abort();
+  },[id,accepted,readonly,around]);
   useEffect(() => {
     alive.current = true;
     messagesRef.current=[];setLoading(!!id);setSnapshot(s=>s?{...s,messages:[]}:s);
@@ -907,7 +949,8 @@ function Chat(p: ChatProps) {
     const reset = () => {
       stop();
       clearChatDrafts();
-      pending.current = null;
+      resetSends();
+      restoredPending.current = null;
       window.dispatchEvent(new Event("roppo:chat-space"));
     };
     const load = async () => {
@@ -989,7 +1032,7 @@ function Chat(p: ChatProps) {
       window.removeEventListener("online", resume);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [id, refresh]);
+  }, [id, refresh, resetSends]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
@@ -1008,7 +1051,7 @@ function Chat(p: ChatProps) {
   }
 
   const runtime = useExternalStoreRuntime({
-    isRunning: !readonly && (!!reply || sending),
+    isRunning: !readonly && !!reply,
     isLoading: loading,
     isSendDisabled: disabled,
     adapters:{attachments:attachmentAdapter},
@@ -1047,76 +1090,17 @@ function Chat(p: ChatProps) {
         .map((c) => c.text)
         .join("\n")
         .trim();
-      const attachments=message.attachments?.map(a=>a.id)??[],sentQuote=quoteReference(quote);
+      const files=message.attachments??[],attachments=files.map(a=>a.id),sentQuote=quoteCurrent.current;
       if ((!text&&!attachments.length) || sending || readonly) return;
-      setSending(true);
+      if(!p.sends.begin({
+        conversationId:id??uploadConversationId.current,files,quote:sentQuote,
+        input:{text,attachments,quote:quoteReference(sentQuote),locale:navigator.language||lang,
+          timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,openingLocale:lang},
+      }))return;
       setError("");
-      let target = id;
-      let submittedId:string|undefined,accepted=false;
-      try {
-        if (!target) {
-          target = await ensureConversation();
-        }
-        if (
-          !pending.current ||
-          pending.current.text !== text ||
-          JSON.stringify(pending.current.quote??null)!==JSON.stringify(sentQuote??null) ||
-          JSON.stringify(pending.current.attachments??[])!==JSON.stringify(attachments) ||
-          pending.current.conversationId !== target
-        )
-          pending.current = {
-            text,
-            id: crypto.randomUUID(),
-            conversationId: target,
-            attachments,
-            quote:sentQuote,
-          };
-        write(pendingKey(target), JSON.stringify(pending.current));
-        submittedId=pending.current.id;
-        write(draftKey(target), text);
-        if (!id && alive.current) {
-          const url = new URL(location.href);
-          url.search = "";
-          history.replaceState(null, "", url);
-        }
-        if (arrivals.current.conversationId !== target) arrivals.current = {conversationId:target,since:Date.now(),seen:new Set()};
-        await api("/conversations/" + target + "/messages", {
-          text,
-          attachments,
-          quote:sentQuote,
-          clientMessageId: pending.current.id,
-          locale: navigator.language || lang,
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          openingLocale: lang,
-        });
-        accepted=true;
-        if(JSON.stringify(quoteReference(quoteCurrent.current)??null)===JSON.stringify(sentQuote??null))saveQuote(null);
-        motion.latest();
-        if(around)setAround(undefined);
-        pending.current = null;
-        write(pendingKey(target), "null");
-        const nextDraft=runtime.thread.composer.getState().text;
-        write(draftKey(id),nextDraft);
-        write(draftKey(target),nextDraft);
-        if(target!==id)await refreshList();
-        if (alive.current) {
-          if (target !== id) navigate(target);
-          else if(!around)await refreshCurrent.current();
-        }
-      } catch (e) {
-        // Admission and refreshing the view are separate: an acknowledged send is no longer a draft.
-        if(accepted){if(alive.current)setError('sent_refresh_failed');return;}
-        if(submittedId&&pending.current?.id!==submittedId)return;
-        fail(e);
-        write(draftKey(target ?? id), text);
-        if (alive.current) {
-          runtime.thread.composer.setText(text);
-          for(const attachment of message.attachments??[])await runtime.thread.composer.addAttachment(attachment);
-          if (target && target !== id) navigate(target);
-        }
-      } finally {
-        if (alive.current) setSending(false);
-      }
+      if(sentQuote)saveQuote(null);
+      if(around)setAround(undefined);
+      motion.latest();
     },
     hasEarlier: snapshot?.hasMore ?? false,
     onLoadEarlier: async () => {
@@ -1138,6 +1122,17 @@ function Chat(p: ChatProps) {
       setSnapshot((s) => (s ? { ...s, messages, approvals:[...new Map([...data.approvals,...s.approvals].map(a=>[a.id,a])).values()], decisions:[...new Map([...data.decisions,...s.decisions].map(q=>[q.id,q])).values()], hasMore: data.hasMore } : s));
     },
   });
+  const editOutgoing=async(messageId:string)=>{
+    const composer=runtime.thread.composer;
+    if(composer.getState().text.trim()||composer.getState().attachments.length||quoteCurrent.current)return;
+    const message=p.sends.edit(messageId);
+    if(!message)return;
+    composer.setText(message.input.text);
+    saveQuote(message.quote);
+    for(const file of message.files)await composer.addAttachment(file);
+    if(message.error)setError(message.error);
+    threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus();
+  };
   useEffect(()=>{
     if(disabled||queuedEnter.current===null)return;
     const requested=queuedEnter.current;queuedEnter.current=null;
@@ -1147,20 +1142,20 @@ function Chat(p: ChatProps) {
     if(!id)return;
     let active=true;
     api<{attachments:ChatAttachment[]}>("/conversations/"+id+"/attachments").then(async result=>{
-      for(const file of result.attachments)if(active&&!runtime.thread.composer.getState().attachments.some(a=>a.id===file.id))await runtime.thread.composer.addAttachment(attachmentParts(file));
+      for(const file of result.attachments)if(active&&!hasAttachment(file.id)&&!runtime.thread.composer.getState().attachments.some(a=>a.id===file.id))await runtime.thread.composer.addAttachment(attachmentParts(file));
     }).catch(fail).finally(()=>{if(active)setLoadingAttachments(false)});
     return()=>{active=false};
-  },[runtime,id]);
+  },[runtime,id,hasAttachment]);
   useEffect(() => {
-    runtime.thread.composer.setText(
-      read(draftKey(id)) || savedPending(id)?.text || "",
-    );
+    const saved=savedPending(id);
+    restoredPending.current=saved&&!has(saved.id)?saved:null;
+    runtime.thread.composer.setText(read(draftKey(id))||restoredPending.current?.text||'');
     return runtime.thread.composer.subscribe(() => {
       const composer=runtime.thread.composer.getState(),text=composer.text;write(draftKey(id),text);
       setAttachmentBlocked(composer.attachments.some(a=>a.status.type==='running'||a.status.type==='incomplete'));
       if(uploadConversationId.current&&uploadConversationId.current!==id)write(draftKey(uploadConversationId.current),text);
     });
-  }, [runtime, id]);
+  }, [runtime, id, has]);
   useEffect(() => {
     const media = matchMedia("(max-width:800px)");
     const change = () => {
@@ -1171,12 +1166,12 @@ function Chat(p: ChatProps) {
     return () => media.removeEventListener("change", change);
   }, []);
   useEffect(() => {
-    const saved = pending.current;
+    const saved = restoredPending.current;
     if (
       saved &&
       snapshot?.messages.some((m) => m.clientMessageId === saved.id)
     ) {
-      pending.current = null;
+      restoredPending.current = null;
       if(JSON.stringify(quoteReference(quote)??null)===JSON.stringify(saved.quote??null))saveQuote(null);
       for(const [index,file] of [...runtime.thread.composer.getState().attachments.entries()].reverse())
         if(saved.attachments?.includes(file.id))void runtime.thread.composer.getAttachmentByIndex(index).remove();
@@ -1210,13 +1205,10 @@ function Chat(p: ChatProps) {
   const current = snapshot?.conversation;
   const pendingCards=snapshot?.conversation.id===id?(snapshot?.pendingCards??[]):[];
   const trayVisible=trayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
-  const [trayRetained,setTrayRetained]=useState(false);
-  useEffect(()=>{
-    if(trayVisible){setTrayRetained(true);return}
-    if(matchMedia('(prefers-reduced-motion: reduce)').matches){setTrayRetained(false);return}
-    const timer=setTimeout(()=>setTrayRetained(false),170);
-    return ()=>clearTimeout(timer);
-  },[trayVisible]);
+  const trayView = useMemo(() => trayVisible ? { linkedItem, linkVisit } : null, [trayVisible, linkedItem, linkVisit]);
+  const trayPresence = usePanelPresence<NonNullable<typeof trayView>, HTMLDivElement>(trayView, '#pending-tray');
+  const displayedTray = trayPresence.view;
+  const displayedPendingItem = displayedTray?.linkedItem;
   useEffect(()=>{
     if(linkedItem){
       changeTray(true);
@@ -1327,7 +1319,7 @@ function Chat(p: ChatProps) {
           className={
             "chat-shell studio-shell" +
             (menu ? " menu-open" : "") +
-            (panel ? " team-open" : "") +
+            (displayedSession ? " team-open" : "") +
             (configuring && navExpanded ? " functions-expanded" : "") +
             (configuring ? " management-mode" : " floating-chat") +
             (display === "group" ? " conversation-list-hidden" : "")
@@ -1397,7 +1389,7 @@ function Chat(p: ChatProps) {
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
                 <ChatCompanion actor={companionActor} event={handoff.event} onFinish={handoff.finish}
-                  status={companionStatus(snapshot,L,{participantId:companionWorker,connected,sending:sending&&!companionWorker,loading})} L={L}
+                  status={companionStatus(snapshot,L,{participantId:companionWorker,connected,loading:loading&&!localMessages.length})} L={L}
                   onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
                 <div className="chat-float chat-float-end">
                   <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
@@ -1417,11 +1409,12 @@ function Chat(p: ChatProps) {
                     <PanelRight size={19} />
                   </button>
                 </div>
-                {(trayVisible||trayRetained)&&<div className="tray-presence" data-closing={!trayVisible||undefined} inert={!trayVisible} aria-hidden={!trayVisible||undefined}>
+                {displayedTray&&<div ref={trayPresence.ref} className="tray-presence" data-closing={trayPresence.closing||undefined}
+                  inert={trayPresence.closing} aria-hidden={trayPresence.closing||undefined}>
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close pending panel','关闭待处理面板')} onClick={closeTray}/>
-                  <PendingTray key={(id??'')+':'+linkVisit} read={readHistory} clearSelection={clearSelection}
-                  linkedAnswer={!!linkedItem && (linkedItem.startsWith('decision:') || !!snapshot?.decisions.some(q=>q.id===linkedItem) || !!snapshot?.approvals.some(a=>a.id===linkedItem && a.method==='item/tool/requestUserInput'))}
-                  cards={pendingCards} selectedId={linkedItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
+                  <PendingTray key={(id??'')+':'+displayedTray.linkVisit} read={readHistory} clearSelection={clearSelection}
+                  linkedAnswer={!!displayedPendingItem && (displayedPendingItem.startsWith('decision:') || !!snapshot?.decisions.some(q=>q.id===displayedPendingItem) || !!snapshot?.approvals.some(a=>a.id===displayedPendingItem && a.method==='item/tool/requestUserInput'))}
+                  cards={pendingCards} selectedId={displayedPendingItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
                   changeTray(false);
                   if(panel && (panelOverlay || panelExpanded))void choosePanel(null);
                   if('messageId' in card)void locateMessage(card.messageId,card.id);
@@ -1436,7 +1429,7 @@ function Chat(p: ChatProps) {
                   }}
                   ref={threadRef}
                   className="thread"
-                  data-welcome={!readonly && !loading && !snapshot?.messages.length && !sending && !running || undefined}
+                  data-welcome={welcome || undefined}
                   inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
                 >
                   <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
@@ -1444,23 +1437,25 @@ function Chat(p: ChatProps) {
                       <ThreadPrimitive.LoadEarlier className="load-earlier">
                         {L("Load earlier messages", "加载更早的消息")}
                       </ThreadPrimitive.LoadEarlier>
-                      {loading ? (
+                      {loading && !localMessages.length ? (
                         <div className="loading" role="status">
                           <LoaderCircle size={22} className="spin" />
                           {L("Loading conversation", "正在加载会话")}
                         </div>
                       ) : null}
-                      <ThreadPrimitive.Empty>
+                      {!localMessages.length&&<ThreadPrimitive.Empty>
                         <div className="empty-state">
                           {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:null}
                           <h1>
                             {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
                           </h1>
                         </div>
-                      </ThreadPrimitive.Empty>
+                      </ThreadPrimitive.Empty>}
                       <ThreadPrimitive.Messages
                         components={{ UserMessage, AssistantMessage }}
                       />
+                      {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftQuoted={!!quote}
+                        retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
                       {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
                         <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
@@ -1491,7 +1486,7 @@ function Chat(p: ChatProps) {
                     {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                       <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                       <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                      <ComposerControls visible={!configuring} L={L} sending={sending} router={currentRouter.label}
+                      <ComposerControls visible={!configuring} L={L} sending={outstanding?.stage==='sending'} router={currentRouter.label}
                         model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
                         onContext={() => revealCard('context')} saveMode={p.saveApprovalMode}
@@ -1502,7 +1497,7 @@ function Chat(p: ChatProps) {
                         }}/>
                     </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                   </div>
-                  {!readonly && !loading && !snapshot?.messages.length && !sending && !running ? <div className="starter-actions">
+                  {welcome ? <div className="starter-actions">
                     {[
                       {Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
                       {Icon:UsersRound,label:L("Meet the team","查看分工"),text:L("Which Agents are in this workspace and what can they do?","我的团队里有哪些 Agent？各自负责什么？")},
@@ -1511,19 +1506,20 @@ function Chat(p: ChatProps) {
                   </div>:null}
                 </ThreadPrimitive.Root>
               </div>
-              {panel && <aside id="session-panel" aria-label={L('Session panel', '会话面板')}
-                className={'session-panel '+(overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(panelExpanded?' expanded':''))}>
+              {displayedSession && <aside ref={sessionPresence.ref} id="session-panel" aria-label={L('Session panel', '会话面板')}
+                data-closing={sessionPresence.closing||undefined} inert={sessionPresence.closing} aria-hidden={sessionPresence.closing||undefined}
+                className={'session-panel '+(displayedSession.overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(displayedSession.expanded?' expanded':''))}>
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>
-                {overview && <TeamOverview snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
-                  tab={sidebarCards.revealing ? 'activity' : teamTab} focusOnOpen={!sidebarCards.revealing}
+                {displayedSession.overview && <TeamOverview active={!sessionPresence.closing} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                  tab={displayedSession.cards.revealing ? 'activity' : displayedSession.tab} focusOnOpen={!displayedSession.cards.revealing}
                   setTab={tab => {
                     if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');
                     setTeamTab(tab);
                   }}
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
-                  cards={!configuring && !readonly && sidebarCards.items.length > 0 && sidebarCards.items.map(card =>
+                  cards={!configuring && !readonly && displayedSession.cards.items.length > 0 && displayedSession.cards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
-                      current={usage} L={L} focusOnReveal={panelOverlay && sidebarCards.revealing}
+                      current={usage} L={L} focusOnReveal={panelOverlay && displayedSession.cards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
                   locateMessage={messageId=>{if(panelOverlay)void choosePanel(null);requestAnimationFrame(()=>void locateMessage(messageId))}}
@@ -1532,7 +1528,7 @@ function Chat(p: ChatProps) {
                   }}
                 />}
                 <ResourceWorkspace
-                  hidden={overview}
+                  hidden={displayedSession.overview}
                   state={resources}
                   browser={id && !configuring ? {conversationId:id, requestedSession:browserRequest,
                     requestedUrl:pendingWebsite, onUrlConsumed:consumeWebsite} : undefined}
@@ -1541,7 +1537,7 @@ function Chat(p: ChatProps) {
                     if (kind === 'activity') setTeamTab('activity');
                     void choosePanel(kind, url);
                   }}
-                  expanded={panelExpanded}
+                  expanded={displayedSession.expanded}
                   onExpand={() => setPanelExpanded(!panelExpanded)}
                   onClose={closePanel}
                   L={L}

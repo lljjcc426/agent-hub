@@ -40,6 +40,9 @@ html,body,#root{height:100%;overflow:hidden}
 @keyframes chat-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .message-time{font-size:11px;line-height:1.5;color:var(--c-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .user-message>.message-time{padding-inline:4px}
+.chat-send-status{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px 10px;padding-inline:4px;color:var(--c-muted);font-size:13px;line-height:1.5}
+.chat-send-status button{text-decoration:underline;text-underline-offset:3px}
+.chat-send-status button:disabled{opacity:.5}
 .message-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;line-height:1.5;min-width:0}
 .message-status svg{flex-shrink:0;width:14px;height:14px}
 .assistant-identity{flex-wrap:wrap;row-gap:4px}

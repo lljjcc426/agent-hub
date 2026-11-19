@@ -107,6 +107,7 @@
   min-width: 0;
   min-height: 0;
 }
+.floating-chat .conversation-body { background: var(--team-paper); }
 .floating-chat .conversation-body > .session-panel {
   z-index: 10;
   min-width: 0;
@@ -115,6 +116,21 @@
   border-radius: 18px;
   overflow: hidden;
   box-shadow: var(--float-shadow);
+  background: var(--team-paper);
+  animation: none;
+  transition: transform 240ms var(--team-ease), opacity 210ms ease-out;
+}
+.floating-chat .conversation-body > .session-panel[data-closing] {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(28px);
+  transition-timing-function: ease-in;
+}
+@starting-style {
+  .floating-chat .conversation-body > .session-panel { opacity: 0; transform: translateX(20px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floating-chat .conversation-body > .session-panel { transition: none; }
 }
 .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
   position: relative;

@@ -107,9 +107,16 @@ export async function codexInventory(options:{command:string;args?:string[];envi
         for(const group of r.data){
           if(group.errors?.length)warnings.push(source+' · Skills')
           for(const s of group.skills){if(typeof s.path!=='string'||typeof s.name!=='string')continue
-            let path=s.path;try{path=realpathSync(path)}catch{/* A remote CLI may only advertise metadata. */}
-            add(path,{kind:'skill',name:s.name,status:s.enabled?'cli':'disabled',description:s.description,
-              facts:[s.pluginId,s.scope].filter(Boolean),hasContent:true,content:()=>skillText(s.path)})
+            let file:string|undefined
+            try{file=realpathSync(s.path)}catch{/* A remote CLI may only advertise metadata. */}
+            const path=file??s.path
+            const prior=entries.get(identifier(source,'skill',path))
+            const project=typeof group.cwd==='string'?group.cwd:undefined
+            const skillProjects=(project||s.scope==='repo')&&(!prior||prior.skillProjects)
+              ?[...new Set([...(prior?.skillProjects??[]),...(s.enabled&&project?[project]:[])])]:undefined
+            add(path,{kind:'skill',name:s.name,status:s.enabled||prior?.status==='cli'?'cli':'disabled',
+              description:typeof s.description==='string'?s.description:undefined,
+              facts:[s.pluginId,s.scope].filter(Boolean),hasContent:true,content:()=>skillText(s.path),skillFile:file,skillProjects})
           }
         }
       }),

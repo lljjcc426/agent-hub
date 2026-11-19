@@ -565,6 +565,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       const query=new URL(req.url!,'http://localhost').searchParams
       if(path==='/api/chat/memory'&&req.method==='GET'){send(res,200,memoryWorkspace(runtime,owner));return}
       if(path==='/api/chat/memory'&&req.method==='POST'){send(res,200,await changeMemoryWorkspace(runtime,owner,await body(req)));return}
+      if(path==='/api/chat/skills'&&req.method==='GET'){
+        const conversation=query.get('conversation')
+        const project=runtime.chat.skillProject(owner,conversation===null?undefined:z.string().uuid().parse(conversation))
+        send(res,200,library.chatSkills(runtime,endpoint,project));return
+      }
       if(path==='/api/chat/readiness'&&req.method==='GET'){send(res,200,{...runtime.chat.readiness(),...(options.configurationPreview?{ready:false,code:'preview_restricted'}:{}),user:account.status(req).user??null});return}
       if(path==='/api/chat/commit-trail'&&req.method==='GET'){
         const input=z.object({conversation:z.string().uuid().optional(),repository:z.string().max(250).optional(),branch:z.string().max(300).optional()}).parse(Object.fromEntries(query))
@@ -688,8 +693,8 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,runtime.chat.react(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().max(messageCharacters),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(chatUploadLimits.maxFiles).optional(),clientMessageId:z.string().uuid(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
-          send(res,202,runtime.chat.send(id,owner,input));return
+          const input=z.object({text:z.string().trim().max(messageCharacters),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(chatUploadLimits.maxFiles).optional(),clientMessageId:z.string().uuid(),skillId:z.string().regex(/^[A-Za-z0-9_-]{28}$/).optional(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          send(res,202,runtime.chat.send(id,owner,input,(skillId,project)=>library.chatSkill(runtime,endpoint,project,skillId)));return
         }
         if(action==='cancel'&&req.method==='POST'){
           const input=z.object({runId:z.string().min(1).max(500)}).strict().parse(await body(req))

@@ -37,6 +37,7 @@ import {taskActivities,type ChatTask} from './chat-task-activity.ts'
 import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
 import {basename} from 'node:path'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
+import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
 export {ChatError} from './chat-errors.ts'
 
 interface Conversation {
@@ -47,13 +48,13 @@ interface Conversation {
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
-interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;skill?:ChatSkillRef;reactions?:string[];agentReactions?:AgentReaction[]}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
   | {kind:'file';id:string;createdAt:number;name:string;review:FileReview}
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
-interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
+interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -272,6 +273,10 @@ export class ChatSessions {
     return source?{source,actor:principal?.actor??source.allowedActors[0]!}:undefined
   }
   acceptsProjectSource(sourceId:string){return !!this.source(sourceId)}
+  skillProject(owner:string,id?:string){
+    return id?this.source(this.get(id,owner).sourceId)?.source.cwd:this.source()?.source.cwd
+  }
+  skillForTrigger(triggerId:string){return this.host.store.get<ChatRun>('chat-run',triggerId)?.skill}
   readiness(){
     const h=this.host
     let code='ready', backend:string|undefined, model:string|undefined
@@ -789,13 +794,16 @@ export class ChatSessions {
       this.changed(c.id)
     })
   }
-  send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string;timeZone?:string;openingLocale?:'zh-CN'|'en';attachments?:string[];quote?:ChatQuote}){
+  send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string;timeZone?:string;openingLocale?:'zh-CN'|'en';attachments?:string[];quote?:ChatQuote;skillId?:string},
+    resolveSkill?:(skillId:string,project:string)=>SelectedChatSkill|undefined){
     return this.host.store.atomic(()=>{
       const c=this.get(id,owner),text=input.text.trim()
       const previous=this.rows<ChatRun>('chat-run','conversationId',id).find(r=>r.clientMessageId===input.clientMessageId)
       if(previous){
         const message=this.host.store.get<Message>('chat-message','user:'+previous.id)
-        if(message?.text!==text||JSON.stringify(message.attachments?.map(a=>a.id)??[])!==JSON.stringify(input.attachments??[])||message.quote?.messageId!==input.quote?.messageId||message.quote?.excerpt!==input.quote?.excerpt)throw new ChatError('message_conflict','Message identity was reused with different content.')
+        if(message?.text!==text||JSON.stringify(message.attachments?.map(a=>a.id)??[])!==JSON.stringify(input.attachments??[])||
+          message.quote?.messageId!==input.quote?.messageId||message.quote?.excerpt!==input.quote?.excerpt||message.skill?.id!==input.skillId)
+          throw new ChatError('message_conflict','Message identity was reused with different content.')
         return {runId:previous.id,duplicate:true}
       }
       const sourceMessage=input.quote&&this.sourceMessage(c,input.quote.messageId)
@@ -807,16 +815,19 @@ export class ChatSessions {
       const source=this.host.sources.get(c.sourceId)?.config
       if(!source?.enabled||source.kind!=='local'||!source.allowedActors.includes(c.actor))throw new ChatError('source_unavailable','This conversation source is no longer available.')
       if(c.project&&(!this.source(c.sourceId)||realpathSync(source.cwd)!==c.project))throw new ChatError('project_changed','This project binding has changed.',409)
+      const skill=input.skillId?resolveSkill?.(input.skillId,source.cwd):undefined
+      if(input.skillId&&!skill)throw new ChatError('skill_unavailable','This skill is no longer available for this conversation.',409)
       this.bindEntry(c)
       const eventId='chat:'+id+':'+input.clientMessageId
       const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text:text||attachments.map(a=>a.name).join('\n'),addressed:true,...(attachments.length?{attachments:attachments.map(a=>({id:'asset/'+a.id,name:a.name,mimeType:a.mimeType}))}:{})}) as {triggerId:string}
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
-      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now()}
+      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now(),...(skill?{skill}:{})}
       this.host.store.put('chat-run',run.id,run)
       this.uploads.bind(attachments.map(a=>a.id),run.id)
-      this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),...(attachments.length?{attachments}:{})})
+      this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),
+        ...(attachments.length?{attachments}:{}),...(skill?{skill:{id:skill.id,name:skill.name}}:{})})
       if(text&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
         const questionRun=this.host.store.get<ChatRun>('chat-run',sourceMessage.runId)
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)

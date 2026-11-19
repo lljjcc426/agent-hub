@@ -1,7 +1,8 @@
-import { ArrowUpRight, Check, ChevronRight, CircleGauge, GitCommitHorizontal, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, Box, Check, ChevronRight, CircleGauge, GitCommitHorizontal, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { ChatSpace } from './chat-settings.tsx'
 import type { CurrentContext } from './context-card.tsx'
+import type { ChatSkill } from '../../src/chat-skills.ts'
 
 export type Localize = (en: string, zh: string) => string
 export const commands = [
@@ -23,8 +24,10 @@ export function approvalLabel(mode: Mode, L: Localize) {
   return mode === 'full' ? L('Full access', '无需审批') : L('Request approval', '请求批准')
 }
 
-export function CommandList({ items, active, slash, listId, uploadDisabled, mode, L, onHighlight, onChoose }: {
+export function CommandList({ items, skills, empty, active, slash, listId, uploadDisabled, mode, L, onHighlight, onChoose, onSkill }: {
   items: readonly (typeof commands)[number][]
+  skills: readonly ChatSkill[]
+  empty?: string
   active: number
   slash: boolean
   listId: string
@@ -33,6 +36,7 @@ export function CommandList({ items, active, slash, listId, uploadDisabled, mode
   L: Localize
   onHighlight: (index: number) => void
   onChoose: (command: ChatCommand) => void
+  onSkill: (skill: ChatSkill) => void
 }) {
   return <div id={listId} role={slash ? 'listbox' : 'menu'}
     aria-label={slash ? L('Chat commands', 'Chat 命令') : L('Chat actions', '对话操作')}>
@@ -47,6 +51,25 @@ export function CommandList({ items, active, slash, listId, uploadDisabled, mode
         {id !== 'attach' && id !== 'commits' && <ChevronRight size={13} className="palette-trailing"/>}
       </button>
     ))}
+    {!!skills.length && <div role="group" aria-label={L('Skills','技能')}>
+      <div className="palette-group-label" aria-hidden>{L('Skills','技能')}</div>
+      {skills.map((skill, position) => {
+        const index = items.length + position
+        return <button key={skill.id} id={listId + '-' + index} type="button" className="palette-row palette-skill"
+          role="option" aria-selected={index === active} tabIndex={-1}
+          aria-label={'/' + skill.name} aria-description={[skill.description, skill.source].filter(Boolean).join(' · ')}
+          onPointerMove={() => onHighlight(index)} onMouseDown={event => event.preventDefault()}
+          onClick={() => onSkill(skill)}>
+          <Box size={16}/>
+          <span className="palette-skill-details">
+            <strong title={skill.name}>/{skill.name}</strong>
+            {skill.description && <small title={skill.description}>{skill.description}</small>}
+          </span>
+          <small>{skill.source}</small>
+        </button>
+      })}
+    </div>}
+    {empty && <div className="palette-empty" role="status">{empty}</div>}
   </div>
 }
 

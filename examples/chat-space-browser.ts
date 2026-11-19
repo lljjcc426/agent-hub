@@ -5,7 +5,7 @@ import {join} from 'node:path'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 const root=process.env.CHAT_BROWSER_DIR!;mkdirSync(root,{recursive:true})
-const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'developer',label:'开发 Worker',backend:'codex'},{id:'reviewer',label:'复核 Worker',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,workspace:{mode:'source'},allowedActors:['alice']}]})
+const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},prompts:{skills:{'release-review':'报告必须分为结论、证据和待确认。'}},execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'developer',label:'开发 Worker',backend:'codex'},{id:'reviewer',label:'复核 Worker',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,workspace:{mode:'source'},allowedActors:['alice']}]})
 const h=new Runtime(config,{model:desktopChatFixture({async run(r){const threadId=r.threadId??crypto.randomUUID();r.onThread?.(threadId);r.onTurn?.(crypto.randomUUID());let result;
  if(r.role==='worker'){
    const reviewer=r.activity?.workerId==='reviewer'
@@ -20,6 +20,7 @@ const h=new Runtime(config,{model:desktopChatFixture({async run(r){const threadI
    }
    if(reviewer)writeFileSync(join(r.cwd,'review.md'),'# 复核记录\n检查完成。')
    result={...(reviewer?{files:['review.md']}:{}),state:'ready',summary:'已确认摘要按 Unicode 码点截断。',reply:'摘要截断已修改，A😀B 在限制三个字时保持完整。回归验证通过。',question:null,askedBy:null,handbacks:[]}}
+ else if(JSON.parse(r.input).selectedSkill?.instructions==='报告必须分为结论、证据和待确认。')result={reply:'结论：已核对。\n\n证据：发布清单。\n\n待确认：复核时间。'}
  else if(JSON.parse(r.input).trigger?.text==='你好')result={reply:'你好！'}
  else if(JSON.parse(r.input).kind==='user_message'){
    const reviewer=JSON.parse(r.input).trigger?.text?.includes('复核文件')
@@ -34,7 +35,7 @@ const h=new Runtime(config,{model:desktopChatFixture({async run(r){const threadI
    const tool=await r.onTool!('worker_manage',{action:'assign',revision:0,requestId:crypto.randomUUID(),id:reviewer?'reviewer':'developer',text:reviewer?'请交付复核文件。':JSON.parse(r.input).trigger?.text?.includes('第二项')?'第二项：检查目录结构。':'请修复摘要遇到 emoji 被截断的问题，并运行回归验证。'},crypto.randomUUID());if(!tool.success)throw Error(JSON.stringify(tool));result={reply:reviewer?'复核工作已安排。':'我会请开发 Worker 修复摘要截断，完成验证后给你结果。'}}
  else result={reply:'开发 Worker 已完成修复和回归验证，请验收。'};
  return {threadId,turnId:crypto.randomUUID(),text:JSON.stringify(result)}},async purge(){return {local:'verified',provider:'not_managed'}}},'我先核对摘要的截断规则，再请开发同事验证。')})
-const {serve}=await import('../src/server.ts'),host=await serve(h),authorization='Bearer '+readFileSync(host.tokenPath,'utf8').trim()
+const {serve}=await import('../src/server.ts'),host=await serve(h,{clientHome:join(root,'client-home')}),authorization='Bearer '+readFileSync(host.tokenPath,'utf8').trim()
 const setup=await fetch(host.url+'/account/setup',{method:'POST',headers:{authorization,'content-type':'application/json',origin:host.url},body:JSON.stringify({username:'chat-review',displayName:'对话验证',password:'isolated chat browser password',remember:false})});if(setup.status!==201)throw Error('setup failed')
 const cookie=setup.headers.get('set-cookie')!.split(';')[0]!
 const identity=await (await fetch(host.url+'/api/chat/readiness',{headers:{cookie}})).json() as {user:{id:string}}

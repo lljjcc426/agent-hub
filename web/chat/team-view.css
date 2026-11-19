@@ -1,11 +1,11 @@
 .conversation-body,.team-file-dialog {
   --team-paper:#fafafa;--team-surface:#fff;--team-ink:#1c1c1c;--team-muted:#656565;
-  --team-line:#d9d9d9;--team-fill:#ebebeb;--team-action:#262626;--team-on-action:#fff;
+  --team-line:#d9d9d9;--team-fill:#ebebeb;--team-user-bubble:#deebff;--team-action:#262626;--team-on-action:#fff;
   --team-ease:cubic-bezier(.22,.76,.22,1);
 }
 :root[data-theme=dark] :is(.conversation-body,.team-file-dialog) {
   --team-paper:#141414;--team-surface:#202020;--team-ink:#eee;--team-muted:#b2b2b2;
-  --team-line:#414141;--team-fill:#303030;--team-action:#e0e0e0;--team-on-action:#181818;
+  --team-line:#414141;--team-fill:#303030;--team-user-bubble:#203a58;--team-action:#e0e0e0;--team-on-action:#181818;
 }
 .conversation-body .thread,.team-drawer,.team-file-dialog {
   color:var(--team-ink);background:var(--team-paper);
@@ -16,10 +16,11 @@
 .conversation-body .assistant-identity {min-height:26px;gap:7px}
 .conversation-body .assistant-identity>.agent-portrait {position:static;width:25px;height:25px}
 .conversation-body .assistant-identity strong {font-size:14px}
-.conversation-body .assistant-identity time {margin-left:2px}
 .conversation-body .assistant-body {padding-inline-start:32px;max-width:680px}
 .conversation-body .assistant-body [data-message-body] {line-height:1.66}
-.conversation-body .user-bubble {padding:8px 14px;background:var(--team-fill);color:var(--team-ink);border-radius:15px 15px 5px 15px}
+.conversation-body :is(.user-bubble,.assistant-bubble) {padding:8px 14px;color:var(--team-ink)}
+.conversation-body .user-bubble {background:var(--team-user-bubble);border-radius:15px 15px 5px 15px}
+.conversation-body .assistant-bubble {background:var(--team-fill);border-radius:15px 15px 15px 5px}
 .conversation-body .message-time,.conversation-body .message-status {color:var(--team-muted)}
 .conversation-body .message-tool-activity {max-width:680px}
 .conversation-body .composer-area {background:var(--team-paper)}

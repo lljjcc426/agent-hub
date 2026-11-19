@@ -1,6 +1,7 @@
 import {useCallback,useEffect,useRef,useState} from 'react'
 import type {CompleteAttachment} from '@assistant-ui/react'
 import type {ChatQuote} from '../../src/chat-interactions.ts'
+import type {ChatSkillRef} from '../../src/chat-skills.ts'
 import type {DraftQuote} from './message-interactions.tsx'
 
 export function read(key:string,fallback=''){
@@ -10,14 +11,23 @@ export function write(key:string,value:string){
   try{localStorage.setItem(key,value)}catch{}
 }
 export const draftKey=(id:string|null)=>'roppo.chat.draft.'+(id??'new')
+export const skillDraftKey=(id:string|null)=>'roppo.chat.draft.skill.'+(id??'new')
+export function savedDraftSkill(id:string|null):ChatSkillRef|null {
+  try{
+    const value=JSON.parse(read(skillDraftKey(id),'null'))
+    return typeof value?.id==='string'&&typeof value.name==='string'?value:null
+  }catch{return null}
+}
 export function carryInitialDraft(id:string){
-  const text=read(draftKey(null))
-  if(!text||read(draftKey(id)))return
+  const text=read(draftKey(null)),skill=savedDraftSkill(null)
+  if((!text&&!skill)||read(draftKey(id))||savedDraftSkill(id))return
   write(draftKey(id),text)
   write(draftKey(null),'')
+  write(skillDraftKey(id),JSON.stringify(skill))
+  write(skillDraftKey(null),'null')
 }
 const pendingKey=(id:string|null)=>'roppo.chat.pending.'+(id??'new')
-type Pending={id:string;conversationId:string|null;text:string;attachments?:string[];quote?:ChatQuote;draftQuote?:DraftQuote}
+type Pending={id:string;conversationId:string|null;text:string;attachments?:string[];quote?:ChatQuote;draftQuote?:DraftQuote;skill?:ChatSkillRef}
 
 export function savedPending(id:string|null):Pending|null {
   try{
@@ -29,8 +39,8 @@ export function forgetPending(id:string|null,messageId:string){
   if(savedPending(id)?.id===messageId)write(pendingKey(id),'null')
 }
 
-type MessageInput={text:string;attachments:string[];quote?:ChatQuote;locale:string;timeZone:string;openingLocale:'en'|'zh-CN'}
-type Draft={input:MessageInput;files:readonly CompleteAttachment[];quote:DraftQuote|null;conversationId:string|null}
+type MessageInput={text:string;attachments:string[];quote?:ChatQuote;skillId?:string;locale:string;timeZone:string;openingLocale:'en'|'zh-CN'}
+type Draft={input:MessageInput;files:readonly CompleteAttachment[];quote:DraftQuote|null;skill?:ChatSkillRef;conversationId:string|null}
 export type OutgoingMessage=Draft&{id:string;createdAt:number;stage:'initial'|'sending'|'slow'|'unconfirmed'|'rejected'|'accepted';error?:string}
 type Transport={
   open:(signal:AbortSignal)=>Promise<string>
@@ -80,7 +90,7 @@ export function useMessageSend(transport:Transport,adopt:(id:string)=>void){
       publish()
     }
     const remember=()=>write(pendingKey(message.conversationId),JSON.stringify({id,conversationId:message.conversationId,
-      text:input.text,attachments:input.attachments,quote:input.quote,draftQuote:message.quote??undefined} satisfies Pending))
+      text:input.text,attachments:input.attachments,quote:input.quote,draftQuote:message.quote??undefined,skill:message.skill} satisfies Pending))
     update({stage:'initial',error:undefined})
     remember()
     const sending=setTimeout(()=>{if(!signal.aborted)update({stage:'sending'})},2000)
@@ -112,7 +122,7 @@ export function useMessageSend(transport:Transport,adopt:(id:string)=>void){
   function begin(draft:Draft){
     if([...entries.current.values()].some(m=>m.conversationId===draft.conversationId&&m.stage!=='accepted'))return false
     const saved=savedPending(draft.conversationId),{input}=draft
-    const same=saved?.text===input.text&&JSON.stringify(saved.attachments??[])===JSON.stringify(input.attachments)&&
+    const same=saved?.text===input.text&&saved.skill?.id===input.skillId&&JSON.stringify(saved.attachments??[])===JSON.stringify(input.attachments)&&
       JSON.stringify(saved.quote??null)===JSON.stringify(input.quote??null)
     void transmit({...draft,id:same?saved.id:crypto.randomUUID(),createdAt:Date.now(),stage:'initial'})
     return true

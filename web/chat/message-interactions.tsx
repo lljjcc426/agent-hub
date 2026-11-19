@@ -1,6 +1,6 @@
 import './message-interactions.css'
 import { InputControl } from '../ui/controls.tsx'
-import {createContext,useContext,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
+import {createContext,useContext,useEffect,useId,useLayoutEffect,useRef,useState,type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {FileCode2,Reply,Search,Smile,X} from 'lucide-react'
 import type {ChatQuote,ChatQuoteView,AgentReaction} from '../../src/chat-interactions.ts'
@@ -42,6 +42,32 @@ function toQuote(message:Message,excerpt?:string):DraftQuote{
 
 export function InteractionProvider({children,...value}:React.ComponentProps<typeof Context.Provider>['value']&{children:ReactNode}){
   return <Context.Provider value={value}>{children}<SelectionReply/></Context.Provider>
+}
+
+export function MessageTimestamp({at,lang,L}:{at:Date|number;lang:string;L:L}){
+  const id=useId(),panel=useRef<HTMLDivElement>(null)
+  const date=new Date(at),iso=date.toISOString()
+  const short=new Intl.DateTimeFormat(lang,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)
+  const full=new Intl.DateTimeFormat(lang,{
+    year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',
+  }).format(date)
+  return <div className="message-time-control">
+    <button type="button" className="message-time-trigger" popoverTarget={id}
+      aria-label={short+' · '+L('Show date and time','查看日期和时间')}
+      aria-controls={id}
+      onKeyDown={event=>{
+        if(event.key==='Escape'&&panel.current?.matches(':popover-open')){
+          event.preventDefault()
+          event.stopPropagation()
+          panel.current.hidePopover()
+        }
+      }}>
+      <time className="message-time" dateTime={iso}>{short}</time>
+    </button>
+    <div ref={panel} id={id} className="roppo-ui rp-popover message-time-detail" popover="auto">
+      <time dateTime={iso}>{full}</time>
+    </div>
+  </div>
 }
 
 export function MessageActions({id}:{id:string}){

@@ -27,6 +27,7 @@ import {
 
 import {
   ArrowDown,
+  Box,
   ListChecks,
   UsersRound,
   FileText,
@@ -84,12 +85,13 @@ import { AgentAvatar } from "./agent-avatar.tsx";
 import {useHandoffPlayer,type HandoffCursor} from './use-handoff.ts';
 import {ChatCompanion} from "./companion.tsx";
 import {companionStatus,pendingWaitLabel} from "./companion-state.ts";
-import {InteractionProvider,MessageActions,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
+import {InteractionProvider,MessageActions,MessageTimestamp,Reactions,QuotePreview,QuotedMessage,type DraftQuote} from './message-interactions.tsx';
 import {useChatMotion} from './chat-motion.ts';
 import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
-import {carryInitialDraft,draftKey,forgetPending,read,savedPending,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
+import type {ChatSkillCatalog,ChatSkillRef} from '../../src/chat-skills.ts';
+import {carryInitialDraft,draftKey,forgetPending,read,savedDraftSkill,savedPending,skillDraftKey,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
 import "../../src/ui/typography.css";
@@ -183,6 +185,7 @@ function IconButton({
 function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
   const { L } = useUI();
   const message =
+    code==='skill_unavailable'?L('This skill is unavailable. Select a skill again or remove it from the draft.','这个技能已不可用。请重新选择，或从草稿中移除。'):
     code==='message_missing'?L('The original message is no longer available.','原消息已不可用。'):
     code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
     code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
@@ -227,8 +230,11 @@ function useArrival(id: string, createdAt: number) {
   return fresh || undefined;
 }
 function Timestamp({ at }: { at: Date | number }) {
-  const { lang } = useUI(), date = new Date(at);
-  return <time className="message-time" dateTime={date.toISOString()} title={new Intl.DateTimeFormat(lang, {dateStyle:'medium', timeStyle:'medium'}).format(date)}>{new Intl.DateTimeFormat(lang, {hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)}</time>;
+  const { lang,L } = useUI();
+  return <MessageTimestamp at={at} lang={lang} L={L}/>;
+}
+function MessageSkill({skill}:{skill?:ChatSkillRef}){
+  return skill?<span className="message-skill"><Box size={13}/><span>/{skill.name}</span></span>:null;
 }
 function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string) {
   return ({waiting:waitingLabel||L('Waiting for your input','等待你的补充'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
@@ -237,6 +243,7 @@ function UserMessage() {
   const { L } = useUI(),
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
+    skill = useAuiState((s) => s.message.metadata.custom?.skill) as ChatSkillRef|undefined,
     hasText = useAuiState((s) => s.message.content.some(c=>c.type==='text'&&!!c.text)),
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime());
@@ -247,9 +254,10 @@ function UserMessage() {
       <MessagePrimitive.Root className="message user-message" data-arrival={arrival}>
         <UserQuote/>
         <div className="message-line" tabIndex={-1}>
-          <div className="message-surface">
+          <div className="message-surface user-bubble">
+            <MessageSkill skill={skill}/>
             <MessageAttachments files={attachments??[]} L={L}/>
-            {hasText && <div className="user-bubble" data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>}
+            {hasText && <div data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>}
           </div>
           <MessageActions id={id}/>
         </div>
@@ -260,23 +268,24 @@ function UserMessage() {
     </>
   );
 }
-function OutgoingBubble({message,retry,edit,draftQuoted}:{message:OutgoingMessage;retry:()=>void;edit:()=>void;draftQuoted:boolean}){
+function OutgoingBubble({message,retry,edit,draftHasContext}:{message:OutgoingMessage;retry:()=>void;edit:()=>void;draftHasContext:boolean}){
   const {L}=useUI();
   const canEdit=useAuiState(s=>!s.composer.text.trim()&&!s.composer.attachments.length);
-  const {stage,input,files,quote,createdAt}=message;
+  const {stage,input,files,quote,createdAt,skill}=message;
   const waiting=stage==='slow'||stage==='unconfirmed';
   const status=stage==='sending'?L('Sending…','发送中…'):
     waiting?L('Delivery not confirmed yet.','还未确认送达。'):
     stage==='rejected'?L('Message not sent. Your draft is saved.','发送失败，草稿已保留。'):'';
   return <div className="message user-message" data-outgoing={stage}>
     <QuotedMessage quote={quote??undefined}/>
-    <div className="message-line"><div className="message-surface">
+    <div className="message-line"><div className="message-surface user-bubble">
+      <MessageSkill skill={skill}/>
       {!!files.length&&<div className="message-attachments">{files.map(file=><span key={file.id} className="chat-attachment"><FileText size={22}/><span className="attachment-info"><strong>{file.name}</strong></span></span>)}</div>}
-      {input.text&&<div className="user-bubble">{input.text}</div>}
+      {input.text&&<div>{input.text}</div>}
     </div></div>
     {status&&<div className="chat-send-status"><span role="status">{status}</span>
       {waiting&&<button type="button" className="text-button" onClick={retry}>{L('Retry send','重试')}</button>}
-      {stage==='rejected'&&<button type="button" className="text-button" disabled={!canEdit||draftQuoted} onClick={edit}>{L('Edit message','编辑消息')}</button>}
+      {stage==='rejected'&&<button type="button" className="text-button" disabled={!canEdit||draftHasContext} onClick={edit}>{L('Edit message','编辑消息')}</button>}
     </div>}
     <Timestamp at={createdAt}/>
   </div>;
@@ -339,7 +348,7 @@ function AssistantMessage() {
       </div>}
       <div className="assistant-body">
         <div className="message-line" tabIndex={-1}>
-          <div className="message-surface">
+          <div className={deliveries?.length||fileReview||decision?"message-surface":"message-surface assistant-bubble"}>
             {recipient ? <div className="addressed-message">
               <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
             </div> : body}
@@ -748,6 +757,8 @@ function Chat(p: ChatProps) {
         if (url) try { sessionStorage.setItem("roppo.website." + conversation.id, url); } catch {}
         write(draftKey(conversation.id), runtime.thread.composer.getState().text);
         write(draftKey(null), "");
+        write(skillDraftKey(conversation.id),read(skillDraftKey(null),'null'));
+        write(skillDraftKey(null),'null');
         await refreshList();
         if (alive.current && location.pathname === "/chat") navigate(conversation.id);
       } catch (error) { fail(error); }
@@ -835,6 +846,11 @@ function Chat(p: ChatProps) {
     const saved=savedPending(id),draft=read(draftKey(id));
     return savedQuote(id)??(saved&&!p.sends.has(saved.id)&&(!draft||draft.trim()===saved.text)?saved.draftQuote??null:null);
   }),[around,setAround]=useState<string>();
+  const [skill,setSkill]=useState<ChatSkillRef|null>(()=>{
+    const saved=savedPending(id),draft=read(draftKey(id));
+    return savedDraftSkill(id)??(saved&&!p.sends.has(saved.id)&&(!draft||draft.trim()===saved.text)?saved.skill??null:null);
+  });
+  const skillCurrent=useRef(skill);
   const locateAfterLoad=useRef<{messageId:string;workflowId?:string}|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
   const queuedEnter=useRef<string|null>(null);
   const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
@@ -869,9 +885,19 @@ function Chat(p: ChatProps) {
 
   const participants = (snapshot?.participants ?? [{id:"router",label:boot?.routerLabel??"Router",kind:"router" as const,latestMessage:null},...(boot?.workers??[]).map(w=>({id:w.id,label:w.label,kind:"worker" as const,latestMessage:null}))]).map(p=>p.kind==="router"?{...p,label:teamName(p.label)}:p);
   const uploadConversation=useRef<Promise<string>|null>(null),uploadConversationId=useRef(id),[loadingAttachments,setLoadingAttachments]=useState(!!id),[attachmentBlocked,setAttachmentBlocked]=useState(false);
+  const saveSkill=useCallback((selected:ChatSkillRef|null)=>{
+    skillCurrent.current=selected;
+    setSkill(selected);
+    write(skillDraftKey(id),JSON.stringify(selected));
+    if(uploadConversationId.current&&uploadConversationId.current!==id)
+      write(skillDraftKey(uploadConversationId.current),JSON.stringify(selected));
+  },[id]);
+  const loadSkills=useCallback((signal:AbortSignal)=>api<ChatSkillCatalog>(
+    '/skills'+(id?'?'+new URLSearchParams({conversation:id}):''),undefined,'GET',signal,
+  ),[id]);
   const ensureConversation=useCallback(()=>{
     if(id)return Promise.resolve(id);
-    if(!uploadConversation.current)uploadConversation.current=spaceRequest({},'POST').then(space=>{const target=space.conversation!.id;uploadConversationId.current=target;p.handoffCursor.current={id:target,sequence:space.conversation!.sequence};write(draftKey(target),read(draftKey(null)));return target}).catch(error=>{uploadConversation.current=null;throw error});
+    if(!uploadConversation.current)uploadConversation.current=spaceRequest({},'POST').then(space=>{const target=space.conversation!.id;uploadConversationId.current=target;p.handoffCursor.current={id:target,sequence:space.conversation!.sequence};write(draftKey(target),read(draftKey(null)));write(skillDraftKey(target),read(skillDraftKey(null),'null'));return target}).catch(error=>{uploadConversation.current=null;throw error});
     return uploadConversation.current;
   },[id]);
   const attachmentLanguage=useRef(L);attachmentLanguage.current=L;
@@ -1109,7 +1135,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         continuedReview:continuedReviews.has(m.id),speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
-        inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, reactions: m.reactions, agentReactions: m.agentReactions,
+        inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length && !m.skill, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, skill:m.skill, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1134,14 +1160,16 @@ function Chat(p: ChatProps) {
         .join("\n")
         .trim();
       const files=message.attachments??[],attachments=files.map(a=>a.id),sentQuote=quoteCurrent.current;
+      const sentSkill=skillCurrent.current??undefined;
       if ((!text&&!attachments.length) || sending || readonly) return;
       if(!p.sends.begin({
-        conversationId:id??uploadConversationId.current,files,quote:sentQuote,
-        input:{text,attachments,quote:quoteReference(sentQuote),locale:navigator.language||lang,
+        conversationId:id??uploadConversationId.current,files,quote:sentQuote,skill:sentSkill,
+        input:{text,attachments,quote:quoteReference(sentQuote),skillId:sentSkill?.id,locale:navigator.language||lang,
           timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,openingLocale:lang},
       }))return;
       setError("");
       if(sentQuote)saveQuote(null);
+      if(sentSkill)saveSkill(null);
       if(around)setAround(undefined);
       motion.latest();
     },
@@ -1167,11 +1195,12 @@ function Chat(p: ChatProps) {
   });
   const editOutgoing=async(messageId:string)=>{
     const composer=runtime.thread.composer;
-    if(composer.getState().text.trim()||composer.getState().attachments.length||quoteCurrent.current)return;
+    if(composer.getState().text.trim()||composer.getState().attachments.length||quoteCurrent.current||skillCurrent.current)return;
     const message=p.sends.edit(messageId);
     if(!message)return;
     composer.setText(message.input.text);
     saveQuote(message.quote);
+    saveSkill(message.skill??null);
     for(const file of message.files)await composer.addAttachment(file);
     if(message.error)setError(message.error);
     threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus();
@@ -1216,9 +1245,11 @@ function Chat(p: ChatProps) {
     ) {
       restoredPending.current = null;
       if(JSON.stringify(quoteReference(quote)??null)===JSON.stringify(saved.quote??null))saveQuote(null);
+      const restoredText=runtime.thread.composer.getState().text===saved.text;
+      if(restoredText&&saved.skill&&skillCurrent.current?.id===saved.skill.id)saveSkill(null);
       for(const [index,file] of [...runtime.thread.composer.getState().attachments.entries()].reverse())
         if(saved.attachments?.includes(file.id))void runtime.thread.composer.getAttachmentByIndex(index).remove();
-      if (runtime.thread.composer.getState().text === saved.text)
+      if (restoredText)
         runtime.thread.composer.setText("");
     }
   }, [snapshot, runtime]);
@@ -1541,7 +1572,7 @@ function Chat(p: ChatProps) {
                       <ThreadPrimitive.Messages
                         components={{ UserMessage, AssistantMessage }}
                       />
-                      {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftQuoted={!!quote}
+                      {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftHasContext={!!quote||!!skill}
                         retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
                       {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
@@ -1575,6 +1606,7 @@ function Chat(p: ChatProps) {
                       <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                       <ComposerControls visible={!configuring} L={L} sending={outstanding?.stage==='sending'} router={currentRouter.label}
                         model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
+                        loadSkills={loadSkills} skill={skill} onSkillChange={saveSkill}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
                         onContext={() => revealCard('context')} onCommitTrail={openActivityTray} saveMode={p.saveApprovalMode}
                         onModelSaved={id ? refresh : p.refreshReady}

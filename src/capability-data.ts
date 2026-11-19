@@ -4,7 +4,7 @@ import {basename} from 'node:path'
 import type {Capability,CapabilityTool} from './capability-types.ts'
 
 export const identifier=(...parts:string[])=>createHash('sha256').update(JSON.stringify(parts)).digest('base64url').slice(0,28)
-export type Entry=Capability & {content?:()=>string|undefined}
+export type Entry=Capability & {content?:()=>string|undefined;skillFile?:string;skillProjects?:readonly string[]}
 export const strings=(value:unknown):string[]=>Array.isArray(value)?value.filter((v):v is string=>typeof v==='string'):[]
 export const object=(value:unknown):Record<string,any>=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,any>:{}
 export function toolInfo(tool:{name:string;description?:string;inputSchema?:unknown}):CapabilityTool {

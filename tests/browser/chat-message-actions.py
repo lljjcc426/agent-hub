@@ -1,5 +1,6 @@
 """Exercise inline message actions against a fresh examples/chat-space-browser.ts fixture."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -14,11 +15,13 @@ name, value = fixture['cookie'].split('=', 1)
 errors = []
 
 
-def open_chat(browser, width, touch=False):
+def open_chat(browser, width, touch=False, dark=False):
     ctx = browser.new_context(viewport={'width': width, 'height': 900}, has_touch=touch,
-                              is_mobile=touch, reduced_motion='reduce')
+                              is_mobile=touch, reduced_motion='reduce', timezone_id='Asia/Shanghai')
     ctx.add_cookies([{'name': name, 'value': value, 'url': base}])
     ctx.add_init_script("localStorage.setItem('agenthub.configuration.language','zh-CN')")
+    if dark:
+        ctx.add_init_script("localStorage.setItem('agenthub.configuration.theme','dark')")
     page = ctx.new_page()
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.goto(base + '/chat', wait_until='networkidle')
@@ -28,11 +31,21 @@ def open_chat(browser, width, touch=False):
 def assert_side(line, user):
     surface = line.locator('.message-surface').bounding_box()
     actions = line.locator('.message-actions').bounding_box()
-    assert surface['y'] < actions['y'] + actions['height'] and actions['y'] < surface['y'] + surface['height']
+    assert abs(surface['y'] + surface['height'] / 2 - actions['y'] - actions['height'] / 2) <= 1
     if user:
         assert actions['x'] + actions['width'] <= surface['x'] + 1
     else:
         assert surface['x'] + surface['width'] <= actions['x'] + 1
+
+
+def show_timestamp(message):
+    button = message.get_by_role('button', name=re.compile('查看日期和时间')).first
+    details = message.locator('.message-time-detail').first
+    button.click()
+    expect(details).to_be_visible()
+    expect(details).to_have_text(re.compile(r'\d{4}年\d{1,2}月\d{1,2}日\s*\d{2}:\d{2}:\d{2}'))
+    assert button.locator('time').get_attribute('datetime') == details.locator('time').get_attribute('datetime')
+    return button, details
 
 
 with sync_playwright() as pw:
@@ -55,6 +68,14 @@ with sync_playwright() as pw:
     assert_side(line, True)
     expect(line.locator('.message-actions')).to_have_css('opacity', '0')
     bubble = user.locator('.user-bubble')
+    expect(bubble).to_have_css('background-color', 'rgb(222, 235, 255)')
+    expect(final.locator('.assistant-bubble')).to_have_css('background-color', 'rgb(235, 235, 235)')
+    trigger, details = show_timestamp(user)
+    trigger.press('Escape')
+    expect(details).to_be_hidden()
+    _, details = show_timestamp(final)
+    box.click()
+    expect(details).to_be_hidden()
     before = bubble.bounding_box()
     bubble.hover()
     actions = line.locator('.message-actions')
@@ -96,8 +117,33 @@ with sync_playwright() as pw:
     page.keyboard.press('Escape')
     expect(reaction).to_be_focused()
 
-    touch_ctx, mobile = open_chat(browser, 320, touch=True)
+    box.fill('/')
+    expect(page.get_by_role('listbox', name='Chat 命令')).to_be_visible()
+    box.fill('/release-rev')
+    expect(page.get_by_role('option', name='/release-review', exact=True)).to_be_visible()
+    box.press('Enter')
+    expect(page.locator('.composer-skill')).to_have_text('/release-review')
+    expect(box).to_have_value('')
+    box.fill('请核对上次发布。')
+    page.reload(wait_until='networkidle')
+    expect(page.locator('.composer-skill')).to_have_text('/release-review')
+    expect(box).to_have_value('请核对上次发布。')
+    box.press('Enter')
+    expect(page.locator('.user-bubble .message-skill')).to_have_text('/release-review')
+    skill_reply = page.locator('.assistant-message').filter(has_text='待确认：复核时间。')
+    expect(skill_reply).to_be_visible()
+    assert_side(skill_reply.locator('.message-line'), False)
+    expect(page.locator('.composer-skill')).to_have_count(0)
+
+    touch_ctx, mobile = open_chat(browser, 320, touch=True, dark=True)
     mobile_line = mobile.locator('.user-message .message-line').first
+    expect(mobile_line.locator('.user-bubble')).to_have_css('background-color', 'rgb(32, 58, 88)')
+    expect(mobile.locator('.assistant-bubble').first).to_have_css('background-color', 'rgb(48, 48, 48)')
+    _, date = show_timestamp(mobile.locator('.user-message').first)
+    rect = date.bounding_box()
+    assert rect['x'] >= 0 and rect['x'] + rect['width'] <= 320
+    mobile.locator('.composer-input').tap()
+    expect(date).to_be_hidden()
     mobile_actions = mobile_line.locator('.message-actions')
     expect(mobile_actions).to_have_css('opacity', '0')
     mobile_line.locator('.user-bubble').tap()
@@ -123,5 +169,5 @@ with sync_playwright() as pw:
     assert long_bubble.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
     assert_side(long_line, True)
     assert not errors, errors
-    print('Passed inline geometry, compact spacing, hidden actions, clipboard formats, quote, reactions, keyboard and touch.')
+    print('Passed slash skill selection, draft reload, date disclosure, bubble colors, action centering, clipboard, quote, reactions, keyboard and touch.')
     browser.close()

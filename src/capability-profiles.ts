@@ -32,17 +32,36 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
     const id=identifier(source,item.kind,key)
     rows.set(id,{...item,source,id,description:typeof item.description==='string'?item.description:undefined,version:typeof item.version==='string'?item.version:undefined})
   }
-  function skills(path:string,source:string,disabled=false){
+  function skills(path:string,source:string,{disabled=false,project,disabledFiles}:{
+    disabled?:boolean;project?:string;disabledFiles?:ReadonlySet<string>
+  }={}){
     const scan=(dir:string)=>{
       const file=join(dir,'SKILL.md'),body=skillText(file);if(!body)return
       const front=/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body)?.[1]??''
       const field=(k:string)=>new RegExp('^'+k+':\\s*([^\\n]+)','m').exec(front)?.[1]?.trim().replace(/^["']|["']$/g,'')
-      add(source,realpathSync(file),{kind:'skill',name:field('name')||basename(dir),description:field('description'),status:disabled?'disabled':'cli',hasContent:true,content:()=>skillText(file)})
+      let key:string
+      try{key=realpathSync(file)}catch{return}
+      const existing=rows.get(identifier(source,'skill',key))
+      const skillProjects=project&&(!existing||existing.skillProjects)?[...new Set([...(existing?.skillProjects??[]),project])]:undefined
+      add(source,key,{kind:'skill',name:field('name')||basename(dir),description:field('description'),status:disabled||disabledFiles?.has(key)?'disabled':'cli',
+        hasContent:true,content:()=>skillText(file),skillFile:key,skillProjects})
     }
     for(const name of dirs(path)){
       if(name==='.system')for(const child of dirs(join(path,name)))scan(join(path,name,child))
       else if(!name.startsWith('.'))scan(join(path,name))
     }
+  }
+  function codexSkills(path:string,source:string,root:Record<string,any>){
+    const disabledFiles=new Set<string>()
+    for(const skill of Array.isArray(root.skills?.config)?root.skills.config:[]){
+      if(skill?.enabled===false&&typeof skill.path==='string'){
+        try{disabledFiles.add(realpathSync(resolve(home,skill.path)))}catch{/* The disabled file is absent. */}
+      }
+    }
+    skills(join(dirname(path),'skills'),source,{disabledFiles})
+    skills(join(home,'.agents/skills'),source,{disabledFiles})
+    for(const project of projects)skills(join(project,'.agents/skills'),source,{project,disabledFiles})
+    return disabledFiles
   }
   function mcp(root:Record<string,any>,key:string,source:string,namespace='',plugin?:{id:string;disabled:boolean}){
     for(const [name,value] of Object.entries(object(root[key]))){
@@ -84,6 +103,8 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
     })
     if(attached)register(client)
   }
+  if(![...profiles.values()].some(p=>p.client==='codex'&&p.path===paths.codex))
+    codexSkills(paths.codex,'Codex',read(paths.codex,''))
   for(const {client,path,source,backend} of profiles.values()){
     const root=read(path,source),key=clientInfo[client].root
     mcp(root,key,source)
@@ -96,8 +117,7 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
       const d=backend?config.backends[backend]:undefined,opts=d?.kind==='plugin'?d.config:{}
       if(backend||path===paths.codex)native.set(source,{command:d?.kind==='codex'?d.command??config.codex:typeof opts.command==='string'?opts.command:config.codex,args:d?.kind==='codex'?d.args:strings(opts.args),environment:d?.kind==='codex'||d?.kind==='plugin'?d.env:undefined,cwd:home,projects,source})
       // File-backed fallback remains available when native discovery is offline.
-      skills(join(dirname(path),'skills'),source);skills(join(home,'.agents/skills'),source)
-      for(const project of projects)skills(join(project,'.agents/skills'),source)
+      const disabledFiles=codexSkills(path,source,root)
       for(const [name,settings] of Object.entries(object(root.plugins)))add(source,name,{kind:'plugin',name:name.split('@')[0]??name,status:settings?.enabled===false?'disabled':'cli',facts:[name]})
       const cache=join(dirname(path),'plugins/cache')
       for(const market of dirs(cache))for(const name of dirs(join(cache,market))){
@@ -118,7 +138,7 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
           return resolved.startsWith(parent+'/')?resolved:undefined
         }
         for(const v of Array.isArray(manifest.skills)?manifest.skills:[manifest.skills]){
-          const dir=local(v,'skills');if(dir)skills(dir,source,disabled)
+          const dir=local(v,'skills');if(dir)skills(dir,source,{disabled,disabledFiles})
         }
         const mf=local(manifest.mcpServers,'.mcp.json')
         if(mf)mcp(read(mf,source),'mcpServers',source,'',{id:pluginId,disabled})
@@ -134,8 +154,8 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
       if(client==='opencode'){skills(join(base,'skill'),source);skills(join(home,'.agents/skills'),source);skills(join(home,'.claude/skills'),source)}
       for(const project of projects){
         const folder=client==='claude-code'?'.claude':client==='gemini'?'.gemini':'.opencode'
-        skills(join(project,folder,'skills'),source)
-        if(client==='opencode'){skills(join(project,'.agents/skills'),source);skills(join(project,'.claude/skills'),source)}
+        skills(join(project,folder,'skills'),source,{project})
+        if(client==='opencode'){skills(join(project,'.agents/skills'),source,{project});skills(join(project,'.claude/skills'),source,{project})}
       }
       if(client==='gemini')for(const dir of dirs(join(base,'extensions'))){
         const folder=join(base,'extensions',dir),meta=read(join(folder,'gemini-extension.json'),source)
@@ -149,7 +169,8 @@ export function profileInventory(config:Config,home:string,endpoint:string,env:N
           if(p.projectPath&&!projects.includes(p.projectPath)||typeof p.installPath!=='string')continue
           const label=name+' / ',meta=read(join(p.installPath,'.claude-plugin/plugin.json'),source)
           add(source,name+'@'+(p.projectPath??''),{kind:'plugin',name:meta.name??name,status:settings.enabledPlugins?.[name]===false?'disabled':'installed',description:meta.description,version:p.version,facts:[name]})
-          mcp(read(join(p.installPath,'.mcp.json'),source),'mcpServers',source,label);mcp(meta,'mcpServers',source,label);skills(join(p.installPath,'skills'),source)
+          const disabled=settings.enabledPlugins?.[name]===false
+          mcp(read(join(p.installPath,'.mcp.json'),source),'mcpServers',source,label);mcp(meta,'mcpServers',source,label);skills(join(p.installPath,'skills'),source,{disabled,project:p.projectPath})
         }
       }
       if(client==='opencode'){

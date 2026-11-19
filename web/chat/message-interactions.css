@@ -9,7 +9,7 @@
 .conversation-body .assistant-message .assistant-body { max-width: 100%; }
 .message-line {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   width: fit-content;
   max-width: 100%;
   min-width: 0;
@@ -18,9 +18,22 @@
 .message-surface [data-message-body] > div > :first-child { margin-top: 0; }
 .message-surface [data-message-body] > div > :last-child { margin-bottom: 0; }
 .message-surface .message-attachments:last-child { margin-bottom: 0; }
-.user-message .message-line { flex-direction: row-reverse; align-items: center; }
-.user-message .message-surface { display: flex; flex-direction: column; align-items: flex-end; }
-.user-message .message-surface .user-bubble { max-width: 100%; }
+.user-message .message-line { flex-direction: row-reverse; }
+.message-line > .user-bubble { max-width: 648px; }
+.user-message[data-outgoing] .user-bubble { white-space: pre-wrap; }
+.message-time-control { line-height: 1; }
+.message-time-trigger { display: inline-flex; align-items: center; min-height: 20px; padding-inline: 4px; border-radius: 5px; }
+.message-time-trigger .message-time { padding: 0; }
+.message-time-trigger:is(:hover, :has(+ :popover-open)) { background: var(--c-hover); }
+.rp-popover.message-time-detail {
+  position-area: block-start span-inline-end;
+  padding: 7px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.user-message .message-time-detail { position-area: block-end span-inline-start; }
 .message-actions {
   display: flex;
   flex: none;
@@ -39,22 +52,23 @@
 @media (hover: none) {
   .message-line:focus-within .message-actions { opacity: 1; pointer-events: auto; }
 }
-.message-actions .icon-button {
+.message-line > .message-actions .icon-button {
   width: 25px; min-width: 25px; height: 25px; padding: 0; border-radius: 7px;
   transition: background 140ms, color 140ms, transform 160ms var(--chat-spring);
 }
 @container chat-thread (max-width: 440px) {
   .message-line { position: relative; max-width: calc(100% - 59px); }
-  .message-actions {
+  .message-line > .message-actions {
     position: absolute;
-    inset: 0 auto auto 100%;
+    inset: 50% auto auto 100%;
+    translate: 0 -50%;
     z-index: 1;
     display: grid;
     grid-template-columns: repeat(2, 25px);
     background: var(--c-bg);
     border-radius: 8px;
   }
-  .user-message .message-actions { inset: 0 100% auto auto; }
+  .user-message .message-actions { inset: 50% 100% auto auto; }
 }
 .message-actions .icon-button:hover{background:var(--c-hover)}
 .message-actions .icon-button:active,.send-button:active:not(:disabled){transform:scale(.9)}

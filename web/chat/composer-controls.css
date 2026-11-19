@@ -84,6 +84,30 @@
 .palette-row > svg { flex: none; }
 .palette-row small, .palette-trailing { color: var(--rp-muted); }
 .palette-row small { font-size: 11px; }
+.palette-group-label, .palette-empty { padding: 7px 10px; color: var(--rp-muted); }
+.palette-group-label { margin-top: 4px; font-weight: 550; }
+.palette-skill-details { display: grid; gap: 2px; }
+.palette-skill-details > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-skill-details strong { font-weight: 550; }
+.composer-skill, .message-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.composer-skill {
+  margin: 2px 4px 3px;
+  padding: 2px 3px 2px 8px;
+  border-radius: 8px;
+  background: var(--c-soft);
+}
+.composer-skill span, .message-skill span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-skill svg, .message-skill svg { flex: none; }
+.composer-skill button { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 6px; color: var(--c-muted); }
+.composer-skill button:hover { background: var(--c-hover); color: var(--c-text); }
+.message-skill { margin-bottom: 3px; font-weight: 560; }
 .composer-palette .palette-row:is(:hover, :focus-visible, [aria-selected=true]) { background: var(--rp-soft); outline: 0; }
 .composer-palette .palette-row:disabled { opacity: .5; cursor: default; }
 .palette-heading { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; margin-bottom: 4px; }

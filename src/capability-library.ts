@@ -5,6 +5,7 @@ import {builtinSources} from './source-plugins.ts'
 import {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js'
 import {homedir} from 'node:os'
+import {realpathSync} from 'node:fs'
 import {createOperatorMcp} from './mcp.ts'
 import type {Runtime} from './runtime.ts'
 import {workerProfiles} from './worker-pool.ts'
@@ -20,8 +21,17 @@ import {nativeToolFor} from './cli-native-tools.ts'
 import {verifyCliMcpGrant} from './cli-mcp-profile.ts'
 import {clientGroup,profileInventory} from './capability-profiles.ts'
 import {codexInventory,withPreviousCatalog,type CodexInventory} from './capability-codex.ts'
-import {identifier,toolInfo,type Entry} from './capability-data.ts'
+import {identifier,skillText,toolInfo,type Entry} from './capability-data.ts'
 import type {CapabilitySnapshot,CapabilityTool} from './capability-types.ts'
+import type {Config} from './config.ts'
+import type {ChatSkillCatalog,SelectedChatSkill} from './chat-skills.ts'
+
+function teamSkillEntries(config:Config):Entry[]{
+  return Object.entries(config.prompts.skills).map(([name,body])=>({
+    id:identifier('Roppo','skill','team/'+name),source:'Roppo',kind:'skill',name,
+    status:'configured',roles:['Router','Worker'],content:()=>body,hasContent:true,
+  }))
+}
 
 async function bridgeCatalog(){
   const server=createOperatorMcp('',''),client=new Client({name:'roppo-library',version:'1'})
@@ -59,7 +69,7 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     const text=p.override?.text??p.default
     put('Roppo',p.id,{kind:'skill',name:p.id.slice(6),status:'builtin',roles:['Router','Worker'],description:text,content:()=>text,hasContent:true})
   }
-  for(const [name,body] of Object.entries(config.prompts.skills))put('Roppo','team/'+name,{kind:'skill',name,status:'configured',roles:['Router','Worker'],content:()=>body,hasContent:true})
+  for(const skill of teamSkillEntries(config))rows.set(skill.id,skill)
   if(host.store.list('skill-version').length)for(const {label,context:c} of memoryContexts(host,owner)){
     for(const skill of host.skills.list(c.route.scopeId,c)){
       const v=host.skills.resolve(skill,c.route.scopeId,c.route.entryId,c)
@@ -129,6 +139,9 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
   return rows
 }
 interface ExternalCache {controller:AbortController;revision:number;started:number;pending:boolean;profile:ReturnType<typeof profileInventory>;native:Map<string,CodexInventory>}
+function canonicalProject(path:string){
+  try{return realpathSync(path)}catch{return path}
+}
 export class CapabilityLibrary {
   private external=new WeakMap<Runtime,ExternalCache>()
   constructor(private home=homedir(),private env:NodeJS.ProcessEnv=process.env){}
@@ -148,6 +161,33 @@ export class CapabilityLibrary {
     return cache
   }
   close(host:Runtime){this.external.get(host)?.controller.abort();this.external.delete(host)}
+  private runnableSkills(host:Runtime,endpoint:string,project:string|undefined){
+    const external=this.catalogs(host,endpoint,false)
+    const rows=new Map(external.profile.entries.map(e=>[e.id,e]))
+    for(const catalog of external.native.values())for(const entry of catalog.entries)
+      rows.set(entry.id,entry)
+    const cwd=project&&canonicalProject(project)
+    const files=[...rows.values()].filter(e=>e.kind==='skill'&&e.skillFile&&e.status==='cli'&&
+      (!e.skillProjects||e.skillProjects.some(p=>canonicalProject(p)===cwd)))
+    const refreshing=external.profile.native.some(p=>!external.native.get(p.source)?.complete.includes('skill'))&&external.pending
+    return {items:[...teamSkillEntries(host.config),...files],refreshing}
+  }
+  chatSkills(host:Runtime,endpoint:string,project:string|undefined):ChatSkillCatalog {
+    const {items,refreshing}=this.runnableSkills(host,endpoint,project)
+    const distinct=new Map<string,Entry>()
+    for(const item of items){
+      const key=item.skillFile??item.id
+      if(!distinct.has(key))distinct.set(key,item)
+    }
+    return {items:[...distinct.values()].map(({id,name,source,description})=>({id,name,source,description})).sort((a,b)=>a.name.localeCompare(b.name)),refreshing}
+  }
+  chatSkill(host:Runtime,endpoint:string,project:string|undefined,id:string):SelectedChatSkill|undefined {
+    const item=this.runnableSkills(host,endpoint,project).items.find(e=>e.id===id)
+    if(!item)return
+    const instructions=item.skillFile?skillText(item.skillFile):item.content?.()
+    if(!instructions?.trim())return
+    return {id:item.id,name:item.name,instructions,...(item.skillFile?{file:item.skillFile}:{})}
+  }
   async read(host:Runtime,owner:string,endpoint:string,opts:{id?:string;inspect?:boolean;refresh?:boolean}={}){
     const external=this.catalogs(host,endpoint,!!opts.refresh)
     const all=hostEntries(host,owner,await (bridge??=bridgeCatalog().catch(e=>{bridge=undefined;throw e})))
@@ -160,7 +200,7 @@ export class CapabilityLibrary {
     const groupOf=(e:Entry)=>e.sourceGroup??external.profile.sourceGroups.get(e.source)??e.source
     if(opts.id){
       const entry=all.get(opts.id);if(!entry)return undefined
-      const {content,...fields}=entry
+      const {content,skillFile,skillProjects,...fields}=entry
       const item={...fields,sourceGroup:groupOf(entry)}
       if(opts.inspect&&item.inspectable){
         const key=Object.keys(host.config.toolConnections).find(id=>identifier('Roppo',item.kind,'connection/'+id)===item.id)
@@ -169,7 +209,7 @@ export class CapabilityLibrary {
       const body=content?.()
       return {...item,body,...(content&&body===undefined?{status:'unavailable'}:{})}
     }
-    const items=[...all.values()].map(({content,steps,criteria,inputs,...item})=>({...item,sourceGroup:groupOf(item),tools:item.tools?.map(({name})=>({name}))}))
+    const items=[...all.values()].map(({content,steps,criteria,inputs,skillFile,skillProjects,...item})=>({...item,sourceGroup:groupOf(item),tools:item.tools?.map(({name})=>({name}))}))
     return {items,warnings:[...warnings],refreshing:external.pending} satisfies CapabilitySnapshot
   }
 }

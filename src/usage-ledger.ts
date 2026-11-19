@@ -3,7 +3,8 @@ import {statSync} from 'node:fs'
 import {DatabaseSync} from 'node:sqlite'
 import type {ExecutionContext} from './execution-activity.ts'
 import {normalizeUsage,sumUsage,usageFields,type ModelUsage,type TokenCounts} from './model-usage.ts'
-import type {UsagePurpose,UsageSummary,UsageGroup} from './usage-contract.ts'
+import type {UsagePurpose,UsageSummary,UsageGroup,UsagePeriod,UsageStatistics} from './usage-contract.ts'
+import {aggregateUsage,usageCalendar} from './usage-statistics.ts'
 export type {UsagePurpose,UsageSummary,UsageGroup} from './usage-contract.ts'
 
 export interface UsageRecord extends ExecutionContext {id:string;purpose:UsagePurpose;role:string;sessionKey?:string;latestReading?:{key:string;at:number};state:'running'|'completed'|'failed'|'interrupted';at:number;endedAt?:number;backend?:string;model?:string;steps:Record<string,ModelUsage>;attempts?:Record<string,string>}
@@ -13,6 +14,13 @@ export function usagePurpose(role:string,context:ExecutionContext):UsagePurpose{
 }
 const reported=(r:UsageRecord)=>Object.values(r.steps).some(s=>usageFields.some(field=>s[field]!==undefined))
 const partial=(r:UsageRecord)=>reported(r)&&(r.state!=='completed'||Object.values(r.attempts??{}).some(s=>s!=='completed')||Object.values(r.steps).some(s=>s.inputTokens===undefined||s.outputTokens===undefined))
+
+function usageRows(db: DatabaseSync, window?: {since: number; now: number}): UsageRecord[] {
+ const rows=window
+  ?db.prepare("SELECT body FROM records WHERE kind='model-usage' AND json_extract(body,'$.at') BETWEEN ? AND ?").all(window.since,window.now)
+  :db.prepare("SELECT body FROM records WHERE kind='model-usage'").all()
+ return rows.map(row=>JSON.parse(String(row.body)) as UsageRecord)
+}
 /** Durable accounting is independent of the pruned activity display and native history. No prompt/result content. */
 export class UsageLedger {
  constructor(private store:Store,private watchdogPath?:string){for(const r of store.list<UsageRecord>('model-usage'))if(r.state==='running')this.finish(r.id,'interrupted')}
@@ -33,16 +41,23 @@ export class UsageLedger {
   return current
  }
  finish(id:string,state:Exclude<UsageRecord['state'],'running'>){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,state,endedAt:Date.now()})}
- summary(sourceId?:string):UsageSummary{
-  let extra:UsageRecord[]=[],watchdogUnavailable=false
+ private watchdogUsage(window?: {since: number; now: number}): {records: UsageRecord[]; unavailable?: boolean} {
   // Read only the observer's numeric records. It never opens the host DB, and the
   // host must not finish/interfere with the observer's independently running calls.
-  if(this.watchdogPath)try{
+  if(!this.watchdogPath)return {records:[]}
+  try{
    statSync(this.watchdogPath)
    const db=new DatabaseSync(this.watchdogPath,{readOnly:true})
-   try{extra=db.prepare("SELECT body FROM records WHERE kind='model-usage'").all().map(row=>({...JSON.parse(String(row.body)),purpose:'watchdog'}))}finally{db.close()}
-  }catch(error){watchdogUnavailable=(error as NodeJS.ErrnoException).code!=='ENOENT'}
-  const records=[...this.store.list<UsageRecord>('model-usage'),...extra].filter(r=>!sourceId||r.sourceId===sourceId).map(r=>({...r,steps:r.steps??{},purpose:r.purpose??usagePurpose(r.role,r)})),steps=records.flatMap(r=>Object.values(r.steps))
+   try{return {records:usageRows(db,window).map(record=>({...record,purpose:'watchdog'}))}}finally{db.close()}
+  }catch(error){return {records:[],unavailable:(error as NodeJS.ErrnoException).code!=='ENOENT'}}
+ }
+ statistics(period:UsagePeriod,timeZone:string,now=Date.now()):UsageStatistics{
+  const calendar=usageCalendar(period,timeZone,now),watchdog=this.watchdogUsage(calendar)
+  return {...aggregateUsage([...usageRows(this.store.db,calendar),...watchdog.records],calendar),...(watchdog.unavailable?{watchdogUnavailable:true}:{})}
+ }
+ summary(sourceId?:string):UsageSummary{
+  const watchdog=this.watchdogUsage(),watchdogUnavailable=watchdog.unavailable
+  const records=[...this.store.list<UsageRecord>('model-usage'),...watchdog.records].filter(r=>!sourceId||r.sourceId===sourceId).map(r=>({...r,steps:r.steps??{},purpose:r.purpose??usagePurpose(r.role,r)})),steps=records.flatMap(r=>Object.values(r.steps))
   const group=(purpose:UsagePurpose):UsageGroup=>{const rows=records.filter(r=>r.purpose===purpose),reportedCalls=rows.filter(reported).length;return {purpose,calls:rows.length,reportedCalls,unknownCalls:rows.length-reportedCalls,partialCalls:rows.filter(partial).length,steps:rows.reduce((n,r)=>n+Object.keys(r.steps).length,0),tokens:sumUsage(rows.flatMap(r=>Object.values(r.steps)))}}
   const ids=new Set(records.map(r=>r.id)),legacy=this.store.list<any>('execution-call').filter(r=>r.kind!=='tool'&&(!sourceId||r.sourceId===sourceId)&&!ids.has(r.id))
   return {since:records.length?records.reduce((at,r)=>Math.min(at,r.at),records[0]!.at):null,calls:records.length,reportedCalls:records.filter(reported).length,unknownCalls:records.filter(r=>!reported(r)).length,partialCalls:records.filter(partial).length,steps:steps.length,tokens:sumUsage(steps),fieldReported:Object.fromEntries(usageFields.map(field=>[field,steps.filter(s=>s[field]!==undefined).length])) as UsageSummary['fieldReported'],groups:([...new Set(records.map(r=>r.purpose))]).map(group),legacyUntrackedCalls:legacy.length,...(watchdogUnavailable?{watchdogUnavailable:true}:{})}

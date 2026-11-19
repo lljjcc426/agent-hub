@@ -17,7 +17,7 @@ let chatElement: HTMLDivElement | undefined;
 const active = () => {
   const { pathname, hash } = location;
   if (!["/configure", "/configure/", "/"].includes(pathname)) return false;
-  if (["", "#general", "#workspace", "#automations", "#prompts/memory"].includes(hash)) return false;
+  if (["", "#general", "#workspace", "#automations", "#prompts/memory", "#tasks/statistics"].includes(hash)) return false;
   if (hash.startsWith("#plugin/")) return false;
   return !/^#integrations(?:\/|$)/.test(hash) || hash === "#integrations/tools";
 };

@@ -6,6 +6,7 @@ import {
   Boxes,
   Brain,
   Cable,
+  ChartColumn,
   ChevronRight,
   FileSliders,
   Gauge,
@@ -76,6 +77,8 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
           Activity,
           (h) => h === 'attention' || h.startsWith('tasks') || h === 'execution',
         ),
+        ...(query ? [row('tasks/statistics', L('Usage statistics', '使用统计'), ChartColumn, undefined,
+          L('Tokens usage charts model calls', 'Token 用量 趋势 模型调用'))] : []),
         row(
           'workspace',
           L('Workspace settings', '工作区设置'),

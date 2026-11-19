@@ -14,6 +14,7 @@ import {GithubError} from './github-errors.ts'
 import {FeishuPairing,feishuGroupSelection} from './feishu-pairing.ts'
 import {ExecutionTrace,TraceError} from './execution-trace.ts'
 import {ResourceUsage} from './resource-usage.ts'
+import {isUsageTimeZone} from './usage-statistics.ts'
 import {CredentialReferences} from './credential-references.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {BackendPluginError} from './backends/plugin-contract.ts'
@@ -306,6 +307,20 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(req.method!=='GET'){send(res,405,{code:'method_not_allowed'});return}
       if(new URL(req.url!,requestOrigin).search!==''){send(res,400,{code:'resource_usage_query_invalid'});return}
       try{send(res,200,new ResourceUsage(()=>runtime).snapshot())}catch{send(res,503,{code:'resource_usage_unavailable'})};return
+    }
+    if(path==='/api/usage-statistics'){
+      requireCurrentOperator(req)
+      if(req.method!=='GET'){send(res,405,{code:'method_not_allowed'});return}
+      const query=z.object({
+        days:z.enum(['7','30']).default('7'),
+        timeZone:z.string().max(100).refine(isUsageTimeZone).default('UTC'),
+      }).strict().safeParse(Object.fromEntries(new URL(req.url!,requestOrigin).searchParams))
+      if(!query.success){send(res,400,{code:'usage_statistics_query_invalid'});return}
+      res.setHeader('cache-control','no-store')
+      try{
+        send(res,200,runtime.usage.statistics(query.data.days==='30'?30:7,query.data.timeZone))
+      }catch{send(res,503,{code:'usage_statistics_unavailable'})}
+      return
     }
     if(path==='/api/scheduler-status'){
       requireCurrentOperator(req)

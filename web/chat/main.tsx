@@ -68,6 +68,7 @@ import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
+const UsageStatisticsPage = lazy(() => import("./usage-statistics.tsx").then(module => ({default: module.UsageStatisticsPage})));
 const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDetail})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
@@ -746,6 +747,7 @@ function Chat(p: ChatProps) {
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
   const connectorsRoute=configuring&&hash==='connectors';
+  const usageStatisticsRoute = configuring && hash === 'tasks/statistics';
   const marketTools=hash==='integrations/tools';
   const views=useWorkspaceViews();
   const pluginId=configuring&&hash.startsWith('plugin/')?hash.slice(7):null;
@@ -756,6 +758,7 @@ function Chat(p: ChatProps) {
     tasks: L("Activity", "运行记录"),
     "tasks/active": L("Activity", "运行记录"),
     "tasks/history": L("Activity", "运行记录"),
+    "tasks/statistics": L("Usage statistics", "使用统计"),
     attention: L("Activity", "运行记录"),
     "advanced/memory": L("Memory","记忆"),
     "advanced/chat": L("Conversations and context", "对话与上下文"),
@@ -1384,7 +1387,11 @@ function Chat(p: ChatProps) {
                 <Menu size={20} />
               </button>
               {!connectorsRoute && <div className="studio-breadcrumb">
-                <span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}{hash === "advanced/chat" && <><a href="/configure#general">{L("General", "通用")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong>
+                <span>{L("Settings","设置")}</span><ChevronRight size={14}/>
+                {workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}
+                {hash === "advanced/chat" && <><a href="/configure#general">{L("General", "通用")}</a><ChevronRight size={14}/></>}
+                {usageStatisticsRoute && <><a href="/configure#tasks/history">{L("Activity", "运行记录")}</a><ChevronRight size={14}/></>}
+                <strong>{pageTitle}</strong>
               </div>}
             </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
@@ -1393,8 +1400,11 @@ function Chat(p: ChatProps) {
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
+            {usageStatisticsRoute && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading usage statistics…", "正在读取使用统计…")}</div>}>
+              <UsageStatisticsPage language={lang}/>
+            </Suspense>}
             <Configuration
-              visible={configuring&&!general&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!general&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!usageStatisticsRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}

@@ -1,8 +1,16 @@
 .usage-stats {
   container: usage-stats / inline-size;
-  --usage-input: color-mix(in srgb, var(--rp-ink) 90%, var(--rp-panel));
-  --usage-output: color-mix(in srgb, var(--rp-ink) 50%, var(--rp-panel));
-  --usage-unsplit: color-mix(in srgb, var(--rp-ink) 68%, var(--rp-panel));
+  --usage-input: #5a53cb;
+  --usage-output: #168278;
+  --usage-unsplit: #65738f;
+  --usage-calls: #3268bb;
+}
+
+:root[data-theme="dark"] .usage-stats {
+  --usage-input: #a49aff;
+  --usage-output: #54c5b6;
+  --usage-unsplit: #91a0bc;
+  --usage-calls: #81b0f3;
 }
 
 .usage-stats-heading,
@@ -52,18 +60,20 @@
   overflow-wrap: anywhere;
 }
 
+.usage-stats-summary > div:first-child dd { color: var(--usage-input); }
+
 .usage-stats-board {
+  --usage-accent: var(--usage-input);
+  --usage-wash: color-mix(in srgb, var(--usage-accent) 13%, var(--rp-panel));
+  --usage-highlight-line: color-mix(in srgb, var(--usage-accent) 42%, var(--rp-panel));
   display: grid;
   grid-template-columns: minmax(0, 1.9fr) minmax(250px, 1fr);
   border: 1px solid var(--rp-line);
   border-radius: var(--settings-radius);
   background: var(--rp-panel);
-  animation: usage-stats-arrive 220ms var(--rp-ease) both;
 }
 
-@keyframes usage-stats-arrive {
-  from { opacity: .55; transform: translateY(5px); }
-}
+.usage-stats-board[data-metric="calls"] { --usage-accent: var(--usage-calls); }
 
 .usage-trend,
 .usage-models {
@@ -105,15 +115,15 @@
 .usage-stats [data-part="input"] { background: var(--usage-input); }
 .usage-stats [data-part="output"] { background: var(--usage-output); }
 .usage-stats [data-part="unsplit"] { background: var(--usage-unsplit); }
+.usage-stats [data-part="calls"] { background: var(--usage-calls); }
 
 .usage-chart-frame {
-  --usage-tooltip-half: 78px;
   --usage-axis-space: 42px;
   padding-inline-start: var(--usage-axis-space);
   font-variant-numeric: tabular-nums;
 }
 
-.usage-chart-plot { position: relative; block-size: 192px; }
+.usage-chart-plot { position: relative; container-type: inline-size; block-size: 192px; }
 .usage-chart-grid,
 .usage-chart-columns { position: absolute; inset: 0; }
 .usage-chart-grid { pointer-events: none; }
@@ -154,6 +164,7 @@
 .usage-chart-frame[data-period="30"] .usage-chart-dates > span:first-child { justify-self: start; }
 .usage-chart-frame[data-period="30"] .usage-chart-dates > span:last-child { justify-self: end; }
 .usage-chart-dates [data-today="true"] { color: var(--rp-ink); font-weight: 620; }
+.usage-chart-dates [data-selected="true"] { color: var(--usage-accent); font-weight: 650; }
 
 .usage-chart-day {
   position: relative;
@@ -171,8 +182,16 @@
 
 .usage-chart-day:focus-visible {
   z-index: 2;
-  outline: 2px solid var(--rp-focus);
+  outline: 2px solid var(--usage-accent);
   outline-offset: 1px;
+}
+
+.usage-chart-day[aria-pressed="true"]::after {
+  position: absolute;
+  content: "";
+  inset: auto 0 0;
+  border-block-end: 2px solid var(--usage-accent);
+  pointer-events: none;
 }
 
 .usage-chart-marker {
@@ -181,41 +200,70 @@
   inset-inline-start: 0;
   inline-size: calc(100% / var(--usage-days));
   border-radius: 4px 4px 0 0;
-  background: var(--rp-selected);
+  background: var(--usage-wash);
   opacity: 0;
   transform: translateX(calc(100% * var(--usage-marker)));
-  transition: transform 200ms var(--rp-ease), opacity 120ms ease;
+  transition: transform 260ms var(--rp-ease), opacity 150ms ease;
   pointer-events: none;
 }
 
-.usage-chart-marker[data-visible="true"] { opacity: .8; }
+.usage-chart-marker::before {
+  position: absolute;
+  content: "";
+  inset-block: 0;
+  inset-inline-start: 50%;
+  border-inline-start: 1px solid var(--usage-highlight-line);
+}
 
-.usage-chart-bar {
-  display: flex;
-  flex-direction: column-reverse;
+.usage-chart-marker[data-visible="true"] { opacity: 1; }
+
+.usage-chart-bar,
+.usage-chart-baseline {
   inline-size: 68%;
   max-inline-size: 44px;
+  pointer-events: none;
+}
+
+.usage-chart-bar {
   block-size: 100%;
   border-radius: 4px 4px 0 0;
   overflow: hidden;
   transform-origin: bottom;
   transform: scaleY(var(--usage-height));
-  transition: transform 250ms var(--rp-ease), opacity 160ms ease;
-  pointer-events: none;
+  transition: transform 440ms var(--rp-ease), opacity 180ms ease;
 }
 
-.usage-chart-bar > i { flex: 1 1 0; }
-.usage-chart-day[data-highlight="true"] .usage-chart-bar { opacity: .81; }
-.usage-chart-bar[data-empty="true"] {
+.usage-chart-fill {
+  display: flex;
+  flex-direction: column-reverse;
+  block-size: 100%;
+  transform-origin: bottom;
+  animation: usage-chart-draw 480ms var(--rp-ease) var(--usage-draw-delay) both;
+}
+
+.usage-chart-fill > i { flex: 1 1 0; }
+.usage-chart-fill > i + i { box-shadow: inset 0 -1px var(--rp-panel); }
+
+@keyframes usage-chart-draw {
+  from { transform: scaleY(.05); }
+  to { transform: scaleY(1); }
+}
+
+.usage-chart-columns[data-spotlight="true"] .usage-chart-day[data-highlight="false"]:not([aria-pressed="true"]) .usage-chart-bar {
+  opacity: .8;
+}
+
+.usage-chart-baseline {
   position: absolute;
   inset-block-end: 0;
   block-size: 2px;
   background: var(--rp-line-strong);
-  transform: none;
-  opacity: .54;
+  opacity: 0;
+  transition: opacity 150ms ease;
 }
-.usage-chart-bar[data-empty="true"] > i { display: none; }
-.usage-chart-bar[data-unknown="true"] {
+
+.usage-chart-baseline[data-visible="true"] { opacity: .55; }
+.usage-chart-baseline[data-visible="true"][data-unknown="true"] {
   block-size: 3px;
   border-block-start: 1px dashed var(--rp-muted);
   border-radius: 0;
@@ -224,19 +272,26 @@
 }
 
 .usage-chart-tooltip {
+  --usage-tip-width: min(156px, 100cqi);
   position: absolute;
   z-index: 3;
   inset-block-start: 9px;
-  inset-inline-start: clamp(var(--usage-tooltip-half), var(--usage-tip), 100% - var(--usage-tooltip-half));
-  transform: translateX(-50%);
+  inset-inline-start: 0;
+  transform: translateX(clamp(0px, 100cqi * var(--usage-tip) - var(--usage-tip-width) / 2, 100cqi - var(--usage-tip-width)));
   display: grid;
   gap: 3px;
-  inline-size: calc(2 * var(--usage-tooltip-half));
+  inline-size: var(--usage-tip-width);
   padding: 8px 10px;
-  border: 1px solid var(--rp-line);
+  border: 1px solid var(--usage-highlight-line);
   border-radius: var(--rp-corner-control);
   background: var(--rp-panel);
+  transition: transform 230ms var(--rp-ease);
+  animation: usage-tooltip-appear 180ms var(--rp-ease) both;
   pointer-events: none;
+}
+
+@keyframes usage-tooltip-appear {
+  from { opacity: 0; translate: 0 5px; }
 }
 
 .usage-chart-tooltip > span { font-size: var(--roppo-font-meta); color: var(--rp-muted); }
@@ -257,6 +312,7 @@
 }
 
 .usage-model-list {
+  position: relative;
   display: grid;
   gap: 16px;
   list-style: none;
@@ -264,6 +320,7 @@
   margin: 17px 0 14px;
 }
 
+.usage-model-list[hidden] { display: none; }
 .usage-model-list > li { min-inline-size: 0; }
 .usage-model-row {
   display: flex;
@@ -287,10 +344,33 @@
   display: block;
   block-size: 100%;
   border-radius: inherit;
-  background: var(--usage-input);
   transform-origin: left;
   transform: scaleX(var(--usage-share));
-  transition: transform 240ms var(--rp-ease);
+  transition: transform 390ms var(--rp-ease);
+}
+
+.usage-model-track > span::before {
+  content: "";
+  display: block;
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--usage-accent);
+  transform-origin: left;
+  animation: usage-model-draw 500ms var(--rp-ease) both;
+}
+
+@keyframes usage-model-draw {
+  from { transform: scaleX(.08); }
+}
+
+.usage-models .rp-button.usage-date-clear {
+  color: var(--usage-accent);
+  background: var(--usage-wash);
+  border-color: transparent;
+}
+
+.usage-models .rp-button.usage-date-clear:hover {
+  border-color: var(--usage-highlight-line);
 }
 
 .usage-model-actions {
@@ -359,6 +439,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .usage-stats-board { animation: none; }
-  .usage-chart-marker, .usage-chart-bar, .usage-model-track > span { transition: none; }
+  .usage-chart-fill, .usage-chart-tooltip, .usage-model-track > span::before { animation: none; }
+  .usage-chart-marker, .usage-chart-bar, .usage-chart-baseline, .usage-chart-tooltip, .usage-model-track > span {
+    transition: none;
+  }
 }

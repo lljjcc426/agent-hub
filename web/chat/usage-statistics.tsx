@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { Button, ChoiceGroup } from '../ui/controls.tsx'
+import { useOrderedListMotion } from '../ui/transitions.tsx'
 import type { UsageDay, UsagePeriod, UsageStatistics, UsageVolume } from '../../src/usage-contract.ts'
 import './usage-statistics.css'
 
@@ -89,7 +90,7 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
         </div>
         <span className="usage-chart-marker" aria-hidden="true" data-visible={marker >= 0}
           style={{'--usage-marker': Math.max(0, marker)} as CSSProperties} />
-        <div className="usage-chart-columns">
+        <div className="usage-chart-columns" data-spotlight={marker >= 0}>
           {days.map((day, index) => {
             const value = labelValues[index] ?? null
             const split = metric === 'tokens' ? day.tokens : null
@@ -107,13 +108,18 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
                 onBlur={() => setFocused(null)}
                 onKeyDown={event => moveFocus(event, index)}
                 onClick={() => select(day.date === selected ? null : day.date)}>
-                <span className="usage-chart-bar" data-empty={!value} data-unknown={unavailable}
-                  style={{'--usage-height': height} as CSSProperties} aria-hidden="true">
-                  {split && split.total > 0 ? <>
-                    {split.input > 0 && <i data-part="input" style={{flexGrow: split.input}} />}
-                    {split.output > 0 && <i data-part="output" style={{flexGrow: split.output}} />}
-                    {split.unsplit > 0 && <i data-part="unsplit" style={{flexGrow: split.unsplit}} />}
-                  </> : <i data-part="input" />}
+                <span className="usage-chart-baseline" data-visible={!value} data-unknown={unavailable} aria-hidden="true" />
+                <span className="usage-chart-bar" aria-hidden="true" style={{
+                  '--usage-height': height,
+                  '--usage-draw-delay': Math.round(index / (days.length - 1) * 144) + 'ms',
+                } as CSSProperties}>
+                  <span className="usage-chart-fill">
+                    {split && split.total > 0 ? <>
+                      {split.input > 0 && <i data-part="input" style={{flexGrow: split.input}} />}
+                      {split.output > 0 && <i data-part="output" style={{flexGrow: split.output}} />}
+                      {split.unsplit > 0 && <i data-part="unsplit" style={{flexGrow: split.unsplit}} />}
+                    </> : <i data-part={metric === 'calls' ? 'calls' : 'input'} />}
+                  </span>
                 </span>
               </button>
             )
@@ -121,14 +127,15 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
         </div>
         {noTokens && !hoveredDay && <div className="usage-chart-no-tokens">{L('No token counts reported', '暂无 Token 用量')}</div>}
         {hoveredDay && <div className="usage-chart-tooltip" aria-hidden="true"
-          style={{'--usage-tip': ((marker + 0.5) / days.length) * 100 + '%'} as CSSProperties}>
+          style={{'--usage-tip': (marker + 0.5) / days.length} as CSSProperties}>
           <span>{detailDate(dateOf(hoveredDay.date))}</span>
           <strong>{metricLabel} {hoverValue === null ? (hoveredDay.calls ? unknown : '0') : count(hoverValue)}</strong>
         </div>}
       </div>
       <div className="usage-chart-dates" aria-hidden="true">
         {dateLabels.map(index => (
-          <span key={index} style={{gridColumn: index + 1}} data-today={index === days.length - 1}>
+          <span key={index} style={{gridColumn: index + 1}} data-today={index === days.length - 1}
+            data-selected={index === selectedIndex}>
             {formatDate(dateOf(days[index]!.date))}
           </span>
         ))}
@@ -146,6 +153,8 @@ function ModelBreakdown({ data, selected, clear, metric, language, count, compac
   const models = (selected?.models ?? data.models).toSorted((a, b) =>
     (valueOf(b, metric) ?? -1) - (valueOf(a, metric) ?? -1) || b.calls - a.calls ||
     (a.model ?? '').localeCompare(b.model ?? ''))
+  const visible = expanded ? models : models.slice(0, 5)
+  const list = useOrderedListMotion(visible.map(model => model.model))
   const date = selected && new Intl.DateTimeFormat(language, {month: 'short', day: 'numeric', timeZone: 'UTC'})
     .format(dateOf(selected.date))
   return (
@@ -157,12 +166,12 @@ function ModelBreakdown({ data, selected, clear, metric, language, count, compac
           {date}<X size={13} aria-hidden="true" />
         </Button>}
       </div>
-      {models.length ? <ul className="usage-model-list">
-        {(expanded ? models : models.slice(0, 5)).map(model => {
+      <ol className="usage-model-list" ref={list} hidden={!models.length}>
+        {visible.map(model => {
           const label = model.model ?? L('Model not recorded', '未记录模型')
           const value = valueOf(model, metric)
           return (
-            <li key={model.model === null ? '' : model.model}>
+            <li key={model.model ?? ''} data-item={model.model ?? ''}>
               <div className="usage-model-row">
                 <span title={label}>{label}</span>
                 <strong title={value === null ? L('No token counts reported', '未返回 Token') : count(value)}>
@@ -175,7 +184,8 @@ function ModelBreakdown({ data, selected, clear, metric, language, count, compac
             </li>
           )
         })}
-      </ul> : <p className="usage-model-empty">{L('No calls on this day', '当天没有模型调用')}</p>}
+      </ol>
+      {!models.length && <p className="usage-model-empty">{L('No calls on this day', '当天没有模型调用')}</p>}
       <div className="usage-model-actions">
         {models.length > 5 && <Button tone="quiet" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>
           {expanded ? L('Show fewer', '收起') : L('Show all', '查看全部')}
@@ -255,7 +265,7 @@ export function UsageStatisticsPage({ language }: { language: Language }) {
           <a href="/configure#execution" className="rp-button" data-tone="quiet">
             {L('View model calls', '查看模型调用')}<ArrowUpRight size={15} aria-hidden="true" />
           </a>
-        </div> : <div className="usage-stats-board">
+        </div> : <div className="usage-stats-board" data-metric={metric}>
           <section className="usage-trend" aria-labelledby={sectionId}>
             <div className="usage-stats-section-heading">
               <h2 id={sectionId}>{L('Daily trend', '使用趋势')}</h2>

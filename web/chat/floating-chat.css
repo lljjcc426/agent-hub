@@ -97,8 +97,22 @@
 .chat-float-center .roppo-character { width: 46px; height: 42px; }
 .chat-float-center .roppo-pose { width: 64px; height: 58px; transform-origin: top left; scale: .72; }
 .chat-float-center .roppo-body { width: 58px; height: 58px; }
-.floating-chat .thread:not([data-welcome]) { padding-top: var(--below-controls); }
-.floating-chat .thread:not([data-welcome]) .transcript { padding-top: 8px; scroll-padding-top: 8px; }
+.floating-chat .thread:not([data-welcome]) .transcript {
+  padding-top: 8px;
+  scroll-padding-top: calc(var(--below-controls) + 8px);
+}
+.floating-chat .thread:not([data-welcome]) .transcript-inner {
+  padding-top: var(--below-controls);
+}
+.floating-chat .thread:not([data-welcome])::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 24px;
+  background: linear-gradient(var(--team-paper), transparent);
+  pointer-events: none;
+}
 .chat-float-start .member .agent-portrait[data-kind="worker"] { filter: none; }
 .conversation-lane {
   position: relative;

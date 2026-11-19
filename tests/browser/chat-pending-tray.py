@@ -98,9 +98,9 @@ with sync_playwright() as pw:
     activity.locator('summary').click()
     expect(activity).to_contain_text('Choose language')
     page.screenshot(path=str(out/'session-panel-split.png'))
-    transcript_box=page.locator('.transcript').bounding_box()
+    first_message=transcript.locator('.message').first.bounding_box()
     mascot=page.locator('.chat-companion').bounding_box()
-    assert transcript_box['y'] >= mascot['y'] + mascot['height']
+    assert first_message['y'] + transcript.evaluate('el => el.scrollTop') >= mascot['y'] + mascot['height']
     assert tray.bounding_box()['x']+tray.bounding_box()['width']<=panel.bounding_box()['x']+1
     panel_button.click()
     tray.get_by_role('button', name='Hide pending requests').click()

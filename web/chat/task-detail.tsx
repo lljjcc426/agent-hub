@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
-import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, Play, Square, Wrench, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, Wrench, X } from 'lucide-react'
 import { taskCallLimit, type TaskExecutionCall, type TaskExecutionDetail, type TaskExecutionEvent } from '../../src/chat-task-detail.ts'
 import { Button, IconButton } from '../ui/controls.tsx'
 import { taskStatus } from '../ui/task-activity.tsx'
@@ -10,8 +10,7 @@ import { toolLabel, toolStatus } from './tool-trace.tsx'
 type Tab = 'progress' | 'tools'
 type LoadTask = (id: string, signal: AbortSignal) => Promise<TaskExecutionDetail>
 type Entry = { id: string; at: number; event?: TaskExecutionEvent; call?: TaskExecutionCall }
-type Replay = { record: TaskExecutionDetail; points: number[]; index: number }
-type Tone = 'pending' | 'working' | 'problem' | 'done'
+type Tone = 'working' | 'problem' | 'done'
 const problems = new Set(['failed', 'interrupted', 'blocked', 'cancelled', 'held'])
 const terminal = new Set(['completed', 'cancelled', 'failed'])
 
@@ -62,9 +61,8 @@ function eventLabel(event: TaskExecutionEvent, L: Localize) {
   }
 }
 
-function callState(call: TaskExecutionCall, at: number | undefined, L: Localize) {
-  if (at !== undefined && call.startedAt > at) return { tone:'pending' as const, label:L('Not started','未开始') }
-  if (call.state === 'running' || at !== undefined && !call.reported && (call.endedAt ?? -1) > at)
+function callState(call: TaskExecutionCall, L: Localize) {
+  if (call.state === 'running')
     return { tone:'working' as const, label:L('In progress','进行中') }
   const problem = problems.has(call.state) || call.permission === 'denied' || call.permission === 'uncertain'
   return { tone:problem ? 'problem' as const : 'done' as const, label:toolStatus(call,L) }
@@ -92,86 +90,42 @@ function RecordRow({label, meta, tone, open, toggle, children}: {
   </>
 }
 
-function Timing({record, at, onReplay, onSkip, playable, locale, L}: {
-  record: TaskExecutionDetail; at?: number; onReplay: () => void; onSkip: () => void;
-  playable: boolean; locale: string; L: Localize;
-}) {
-  const span = record.span
-  const elapsed = span ? Math.min(span.to,Math.max(span.from,at ?? span.to))-span.from : 0
-  const progress = span && span.to > span.from ? elapsed/(span.to-span.from)*100 : 0
-  return <>
-    <div className="task-run-elapsed">
-      {span ? <div><span>{at !== undefined ? L('Recorded time','重放到') : span.complete ? L('Total time','总用时') : L('Recorded time','已记录用时')}</span>
-        <strong>{durationLabel(elapsed,locale,L)}</strong></div>
-        : <span>{L('No recorded duration','暂无耗时记录')}</span>}
-      {playable && <Button onClick={at === undefined ? onReplay : onSkip}>
-        {at === undefined ? <Play size={13} aria-hidden="true"/> : <Square size={13} aria-hidden="true"/>}
-        {at === undefined ? L('Replay progress','重放过程') : L('Skip to result','跳到结果')}
-      </Button>}
-    </div>
-    {span && <div className="task-run-time-strip" aria-hidden="true"><span style={{width:progress+'%'}}
-      data-problem={problems.has(record.activity.state) || undefined}/></div>}
-  </>
-}
-
-function TaskRecord({record, active, locale, L, agentName, selectAgent}: {
-  record: TaskExecutionDetail; active: boolean; locale: string; L: Localize;
+function TaskRecord({record, locale, L, agentName, selectAgent}: {
+  record: TaskExecutionDetail; locale: string; L: Localize;
   agentName: (id?: string) => string; selectAgent: (id: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>('progress')
   const [expanded, setExpanded] = useState<string>()
   const [tool, setTool] = useState<string>()
-  const [replay, setReplay] = useState<Replay>()
   const toolsTab = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
-  const data = replay?.record ?? record
-  const at = replay?.points[replay.index]
-  const { activity } = data
-  const tools = data.calls.filter(call => call.kind === 'tool')
+  const { activity, span } = record
+  const tools = record.calls.filter(call => call.kind === 'tool')
   const ticketById = new Map(activity.tickets.map(ticket => [ticket.id,ticket]))
   const executors = new Map<string,TaskExecutionCall>()
-  for (const call of data.calls) {
-    if (call.kind === 'tool' || at !== undefined && call.startedAt > at) continue
+  for (const call of record.calls) {
+    if (call.kind === 'tool') continue
     const key = JSON.stringify([call.kind,call.workerId ?? call.agentId,call.backend,call.model])
     if (!executors.has(key)) executors.set(key,call)
   }
   const entries = useMemo(() => {
-    const milestones = new Set(data.events.map(event => event.kind))
-    const visibleCalls = data.calls.filter(call => call.kind !== 'tool' || call.state !== 'completed' ||
+    const milestones = new Set(record.events.map(event => event.kind))
+    const visibleCalls = record.calls.filter(call => call.kind !== 'tool' || call.state !== 'completed' ||
       !(call.name === 'chat_opening' && milestones.has('opening') ||
         call.name === 'superagent_plan' && milestones.has('plan')))
     const all: Entry[] = [
-      ...data.events.map(event => ({id:'event:'+event.id,at:event.at,event})),
+      ...record.events.map(event => ({id:'event:'+event.id,at:event.at,event})),
       ...visibleCalls.map(call => ({id:'call:'+call.id,at:call.startedAt,call})),
     ]
     return all.sort((a,b) => a.at-b.at)
-  }, [data])
-  const points = useMemo(() => [...new Set([
-    ...record.events.map(event => event.at),
-    ...record.calls.flatMap(call => call.endedAt === undefined || call.reported ? [call.startedAt] : [call.startedAt,call.endedAt]),
-  ])].sort((a,b) => a-b), [record])
+  }, [record])
   const clock = useMemo(() => new Intl.DateTimeFormat(locale,{hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}),[locale])
   const dateTime = useMemo(() => new Intl.DateTimeFormat(locale,{dateStyle:'medium',timeStyle:'medium'}),[locale])
   const duration = (ms: number) => durationLabel(ms,locale,L)
 
-  useEffect(() => {
-    if (!replay || !active) return
-    const timer = window.setTimeout(() => {
-      const next = replay.index + 1
-      setReplay(next < replay.points.length ? { ...replay, index:next } : undefined)
-    }, Math.max(20,Math.min(800,5600/replay.points.length)))
-    return () => window.clearTimeout(timer)
-  }, [replay, active])
   useLayoutEffect(() => {
     if (tab === 'tools' && tool) list.current?.querySelector('.task-run-tool[data-selected]')?.scrollIntoView({block:'nearest'})
   }, [tab, tool])
-
-  function play() {
-    setTab('progress')
-    setExpanded(undefined)
-    setTool(undefined)
-    setReplay({record,points,index:0})
-  }
 
   function jump(id: string) {
     setTool(id)
@@ -191,7 +145,7 @@ function TaskRecord({record, active, locale, L, agentName, selectAgent}: {
     <div className="task-run-title">
       <h3>{activity.title || L('Task','任务')}</h3>
       <span className="task-run-status" data-problem={problems.has(activity.state) || undefined} role="status">
-        {replay ? L('Replaying','正在重放') : taskStatus(activity.state,L)}
+        {taskStatus(activity.state,L)}
       </span>
     </div>
     {(activity.objective || activity.nextAction) && <p className="task-run-note">{activity.objective || activity.nextAction}</p>}
@@ -203,48 +157,50 @@ function TaskRecord({record, active, locale, L, agentName, selectAgent}: {
         detail={[call.backend,call.model].filter(Boolean).join(' · ') || L('No model recorded','暂无模型记录')}/>)}
     </div>}
 
-    <Timing record={data} at={at} onReplay={play} onSkip={() => setReplay(undefined)} playable={!!replay||points.length>1} locale={locale} L={L}/>
+    <div className="task-run-elapsed">
+      {span ? <>
+        <span>{span.complete ? L('Total time','总用时') : L('Recorded time','已记录用时')}</span>
+        <strong>{duration(span.to-span.from)}</strong>
+      </> : <span>{L('No recorded duration','暂无耗时记录')}</span>}
+    </div>
     <div className="team-tabs task-run-tabs" role="tablist" aria-label={L('Task record tabs','执行详情分组')} data-tab={tab} onKeyDown={keys}>
       <button id="task-run-tab-progress" role="tab" type="button" aria-controls="task-run-progress" aria-selected={tab==='progress'}
         tabIndex={tab==='progress'?0:-1} onClick={() => setTab('progress')}><Clock3 size={16} aria-hidden="true"/>{L('Progress','进度')}</button>
       <button ref={toolsTab} id="task-run-tab-tools" role="tab" type="button" aria-controls="task-run-tools" aria-selected={tab==='tools'}
         tabIndex={tab==='tools'?0:-1} onClick={() => setTab('tools')}><Wrench size={16} aria-hidden="true"/>{L('Tools','工具')}</button>
     </div>
-    {data.callsTruncated && <p className="task-run-note">{L('Showing the latest '+taskCallLimit+' calls for this task.','显示此任务最近 '+taskCallLimit+' 条调用。')}</p>}
+    {record.callsTruncated && <p className="task-run-note">{L('Showing the latest '+taskCallLimit+' calls for this task.','显示此任务最近 '+taskCallLimit+' 条调用。')}</p>}
     <div id="task-run-progress" role="tabpanel" aria-labelledby="task-run-tab-progress" hidden={tab!=='progress'} className="task-run-arrive">
       {entries.length ? <ol className="task-run-timeline">
         {entries.map(({id,at:time,event,call}) => {
-          const callStatus = call && callState(call,at,L)
-          const tone = callStatus?.tone ?? (at !== undefined && time>at ? 'pending' : event?.state && problems.has(event.state) ? 'problem' : 'done')
+          const callStatus = call && callState(call,L)
+          const tone = callStatus?.tone ?? (event?.state && problems.has(event.state) ? 'problem' : 'done')
           const wait = event?.waitMs
           const took = call ? recordedDuration(call) : undefined
           const name = event ? eventLabel(event,L) : call!.kind === 'tool' ? toolLabel(call!,L) : L('Model run','模型处理')
-          const meta = tone === 'pending' ? L('Not started','未开始')
-            : tone === 'working' || tone === 'problem' ? callStatus?.label ?? clock.format(time)
+          const meta = tone === 'working' || tone === 'problem' ? callStatus?.label ?? clock.format(time)
             : took === undefined ? clock.format(time) : duration(took)
           const related = ticketById.get(event?.ticketId ?? call?.ticketId ?? '')
           return <li key={id} data-tone={tone}>
             <span className="task-run-marker" aria-hidden="true">{tone==='done' ? <Check size={11}/> : tone==='problem' ? <CircleAlert size={15}/> : null}</span>
             <div>
               <RecordRow label={name} meta={meta} tone={tone} open={expanded===id} toggle={() => setExpanded(expanded===id?undefined:id)}>
-                {tone === 'pending' ? <p>{L('This step has not started in the replay.','重放还没到这一步。')}</p> : <>
-                  <p><time dateTime={new Date(time).toISOString()}>{dateTime.format(time)}</time>{related ? ' · '+related.title : ''}</p>
-                  {wait !== undefined && <p>{L('Waited ','等待开始 ')+duration(wait)}</p>}
-                  {call && call.kind !== 'tool' && <p>{agentName(call.workerId)}{call.model ? ' · '+call.model : ''}</p>}
-                  {call?.kind === 'tool' && <button type="button" className="task-run-link" onClick={() => jump(call.id)}>
-                    {L('View tool record','查看工具记录')} <ArrowRight size={13} aria-hidden="true"/>
-                  </button>}
-                </>}
+                <p><time dateTime={new Date(time).toISOString()}>{dateTime.format(time)}</time>{related ? ' · '+related.title : ''}</p>
+                {wait !== undefined && <p>{L('Waited ','等待开始 ')+duration(wait)}</p>}
+                {call && call.kind !== 'tool' && <p>{agentName(call.workerId)}{call.model ? ' · '+call.model : ''}</p>}
+                {call?.kind === 'tool' && <button type="button" className="task-run-link" onClick={() => jump(call.id)}>
+                  {L('View tool record','查看工具记录')} <ArrowRight size={13} aria-hidden="true"/>
+                </button>}
               </RecordRow>
             </div>
           </li>
         })}
       </ol> : <p className="task-run-note">{L('No progress timestamps were recorded for this task.','这个任务暂无进度时间记录。')}</p>}
-      {!replay && !!activity.steps.length && <div className="task-run-plan">
+      {!!activity.steps.length && <div className="task-run-plan">
         <h4>{L('Task plan','任务计划')}</h4><ol>{activity.steps.map(step => <li key={step.id}>{step.title}
           {step.state && <small>{taskStatus(step.state,L)}</small>}</li>)}</ol>
       </div>}
-      {!replay && !!activity.tickets.length && <div className="task-run-plan">
+      {!!activity.tickets.length && <div className="task-run-plan">
         <h4>{L('Assigned work','分派记录')}</h4>
         {activity.tickets.map(ticket => <div key={ticket.id} className="task-run-ticket">
           {ticket.title !== activity.title && <strong>{ticket.title}</strong>}
@@ -257,14 +213,12 @@ function TaskRecord({record, active, locale, L, agentName, selectAgent}: {
     </div>
     <div ref={list} id="task-run-tools" role="tabpanel" aria-labelledby="task-run-tab-tools" hidden={tab!=='tools'} className="task-run-arrive">
       {tools.length ? <ul className="task-run-tools">{tools.map(call => {
-        const status = callState(call,at,L), took = recordedDuration(call)
+        const status = callState(call,L), took = recordedDuration(call)
         return <li className="task-run-tool" data-selected={tool===call.id || undefined} key={call.id}>
           <RecordRow label={toolLabel(call,L)} meta={status.label} tone={status.tone} open={tool===call.id}
             toggle={() => setTool(tool===call.id ? undefined : call.id)}>
-            {status.tone === 'pending' ? <p>{L('This call has not started in the replay.','重放还没到这次调用。')}</p> : <>
-              <p>{call.name && <code>{call.name} · </code>}{agentName(call.workerId)} · {dateTime.format(call.startedAt)}</p>
-              <p>{status.label}{status.tone!=='working' && (took===undefined ? ' · '+L('Duration unavailable','未记录耗时') : ' · '+duration(took))}</p>
-            </>}
+            <p>{call.name && <code>{call.name} · </code>}{agentName(call.workerId)} · {dateTime.format(call.startedAt)}</p>
+            <p>{status.label}{status.tone!=='working' && (took===undefined ? ' · '+L('Duration unavailable','未记录耗时') : ' · '+duration(took))}</p>
           </RecordRow>
         </li>
       })}</ul> : <p className="task-run-note">{L('No tool calls were recorded for this task.','这个任务暂无工具调用记录。')}</p>}
@@ -295,7 +249,7 @@ export function TaskDetail({id, load, active, closing, layerRef, back, close, lo
         <span role="status">{L('The latest record could not be loaded.','暂时读不到最新记录。')}</span>
         <Button onClick={retry}>{L('Retry','重试')}</Button>
       </div>}
-      {record ? <TaskRecord record={record} active={active} locale={locale} L={L} agentName={agentName} selectAgent={selectAgent}/>
+      {record ? <TaskRecord record={record} locale={locale} L={L} agentName={agentName} selectAgent={selectAgent}/>
         : !failed && <p className="task-run-note" role="status">{L('Loading task history…','正在读取任务记录…')}</p>}
     </div>
   </section>

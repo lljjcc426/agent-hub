@@ -58,7 +58,7 @@
   overscroll-behavior: contain;
   overflow-wrap: anywhere;
 }
-.task-run-title, .task-run-elapsed, .task-run-error {
+.task-run-title, .task-run-error {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -90,13 +90,8 @@
   background: var(--rp-soft);
 }
 .task-run-executors .rp-identity :is(strong,small) { white-space: normal; }
-.task-run-elapsed { margin-top: 15px; color: var(--team-muted); font-size: 12px; }
-.task-run-elapsed > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; }
+.task-run-elapsed { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; margin-top: 15px; color: var(--team-muted); font-size: 12px; }
 .task-run-elapsed strong { color: var(--team-ink); font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.task-run-elapsed .rp-button { flex: none; min-height: 31px; padding-inline: 9px; font-size: 12px; }
-.task-run-time-strip { height: 5px; margin-top: 5px; border-radius: 5px; overflow: hidden; background: var(--team-fill); }
-.task-run-time-strip > span { display: block; height: 100%; background: var(--team-muted); transition: width 200ms var(--team-ease); }
-.task-run-time-strip > span[data-problem] { background: var(--task-run-alert); }
 .task-run-layer .task-run-tabs { margin-block: 8px 5px; grid-template-columns: repeat(2,minmax(0,1fr)); }
 .task-run-layer .task-run-tabs::after { width: 50%; }
 .task-run-tabs[data-tab="tools"]::after { transform: translateX(100%); }
@@ -142,7 +137,6 @@
 }
 .task-run-record:hover { background: var(--rp-soft); }
 .task-run-record > span { flex: 1; min-width: 0; font-weight: 600; }
-.task-run-record[data-tone="pending"] > span { color: var(--team-muted); }
 .task-run-record[data-tone="problem"] > span { color: var(--task-run-alert); }
 .task-run-record > small { color: var(--team-muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-run-record > svg { flex: none; color: var(--team-muted); transform: rotate(-90deg); transition: transform 180ms var(--team-ease); }

@@ -96,11 +96,11 @@ npx tsx src/cli.ts cli-mcp grant claude /path/to/.mcp.json linear worker-1 list_
 
 The grant pins the selected entry and lists the Workers allowed to use it. Credentials are read by the host from that profile or its environment. Settings and downloads contain the reference and digest. Changing the entry requires regenerating the grant. Supported transports are stdio and Streamable HTTP. Native OAuth stores, SSE and provider-specific settings outside the supported profile format require a separate supported connection. The host process must have access to the profile, executable and referenced environment variables.
 
-In **Agent team → Tools**, a hosted Router or Worker can also enable one native capability for its CLI. Codex offers cached web search. Claude Code, Gemini CLI and OpenCode offer their own session task lists (`TodoWrite`, `write_todos`, `todowrite`). These tools are opt-in per role. Roppo records task ownership and completion independently. Inference-only calls, including memory maintenance, receive no native grant. Existing plugin installations need a package declaring the matching `nativeTools` capability. A pinned older session reports an unsupported grant until the operator uses a compatible session or removes that grant. ZCode has no managed native tool grant.
+In **Agent team → Tools**, hosted roles can opt in to Codex cached web search or the Claude Code and Gemini CLI task lists. Older OpenCode packages also offer `todowrite` as an opt-in. OpenCode adapter 1.2 and later grant the pinned CLI's built-in tools by default for eligible Router and Worker turns, including on explicitly configured OpenCode connections. Roppo records task ownership and completion independently.
 
 ## Built-in tools for API and subscription connections
 
-Choose a model connection for the host Router or Worker. Roppo automatically supplies OpenCode's file tools on eligible managed text tasks. The CLI is included with standard macOS and Linux installations and the Roppo image. It runs with the model and credentials from the selected connection. An OpenCode account or separate CLI connection is unnecessary.
+Choose a model connection for the host Router or Worker. Roppo uses its bundled OpenCode CLI for eligible managed text tasks. The CLI is included with standard macOS and Linux installations and the Roppo image. It runs with the model and credentials from the selected connection.
 
 Roppo retains its direct model executor for image-enabled connections, hosts without an available bundled CLI or enabled sandbox, and background inference. Explicit CLI model connections use their own executor. Existing conversations keep their original engine and adapter.
 
@@ -108,12 +108,14 @@ The model connection supplies the model ID, upstream address, credentials, provi
 
 | Role | OpenCode workspace tools | Roppo tools |
 | --- | --- | --- |
-| Host Router | `read`, `glob`, `grep` inside the source workspace when `router_read` is enabled | Coordination and the other tools enabled for this Router |
-| Assigned Worker | Search and read when `superagent_read` is enabled. A writable assignment with `superagent_shell` also enables targeted `edit` of existing files | Assigned shell jobs, browser actions, connected tools and delivery through the host |
+| Host Router | Native built-ins such as `webfetch`, `read`, and `bash` within the read-only source workspace | Coordination and the other tools enabled for this Router |
+| Assigned Worker | The same native tools with write access for assignments with a writable workspace | Assigned shell jobs, browser actions, connected tools and delivery through the host |
 
-Point searches at a narrower directory when a tree contains private state or exceeds the traversal limit. The engine loads its own isolated configuration. Native tool results appear in task history, and the execution timeline records native and Roppo tool outcomes. Existing sessions retain their original engine and model. After an interruption following a native edit or host action, reconcile the recorded operation before starting fresh work.
+The default grant applies to foreground work with an inherited tool list. An explicit tool list keeps the role's previous tool restrictions. Network tools require `work.network`. OpenCode controls which built-ins the model sees, including provider-specific tools, experimental features and tools that require an interactive terminal. Independent URLs can run in parallel when the model emits multiple native `webfetch` calls in one turn.
 
-Run the end-to-end check from a standard installation. It exercises file edits, a managed shell job, delivery back to the original local discussion, and recovery after an interrupted edit. Protocol and subscription responses come from a local test provider.
+OpenCode 1.2 adapter sessions use private storage scoped to the thread. Existing sessions keep their pinned package and storage layout. Preserve the matching Roppo release when rolling back after creating 1.2 sessions. Native tool outcomes appear in task history and the execution timeline. After an interrupted native operation, review its recorded outcome before resuming.
+
+Run the end-to-end check from a standard installation. It exercises native file operations, native Shell and parallel page reads, plus managed Shell, delivery back to the original discussion and interruption after an edit. The exercise uses a local model provider and local test pages.
 
 ```sh
 npx tsx tests/manual/opencode-harness.ts

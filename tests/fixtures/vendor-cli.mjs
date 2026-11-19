@@ -16,7 +16,10 @@ await emit(init())
 let mcp,base
 if(kind==='claude'){mcp=JSON.parse(readFileSync(option('--mcp-config'),'utf8')).mcpServers.roppo;base=process.env.ANTHROPIC_BASE_URL}
 if(kind==='gemini'){mcp=JSON.parse(readFileSync(join(process.env.GEMINI_CLI_HOME,'.gemini/settings.json'),'utf8')).mcpServers.roppo;base=process.env.GOOGLE_GEMINI_BASE_URL}
-if(kind==='opencode'){const c=JSON.parse(process.env.OPENCODE_CONFIG_CONTENT);mcp=c.mcp.roppo;base=Object.values(c.provider)[0].options.baseURL}
+if(kind==='opencode'){
+ const c=JSON.parse(process.env.OPENCODE_CONFIG_CONTENT);mcp=c.mcp.roppo;base=Object.values(c.provider)[0].options.baseURL
+ if(c.plugin?.length)await (await import(c.plugin[0]+'/index.mjs')).default.server()
+}
 const rpc=(id,method,params)=>fetch(mcp.url??mcp.httpUrl,{method:'POST',headers:{'content-type':'application/json',...mcp.headers},body:JSON.stringify({jsonrpc:'2.0',id,method,params})}).then(r=>r.json())
 await rpc(1,'initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'fixture',version:'1'}})
 const response=await fetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:mode==='wire-budget'?'x'.repeat(90000):input}],...(mode==='wire-native-tool'?{tools:[{name:'bash',input_schema:{type:'object'}}]}:{}),...(mode==='wire-opaque'?{previous_response_id:'unaccounted'}:{})})})

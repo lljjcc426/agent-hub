@@ -39,6 +39,8 @@ export interface ModelRequest {
   harnessProviderUrl?:string
   harnessWorkspace?:'read'|'edit'
   harnessPrivateFiles?:string[]
+  /** Host-owned grant for the bundled or configured OpenCode adapter. */
+  opencodeNativeTools?:{network:boolean}
   nativeTool?:import('./cli-native-tools.ts').CliNativeTool
   managed?:boolean
   /** Host-owned migration of legacy native context; never replaces the thread. */

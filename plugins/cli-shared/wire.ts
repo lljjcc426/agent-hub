@@ -31,8 +31,9 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
    const payload=body.request??body
    // Opaque provider-side histories cannot prove the complete host budget.
    if(payload.previous_response_id||payload.cachedContent||payload.conversation)throw new BackendAdapterError('unsupported')
-   // OpenCode groups write with edit. Only expose the operation the role actually grants.
-   if(r.harnessWorkspace==='edit'&&driver.id==='opencode-cli'&&Array.isArray(payload.tools)){
+   const allowedNative=new Set(driver.nativeTools?.(r))
+   // OpenCode groups write with edit, including on the older file-only grant.
+   if(r.harnessWorkspace==='edit'&&driver.id==='opencode-cli'&&!allowedNative.has('write')&&Array.isArray(payload.tools)){
     payload.tools=payload.tools.filter((tool:any)=>(tool.name??tool.function?.name)!=='write')
     bytes=Buffer.from(JSON.stringify(body))
    }
@@ -40,7 +41,7 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
    if(!Array.isArray(nativeTools))throw new BackendAdapterError('unsupported')
    for(const tool of nativeTools){
     const names=Array.isArray(tool.functionDeclarations)?tool.functionDeclarations.map((f:any)=>f.name):[tool.name??tool.function?.name]
-    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!(driver.id==='claude-code'&&name==='EndConversation')&&!driver.workspaceTools?.(r.harnessWorkspace).includes(name)&&!(r.nativeTool==='task-list'&&name===driver.taskListTool)&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
+    if(!names.length||names.some((name:unknown)=>typeof name!=='string'||!allowedNative.has(name)&&!(driver.id==='claude-code'&&name==='EndConversation')&&!(r.nativeTool==='task-list'&&name===driver.taskListTool)&&!r.tools?.some(t=>t.name===driver.toolName(name))))throw new BackendAdapterError('unsupported')
    }
    checkBudget(body,r.contextBudget,'api-wire','before-native-request',r.onBudget,true)
    beforeRequest(nativeTools.length>0)

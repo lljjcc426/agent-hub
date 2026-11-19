@@ -6,6 +6,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,link
 import {fileURLToPath} from 'node:url'
 import {digest} from '../plugins/cli-shared/files.ts'
 import {workspaceGuard} from '../plugins/backend-opencode/workspace.ts'
+import {openCodeBuiltins,nativeTools} from '../plugins/backend-opencode/native-tools.ts'
 import {openHarnessProvider} from '../src/backends/harness-provider.ts'
 import {apiBackendDefinition} from '../src/backend-config.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
@@ -45,6 +46,39 @@ it('restricts native tool paths and journals the vendor call ID before editing',
    else await expect(invoke('edit',args)).rejects.toThrow()
   }
  }finally{for(const dir of installed)rmSync(dir,{recursive:true,force:true});rmSync(root,{recursive:true,force:true})}
+})
+
+it('grants the stock OpenCode tools with the task network and workspace bounds',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'opencode-native-')))
+ const cwd=join(root,'work');mkdirSync(cwd)
+ const task:ModelRequest={...request,cwd,role:'worker',sandbox:'workspace-write',opencodeNativeTools:{network:true}}
+ const guards=[workspaceGuard(root,task,'normal'),workspaceGuard(root,{...task,sandbox:'read-only',opencodeNativeTools:{network:false}},'restricted')]
+ try{
+  expect(nativeTools(task)).toEqual(openCodeBuiltins)
+  expect(nativeTools({...task,opencodeNativeTools:{network:false}})).not.toContain('webfetch')
+  const invoke=async(index:number)=>{
+   const plugin=await import(guards[index]!.url+'/index.mjs')
+   const hooks=await plugin.default.server()
+   return (tool:string,args:Record<string,string>)=>hooks['tool.execute.before']({tool,callID:'native-'+tool},{args})
+  }
+  const normal=await invoke(0),restricted=await invoke(1)
+  const write={filePath:'results/new.txt'}
+  await normal('write',write);expect(write.filePath).toBe(join(cwd,'results/new.txt'))
+  const patch={patchText:'*** Begin Patch\n*** Add File: results/patch.txt\n+proof\n*** End Patch'}
+  await normal('apply_patch',patch);expect(patch.patchText).toContain('*** Add File: '+join(cwd,'results/patch.txt'))
+  const command:Record<string,string>={command:'pwd'}
+  await normal('bash',command);expect(command.workdir).toBe(cwd)
+  await normal('webfetch',{url:'https://example.org'})
+  expect(guards[0]!.operations().at(-1)).toEqual({tool:'webfetch',id:'native-webfetch'})
+  await expect(restricted('webfetch',{url:'https://example.org'})).rejects.toThrow(/unavailable/)
+  await expect(restricted('bash',{command:'pwd'})).rejects.toThrow(/unavailable/)
+  await expect(restricted('write',{filePath:'denied.txt'})).rejects.toThrow(/read-only/)
+  await expect(normal('apply_patch',{patchText:'*** Add File: ../outside.txt'})).rejects.toThrow(/scope/)
+  await expect(normal('unregistered',{})).rejects.toThrow(/unavailable/)
+ }finally{
+  for(const guard of guards)rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
+  rmSync(root,{recursive:true,force:true})
+ }
 })
 
 it('applies the saved API connection, structured output, request budget and step limit on the final wire',async()=>{
@@ -119,7 +153,7 @@ it('resumes a bundled session created in a removed release while retaining its o
   const registry=new BackendRegistry(config,store)
   expect(registry.describe(threadId,'router')).toMatchObject({id:'api',model:'sample'})
   const folder='00000000-0000-0000-0000-000000000001'
-  const data=join(stateDir,'backend-plugin-data','api',oldIdentity)
+  const data=join(stateDir,'backend-plugin-data','api',oldIdentity,'threads',stableDigest(threadId))
   const session=join(data,'sessions',folder)
   mkdirSync(join(data,'index'),{recursive:true});mkdirSync(session,{recursive:true})
   writeFileSync(join(data,'index',digest(nativeId)+'.json'),JSON.stringify({id:nativeId,folder}))

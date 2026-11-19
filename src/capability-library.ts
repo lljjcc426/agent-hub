@@ -13,7 +13,7 @@ import {marketState} from './plugin-market-state.ts'
 import {viewCatalog} from './workspace-view-package.ts'
 import {backendPackages} from './backends/plugin-package.ts'
 import {bundledCLI} from './backends/bundled-opencode.ts'
-import {workspaceTools} from '../plugins/backend-opencode/workspace.ts'
+import {openCodeTools,supportsOpenCodeTools} from '../plugins/backend-opencode/native-tools.ts'
 import {isApiBackend} from './backend-config.ts'
 import {nativeToolFor} from './cli-native-tools.ts'
 import {verifyCliMcpGrant} from './cli-mcp-profile.ts'
@@ -82,7 +82,8 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     const v=views.find(v=>v.id===ref.id)
     put('Roppo',ref.id,{kind:'plugin',name:v?.label.en??ref.id,status:!ref.enabled?'disabled':v?.available?'configured':'unavailable',version:v?.version??undefined,facts:v?.capabilities})
   }
-  for(const pkg of backendPackages(config).values()){
+  const packages=backendPackages(config)
+  for(const pkg of packages.values()){
     const m=pkg.manifest
     put('Roppo','backend/'+m.id,{kind:'plugin',name:m.label,status:'configured',version:m.version,facts:[m.id,m.type]})
   }
@@ -91,16 +92,21 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
   const backends=new Set([...Object.keys(config.backends),config.execution.backend,routerBackend,...workers.map(w=>w.backend)])
   for(const id of backends){
     const d=config.backends[id],native=nativeToolFor(d)
+    const manifest=d?.kind==='plugin'?packages.get(d.plugin)?.manifest:undefined
+    if(manifest&&supportsOpenCodeTools(manifest)){
+      const roles=[...(id===routerBackend&&router?.mode==='host'&&assigned(router,id,'tools')===undefined?['Router']:[]),
+        ...workers.filter(w=>w.backend===id&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,id,'tools')===undefined).map(w=>w.id)]
+      for(const name of openCodeTools(config.work.network))put('CLI · '+id,name,{kind:'tool',name,status:roles.length?'conditional':'disabled',roles,version:manifest.version})
+      continue
+    }
     const roles=[...(id===routerBackend&&router?.nativeTool===native?['Router']:[]),...workers.filter(w=>w.backend===id&&w.nativeTool===native&&w.state!=='paused'&&w.state!=='retiring').map(w=>w.id)]
     if(native)put('CLI · '+id,native,{kind:'tool',name:native,status:roles.length?'conditional':'disabled',roles})
   }
   const eligible=[...backends].filter(id=>{const d=config.backends[id];return d&&isApiBackend(d)&&!d.images})
   if(eligible.length&&bundledCLI){
-    const read=workspaceTools('read')
-    for(const name of workspaceTools('edit')){
-      const can=(grants:string[]|undefined,wanted:string)=>!grants||grants.includes(wanted)
-      const roles=[...(read.includes(name)&&eligible.includes(routerBackend)&&can(assigned(router??{},routerBackend,'tools'),'router_read')?['Router']:[]),
-        ...workers.filter(w=>eligible.includes(w.backend)&&w.state!=='paused'&&w.state!=='retiring'&&can(assigned(w,w.backend,'tools'),'superagent_read')&&(read.includes(name)||can(assigned(w,w.backend,'tools'),'superagent_shell'))).map(w=>w.id)]
+    const roles=[...(router?.mode==='host'&&eligible.includes(routerBackend)&&assigned(router,routerBackend,'tools')===undefined?['Router']:[]),
+      ...workers.filter(w=>eligible.includes(w.backend)&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,w.backend,'tools')===undefined).map(w=>w.id)]
+    for(const name of openCodeTools(config.work.network)){
       put('OpenCode harness',name,{kind:'tool',name,status:roles.length&&config.work.sandboxDriver!=='disabled'?'conditional':'disabled',roles,version:bundledCLI.cliVersion,facts:eligible.map(id=>config.backends[id]?.label??id)})
     }
   }

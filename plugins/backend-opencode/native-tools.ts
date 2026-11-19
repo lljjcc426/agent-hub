@@ -1,0 +1,28 @@
+import type {ModelRequest} from '../backend-sdk.ts'
+
+// Built-ins registered by the pinned OpenCode CLI. OpenCode still selects which
+// of its optional tools are available for the active model and feature flags.
+export const openCodeBuiltins = [
+  'invalid','question','bash','read','glob','grep','edit','write','task',
+  'webfetch','todowrite','websearch','skill','apply_patch','execute','lsp','plan_enter','plan_exit',
+] as const
+
+const networkTools = new Set(['bash','webfetch','websearch','lsp'])
+
+export function supportsOpenCodeTools(manifest: {id: string; version: string}): boolean {
+  const [major = 0, minor = 0] = manifest.version.split('.').map(Number)
+  return manifest.id === 'opencode-cli' && (major > 1 || major === 1 && minor >= 2)
+}
+
+export function openCodeTools(network: boolean): string[] {
+  return openCodeBuiltins.filter(name => network || !networkTools.has(name))
+}
+
+export function workspaceTools(mode: ModelRequest['harnessWorkspace']): string[] {
+  return mode ? ['read','glob','grep',...(mode === 'edit' ? ['edit'] : [])] : []
+}
+
+export function nativeTools(request: ModelRequest): string[] {
+  if (request.opencodeNativeTools) return openCodeTools(request.opencodeNativeTools.network)
+  return [...workspaceTools(request.harnessWorkspace),...(request.nativeTool === 'task-list' ? ['todowrite'] : [])]
+}

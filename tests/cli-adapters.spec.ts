@@ -11,12 +11,13 @@ import {buildBackendPackage,activateBackendPackages} from '../src/backends/plugi
 import type {ModelRequest} from '../src/model.ts'
 const cleanups:(()=>void|Promise<void>)[]=[]
 afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();delete process.env.CLI_TEST_KEY})
-async function setup(kind:string){
+async function setup(kind:string,version?:string){
  const root=mkdtempSync(join(tmpdir(),'cli-adapter-'));cleanups.push(()=>rmSync(root,{recursive:true,force:true}))
  let requests=0,status=200,body='{}'
  const server=createServer((_req,res)=>{requests++;res.writeHead(status,{'content-type':'application/json'});res.end(body)})
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));cleanups.push(()=>new Promise<void>(r=>{server.closeAllConnections();server.close(()=>r())}))
  const manifest=JSON.parse(readFileSync(resolve('plugins/backend-'+kind+'/manifest.json'),'utf8'))
+ if(version)manifest.version=version
  const pkg=await buildBackendPackage(resolve('plugins/backend-'+kind+'/index.ts'),manifest,join(root,'pkg'))
  process.env.CLI_TEST_KEY='synthetic-account'
  const fixture=resolve('tests/fixtures/vendor-cli.mjs'),config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},turnTimeoutMs:10000,backendPlugins:[{directory:pkg.directory,digest:pkg.digest}],backends:{external:{kind:'plugin',plugin:manifest.id,config:{command:process.execPath,args:[fixture,kind,manifest.configSchema.properties.cliVersion.const],cliVersion:manifest.configSchema.properties.cliVersion.const,model:kind==='opencode'?'anthropic/fixture':'fixture',baseUrl:'http://127.0.0.1:'+(server.address() as any).port},readPaths:[fixture],env:{[kind==='gemini'?'GEMINI_API_KEY':'ANTHROPIC_API_KEY']:'CLI_TEST_KEY'}}},execution:{backend:'external'}})
@@ -25,6 +26,22 @@ async function setup(kind:string){
  const request:ModelRequest={cwd:root,instructions:'A validation task',input:'first',schema:{type:'object',properties:{answer:{type:'string'},inputs:{type:'array'}},required:['answer','inputs'],additionalProperties:false},managed:true,contextBudget:{maxBytes:80000,outputReserveBytes:8192,toolReserveBytes:4096},tools:[{type:'function',name:'allowed',description:'allowed operation',inputSchema:{type:'object',properties:{n:{type:'number'}},required:['n'],additionalProperties:false}}]}
  return {root,manifest,pkg,config,request,setResponse(s:number,b:string){status=s;body=b},get store(){return store},get registry(){return registry},get requests(){return requests},restart(){store.close();store=new Store(join(config.stateDir,'state.sqlite'));registry=new BackendRegistry(config,store)}}
 }
+it('authorizes the configured OpenCode adapter by default while preserving older pinned sessions',async()=>{
+ const f=await setup('opencode','1.1.0')
+ const request:ModelRequest={...f.request,role:'worker',allowNativeTools:true,onTool:async()=>({success:true,contentItems:[]})}
+ const old=await f.registry.run(request)
+ const next=await buildBackendPackage(resolve('plugins/backend-opencode/index.ts'),{...f.manifest,version:'1.2.0'},join(f.root,'new-package'))
+ f.config.backendPlugins=[{directory:next.directory,digest:next.digest}];activateBackendPackages(f.store,f.config);f.restart()
+ expect((await f.registry.history(old.threadId,f.root)).turns).toHaveLength(1)
+ await expect(f.registry.run({...request,input:'wire-native-tool',threadId:old.threadId})).rejects.toMatchObject({code:'unsupported'})
+ const sent:Record<string,unknown>[]=[]
+ const current=await f.registry.run({...request,input:'wire-native-tool',onConfiguration:v=>sent.push(v.sent)})
+ expect(sent.at(-1)?.nativeTools).toEqual(expect.arrayContaining(['bash','webfetch','write','task','todowrite']))
+ await expect(f.registry.run({...request,options:{tools:['allowed']},input:'wire-native-tool'})).rejects.toMatchObject({code:'unsupported'})
+ f.config.work.network=false;f.restart()
+ await expect(f.registry.run({...request,input:'wire-native-tool',threadId:current.threadId})).rejects.toMatchObject({code:'unsupported'})
+ expect((await f.registry.history(current.threadId,f.root)).turns[0]).toBeDefined()
+})
 for(const kind of ['claude','gemini','opencode']){
  it(kind+' fences a completed effect whose native acknowledgement was lost',async()=>{
   const f=await setup(kind);let id='',calls=0

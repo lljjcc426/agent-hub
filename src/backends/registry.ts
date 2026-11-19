@@ -138,7 +138,7 @@ export class BackendRegistry implements Model {
   const options=boundedBackendOptions(id,definition,r.options??(role==='router'?this.config.execution.router:undefined),this.config.turnTimeoutMs)
   const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
   const profileBackend=profile?.backend??this.selected(role)
-  const {allowNativeTools,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,...activation}=r
+  const {allowNativeTools,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
   const hostedTurn=allowNativeTools===true&&r.managed===true&&!r.ephemeral&&role!=='subagent'
   const interactive=hostedTurn&&r.onTool&&r.tools?.length
   const granted=profileBackend===id&&profile?.nativeTool===nativeToolFor(definition)?profile?.nativeTool:undefined
@@ -152,6 +152,7 @@ export class BackendRegistry implements Model {
   const eligible=hostedTurn&&bundledCLI&&isApiBackend(definition)&&!definition.images
   let engineId=previous?.harness
   if(!r.threadId&&eligible&&await this.presetSandboxAvailable())engineId=bundledEngineId
+  if(hostedTurn&&(engineId||definition.kind==='plugin'&&definition.plugin==='opencode-cli'))r={...r,allowNativeTools:true}
   if(r.threadId&&this.writers.has(r.threadId))throw Error('Backend thread already has an active writer')
   let locked=r.threadId;if(locked)this.writers.add(locked)
   const binding=this.binding(id)

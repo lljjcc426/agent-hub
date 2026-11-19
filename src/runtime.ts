@@ -529,12 +529,12 @@ export class Runtime {
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     let usingOpenCode=false
-    request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode';this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
+    request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools);this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
     if(this.model instanceof BackendRegistry){
       const progress=request.onProgress
       request.onProgress=event=>{
-        const match=/^opencode\/(completed|failed)\/(read|glob|grep|edit)$/.exec(event)
+        const match=/^opencode\/(completed|failed)\/([a-z_]+)$/.exec(event)
         if(usingOpenCode&&match){
           const call=this.activity.begin('tool','opencode/'+match[2],context,activity)
           this.activity.finish(call,match[1]==='completed'?'completed':'failed')

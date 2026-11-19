@@ -11,7 +11,8 @@ export interface LaunchContext {
 }
 export interface CliDriver {
  workspaceTools?(mode:ModelRequest['harnessWorkspace']):string[]
- workspaceGuard?(root:string,request:ModelRequest,turnId:string):{url:string;ready:()=>boolean;operations:()=>{tool:string;path:string;id:string}[]}
+ nativeTools?(request:ModelRequest):string[]
+ workspaceGuard?(root:string,request:ModelRequest,turnId:string):{url:string;ready:()=>boolean;operations:()=>{tool:string;path?:string;id:string}[]}
  taskListTool:string
  id:string;version:string;credentialEnvs:string[]
  upstream(config:CliConfig,model?:string):string

@@ -1,7 +1,7 @@
 /** Exercise the real pinned CLI with a deterministic, local OpenAI-compatible endpoint. */
 import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
-import {constants,copyFileSync,mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs'
+import {constants,copyFileSync,mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,realpathSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {Runtime} from '../../src/runtime.ts'
@@ -11,16 +11,28 @@ import {BackendRegistry} from '../../src/backends/registry.ts'
 import {bundledCLI,bundledEngineId} from '../../src/backends/bundled-opencode.ts'
 import type {ModelRequest} from '../../src/model.ts'
 
-const root=mkdtempSync(join(tmpdir(),'roppo-harness-'))
-const cwd=join(root,'task'),file=join(cwd,'endpoint.txt')
+const root=realpathSync(mkdtempSync(join(tmpdir(),'roppo-harness-')))
+const cwd=join(root,'task'),file=join(cwd,'endpoint.txt'),created=join(cwd,'native-result.txt')
 mkdirSync(cwd);writeFileSync(file,'old-address\n')
 let step=0,router=false,writes=0,runtimeTask=false,subscription=false,hostRouter=false,direct=false
 const protocols=new Set<string>()
 const events:string[]=[],errors:string[]=[]
-const sequence=[['glob',{pattern:'*.txt'}],['grep',{pattern:'old-address'}],['read',{filePath:'endpoint.txt'}],['edit',{filePath:'endpoint.txt',oldString:'old-address',newString:'new-address'}],['roppo_superagent_shell',{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]] as const
+const sequence=[['glob',{pattern:'*.txt'}],['grep',{pattern:'old-address'}],['read',{filePath:'endpoint.txt'}],['edit',{filePath:'endpoint.txt',oldString:'old-address',newString:'new-address'}],['write',{filePath:'native-result.txt',content:'native output\n'}],['bash',{command:'pwd',description:'Read the task directory'}],['roppo_superagent_shell',{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]] as const
+const nativeEvents=sequence.slice(0,-1).map(([name])=>'opencode/completed/'+name)
+const webPaths=['/article-one','/article-two']
+const webRequests=new Map<string,{start:number;end:number}>()
+let checkParallelFetch=false,requestedFetch=false
 const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,decision:null,handbacks:[]})
 const server=createServer(async(req,res)=>{
  try{
+  if(req.method==='GET'&&req.url&&webPaths.includes(req.url)){
+   const path=req.url
+   const timing={start:performance.now(),end:0};webRequests.set(path,timing)
+   await new Promise(ok=>setTimeout(ok,650))
+   timing.end=performance.now()
+   res.writeHead(200,{'content-type':'text/plain'}).end('Body of '+path)
+   return
+  }
   let raw='';for await(const chunk of req)raw+=chunk
   const input=JSON.parse(raw)
   if(input.model==='assessment'){
@@ -35,7 +47,7 @@ const server=createServer(async(req,res)=>{
    const anthropic=path.endsWith('/messages')
    if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
    else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
-   if(input.tools?.length){assert(input.tools.some((t:any)=>t.name==='read'));assert(!input.tools.some((t:any)=>t.name==='edit'))}
+   if(input.tools?.length){for(const name of ['read','bash','webfetch','task','todowrite'])assert(input.tools.some((t:any)=>t.name===name),name)}
    res.writeHead(200,{'content-type':'text/event-stream'})
    let n=0
    const event=(type:string,data:any)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data,...(anthropic?{}:{sequence_number:n++})})+'\n\n')
@@ -43,7 +55,21 @@ const server=createServer(async(req,res)=>{
     event('message_start',{message:{id:'msg_sample',type:'message',role:'assistant',model:'sample',content:[],stop_reason:null,usage:{input_tokens:10,output_tokens:0}}})
     event('content_block_start',{index:0,content_block:{type:'text',text:''}});event('content_block_delta',{index:0,delta:{type:'text_delta',text:answer}})
     event('content_block_stop',{index:0});event('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:5}});event('message_stop',{})
+   }else if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch')&&!requestedFetch){
+    requestedFetch=true
+    const origin='http://127.0.0.1:'+(server.address() as {port:number}).port
+    const output=webPaths.map((path,i)=>({type:'function_call',id:'fc_'+i,call_id:'fetch_'+i,name:'webfetch',status:'completed',arguments:JSON.stringify({url:origin+path,format:'text',timeout:5})}))
+    const response={id:'resp_fetch',object:'response',model:'sample',created_at:1,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+    event('response.created',{response:{...response,status:'in_progress',output:[]}})
+    for(const [output_index,item] of output.entries()){
+     event('response.output_item.added',{output_index,item:{...item,arguments:'',status:'in_progress'}})
+     event('response.function_call_arguments.delta',{output_index,item_id:item.id,delta:item.arguments})
+     event('response.function_call_arguments.done',{output_index,item_id:item.id,arguments:item.arguments})
+     event('response.output_item.done',{output_index,item})
+    }
+    event('response.completed',{response})
    }else{
+    if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch'))for(const page of webPaths)assert(raw.includes('Body of '+page))
     const item={type:'message',id:'msg_sample',role:'assistant',status:'completed',content:[{type:'output_text',text:answer,annotations:[]}]}
     const response={id:'resp_sample',object:'response',model:'sample',created_at:1,status:'completed',output:[item],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
     event('response.created',{response:{...response,status:'in_progress',output:[]}})
@@ -66,11 +92,11 @@ const server=createServer(async(req,res)=>{
   }
   const hasTools=names.length>0
   if(hasTools){
-   assert(names.includes('read'));assert.equal(names.includes('edit'),!router)
-   assert(!names.includes('bash'));assert(!names.includes('task'))
+   for(const name of ['read','write','edit','bash','task','webfetch','todowrite'])assert(names.includes(name),name)
    const previous=input.messages.at(-1)
    if(previous?.role==='tool'){
     if((previous.tool_call_id==='call-1'||previous.tool_call_id==='call-2')&&!router)assert(JSON.stringify(previous.content).includes('endpoint.txt'))
+    if(previous.tool_call_id==='call-6'&&!router)assert(JSON.stringify(previous.content).includes(cwd))
     if(hostRouter)assert(JSON.stringify(previous.content).includes('new-address'))
     assert(!/Tool unavailable|Outside the task|permission.*denied|file not found|Error:/i.test(JSON.stringify(previous.content)),JSON.stringify(previous.content))
    }
@@ -107,7 +133,8 @@ try{
  await registry.purge(quiet.threadId,cwd)
  const result=await registry.run(request)
  assert.deepEqual(JSON.parse(result.text),{answer:'done'});assert.equal(writes,1)
- assert.deepEqual(events.filter(e=>e.startsWith('opencode/')),['opencode/completed/glob','opencode/completed/grep','opencode/completed/read','opencode/completed/edit'])
+ assert.deepEqual(events.filter(e=>e.startsWith('opencode/')),nativeEvents)
+ assert.equal(readFileSync(created,'utf8'),'native output\n')
  const connection=config.backends.api!;assert(connection.kind==='openai-chat')
  connection.images=true // Changing the fresh-session preset must preserve this active session.
  store.close();store=new Store(join(config.stateDir,'state.sqlite'));registry=new BackendRegistry(config,store)
@@ -120,7 +147,7 @@ try{
  }finally{bundledCLI!.command=oldCommand}
  connection.images=false
  assert.equal(writes,1);assert((await registry.history(result.threadId,cwd)).turns[0].items.some((i:any)=>i.name==='opencode/edit'))
- writes=0;step=0;writeFileSync(file,'old-address\n')
+ writes=0;step=0;writeFileSync(file,'old-address\n');rmSync(created,{force:true})
  const stop=new AbortController();let interrupted=''
  await assert.rejects(registry.run({...request,signal:stop.signal,onThread:id=>{interrupted=id},onProgress:e=>{if(e==='opencode/completed/edit')stop.abort()}}))
  assert(interrupted);assert.equal(readFileSync(file,'utf8'),'new-address\n')
@@ -133,9 +160,19 @@ try{
  for(const kind of ['anthropic','openai-responses'] as const){
   const api=config.backends.api!;assert(api.kind==='openai-chat');config.backends[kind]={...api,kind}
   config.execution.router!.backend=kind
+  checkParallelFetch=kind==='openai-responses'
   const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.'})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
+  if(checkParallelFetch){
+   const timings=[...webRequests.values()]
+   assert.equal(timings.length,2)
+   const overlap=Math.min(...timings.map(t=>t.end))-Math.max(...timings.map(t=>t.start))
+   assert(overlap>0,'Native webfetch calls ran serially')
+   assert.equal((await registry.history(response.threadId,cwd)).turns[0].items.filter((i:any)=>i.name==='opencode/webfetch').length,2)
+   console.log(JSON.stringify({tool:'opencode/webfetch',calls:2,overlapMs:Math.round(overlap),verified:true}))
+  }
  }
+ checkParallelFetch=false
  const api=config.backends['openai-responses'];assert(api?.kind==='openai-responses')
  config.backends.plan={...api,baseUrl:'https://api.openai.com/v1',apiKeyEnv:undefined,subscription:{provider:'chatgpt',account:'sample',owner:{source:'local',actor:'alice'},backgroundAuthorized:true}}
  config.execution.router!.backend='plan'
@@ -152,7 +189,7 @@ try{
  runtimeTask=true;router=false;step=0;writeFileSync(file,'old-address\n')
  const normalConfig=configSchema.parse({...config,stateDir:join(root,'runtime-state'),models:{router:'assessment'},execution:{backend:'api',roles:{router:'api'},workers:[{id:'one',backend:'api'}]},sources:[{id:'local',kind:'local',cwd,allowedActors:['alice'],sandbox:'workspace-write',workspace:{mode:'source'}}]})
  for(const engine of ['opencode','direct']){
-  direct=engine==='direct';step=0;writeFileSync(file,'old-address\n')
+  direct=engine==='direct';step=0;writeFileSync(file,'old-address\n');rmSync(created,{force:true})
   const trial=structuredClone(normalConfig)
   trial.stateDir=join(root,'runtime-'+engine)
   // The image-capable profile uses Roppo's multimodal API executor.
@@ -170,7 +207,7 @@ try{
    const jobs=host.work.list().filter(job=>job.kind==='shell'&&job.command==='grep -Fx new-address endpoint.txt')
    assert.equal(jobs.length,1);assert.equal(jobs[0]!.state,'completed');assert.equal(jobs[0]!.exitCode,0)
    const calls=host.activity.list().filter(c=>c.kind==='tool'&&c.state==='completed').map(c=>c.name)
-   for(const tool of direct?['superagent_shell']:['opencode/glob','opencode/grep','opencode/read','opencode/edit','superagent_shell'])assert(calls.includes(tool),JSON.stringify(calls))
+   for(const tool of direct?['superagent_shell']:['opencode/glob','opencode/grep','opencode/read','opencode/edit','opencode/write','opencode/bash','superagent_shell'])assert(calls.includes(tool),JSON.stringify(calls))
    console.log(JSON.stringify({engine,elapsedMs:Date.now()-start,tools:calls,verified:true}))
   }finally{await host.close()}
  }

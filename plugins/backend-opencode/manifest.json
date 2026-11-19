@@ -1,7 +1,7 @@
 {
   "id": "opencode-cli",
   "label": "OpenCode",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "stateVersion": 1,
   "configSchema": {
     "type": "object",

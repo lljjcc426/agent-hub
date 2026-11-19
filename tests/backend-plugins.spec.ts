@@ -220,8 +220,8 @@ it.each([true,false])('gates a native descendant write on release after owner ki
   }else{
    // Positive control proves that a live descendant observes the same gate and
    // really writes; removing process cleanup cannot turn this into an empty test.
-   await waitFor(()=>existsSync(join(directory!,'escaped')),'Live descendant did not write after release')
-   expect(readFileSync(join(directory!,'escaped'),'utf8')).toBe('escaped')
+   const escaped=join(directory!,'escaped')
+   await waitFor(()=>existsSync(escaped)&&readFileSync(escaped,'utf8')==='escaped','Live descendant did not finish writing after release')
   }
  }finally{
   try{if(directory)writeFileSync(join(directory,'cancel-descendant'),'cancel')}

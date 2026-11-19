@@ -81,7 +81,8 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    session.turns.push(turn)
    const save=()=>privateFile(join(root,'session.json'),JSON.stringify(session))
    let child:ReturnType<typeof spawn>|undefined,bridge:Awaited<ReturnType<typeof toolBridge>>|undefined,failure:unknown,done=false,buffer='',stderr='',outputBytes=0
-   const guard=config.apiProtocol&&request.harnessWorkspace?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
+   const allowedNative=new Set(driver.nativeTools?.(request))
+   const guard=(config.apiProtocol&&request.harnessWorkspace||request.opencodeNativeTools)?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
    const decoder=new StringDecoder('utf8'),errorDecoder=new StringDecoder('utf8')
    let wire:Awaited<ReturnType<typeof wireBridge>>|undefined
    const fail=(error:unknown)=>{failure??=error;child?.kill('SIGKILL')}
@@ -118,7 +119,10 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      call.result=result;save();budget('cli-tool-result');wire?.check('native-tool-result',{id,result})
      return call.result as Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
     },fail)
-    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences. Use only the supplied Roppo tools for external actions.'+(request.harnessWorkspace?' Use the native file tools with paths relative to the assigned task workspace.':'')+(request.nativeTool==='task-list'?' You may use '+driver.taskListTool+' to organize this session.':'')
+    const toolInstructions=request.opencodeNativeTools
+     ?' Use the supplied OpenCode and Roppo tools within the assigned task permissions. Use file paths relative to the task workspace.'
+     :' Use only the supplied Roppo tools for external actions.'+(request.harnessWorkspace?' Use the native file tools with paths relative to the assigned task workspace.':'')
+    const prompt=request.input+'\n\nReturn the final answer as JSON matching this schema: '+JSON.stringify(request.schema)+'. No Markdown fences.'+toolInstructions+(request.nativeTool==='task-list'?' You may use '+driver.taskListTool+' to organize this session.':'')
     wire=await wireBridge(endpoint(request.harnessProviderUrl??driver.upstream(config,request.model))!,driver,request,fail,withTools=>{
      if(failure)throw failure
      if(withTools&&guard&&!guard.ready())throw new BackendAdapterError('configuration_invalid')
@@ -126,8 +130,8 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      if(!session.nativeId)throw new BackendAdapterError('invalid_output')
     })
     const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,guardPlugin:guard?.url,prompt})
-    request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion,...(config.apiProtocol?{harness:'opencode',protocol:config.apiProtocol,workspaceTools:driver.workspaceTools?.(request.harnessWorkspace)}:{})}})
-    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool||request.harnessWorkspace?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
+    request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion,...(config.apiProtocol?{harness:'opencode',protocol:config.apiProtocol,workspaceTools:driver.workspaceTools?.(request.harnessWorkspace)}:{}),...(request.opencodeNativeTools?{nativeTools:[...allowedNative]}:{})}})
+    request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool||allowedNative.size?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
     request.onContextReady?.()
     request.onActive?.({interrupt:async()=>abort(),steer:async()=>{throw new BackendAdapterError('unsupported')}})
     if(failure)throw failure
@@ -138,17 +142,17 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      const value=JSON.parse(line),event=driver.event(value)
      turn.protocolBytes+=Buffer.byteLength(line);if(event.session)bind(event.session)
      if(event.error)throw new BackendAdapterError(cliFailure(event.error))
-     const workspaceTool=!!event.tool&&driver.workspaceTools?.(request.harnessWorkspace).includes(event.tool)
-     if(workspaceTool){
+     const nativeTool=!!guard&&!!event.tool&&allowedNative.has(event.tool)
+     if(nativeTool){
       const op=guard?.operations().find(o=>o.id===event.callId&&o.tool===event.tool)
       if(!event.callId||!op&&!event.toolError)throw new BackendAdapterError('invalid_output')
-      turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?{path:op.path}:{},result:{success:!event.toolError}})
+      turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?.path===undefined?{}:{path:op.path},result:{success:!event.toolError}})
       request.onProgress?.('opencode/'+(event.toolError?'failed/':'completed/')+event.tool)
      }
      if(event.usage)request.onUsage?.(event.usage)
      const nativeTask=event.tool===driver.taskListTool&&request.nativeTool==='task-list'
      if(nativeTask)request.onProgress?.('cli/tool/'+driver.taskListTool)
-     if(event.tool&&!workspaceTool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
+     if(event.tool&&!nativeTool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
      if(event.tool)turn.text=''
      if(event.model)request.onModel?.(event.model)
      if(event.text)turn.text+=event.text

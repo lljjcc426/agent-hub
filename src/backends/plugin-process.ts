@@ -12,6 +12,7 @@ import type {PluginBackendDefinition} from '../backend-config.ts'
 import type {Model,ModelRequest,ModelResult,BackendDescription} from '../model.ts'
 import type {ThreadStore} from './api.ts'
 import {sandboxCommand} from '../sandbox.ts'
+import {supportsOpenCodeTools} from '../../plugins/backend-opencode/native-tools.ts'
 import {hostPrivateFiles} from '../private-files.ts'
 import {stableDigest} from '../sources.ts'
 import {ContextBudgetExceeded,type BudgetReceipt} from '../context-budget.ts'
@@ -56,6 +57,10 @@ export class ProcessBackend implements Model {
    throw new BackendPluginError('configuration_invalid',this.id)
   }
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
+  const defaultOpenCodeTools=supportsOpenCodeTools(pkg.manifest)&&request.allowNativeTools===true&&request.managed===true&&
+   !request.ephemeral&&request.options?.tools===undefined&&!!request.onTool&&!!request.tools?.length&&(request.role==='router'||request.role==='worker')
+  const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,...activation}=request
+  request=defaultOpenCodeTools?{...activation,opencodeNativeTools:{network:this.config.work.network}}:activation
   if(request.nativeTool&&!caps.nativeTools?.includes(request.nativeTool))throw new BackendPluginError('unsupported',this.id)
   if(old&&!caps.resume)throw new BackendPluginError('unsupported',this.id)
   if(request.managed&&(!caps.managed||!caps.tools||!caps.resume||!caps.history||!caps.contextBudget))throw new BackendPluginError('unsupported',this.id)
@@ -130,7 +135,12 @@ export class ProcessBackend implements Model {
   try{return healthSchema.parse(await transport.call('probe',{args:[]}))}finally{await transport.close()}
  }
  private async launch(pkg:BackendPackage,cwd:string,request?:ModelRequest,record?:PluginThread){
-  const scratch=mkdtempSync(join(tmpdir(),'agenthub-backend-')),dataDirectory=join(this.config.stateDir,'backend-plugin-data',this.id,this.sessionIdentity)
+  const scratch=mkdtempSync(join(tmpdir(),'agenthub-backend-'))
+  const dataRoot=join(this.config.stateDir,'backend-plugin-data',this.id,this.sessionIdentity)
+  // A native shell has the process sandbox's file access. Mount just this
+  // thread's OpenCode data. Older pinned packages keep their original layout.
+  const threadData=record?join(dataRoot,'threads',stableDigest(record.id)):scratch
+  const dataDirectory=supportsOpenCodeTools(pkg.manifest)?threadData:dataRoot
   mkdirSync(dataDirectory,{recursive:true,mode:0o700})
   let child:ChildProcessWithoutNullStreams|undefined,closed=false,sequence=0,toolCalls=0,lastBudget:BudgetReceipt|undefined,buffer=''
   const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>(),readReceipts=new Map<number,()=>void>(),inflightTools=new Set<string>(),callbackIds=new Set<number>()
@@ -211,7 +221,9 @@ export class ProcessBackend implements Model {
    const state=canonical(this.config.stateDir)
    for(const path of this.definition.writePaths)if(inside(canonical(path),state)||inside(state,canonical(path)))throw Error('Execution plugin cannot request writes to host state')
    const workDirectory=record?cwd:scratch
-   const command=sandboxCommand({sandboxDriver:this.config.work.sandboxDriver,codex:this.config.codex,cwd:workDirectory,scratch,sandbox:this.hostHarness&&request?.harnessProviderUrl&&request.harnessWorkspace==='edit'&&request.sandbox==='workspace-write'&&request.role==='worker'?'workspace-write':'read-only',network:pkg.manifest.network,privateState:state,privatePaths:hostPrivateFiles(),attachments:[runner,process.execPath,join(pkg.directory,'plugin.mjs'),...this.definition.readPaths],writablePaths:[dataDirectory,...this.definition.writePaths],command:'exec '+[process.execPath,runner].map(quote).join(' ')})
+   const workspaceWrite=request?.sandbox==='workspace-write'&&request.role==='worker'&&
+    (request.opencodeNativeTools||this.hostHarness&&request.harnessProviderUrl&&request.harnessWorkspace==='edit')
+   const command=sandboxCommand({sandboxDriver:this.config.work.sandboxDriver,codex:this.config.codex,cwd:workDirectory,scratch,sandbox:workspaceWrite?'workspace-write':'read-only',network:pkg.manifest.network,privateState:state,privatePaths:hostPrivateFiles(),attachments:[runner,process.execPath,join(pkg.directory,'plugin.mjs'),...this.definition.readPaths],writablePaths:[dataDirectory,...this.definition.writePaths],command:'exec '+[process.execPath,runner].map(quote).join(' ')})
    child=spawn(command.command,command.args,{cwd:workDirectory,env,stdio:['pipe','pipe','pipe'],detached:true})
    exited=new Promise<void>(done=>child!.once('close',()=>done()))
    child.stderr.resume();child.stdin.on('error',()=>fail(new BackendPluginError('process_failed',this.id)))

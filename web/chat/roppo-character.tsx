@@ -31,21 +31,21 @@ export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:Com
   const handFrom={transform:handStyle.transform,opacity:Number(handStyle.opacity)};
   stopGreeting();
   character.dataset.greeting='true';
-  const options={duration:760,easing:'ease-in-out'};
+  const duration=1180;
   const lift=pose.animate([
    {transform:liftFrom,offset:0},
-   {transform:'translateY(-3px)',offset:.25},
-   {transform:'translateY(-3px)',offset:.72},
+   {transform:'translateY(-3px)',offset:.19},
+   {transform:'translateY(-3px)',offset:.76},
    {transform:'none',offset:1},
-  ],options);
+  ],{duration,easing:'ease-in-out'});
   const wave=hand.animate([
-   {...handFrom,offset:0},
-   {transform:'rotate(-37deg)',opacity:1,offset:.24},
-   {transform:'rotate(-59deg)',opacity:1,offset:.38},
-   {transform:'rotate(-28deg)',opacity:1,offset:.52},
-   {transform:'rotate(-54deg)',opacity:1,offset:.68},
+   {...handFrom,offset:0,easing:'ease-out'},
+   {transform:'rotate(-37deg)',opacity:1,offset:.18,easing:'ease-in-out'},
+   {transform:'rotate(-59deg)',opacity:1,offset:.37,easing:'ease-in-out'},
+   {transform:'rotate(-28deg)',opacity:1,offset:.57,easing:'ease-in-out'},
+   {transform:'rotate(-54deg)',opacity:1,offset:.76,easing:'ease-in-out'},
    {transform:'rotate(32deg)',opacity:0,offset:1},
-  ],options);
+  ],{duration});
   gesture.current=[lift,wave];
   wave.onfinish=()=>{
    if(!gesture.current.includes(wave))return;

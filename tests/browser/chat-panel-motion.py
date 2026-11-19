@@ -15,8 +15,44 @@ def assert_greeting(page):
         const bounds = hand.getBoundingClientRect();
         const smilingEyes = getComputedStyle(portrait.querySelector('.roppo-eyes-happy')).opacity;
         return new DOMMatrix(lift).m42 < -2 && Number(smilingEyes) > .9
-            && Number(getComputedStyle(hand).opacity) > .9 && Math.abs(bounds.width - bounds.height) < .05;
+            && Number(getComputedStyle(hand).opacity) > .9 && Math.abs(bounds.width - bounds.height) < .05
+            && hand.getAnimations().some(animation => animation.effect.getTiming().duration >= 1100);
     }""", timeout=1800)
+
+
+def assert_dock_slide(page, trigger, opening):
+    motion = page.evaluate("""async trigger => {
+        const body = document.querySelector('.conversation-body');
+        const transcript = document.querySelector('.transcript-inner');
+        const composer = document.querySelector('.composer');
+        const center = el => {
+            const bounds = el.getBoundingClientRect();
+            return bounds.left + bounds.width / 2;
+        };
+        const position = () => [center(transcript), center(composer), body.scrollLeft];
+        const frames = [position()];
+        const button = document.querySelector(trigger);
+        button.focus({preventScroll: true});
+        button.click();
+        let duration;
+        const deadline = performance.now() + 340;
+        do {
+            await new Promise(requestAnimationFrame);
+            const panel = document.querySelector('#session-panel');
+            const slide = panel?.getAnimations().find(animation => animation.transitionProperty === 'margin-right');
+            duration ??= slide?.effect.getTiming().duration;
+            frames.push(position());
+        } while (performance.now() < deadline);
+        return {frames, duration};
+    }""", trigger)
+    frames = motion['frames']
+    assert all(abs(chat - composer) < 1 and scroll == 0 for chat, composer, scroll in frames), frames
+    first, last = frames[0][0], frames[-1][0]
+    assert (first - last if opening else last - first) > 100, motion
+    left, right = sorted((first, last))
+    assert any(left + 12 < chat < right - 12 for chat, _, _ in frames), motion
+    if not opening:
+        assert motion['duration'] <= 180, motion
 
 
 def assert_surfaces(page):
@@ -37,13 +73,16 @@ with sync_playwright() as pw:
         window.exits = [];
         document.addEventListener('transitionrun', event => {
             const el = event.target;
-            if (el.id === 'session-panel' && el.hasAttribute('data-closing') && event.propertyName === 'transform')
+            if (el.id === 'session-panel' && el.hasAttribute('data-closing') && ['transform', 'margin-right'].includes(event.propertyName))
                 exits.push([el.classList.contains('team-drawer') ? 'overview' : 'resources', el.inert]);
         });
         document.addEventListener('animationstart', event => {
             const el = event.target;
             const host = el.closest('.tray-presence[data-closing]');
-            if (el.id === 'pending-tray' && host) exits.push([event.animationName, host.inert]);
+            if (el.id === 'pending-tray' && host) {
+                const animation = el.getAnimations().find(animation => animation.animationName === event.animationName);
+                exits.push([event.animationName, host.inert, animation?.effect.getTiming().duration]);
+            }
         });
     """)
     page = context.new_page()
@@ -61,7 +100,7 @@ with sync_playwright() as pw:
     portrait = drawer.get_by_role('button', name='和 Roppo 打招呼')
     close_drawer = drawer.get_by_role('button', name='收起面板')
     mascot = portrait.locator('.roppo-character')
-    drawer_toggle.click()
+    assert_dock_slide(page, 'button[aria-controls="session-panel"]', opening=True)
     expect(drawer).to_be_visible()
     assert_greeting(page)
     expect(portrait).to_have_css('background-color', 'rgba(0, 0, 0, 0)')
@@ -84,7 +123,7 @@ with sync_playwright() as pw:
     assert_greeting(page)
     page.screenshot(path=str(root / 'roppo-greeting.png'))
     expect(mascot).not_to_have_attribute('data-greeting', 'true')
-    close_drawer.click()
+    assert_dock_slide(page, '#session-panel .team-drawer-head > .icon-button', opening=False)
     expect(drawer).to_have_count(0)
     expect(drawer_toggle).to_be_focused()
     assert ['overview', True] in page.evaluate('exits')
@@ -117,15 +156,19 @@ with sync_playwright() as pw:
     page.keyboard.press('Escape')
     expect(pending).to_have_count(0)
     expect(pending_toggle).to_be_focused()
-    assert ['tray-leave', True] in page.evaluate('exits')
+    assert ['tray-leave', True, 170] in page.evaluate('exits')
 
     page.set_viewport_size({'width': 390, 'height': 780})
+    lane = page.locator('.conversation-lane')
+    expect(page.locator('.conversation-body')).to_have_class('conversation-body panel-overlay')
+    narrow_width = lane.bounding_box()['width']
     page.evaluate("""window.dispatchEvent(new StorageEvent('storage', {
         key:'agenthub.configuration.theme', newValue:'dark'
     }))""")
     expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
     page.locator('.chat-companion').click()
     assert_greeting(page)
+    assert lane.bounding_box()['width'] == narrow_width
     assert_surfaces(page)
     expect(portrait).to_have_css('background-color', 'rgba(0, 0, 0, 0)')
     close_drawer.click()
@@ -134,12 +177,15 @@ with sync_playwright() as pw:
     expect(pending).to_be_visible()
     page.keyboard.press('Escape')
     expect(pending).to_have_count(0)
-    assert ['tray-sheet-out', True] in page.evaluate('exits')
+    assert ['tray-sheet-out', True, 170] in page.evaluate('exits')
 
     page.emulate_media(reduced_motion='reduce')
     page.evaluate('exits.length = 0')
+    page.set_viewport_size({'width': 1280, 'height': 820})
+    expect(page.locator('.conversation-body')).to_have_class('conversation-body')
     page.locator('.chat-companion').click()
     portrait.click()
+    assert drawer.evaluate('el => el.getAnimations().length') == 0
     expect(mascot).not_to_have_attribute('data-greeting', 'true')
     assert mascot.evaluate('el => el.getAnimations({subtree:true}).length') == 0
     close_drawer.click()

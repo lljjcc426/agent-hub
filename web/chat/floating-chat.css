@@ -7,6 +7,7 @@
   --float-bottom: max(var(--float-gap), env(safe-area-inset-bottom));
   --below-controls: calc(var(--float-top) + 92px);
   --float-shadow: 0 2px 8px #0000000d, 0 8px 26px #00000009;
+  --panel-exit-duration: 170ms;
 }
 .floating-chat .chat-main { position: relative; grid-column: 1; }
 .chat-float {
@@ -138,20 +139,36 @@
   pointer-events: none;
   opacity: 0;
   transform: translateX(28px);
+  transition-duration: var(--panel-exit-duration);
   transition-timing-function: ease-in;
 }
-@starting-style {
-  .floating-chat .conversation-body > .session-panel { opacity: 0; transform: translateX(20px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .floating-chat .conversation-body > .session-panel { transition: none; }
-}
+/* Keep the sidebar at its full width while its outer edge slides out of the flex layout. */
 .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+  --docked-panel-width: clamp(var(--panel-min, 360px), var(--panel-size, var(--panel-default, min(43vw, 600px))), calc(100% - 394px));
   position: relative;
   inset: auto;
   align-self: stretch;
   margin: var(--float-top) var(--float-right) var(--float-bottom) 0;
-  width: clamp(var(--panel-min, 360px), var(--panel-size, var(--panel-default, min(43vw, 600px))), calc(100% - 394px));
+  width: var(--docked-panel-width);
+  transition-property: margin-right, opacity;
+}
+.floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded)[data-closing] {
+  margin-right: calc(-1 * var(--docked-panel-width));
+  transform: none;
+  transition-timing-function: ease-in-out, ease-in;
+}
+@starting-style {
+  .floating-chat .conversation-body > .session-panel { opacity: 0; transform: translateX(20px); }
+  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+    margin-right: calc(-1 * var(--docked-panel-width));
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floating-chat .conversation-body > .session-panel,
+  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+    transition: none;
+  }
 }
 .floating-chat .session-panel.team-drawer { --panel-min: 290px; --panel-default: 360px; }
 .floating-chat .session-panel > .sidebar-separator { left: 0; }

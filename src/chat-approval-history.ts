@@ -28,15 +28,16 @@ export function pendingChatApprovals(store:Store, conversation:string) {
 }
 
 export function transcriptApprovals(store:Store, conversation:string, window:{from:number;until:number;worker?:string;run?:string}) {
+  // The message page's time window determines which approval notices belong in the transcript.
   const rows=store.db.prepare(`SELECT kind,body FROM records WHERE ${completedPermissions}
     AND (${human} OR json_extract(body,'$.phase')='uncertain' OR json_extract(body,'$.receipt.success')=0
       OR EXISTS(SELECT 1 FROM records job WHERE job.kind='work' AND job.id=json_extract(records.body,'$.jobId') AND json_extract(job.body,'$.state')='failed'))
     AND ${created} BETWEEN ? AND ?
     AND (? IS NULL OR coalesce(json_extract(body,'$.chat.workerId'),json_extract(body,'$.actor.workerId'))=?)
     AND (? IS NULL OR coalesce(json_extract(body,'$.chat.runId'),json_extract(body,'$.actor.runId'))=?)
-    ORDER BY ${created} DESC,id DESC LIMIT 100`).all(conversation,conversation,window.from,window.until,
+    ORDER BY ${created} DESC,id DESC`).iterate(conversation,conversation,window.from,window.until,
       window.worker??null,window.worker??null,window.run??null,window.run??null)
-  return rows.map(row=>{
+  return Array.from(rows,row=>{
     const request=row.kind==='approval'?publicApproval(JSON.parse(String(row.body))):permissionCard(JSON.parse(String(row.body)),store)
     // The transcript only needs the sentence. Full command text is fetched on opening an archive item.
     const facts:Record<string,string>={}

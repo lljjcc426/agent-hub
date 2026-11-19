@@ -8,6 +8,7 @@ from playwright.sync_api import expect, sync_playwright
 
 root = Path(sys.argv[1])
 info = json.loads((root / 'browser.json').read_text())
+approval_count = 101
 with sync_playwright() as pw:
     browser = pw.chromium.launch()
     context = browser.new_context(viewport={'width': 1280, 'height': 820}, reduced_motion='no-preference')
@@ -30,7 +31,7 @@ with sync_playwright() as pw:
     with sqlite3.connect(root / 'state' / 'state.sqlite') as db:
         created, conversation, run = db.execute("""select json_extract(body,'$.createdAt'),json_extract(body,'$.conversationId'),json_extract(body,'$.runId')
             from records where kind='chat-message' order by rowid desc limit 1""").fetchone()
-        for n in range(43):
+        for n in range(approval_count):
             item = 'permission:' + format(n, '064x')
             action = {'id': item, 'actor': {'conversationId':conversation,'runId':run,'triggerId':run,'workerId':'router','mode':'ask'},
                       'tool':'superagent_shell','phase':'complete','approved':True,'automatic':False,'createdAt':created,
@@ -53,16 +54,15 @@ with sync_playwright() as pw:
     expect(tray.get_by_role('button',name='允许一次')).to_have_count(0)
     tray.get_by_role('button',name='返回审批记录').click()
     rows=tray.locator('.history-row')
-    expect(rows).to_have_count(20)
-    tray.get_by_role('button',name='加载更早的记录').click()
-    expect(rows).to_have_count(40)
-    tray.get_by_role('button',name='加载更早的记录').click()
-    expect(rows).to_have_count(43)
+    for visible_count in range(20, approval_count, 20):
+        expect(rows).to_have_count(visible_count)
+        tray.get_by_role('button',name='加载更早的记录').click()
+    expect(rows).to_have_count(approval_count)
     expect(tray.get_by_role('button',name='加载更早的记录')).to_have_count(0)
     rows.last.click()
     expect(tray.locator('.permission-reason')).to_contain_text('目录 00')
     tray.get_by_role('button',name='返回审批记录').click()
-    expect(rows).to_have_count(43)
+    expect(rows).to_have_count(approval_count)
     page.keyboard.press('Escape')
     expect(tray).to_have_count(0)
     expect(origin).to_be_focused()
@@ -86,5 +86,5 @@ with sync_playwright() as pw:
     assert 'tray-sheet-in' in page.evaluate('window.previewMotion')
     assert 'tray-sheet-out' in page.evaluate('window.previewMotion')
     assert not errors,errors
-    print('PASS historical approval links, opaque details, 20/20/3 pages, focus restoration, desktop motion and reduced-motion mobile sheet')
+    print('PASS oldest link with 101 approvals, read-only details, 20-record pages, focus restoration, desktop motion and reduced-motion mobile sheet')
     browser.close()

@@ -1534,6 +1534,25 @@ it('publishes a scheduled Worker file on that occurrence and reopens its message
   expect(Buffer.from(recovered.chat.delivery(c.id,'owner',result.files[0]!.id).bytes).toString()).toBe('Worker handover')
 })
 
+it('keeps every resolved approval on a transcript page containing more than 100 approvals',()=>{
+  const {h}=fixture(),c=h.chat.create('owner'),{runId}=send(h,c.id)
+  const {createdAt}=h.chat.view(c.id,'owner').messages[0]!
+  h.store.atomic(()=>{
+    for(let i=0;i<101;i++){
+      const id='permission-'+String(i).padStart(3,'0')
+      h.store.put('chat-permission',id,{id,createdAt,phase:'complete',automatic:false,
+        actor:{conversationId:c.id,workerId:'router',runId},tool:'superagent_shell',args:{},
+        facts:{command:'historical command contents'},notice:`Approval for operation ${i}.`})
+    }
+  })
+
+  const view=h.chat.view(c.id,'owner')
+  expect(view.hasMore).toBe(false)
+  expect(view.approvals).toHaveLength(101)
+  expect(view.approvals[0]).toMatchObject({id:'permission-000',notice:'Approval for operation 0.',facts:{command:'…'}})
+  expect(view.approvals.at(-1)?.id).toBe('permission-100')
+})
+
 it('pages retained approval history across tied timestamps and looks up older records without exposing another owner',()=>{
   const {h}=fixture(), c=h.chat.create('owner'),foreign=h.chat.create('other')
   const save=(id:string,conversationId:string,createdAt:number)=>{

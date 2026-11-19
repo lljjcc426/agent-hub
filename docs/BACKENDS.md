@@ -11,7 +11,9 @@ AgentHub 的客户端入口、任务来源和执行后端独立。MCP 客户端�
 | `anthropic` | `POST <baseUrl>/messages` | 宿主保存 content、tool_use/tool_result 和推理块 | 无 |
 | `codex` | 本机 Codex App Server | 原生 Codex thread | 有 |
 
-三个 API 后端直接发 HTTP，不调用 Codex CLI。当前采用非流式请求；没有自动压缩上下文、后端自动切换或跨供应商迁移。兼容服务必须实际支持所选协议、模型工具调用和所选输出格式；兼容其中一个协议不代表支持所有模型能力。[验收范围](BACKEND_ACCEPTANCE.md) 单独记录。
+三个 API 后端直接发 HTTP，不调用 Codex CLI。内置 Chat 请求增量回复时，宿主设置 `stream: true` 并解析对应协议的 SSE。普通 API 端点返回完整 JSON 时，Chat 会在请求完成后一次显示回复。
+
+没有自动压缩上下文、后端自动切换或跨供应商迁移。兼容服务必须实际支持所选协议、模型工具调用和所选输出格式。具体能力取决于所选模型与端点。[验收范围](BACKEND_ACCEPTANCE.md) 单独记录。
 
 ## 配置
 

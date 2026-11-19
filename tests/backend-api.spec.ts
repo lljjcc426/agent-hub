@@ -82,6 +82,38 @@ it('admits up to 32 independent reads and preserves write order and provider res
  expect(completed.at(-1)).toBe('last')
  expect(results('openai-responses',f.requests[1].body).map((r:any)=>[r.call_id,r.output[0].text])).toEqual(calls.map(c=>[c.id,c.id]))
 })
+
+it.each([
+ {name:'the connection default',connectionLimit:2},
+ {name:'the connection policy ceiling',connectionLimit:8,policyLimit:2},
+])('counts Code Mode child calls against $name',async({connectionLimit,policyLimit})=>{
+ const kind='openai-responses'
+ let observed:boolean[]|undefined
+ const wire=await server(body=>{
+  const toolResults=results(kind,body)
+  if(toolResults.length){
+   observed=JSON.parse(toolResults[0].output[0].text)
+   return output(kind,'{"reply":"Finished reading."}')
+  }
+  return output(kind,'',[{id:'script',name:'code_mode',args:{
+   source:'const all=await Promise.all([1,2,3].map(()=>tools.worker_manage({action:"list"}))); return all.map(r=>r.success)',
+  }}])
+ })
+ const root=mkdtempSync(join(tmpdir(),'roppo-code-mode-limit-'));roots.push(root)
+ const host=new Runtime(configSchema.parse({
+  stateDir:join(root,'state'),work:{sandboxDriver:'disabled'},
+  backends:{api:definition(kind,wire.url,{maxToolCalls:connectionLimit,...(policyLimit?{limits:{maxToolCalls:policyLimit}}:{})})},
+  execution:{backend:'api',router:{mode:'host',backend:'api'}},
+  sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],
+ }));hosts.push(host)
+ const chat=host.chat.create('owner')
+ host.chat.send(chat.id,'owner',{clientMessageId:'code-mode-limit',text:'Read the Worker list in Code Mode.'})
+ for(let i=0;i<500&&host.chat.view(chat.id,'owner').run?.state!=='completed';i++){await host.tick();await new Promise(r=>setTimeout(r,3))}
+ expect(host.chat.view(chat.id,'owner').run?.state).toBe('completed')
+ expect(observed).toEqual([true,false,false])
+ expect(host.activity.list().filter(call=>call.name==='worker_manage'&&call.state==='completed')).toHaveLength(1)
+})
+
 it.each(kinds)('%s budgets full instructions, tools and provider parameters before HTTP',async kind=>{
  const f=await server(()=>output(kind,'{"answer":"never"}')),store=memory()
  const model=new ApiModel('test',definition(kind,f.url,{parameters:{metadata:{padding:'x'.repeat(9000)}}}),store,10000)

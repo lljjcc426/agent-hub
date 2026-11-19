@@ -23,19 +23,19 @@ export const codeModeTool = {
 } satisfies ToolSpec
 
 /** Each cell receives only this activation's authorized tool descriptors and dispatcher. */
-export function withCodeMode(request: ModelRequest): ModelRequest {
+export function withCodeMode(request: ModelRequest, maxToolCalls = request.options?.maxToolCalls ?? modelToolCalls.default): ModelRequest {
   if(!request.managed || !request.allowNativeTools || request.ephemeral || request.role==='subagent' ||
     !request.onTool || !request.tools?.length || request.options?.tools && !request.options.tools.includes(codeModeTool.name))return request
   const tools=request.tools.filter(t=>t.name!==codeModeTool.name&&t.name!=='chat_opening')
   const original=request.onTool
   let calls=0
   const invoke:Invoke=async(name,args,id)=>{
-    if(++calls>(request.options?.maxToolCalls??modelToolCalls.default))return message('Tool-call budget exhausted',false)
+    if(++calls>maxToolCalls)return message('Tool-call budget exhausted',false)
     return original(name,args,id)
   }
   return {...request,tools:[...request.tools,codeModeTool],onTool:async(name,args,id)=>{
     if(name!==codeModeTool.name)return invoke(name,args,id)
-    if(++calls>(request.options?.maxToolCalls??modelToolCalls.default))return message('Tool-call budget exhausted',false)
+    if(++calls>maxToolCalls)return message('Tool-call budget exhausted',false)
     const source=(args as {source?:unknown}|null)?.source
     if(typeof source!=='string'||!source.trim()||source.length>maxSource)return message('Provide a bounded JavaScript source string',false)
     return runCell(source,tools,invoke,id,request)

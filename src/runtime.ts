@@ -39,7 +39,7 @@ import {ProcessSource} from './plugin-process.ts'
 import {ToolConnections} from './tool-connections.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
-import {validateBackendSelection} from './backend-config.ts'
+import {isApiBackend,validateBackendSelection} from './backend-config.ts'
 import {ProjectCode} from './project-code.ts'
 import { prepareWorkspace } from './workspace.ts'
 import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,validateRuleAssessment } from './schemas.ts'
@@ -525,8 +525,8 @@ export class Runtime {
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
     enforceBudget()
     const profile=role==='router'?this.config.execution.router:context.workerId?workerProfiles(this.config).find(w=>w.id===context.workerId):undefined
-    const defaults=this.model instanceof BackendRegistry?this.model.definition(request.threadId?this.model.describe(request.threadId).id:request.backendId??this.model.selected(role)).defaults:undefined
-    const options=agentOptionsSchema.parse(mergeOptions(defaults,request.options??(profile?Object.fromEntries(Object.entries(profile).filter(([key])=>key in agentOptionsSchema.shape)):{})))
+    const backend=this.model instanceof BackendRegistry?this.model.definition(request.threadId?this.model.describe(request.threadId).id:request.backendId??this.model.selected(role)):undefined
+    const options=agentOptionsSchema.parse(mergeOptions(backend?.defaults,request.options??(profile?Object.fromEntries(Object.entries(profile).filter(([key])=>key in agentOptionsSchema.shape)):{})))
     const trigger=context.triggerId?this.store.triggers.get(context.triggerId):undefined
     if(request.allowNativeTools&&trigger?.text)request={...request,webEvidenceQuery:trigger.text.slice(0,4000)}
     const manifest=request.contextId?this.store.get<ContextManifest>('context-manifest',request.contextId):context.ticketId?this.store.get<{manifest:ContextManifest}>('task-context',context.ticketId)?.manifest:undefined
@@ -577,7 +577,10 @@ export class Runtime {
     request.retainToolResult=(callId,result)=>{const id=activity+':'+callId;this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result});return id}
     const onBackend=request.onBackend,onModel=request.onModel,onTool=request.onTool
     request={...request,onBackend:id=>{this.activity.update(activity,{backend:id});this.usage.update(activity,{backend:id});onBackend?.(id)},onModel:model=>{this.activity.update(activity,{model});this.usage.update(activity,{model});onModel?.(model)},...(role==='router'&&onTool?{onTool:(name,args,callId)=>this.activity.tool(name,context,()=>onTool(name,args,callId),activity,chatToolDetails(name,args))}:{})}
-    request=withCodeMode(request)
+    const toolLimit=backend&&isApiBackend(backend)
+      ?Math.min(request.options?.maxToolCalls??backend.maxToolCalls,backend.limits?.maxToolCalls??Infinity)
+      :request.options?.maxToolCalls
+    request=withCodeMode(request,toolLimit)
     if(request.onTool){
       const invoke=request.onTool,dispatch=new ToolDispatch(),{chatOpeningReady,signal}=request
       request={...request,onTool:async(name,args,id)=>{

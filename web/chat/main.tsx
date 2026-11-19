@@ -1421,7 +1421,7 @@ function Chat(p: ChatProps) {
                   <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
-                <ChatCompanion actor={companionActor} event={handoff.event} onFinish={handoff.finish}
+                <ChatCompanion visible={!configuring} actor={companionActor} event={handoff.event} onFinish={handoff.finish}
                   status={companionStatus(snapshot,L,{participantId:companionWorker,connected,loading:loading&&!localMessages.length})} L={L}
                   onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
                 <div className="chat-float chat-float-end">

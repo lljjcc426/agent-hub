@@ -5,9 +5,9 @@ import {CompanionScene} from './companion-scene.tsx'
 import type {Handoff,Speaker} from './use-handoff.ts'
 export {RoppoCharacter} from './roppo-character.tsx'
 
-export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish}:{
+export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish,visible}:{
  actor:Speaker; event?:Handoff; onFinish:(id:string)=>void
- status:CompanionStatus; onOpen:()=>void; L:(en:string,zh:string)=>string
+ status:CompanionStatus; onOpen:()=>void; L:(en:string,zh:string)=>string; visible:boolean
 }){
  const [displayed,setDisplayed]=useState(current);
  const changedAt=useRef(0);
@@ -40,14 +40,22 @@ export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish}:{
  const capsule = useRef<HTMLDivElement>(null)
  const measure = useRef<HTMLSpanElement>(null)
  useLayoutEffect(() => {
+   if (!visible) return
    const shell = capsule.current!
    const label = measure.current!
-   const resize = () => shell.style.setProperty('--resting-caption', Math.ceil(label.getBoundingClientRect().width) + 'px')
+   const resize = () => {
+     const width = Math.ceil(label.getBoundingClientRect().width)
+     if (width > 0) shell.style.setProperty('--resting-caption', width + 'px')
+   }
+   // Settle the width before the incoming Chat is painted.
+   shell.style.transitionProperty = 'none'
    resize()
+   shell.getBoundingClientRect()
+   shell.style.removeProperty('transition-property')
    const observer = new ResizeObserver(resize)
    observer.observe(label)
    return () => observer.disconnect()
- }, [])
+ }, [visible])
  return <div ref={capsule} className="chat-float chat-float-center" data-expanded={event ? true : undefined}>
   <button type="button" className="chat-companion" data-handoff={event?.id} onClick={onOpen}
    data-phase={status.phase} title={caption} aria-label={L('View current activity','查看当前任务进展')}>

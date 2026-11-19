@@ -550,20 +550,54 @@ export class ChatSessions {
               AND json_extract(body,'$.feedback') IS NULL ORDER BY rowid DESC LIMIT 1)
           ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 1`).get(id)
     const call=row?JSON.parse(String(row.body)) as ChatCall:undefined
+    const cleanup=this.host.memory.cleanup
     const current=call?.conversationId===id && call.kind==='router' &&
-      (!backend||call.backend===backend) && (!model||call.model===model) ? call : undefined
+      (!backend||call.backend===backend) && (!model||call.model===model) &&
+      !cleanup.blocked('chat-call',call.id,call) ? call : undefined
     if(selected&&!current)throw new ChatError('context_missing','Context record not found.',404)
-    const activity=current?.id
-    const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
-    const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
-    const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
-    const attempt=Object.keys(usage?.attempts??{}).map(Number).at(-1)??recorded?.attempt
-    const reading=contextReading(usage,recorded?.attempt)
-    const budget=receipt&&(attempt===undefined||(receipt.attempt??0)===attempt)?receipt:undefined
-    return {activity:activity??null,at:current?.startedAt??null,
-      composition:recorded?.attempt===attempt?recorded?.size??null:null,
-      model:model??usage?.model??null,inputTokens:reading.inputTokens,capacity:reading.capacity,
-      budget:budget?{bytes:budget.bytes,reservedBytes:budget.reservedBytes,maxBytes:budget.maxBytes}:null}
+    const hasMeasurement=(value:{inputTokens:number|null;composition:unknown;budget:unknown})=>
+      value.inputTokens!==null||value.composition!==null||value.budget!==null
+    const read=(source:ChatCall|undefined,previous=false)=>{
+      const activity=source?.id
+      const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
+      const usage=activity?this.host.store.get<UsageRecord>('model-usage',activity):undefined
+      const receipt=activity?this.host.store.get<BudgetReceipt & {attempt?:number}>('context-budget',activity):undefined
+      const attempts=Object.keys(usage?.attempts??{}).map(Number)
+      const budgetAttempt=receipt?(receipt.attempt??0):undefined
+      const latest=attempts.at(-1)??recorded?.attempt
+      const sample=(attempt:number|undefined)=>{
+        const {inputTokens,capacity}=contextReading(usage,attempt)
+        const budget=receipt&&(attempt===undefined||budgetAttempt===attempt)?{bytes:receipt.bytes,reservedBytes:receipt.reservedBytes,maxBytes:receipt.maxBytes}:null
+        return {activity:activity??null,at:source?.startedAt??null,model:model??usage?.model??source?.model??null,
+          composition:recorded?.attempt===attempt?recorded?.size??null:null,inputTokens,capacity,budget,previous}
+      }
+      const measured=sample(latest)
+      if(previous&&latest!==undefined&&!hasMeasurement(measured)){
+        const earlier=[...new Set([...attempts,recorded?.attempt,budgetAttempt])]
+          .filter((attempt):attempt is number=>attempt!==undefined&&attempt<latest).sort((a,b)=>b-a)
+        for(const attempt of earlier){
+          const candidate=sample(attempt)
+          if(hasMeasurement(candidate))return candidate
+        }
+      }
+      return measured
+    }
+    const latest=read(current)
+    if(selected||hasMeasurement(latest))return latest
+
+    const previous=db.prepare(`SELECT c.body FROM records c WHERE c.kind='chat-call'
+      AND json_extract(c.body,'$.conversationId')=? AND json_extract(c.body,'$.kind')='router'
+      AND json_extract(c.body,'$.backend') IS ? AND json_extract(c.body,'$.model') IS ?
+      AND EXISTS(SELECT 1 FROM records r WHERE r.kind='chat-run' AND r.id=json_extract(c.body,'$.runId')
+        AND json_extract(r.body,'$.feedback') IS NULL)
+      ORDER BY json_extract(c.body,'$.startedAt') DESC,c.rowid DESC`).iterate(id,backend??current?.backend??null,model??current?.model??null)
+    for(const row of previous){
+      const candidate=JSON.parse(String(row.body)) as ChatCall
+      if(cleanup.blocked('chat-call',candidate.id,candidate))continue
+      const measured=read(candidate,true)
+      if(hasMeasurement(measured))return measured
+    }
+    return latest
   }
   deliveredWorker(message:{id:string;ticketId?:string;text:string;taskResult?:number}){
     if(!message.ticketId||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return

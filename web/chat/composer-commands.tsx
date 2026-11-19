@@ -95,7 +95,8 @@ export function windowReadout(current: CurrentContext, L: Localize) {
     : current.data?.budget || current.data?.composition ? L('Model token count not reported yet', '模型尚未上报 token 数')
     : !current.empty && !current.data ? L('Loading…', '读取中…') : L('No usage reported yet', '暂无用量记录')
   const tokens = input != null ? input.toLocaleString(locale) + (capacity ? ' / ' + capacity.toLocaleString(locale) : '') + ' tokens' : null
-  return { fraction, label, tokens }
+  const previous = current.data?.previous && (input != null || current.data.budget || current.data.composition)
+  return { fraction, label: previous ? label + L(' (last reading)', '（上次记录）') : label, tokens }
 }
 
 export function UsageRing({ fraction, size = 19 }: { fraction: number | null; size?: number }) {

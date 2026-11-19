@@ -204,7 +204,7 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
     code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
     code.startsWith("attachment_")?attachmentError(code,L):
-    code==='sent_refresh_failed'?L('Message sent. Refresh to see the latest replies.','消息已发送，请刷新查看最新回复。'):
+    code==='sent_refresh_failed'?L('Message sent. Syncing replies…','消息已发送，正在同步回复…'):
     code === "conversation_busy"
       ? L("This conversation is still running.", "当前会话仍在运行。")
       : code === "conversation_missing"
@@ -834,7 +834,7 @@ function Chat(p: ChatProps) {
       sending;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
-    routerCall?.id, running || (overview && sidebarCards.items.includes('context')), loadContext);
+    routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext);
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
@@ -846,14 +846,14 @@ function Chat(p: ChatProps) {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
   };
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!id) return;
     const version = ++fetchVersion.current;
     const query=new URLSearchParams({withPending:'1'});if(participantFilter)query.set('participant',participantFilter);if(around)query.set('around',around);
     const oldest = messagesRef.current[0]?.sequence;
     if (oldest) query.set("decisionsFrom", String(oldest));
-    const data = await api<Snapshot>("/conversations/" + id + "?"+query);
-    if (!alive.current || version !== fetchVersion.current) return;
+    const data = await api<Snapshot>("/conversations/" + id + "?"+query,undefined,"GET",signal);
+    if (signal?.aborted || !alive.current || version !== fetchVersion.current) return;
     const older = messagesRef.current.filter(
       (m) => m.sequence < (data.messages[0]?.sequence ?? Infinity),
     );
@@ -875,6 +875,7 @@ function Chat(p: ChatProps) {
       return {...data, messages, approvals, decisions:[...decisions.values()], hasMore:messages[0]?.sequence === 1 ? false : data.hasMore};
     });
     setLoading(false);
+    setError(code=>code==='sent_refresh_failed'?'':code);
     const saved = savedPending(id);
     if (saved && messages.some((m) => m.clientMessageId === saved.id)) {
       write(pendingKey(id), "null");
@@ -885,84 +886,110 @@ function Chat(p: ChatProps) {
   useEffect(() => {
     alive.current = true;
     messagesRef.current=[];setLoading(!!id);setSnapshot(s=>s?{...s,messages:[]}:s);
-    if (!id)
+    if (!id) {
+      setConnected(true);
       return () => {
         alive.current = false;
       };
-    let source: EventSource | null = null;
+    }
+    const lifetime = new AbortController();
+    let source: EventSource | undefined;
+    let poll: ReturnType<typeof setTimeout> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 1000, reads = 0;
+    let failingSince: number | undefined;
+    const stop = () => {
+      lifetime.abort();
+      clearTimeout(poll);
+      clearTimeout(retry);
+      source?.close();
+    };
+    const reset = () => {
+      stop();
+      clearChatDrafts();
+      pending.current = null;
+      window.dispatchEvent(new Event("roppo:chat-space"));
+    };
     const load = async () => {
-      if (!navigator.onLine) {
-        setConnected(false);
-        return;
-      }
+      if (lifetime.signal.aborted) return;
+      clearTimeout(poll);
+      const read = ++reads;
+      const current = () => !lifetime.signal.aborted && read === reads;
       try {
-        await refresh();
-        if (
-          alive.current &&
-          source?.readyState === EventSource.OPEN &&
-          navigator.onLine
-        )
+        await refresh(AbortSignal.any([lifetime.signal,AbortSignal.timeout(5000)]));
+        if (current()) {
+          failingSince = undefined;
           setConnected(true);
-      } catch (e) {
-        if (alive.current) {
-          setConnected(false);
-          setLoading(false);
-          if (e instanceof ApiError) fail(e);
         }
+      } catch (e) {
+        if (!current()) return;
+        if (e instanceof ApiError && e.code === "conversation_reset") {
+          reset();
+        } else if (e instanceof ApiError && e.code === "conversation_missing") {
+          stop();
+          setLoading(false);
+          setConnected(true);
+          fail(e);
+        } else {
+          const now = performance.now();
+          failingSince ??= now;
+          if (now - failingSince >= 1500) {
+            setConnected(false);
+            setLoading(false);
+          }
+        }
+      } finally {
+        if (current()) poll = setTimeout(load, failingSince === undefined ? 8000 : 2000);
       }
     };
     const connect = () => {
+      if (lifetime.signal.aborted) return;
+      clearTimeout(retry);
       source?.close();
-      if (!navigator.onLine) {
-        setConnected(false);
-        return;
-      }
       const connection = new EventSource(
         "/api/chat/conversations/" + id + "/events",
       );
       source = connection;
+      const active = () => !lifetime.signal.aborted && source === connection;
+      const lost = () => {
+        if (!active()) return;
+        connection.close();
+        source = undefined;
+        retry = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(8000, retryDelay * 2);
+        void load();
+      };
       connection.onopen = () => {
-        if (source === connection) void load();
+        if (active()) {
+          retryDelay = 1000;
+          void load();
+        }
       };
       connection.addEventListener("change", () => {
-        if (source === connection) void load();
+        if (active()) void load();
       });
-      connection.addEventListener("reset", () => {
-        connection.close();clearChatDrafts();pending.current=null;window.dispatchEvent(new Event("roppo:chat-space"));
-      });
-      connection.onerror = () => {
-        if (alive.current && source === connection) setConnected(false);
-      };
-      connection.addEventListener("reconnect", () => {
-        if (source === connection) {
-          setConnected(false);
-          api("/readiness").catch(fail);
-        }
-      });
+      connection.addEventListener("reset", () => { if (active()) reset(); });
+      connection.addEventListener("reconnect", lost);
+      connection.onerror = lost;
     };
-    const offline = () => {
-      source?.close();
-      fetchVersion.current++;
-      setConnected(false);
-    };
-    const online = () => {
-      connect();
+    const resume = () => {
+      if (!source || source.readyState === EventSource.CLOSED) connect();
       void load();
     };
-    connect();
-    void load();
-    window.addEventListener("offline", offline);
-    window.addEventListener("online", online);
-    const poll = setInterval(() => void load(), 8000);
+    const visible = () => { if (document.visibilityState === "visible") resume(); };
+    resume();
+    window.addEventListener("offline", load);
+    window.addEventListener("online", resume);
+    document.addEventListener("visibilitychange", visible);
     return () => {
       alive.current = false;
       fetchVersion.current++;
-      source?.close();
-      clearInterval(poll);
-      window.removeEventListener("offline", offline);
-      window.removeEventListener("online", online);
+      stop();
+      window.removeEventListener("offline", load);
+      window.removeEventListener("online", resume);
+      document.removeEventListener("visibilitychange", visible);
     };
-  }, [id, refresh, refreshList]);
+  }, [id, refresh]);
   const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
@@ -1455,8 +1482,8 @@ function Chat(p: ChatProps) {
                       <div className="connection-state" role="status">
                         <RefreshCw size={14} />
                         {L(
-                          "Reconnecting… Your work continues.",
-                          "正在重连，任务仍在继续。",
+                          "Can’t update the conversation. Reconnecting…",
+                          "暂时无法更新对话，正在重连…",
                         )}
                       </div>
                     ) : null}

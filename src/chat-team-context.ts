@@ -1,10 +1,10 @@
 import type { Store } from './store.ts'
 import type { UsageRecord } from './usage-ledger.ts'
 
-export function contextReading(usage?: UsageRecord, recordedAttempt?: number) {
+export function contextReading(usage?: UsageRecord, attempt?: number) {
   const attempts = Object.keys(usage?.attempts ?? {}).map(Number)
-  const attempt = attempts.length ? Math.max(...attempts) : recordedAttempt
-  const last = Object.entries(usage?.steps ?? {}).findLast(([key]) => attempt === undefined || key.startsWith(attempt + ':'))
+  const selected = attempt ?? (attempts.length ? Math.max(...attempts) : undefined)
+  const last = Object.entries(usage?.steps ?? {}).findLast(([key]) => selected === undefined || key.startsWith(selected + ':'))
   return {
     inputTokens: last?.[1].inputTokens ?? null,
     capacity: last?.[1].contextWindowTokens ?? null,

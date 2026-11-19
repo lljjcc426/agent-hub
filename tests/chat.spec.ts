@@ -81,7 +81,7 @@ it('never publishes an opening or starts work when the send is rejected or the f
   expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text])
 })
 
-it('keeps the plan through a decision and shows only the current Router input for this conversation and model',async()=>{
+it('keeps the plan through a decision and reuses the latest measured Router input within the conversation and model',async()=>{
   const {h}=fixture(async r=>{
     const input=JSON.parse(r.input),first=input.trigger.text==='Prepare the guide'
     const stage=first?'running':'completed'
@@ -101,7 +101,7 @@ it('keeps the plan through a decision and shows only the current Router input fo
   const firstUsage=h.chat.contextUsage(c.id,'owner')
   expect(firstUsage.inputTokens).toBe(321)
   const reply=h.chat.answerDecision(c.id,'owner',m.id,'English','en')
-  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:null,inputTokens:null,composition:null,budget:null})
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:firstUsage.activity,inputTokens:321,previous:true})
   expect(h.chat.answerDecision(c.id,'owner',m.id,'English')).toEqual({...reply,duplicate:true})
   expect(()=>h.chat.answerDecision(c.id,'owner',m.id,'Chinese')).toThrow('already has an answer')
   await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='Guide ready.'))
@@ -115,13 +115,20 @@ it('keeps the plan through a decision and shows only the current Router input fo
   expect(latest.composition!.system).toBeGreaterThan(0)
   expect(latest.composition!.tools).toBeGreaterThan(0)
   expect(latest.activity).not.toBe(firstUsage.activity)
-  expect(latest).not.toHaveProperty('previous')
+  expect(latest.previous).toBe(false)
   expect(latest).not.toHaveProperty('modelInputs')
   expect(()=>h.chat.contextUsage(other.id,'another-owner',latest.activity!)).toThrow('not found')
+  expect(h.chat.contextUsage(other.id,'another-owner')).toMatchObject({inputTokens:null,previous:false})
   h.store.db.prepare("DELETE FROM records WHERE kind='chat-context-input' AND id=?").run(latest.activity)
   expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({composition:null,inputTokens:123})
   h.usage.attempt(latest.activity!,2,'running')
-  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({composition:null,inputTokens:null,budget:null})
+  expect(h.chat.contextUsage(c.id,'owner',latest.activity!)).toMatchObject({composition:null,inputTokens:null,budget:null,previous:false})
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:latest.activity,inputTokens:123,capacity:2048,previous:true})
+  const newest=h.store.get<Record<string,unknown>>('chat-call',latest.activity!)!
+  const failed=randomUUID()
+  h.store.put('chat-call',failed,{...newest,id:failed,startedAt:latest.at!+1,state:'failed'})
+  expect(h.chat.contextUsage(c.id,'owner',failed)).toMatchObject({activity:failed,inputTokens:null,previous:false})
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:latest.activity,inputTokens:123,previous:true})
   expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
   h.config.execution.router!.model='other-model'
   expect(()=>h.chat.contextUsage(c.id,'owner',latest.activity!)).toThrow('not found')

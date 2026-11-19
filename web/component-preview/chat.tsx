@@ -70,7 +70,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
     ...messages.map(m => ({...m, role: 'user' as const, attachments: m.attachment ? [{name: m.attachment.name}] : []})),
   ].map(m => ({...m, reactions: reactions[m.id]}))
   const usage: CurrentContext = hasSample ? {data: {activity: null, at: null, model, inputTokens: 6400,
-    capacity: 32000, budget: null, composition: null}} : {empty: true}
+    capacity: 32000, budget: null, composition: null, previous: false}} : {empty: true}
 
   function send() {
     if (!canSend) return

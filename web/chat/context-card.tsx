@@ -9,11 +9,13 @@ type Localize = (en: string, zh: string) => string
 type LoadUsage = (id: string, signal: AbortSignal) => Promise<Usage>
 
 export function useCurrentContext(conversationId: string | null, turnId: string | undefined,
-  model: string | undefined, backend: string | undefined, callId: string | undefined, watch: boolean, load: LoadUsage): CurrentContext {
-  const key = JSON.stringify([conversationId, turnId, backend, model, callId])
-  const [snapshot, setSnapshot] = useState<{ key: string; data?: Usage; failed?: boolean }>()
+  model: string | undefined, backend: string | undefined, callId: string | undefined,
+  usageRevision: number | undefined, watch: boolean, load: LoadUsage): CurrentContext {
+  const key = JSON.stringify([conversationId, backend, model])
+  const revision = JSON.stringify([turnId, callId, usageRevision])
+  const [snapshot, setSnapshot] = useState<{ key: string; revision: string; data?: Usage; failed?: boolean }>()
   useEffect(() => {
-    if (!conversationId || !turnId) return
+    if (!conversationId) return
     const id = conversationId
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
@@ -21,9 +23,10 @@ export function useCurrentContext(conversationId: string | null, turnId: string 
       let refreshIn = watch ? 4000 : 0
       try {
         const data = await load(id, controller.signal)
-        if (!controller.signal.aborted) setSnapshot({ key, data })
+        if (!controller.signal.aborted) setSnapshot({ key, revision, data })
       } catch {
-        if (!controller.signal.aborted) setSnapshot(last => ({ key, data: last?.key === key ? last.data : undefined, failed: true }))
+        if (!controller.signal.aborted) setSnapshot(last => last?.key === key
+          ? { ...last, failed: true } : { key, revision, failed: true })
         refreshIn = 8000
       }
       if (refreshIn && !controller.signal.aborted) timer = setTimeout(read, refreshIn)
@@ -33,8 +36,12 @@ export function useCurrentContext(conversationId: string | null, turnId: string 
       controller.abort()
       clearTimeout(timer)
     }
-  }, [key, conversationId, turnId, watch, load])
-  return !conversationId || !turnId ? {empty: true} : snapshot?.key === key ? snapshot : {}
+  }, [key, revision, conversationId, watch, load])
+  if (!conversationId) return { empty: true }
+  if (snapshot?.key !== key) return {}
+  const data = snapshot.data
+  return data && (data.inputTokens != null || data.composition || data.budget) && snapshot.revision !== revision
+    ? { ...snapshot, data: { ...data, previous: true } } : snapshot
 }
 
 export type CurrentContext = { data?: Usage; failed?: boolean; empty?: boolean }
@@ -70,6 +77,7 @@ export function ContextCard({ current, L, focusOnReveal, onClose }: {
       <button type="button" ref={closeButton} className="rp-icon-button" onClick={onClose}
         aria-label={L('Close context usage', '关闭上下文用量')}><X size={15} /></button>
     }>
+      {usage?.previous && <p className="usage-note">{L('Showing the last recorded usage', '显示上次用量记录')}</p>}
       {status && <p className="usage-note" role="status">{status}</p>}
       {usage && count != null && (
         <section className="usage-section" aria-label={modelWindow}>

@@ -2,7 +2,7 @@
 
 Roppo can ask a small model to classify unmentioned group messages and task follow-ups before the persistent host Router handles them. This is an optional host extension, not a claim that DeepSeek SuperAgent uses Jev or a separate classifier.
 
-Open **Workspace settings → Model connections → Decision layer**. Select an existing API connection, Jev, or a dedicated API endpoint. Test the draft, then save. API keys are read from the named environment variable in the Roppo process; the API-key field saves only that variable name. Advanced JSON can contain static headers, which are persisted with configuration/history; use `headerEnv` for secret headers. Updating the parent shell does not change an already running process's environment.
+Open **Settings → Team → Run settings → Message intent**. Choose Rules, Jev, Local, or External. Rules uses the existing follow-up conditions with Router. External can reuse a saved API connection or accept a dedicated endpoint. Use **Try a message** to test the draft, then save. Provider-specific overrides are available in the raw configuration editor. The key variable name points to an environment variable in the Roppo process. Use `headerEnv` for secret headers, since static headers are persisted with configuration and history. Updating the parent shell does not change the environment of an already running process.
 
 | Mode | Behavior |
 | --- | --- |

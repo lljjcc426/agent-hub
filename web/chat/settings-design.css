@@ -33,7 +33,7 @@
   color: var(--c-text); font-size: clamp(27px, 2.6vw, 34px); letter-spacing: -.04em;
   line-height: 1.24; font-weight: 660; margin: 0; overflow-wrap: anywhere;
 }
-[data-settings-view] :is(.general > h1,.settings-directory > h1,.studio-page-title,.market-heading,.automation-heading),
+[data-settings-view] :is(.general > h1,.settings-directory > h1,.market-heading,.automation-heading),
 [data-settings-view] .management-content .operator-workspace :is(.page-heading,.memory-settings .memory-heading) {
   margin: 0 0 var(--settings-gap);
 }
@@ -89,12 +89,6 @@
 [data-settings-view] .memory-method-link { margin-top: 16px; }
 [data-settings-view] .saved-reader { min-height: 0; padding-block: 10px; }
 [data-settings-view] .memory-settings .memory-reader { min-width: 0; }
-[data-settings-view] .general.studio-team section { border: 0; padding: 0; }
-[data-settings-view] .studio-team .studio-person { min-height: 66px; padding-inline: 16px; border: 1px solid var(--c-line); border-radius: 0; }
-[data-settings-view] .studio-team .studio-person:first-of-type { border-radius: 12px 12px 0 0; }
-[data-settings-view] .studio-team .studio-person:last-of-type { border-radius: 0 0 12px 12px; }
-[data-settings-view] .studio-team .studio-person:only-of-type { border-radius: 12px; }
-[data-settings-view] .studio-team .studio-person + .studio-person { border-top: 0; }
 
 [data-settings-view] .management-content .operator-workspace .workspace-settings :is(.settings-with-aside,.settings-columns) { grid-template-columns: minmax(0,1fr); }
 [data-settings-view] .management-content .operator-workspace .workspace-settings :is(.form-section,.panel),
@@ -190,6 +184,17 @@
 .settings-notice-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-settings-view] .configuration-outlet[data-intake] :is(.management-content, .operator-workspace) { min-height: 0; }
 [data-settings-view] .configuration-outlet[data-intake] .management-content .operator-workspace > main { padding-bottom: 0; }
+.configuration-outlet[data-structured] :is(.management-content, .operator-workspace) { min-height: 0; }
+[data-settings-view] .configuration-outlet[data-structured] .management-content .operator-workspace > main:has(.operator-body:empty) {
+  padding-block: 0;
+}
+[data-settings-view] .configuration-outlet[data-structured] .management-content main:has(> .operator-body:only-child:empty) {
+  display: none;
+}
+.configuration-outlet[data-structured] + .settings-feedback .settings-action-dock {
+  animation: rp-arrive .24s var(--rp-sweep) both;
+}
+.prompt-member-form textarea { width: 100%; }
 .intake-form {
   box-sizing: border-box; display: grid; gap: 32px; width: 100%; max-width: var(--settings-width);
   margin-inline: auto; padding: 0 var(--settings-gutter) 32px;

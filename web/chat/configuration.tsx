@@ -1,10 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {createPortal} from "react-dom";
 import {BrowserPanel} from './browser.tsx';
-import { IntakeEditor, SettingsFeedback, publishSettings } from './settings-editor.tsx';
+import { IntakeEditor, SettingsFeedback, publishSettings, useSettingsEditor } from './settings-editor.tsx';
 import {ChatSettings} from './chat-settings.tsx';
 import {MemorySettings} from "./memory.tsx";
 import type { mount } from "virtual:configuration-content";
+const TeamConfiguration = lazy(async () => ({ default: (await import('./team-configuration.tsx')).TeamConfiguration }));
+const RuntimeConfiguration = lazy(async () => ({ default: (await import('./runtime-configuration.tsx')).RuntimeConfiguration }));
+const BrowserAgentAccess = lazy(async () => ({ default: (await import('./runtime-configuration.tsx')).BrowserAgentAccess }));
 let controller: ReturnType<typeof mount> | undefined;
 let element: HTMLDivElement | undefined;
 let pending: Promise<void> | undefined;
@@ -14,7 +17,7 @@ let chatElement: HTMLDivElement | undefined;
 const active = () => {
   const { pathname, hash } = location;
   if (!["/configure", "/configure/", "/"].includes(pathname)) return false;
-  if (["", "#general", "#team", "#workspace", "#automations", "#prompts/memory"].includes(hash)) return false;
+  if (["", "#general", "#workspace", "#automations", "#prompts/memory"].includes(hash)) return false;
   if (hash.startsWith("#plugin/")) return false;
   return !/^#integrations(?:\/|$)/.test(hash) || hash === "#integrations/tools";
 };
@@ -98,7 +101,13 @@ export function Configuration({
   useEffect(() => {
     controller?.language(language);
   }, [language]);
-  const intake = visible && route.split("#")[1] === "advanced/intake";
+  const hash = route.split("#")[1] ?? "";
+  const intake = visible && hash === "advanced/intake";
+  const team = visible && /^(?:team|execution\/configuration)(?:\/([a-z][a-z0-9_-]*))?$/.exec(hash);
+  const running = visible && hash === "advanced/configuration";
+  const editor = useSettingsEditor();
+  const settings = editor?.structured;
+  const L = (en: string, zh: string) => language === 'en' ? en : zh;
   return (
     <>
       <section
@@ -106,15 +115,26 @@ export function Configuration({
         className="configuration-outlet"
         hidden={!visible}
         data-intake={intake || undefined}
+        data-structured={!!(team || running) || undefined}
         aria-label={language === "en" ? "Workspace content" : "工作区内容"}
       >
         <div>
           <div ref={outlet} />
           {intake && <IntakeEditor language={language} />}
+          {(team || running) && settings && (
+            <Suspense fallback={<p className="workspace-view-placeholder" role="status">{L('Loading settings…', '正在读取设置…')}</p>}>
+              {team ? <TeamConfiguration key={settings.scope + ':' + (team[1] ?? '')} settings={settings}
+                memberId={team[1]} blocked={!!editor.blocked} hasDraft={!!editor.draft} L={L} />
+                : <RuntimeConfiguration key={settings.scope} settings={settings} blocked={!!editor.blocked} L={L} />}
+            </Suspense>
+          )}
         </div>
         {visible && route.split("#")[1] === "advanced/memory" && memoryTarget ? createPortal(<MemorySettings L={(en, zh) => language === "en" ? en : zh}/>, memoryTarget) : null}
         {visible && route.split("#")[1] === "advanced/chat" && chatTarget ? createPortal(<ChatSettings L={(en, zh) => language === "en" ? en : zh}/>, chatTarget) : null}
-        {visible && route.split("#")[1] === "advanced/browser" && browserTarget ? createPortal(<BrowserPanel settingsOnly L={(en,zh)=>language==="en"?en:zh}/>, browserTarget) : null}
+        {visible && hash === "advanced/browser" && browserTarget ? createPortal(<>
+          <BrowserPanel settingsOnly L={L}/>
+          {settings && <Suspense fallback={null}><BrowserAgentAccess settings={settings} blocked={!!editor.blocked} L={L} /></Suspense>}
+        </>, browserTarget) : null}
         {error ? (
           <button
             className="configuration-retry"

@@ -1,7 +1,7 @@
 // Inventory is reported by the host. Reading it never connects to a tool server.
-const integrations = { data: null, error: '', receipts: null, next: null, draft: '', draftError: '', resources: new Map() }
+const integrations = { data: null, error: '', receipts: null, next: null, draft: '', draftError: '', grantMember: '', resources: new Map() }
 function integrationsReset() {
-  Object.assign(integrations, { data: null, error: '', receipts: null, next: null, draft: '', draftError: '', resources: new Map() })
+  Object.assign(integrations, { data: null, error: '', receipts: null, next: null, draft: '', draftError: '', grantMember: '', resources: new Map() })
 }
 async function integrationsDiscover() {
   try {
@@ -33,7 +33,7 @@ function integrationGrants(current) {
     const option = el('option', '', text); option.value = value; mode.append(option)
   }
   mode.value = own === undefined ? 'inherit' : 'custom'
-  mode.onchange = () => { teamWrite('toolConnections', mode.value === 'inherit' ? undefined : [...effective]); render() }
+  mode.onchange = () => { writeTeamField(current, 'toolConnections', mode.value === 'inherit' ? undefined : [...effective]); render() }
   const label = el('label', '', L('Authorization mode', '授权方式')); label.htmlFor = mode.id
   section.append(label, mode)
   const known = new Set(tools.map(item => item.id))
@@ -44,14 +44,33 @@ function integrationGrants(current) {
     check.onchange = () => {
       const next = new Set(get(S.draft, current.path + '.toolConnections') || [])
       if (check.checked) next.add(item.id); else next.delete(item.id)
-      teamWrite('toolConnections', [...next])
+      writeTeamField(current, 'toolConnections', [...next])
     }
     const row = el('label', 'team-toggle'); row.htmlFor = check.id
     row.append(check, add(el('span'), el('strong', '', item.label), el('small', '', item.missing ? L('Unavailable; remove this grant', '连接不存在，请移除授权') : (item.enabled ? item.allowedTools.join(', ') : L('Disabled', '已停用')))))
     section.append(row)
   }
   if (!tools.length) section.append(el('p', 'team-help', L('No external tool connections available to this Worker.', '此 Worker 暂无可授权的外部工具连接。')))
-  section.append(opButton(L('Manage tools and apps', '管理工具与应用'), () => opNavigate('integrations'), 'text-button'))
+  if (entryState.page !== 'integrations')
+    section.append(opButton(L('Manage tools and apps', '管理工具与应用'), () => opNavigate('integrations'), 'text-button'))
+  return section
+}
+function integrationWorkerPermissions() {
+  const workers = teamWorkers()
+  const worker = workers.find(item => item.id === integrations.grantMember)
+  const section = el('section', 'form-section integration-permissions')
+  section.id = 'integration-permissions'
+  section.append(el('h2', '', L('Member tool access', '成员工具权限')))
+  section.append(teamField('integration-grant-member', L('Member', '选择成员'), worker?.id || '', value => {
+    integrations.grantMember = value
+    render()
+  }, { values: [['', S.draft.execution.router?.label || 'Router'],
+    ...workers.map((item, index) => [item.id, item.label || L('Worker ', '执行者 ') + (index + 1)])] }))
+  const selected = structuredProfile(worker?.id ?? null)
+  const current = { router: !worker, path: selected.path, value: selected.profile }
+  const native = teamNativeTool(current)
+  if (native) section.append(native)
+  section.append(integrationGrants(current))
   return section
 }
 // /read returns bounded pages, not the resource object itself. Keep the cursor
@@ -186,7 +205,8 @@ function integrationDeployment() {
 }
 function controlIntegrations() {
   const root = el('section', 'integrations-page')
-  if (typeof configurationHost === 'undefined' || !configurationHost) root.append(el('h1', '', L('Tools and apps', '工具与应用')))
+  const embedded = typeof configurationHost !== 'undefined' && !!configurationHost
+  if (!embedded) root.append(el('h1', '', L('Tools and apps', '工具与应用')))
   if (integrations.error) root.append(el('p', 'alert error', integrations.error))
   if (!integrations.data) {
     root.append(el('p', 'team-help', L('Integration inventory is unavailable on this host.', '此宿主尚未提供接入清单。')))
@@ -197,23 +217,38 @@ function controlIntegrations() {
   for (const item of integrations.data.tools) {
     const eligible = teamWorkers().filter(worker => !item.workers || item.workers.includes(worker.id))
     const workers = eligible.filter(worker => (worker.toolConnections ?? S.draft.backends?.[worker.backend]?.defaults?.toolConnections ?? []).includes(item.id))
+    const changeAccess = opButton(L('Set Worker access', '设置 Worker 授权'), () => {
+      if (!embedded) {
+        teamStudio.selected = eligible[0]?.id || 'router'
+        teamStudio.tab = 'tools'
+        opNavigate('execution', '', { view: 'configuration' })
+        return
+      }
+      if (!eligible.length || !keys().includes('execution')) return
+      integrations.grantMember = eligible.find(worker => worker.id === integrations.grantMember)?.id || eligible[0].id
+      render()
+      document.getElementById('integration-grant-member')?.focus()
+    }, 'button')
+    changeAccess.disabled = embedded && (!eligible.length || !keys().includes('execution'))
     cards.append(add(el('article', 'integration-card'), el('h3', '', item.label), el('span', 'pill', (item.enabled ? L('Configured', '已配置') : L('Disabled', '已停用')) + ' · ' + item.transport),
-      el('p', 'integration-tool-names', item.allowedTools.join(' · ')), el('p', 'team-help', L('Granted in draft: ', '当前草稿授权：') + (workers.map(w => w.label || w.id).join(', ') || L('None', '无'))),
-      opButton(L('Set Worker access', '设置 Worker 授权'), () => { teamStudio.selected = eligible[0]?.id || 'router'; teamStudio.tab = 'tools'; opNavigate('execution', '', { view: 'configuration' }) }, 'button')))
+      el('p', 'integration-tool-names', item.allowedTools.join(' · ')), el('p', 'team-help', L('Granted in draft: ', '当前草稿授权：') + (workers.map(w => w.label || w.id).join(', ') || L('None', '无'))), changeAccess))
   }
   if (!integrations.data.tools.length) cards.append(opEmpty(L('No tool connections configured', '尚未配置工具连接')))
   tools.append(cards); root.append(tools)
-  const apps = el('section'); apps.append(el('h2', '', L('Connector details', '连接器详情')))
-  const grid = el('div', 'integration-grid')
-  const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Lark', 'Feishu/飞书') }
-  for (const adapter of integrations.data.adapters) {
-    const card = add(el('article', 'integration-card'), add(el('h3', 'integration-app-title'), opMark(adapter.kind), el('span', '', adapterNames[adapter.kind] || adapter.label || adapter.kind)))
-    const sources = integrations.data.sources.filter(source => source.kind === adapter.kind)
-    for (const source of sources) card.append(el('strong', '', source.id + (source.enabled ? '' : ' · ' + L('Disabled', '已停用'))), el('p', 'team-help', ['events', 'replies', 'resources'].filter(key => source.capabilities?.[key]).map(key => ({ events: L('Receive events', '接收事件'), replies: L('Send replies', '发送回复'), resources: L('Read resources', '读取资源') })[key]).join(' · ') || L('No capabilities enabled', '未开启能力')))
-    if (!sources.length) card.append(el('p', 'team-help', L('Available; no source configured', '可用，尚未配置来源')))
-    grid.append(card)
+  if (embedded && keys().includes('execution')) root.append(integrationWorkerPermissions())
+  if (!embedded) {
+    const apps = el('section'); apps.append(el('h2', '', L('Connector details', '连接器详情')))
+    const grid = el('div', 'integration-grid')
+    const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Lark', 'Feishu/飞书') }
+    for (const adapter of integrations.data.adapters) {
+      const card = add(el('article', 'integration-card'), add(el('h3', 'integration-app-title'), opMark(adapter.kind), el('span', '', adapterNames[adapter.kind] || adapter.label || adapter.kind)))
+      const sources = integrations.data.sources.filter(source => source.kind === adapter.kind)
+      for (const source of sources) card.append(el('strong', '', source.id + (source.enabled ? '' : ' · ' + L('Disabled', '已停用'))), el('p', 'team-help', ['events', 'replies', 'resources'].filter(key => source.capabilities?.[key]).map(key => ({ events: L('Receive events', '接收事件'), replies: L('Send replies', '发送回复'), resources: L('Read resources', '读取资源') })[key]).join(' · ') || L('No capabilities enabled', '未开启能力')))
+      if (!sources.length) card.append(el('p', 'team-help', L('Available; no source configured', '可用，尚未配置来源')))
+      grid.append(card)
+    }
+    apps.append(grid); root.append(apps)
   }
-  apps.append(grid); root.append(apps)
   const receipts = el('section'); receipts.append(el('h2', '', L('Tool receipts', '工具回执')), opButton(L('Refresh receipts', '刷新回执'), () => integrationReadReceipts(), 'button'))
   for (const receipt of integrations.receipts || []) {
     const state = { running: L('Running', '执行中'), complete: L('Complete', '已完成'), uncertain: L('Outcome uncertain', '结果待核实') }[receipt.state] || receipt.state

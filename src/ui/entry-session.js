@@ -92,12 +92,13 @@ const workspacePages = {
   'connections/new': 'catalogue', models: 'models', 'models/new': 'model-new',
   deployments: 'deployments', integrations: 'integrations', execution: 'execution', prompts: 'prompts', usage: 'usage'
 }
-const advancedPages = ['host', 'chat', 'memory', 'browser', 'intake', 'runtime', 'delivery', 'json', 'revisions']
+const advancedPages = ['host', 'chat', 'memory', 'browser', 'intake', 'configuration', 'runtime', 'delivery', 'json', 'revisions']
 function workspaceHash() {
   const { page, selected, source, creating, advancedPage, promptView } = entryState
   if (page === 'integrations') return 'integrations/tools'
   if (page === 'advanced') return 'advanced/' + advancedPage
-  if (page === 'execution' && executionView.mode === 'configuration') return 'execution/configuration'
+  if (page === 'execution' && executionView.mode === 'configuration')
+    return typeof configurationHost !== 'undefined' && configurationHost ? 'team' : 'execution/configuration'
   if (page === 'prompts' && promptView === 'templates') return 'prompts/templates'
   if (page === 'detail') {
     const prefix = creating ? 'connections/new/' : 'connections/'
@@ -120,12 +121,18 @@ function applyWorkspaceLocation() {
   const page = Object.hasOwn(workspacePages, hash) ? workspacePages[hash] : null
   let matched
   if (page) return entryNavigate(page, '', { fromLocation: true, view: page === 'execution' ? 'calls' : 'roles' })
-  if ((matched = /^execution\/configuration(?:\/([a-z][a-z0-9_-]*))?$/.exec(hash))) {
+  if ((matched = /^(?:team|execution\/configuration)(?:\/([a-z][a-z0-9_-]*))?$/.exec(hash))) {
     if (matched[1]) teamStudio.selected = matched[1]
     return entryNavigate('execution', '', { fromLocation: true, view: 'configuration' })
   }
   if (hash === 'prompts/templates')
     return entryNavigate('prompts', '', { fromLocation: true, view: 'templates' })
+  if ((matched = /^prompts\/member\/([a-z][a-z0-9_-]*)$/.exec(hash))) {
+    promptTarget = 'member'
+    promptMember = matched[1] === 'router' ? 'router' : 'worker:' + matched[1]
+    if (S.draft) applyPromptMemberPreview()
+    return entryNavigate('prompts', '', { fromLocation: true, view: 'roles' })
+  }
   if (hash === 'advanced' || (hash.startsWith('advanced/') && advancedPages.includes(hash.slice(9))))
     return entryNavigate('advanced', '', { fromLocation: true, view: hash.slice(9) || 'host' })
   if ((matched = /^connections\/(new\/)?([a-z][a-z0-9_-]*)(?:\/([a-z][a-z0-9_-]*))?$/.exec(hash)))
@@ -336,7 +343,8 @@ async function loadEntryGuide() {
 }
 function needsEntryInventory() {
   return ['catalog', 'catalogue', 'detail', 'usage', 'model-new'].includes(entryState.page) ||
-    entryState.page === 'models' && entryModel.creating
+    entryState.page === 'models' && entryModel.creating ||
+    entryState.page === 'execution' && executionView.mode === 'calls'
 }
 async function readEntryInventory(rebaseOwnChange = false) {
   const request = ++entryState.inventoryRequest, epoch = workspaceContext.epoch

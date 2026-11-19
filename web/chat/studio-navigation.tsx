@@ -3,15 +3,15 @@ import { useState } from 'react';
 import {
   Activity,
   ArrowLeft,
-  BookOpen,
   Boxes,
   Brain,
   Cable,
   ChevronRight,
   FileSliders,
-  Layers,
+  Gauge,
   LayoutGrid,
   Link2,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
@@ -31,23 +31,31 @@ import { spaceRequest } from './chat-settings.tsx';
 
 type L = (en: string, zh: string) => string;
 type Agent = { id: string; label: string; kind: 'worker' | 'router' };
-type Entry = { key: string; name: string; icon: LucideIcon; match?: (path: string) => boolean };
+type Entry = { key: string; name: string; icon: LucideIcon; match?: (path: string) => boolean; keywords?: string };
 function sections(L: L, views: { id: string; label: string }[], query: string) {
-  const row = (key: string, name: string, icon: LucideIcon, match?: Entry['match']): Entry => ({
+  const row = (key: string, name: string, icon: LucideIcon, match?: Entry['match'], keywords?: string): Entry => ({
     key,
     name,
     icon,
     match,
+    keywords,
   });
+  const workspaceItems = workspaceGroups(L).flatMap(group => group.items);
   return [
-    { name: L('Preferences', '偏好'), rows: [row('general', L('General', '通用'), SlidersHorizontal)] },
+    { name: L('Preferences', '偏好'), rows: [
+      row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat'),
+      row('advanced/memory', L('Memory', '记忆'), Brain),
+      ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
+        L('Chat preferences reset', '对话设置 清空'))] : []),
+    ] },
     {
       name: L('Team', '团队'),
       rows: [
-        row('team', L('Agent team', 'Agent 团队'), Users, (h) => h === 'team' || h.startsWith('execution')),
+        row('team', L('Agent team', 'Agent 团队'), Users, h => h === 'team' || h.startsWith('team/') || h.startsWith('execution/configuration')),
         row('models', L('Model connections', '模型连接'), Boxes),
         row('prompts', L('Behavior rules', '行为规则'), FileSliders),
-        row('advanced/memory', L('Memory', '记忆'), Brain),
+        row('advanced/configuration', L('Run settings', '运行配置'), Gauge, undefined,
+          L('Configuration editor decision layer Jev routing', '配置编辑器 决策层 消息前置判断 Jev 思考强度 执行者上限')),
       ],
     },
     {
@@ -56,28 +64,27 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
         row('connectors', L('Connectors', '连接器'), Link2),
         row('integrations/library', L('Tools & MCP', '工具与 MCP'), Plug, (h) => h.startsWith('integrations')),
         row('connections', L('Conversation entries', '会话入口'), Cable),
-        row('automations', L('Automations', '自动化'), Workflow),
       ],
     },
     {
       name: L('Workspace', '工作区'),
       rows: [
+        row('automations', L('Automations', '自动化'), Workflow),
         row(
           'tasks/history',
           L('Activity', '运行记录'),
           Activity,
-          (h) => h === 'attention' || h.startsWith('tasks'),
+          (h) => h === 'attention' || h.startsWith('tasks') || h === 'execution',
         ),
-        row('deployments', L('Deployments', '部署'), Layers),
         row(
           'workspace',
           L('Workspace settings', '工作区设置'),
           Server,
-          (h) => h === 'workspace' || (h.startsWith('advanced') && h !== 'advanced/memory'),
+          h => h === 'workspace' || h === 'advanced' || workspaceItems.some(item => item.hash === h),
         ),
-        ...(query ? workspaceGroups(L).flatMap(group => group.items.map(item => row('advanced/' + item.route, item.name, item.Icon))) : []),
+        ...(query ? workspaceItems.map(item => row(item.hash, item.name, item.Icon, undefined,
+          item.hash === 'advanced/intake' ? L('Find tasks in messages', '从消息中发现任务') : undefined)) : []),
         ...views.map((v) => row('plugin/' + v.id, v.label, LayoutGrid)),
-        row('usage', L('User guide', '使用指引'), BookOpen),
       ],
     },
   ];
@@ -127,7 +134,7 @@ export function StudioRail({
   const [search, setSearch] = useState('');
   const query = search.trim().toLowerCase();
   const groups = sections(L, views, query)
-    .map(group => ({...group, rows: group.rows.filter(item => item.name.toLowerCase().includes(query))}))
+    .map(group => ({...group, rows: group.rows.filter(item => (item.name + ' ' + (item.keywords ?? '')).toLowerCase().includes(query))}))
     .filter(group => group.rows.length);
   return (
     <aside
@@ -318,6 +325,12 @@ export function General({
           />
         </section>
         <section className="language-row">
+          <h2>{L('Conversations and context', '对话与上下文')}</h2>
+          <a className="workspace-choose" href="/configure#advanced/chat">
+            {L('Manage data', '数据管理')}<ChevronRight size={16} aria-hidden="true" />
+          </a>
+        </section>
+        <section className="language-row">
           <h2>{L('Workspace', '工作区')}</h2>
           <button className="workspace-choose" onClick={openWorkspaces}>
             {L('Choose workspace', '选择工作区')}
@@ -325,46 +338,6 @@ export function General({
           </button>
         </section>
         {error && <p role="alert">{error}</p>}
-      </article>
-    </div>
-  );
-}
-
-export function TeamSettings({ members, L }: { members: (Agent & { model?: string })[]; L: L }) {
-  return (
-    <div className="general-scroll roppo-ui">
-      <article className="general studio-team">
-        <header className="studio-page-title">
-          <h1>{L('Agent team', 'Agent 团队')}</h1>
-          <a className="studio-primary" href="/configure#execution/configuration">
-            <Users size={17} />
-            {L('Manage team', '管理团队')}
-          </a>
-        </header>
-        {(['router', 'worker'] as const).map((kind) => (
-          <section key={kind}>
-            <h2>{kind === 'router' ? 'Router' : 'Worker'}</h2>
-            {members
-              .filter((m) => m.kind === kind)
-              .map((m) => (
-                <a
-                  className="studio-person"
-                  key={m.id}
-                  href={
-                    '/configure#execution/configuration/' +
-                    encodeURIComponent(kind === 'router' ? 'router' : m.id)
-                  }
-                  aria-label={L('Configure ', '配置 ') + m.label}
-                >
-                  <AgentAvatar id={m.id} kind={m.kind} size={44} />
-                  <strong>{m.label}</strong>
-                  <span>{m.model || L('Connection default', '连接默认模型')}</span>
-                  <ChevronRight size={17} />
-                </a>
-              ))}
-            {!members.some((m) => m.kind === kind) && <p>{L('No members', '暂无成员')}</p>}
-          </section>
-        ))}
       </article>
     </div>
   );

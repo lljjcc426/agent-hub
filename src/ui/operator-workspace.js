@@ -163,7 +163,10 @@ function projectReviewCard(review,editable) {
   return card
 }
 function activityHeader(current) {
-  return [opHeading(L('Activity', '运行记录'), null, opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
+  const embedded = typeof configurationHost !== 'undefined' && !!configurationHost
+  return [opHeading(L('Activity', '运行记录'), null,
+    embedded ? opButton(L('Model calls', '模型调用'), () => opNavigate('execution', '', { view: 'calls' }), 'button', 'activity') : null,
+    opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
     workspaceTabs(L('Activity views', '记录筛选'), [
       [L('History', '历史记录'), current === 'activity', () => opNavigate('activity')],
       [L('In progress', '进行中'), current === 'active-tasks', () => opNavigate('active-tasks')],

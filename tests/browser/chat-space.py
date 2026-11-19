@@ -33,10 +33,15 @@ with sync_playwright() as p:
  expect(composer).to_be_enabled()
  original=context.request.get(f['url']+'/api/chat/space').json()['conversation']['id'];composer.fill('保留这份未发送的草稿')
  def settings():
-  page.goto(f['url']+'/configure#advanced/chat');expect(page.get_by_role('heading',name='聊天显示',exact=True)).to_be_visible()
+  page.goto(f['url']+'/configure#advanced/chat');expect(page.get_by_role('heading',name='对话与上下文',exact=True)).to_be_visible()
+ def layout(name):
+  page.goto(f['url']+'/configure#general')
+  group=page.get_by_role('group',name='对话布局')
+  group.get_by_text(name,exact=True).click()
+  expect(group.get_by_role('radio',name=name,exact=True)).to_be_checked()
  def chat():
   page.get_by_role('link',name='返回对话',exact=True).click();expect(page.locator('.conversation-body')).to_be_visible()
- settings();page.get_by_role('radio',name='Agents 列表',exact=False).check();expect(page.get_by_role('radio',name='Agents 列表',exact=False)).to_be_checked();expect(page.get_by_role('button',name='清空所有记忆和上下文',exact=True)).to_be_enabled();page.screenshot(path=str(root/'settings-light.png'),full_page=True);chat()
+ layout('Agent 列表');settings();expect(page.get_by_role('button',name='清空所有记忆和上下文',exact=True)).to_be_enabled();page.screenshot(path=str(root/'settings-light.png'),full_page=True);chat()
  expect(page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True)).to_have_value('保留这份未发送的草稿')
  picker=page.get_by_role('button',name='切换对话',exact=True)
  picker.click()
@@ -69,6 +74,6 @@ with sync_playwright() as p:
  page.get_by_role('textbox',name='向 Roppo 发送消息',exact=True).fill('重新开始一个任务');page.get_by_role('button',name='发送消息',exact=True).click();expect(page.locator('.assistant-body').filter(has_text='开发 Worker 已完成修复和回归验证，请验收。')).to_be_visible(timeout=20000)
  fresh=context.request.get(f['url']+'/api/chat/space').json();assert fresh['conversation']['id']!=original;assert fresh['display']=='agents'
  passed('confirmed reset clears old chat and drafts, reports verified cleanup and admits a fresh task while retaining display preference')
- settings();page.get_by_role('radio',name='群聊',exact=False).check();chat();expect(page.locator('.conversation-sidebar')).to_have_count(0);assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==fresh['conversation']['id']
+ layout('群聊');chat();expect(page.locator('.conversation-sidebar')).to_have_count(0);assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==fresh['conversation']['id']
  assert not errors,errors;passed('both display modes remain usable after reset, with no browser page errors')
  (root/'evidence.json').write_text(json.dumps({'checks':checks,'errors':errors,'model':'deterministic fixture; no external provider','chatBefore':original,'chatAfter':fresh['conversation']['id']},ensure_ascii=False,indent=2));browser.close()

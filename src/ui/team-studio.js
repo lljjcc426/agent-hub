@@ -23,7 +23,10 @@ function teamMaterializeWorkers() {
   if (!S.draft.execution.workers?.length) S.draft.execution.workers = teamWorkers()
 }
 function teamWrite(key, value) {
-  const current = teamCurrent()
+  writeTeamField(teamCurrent(), key, value)
+  teamRefreshSummary()
+}
+function writeTeamField(current, key, value) {
   if (!current.router) teamMaterializeWorkers()
   let path = current.path + '.' + key
   if (current.router && !teamFeatures().options) {
@@ -35,7 +38,6 @@ function teamWrite(key, value) {
   set(S.draft, path, value)
   S.preview = null
   updateBar()
-  teamRefreshSummary()
 }
 function teamRefreshSummary() {
   const current = teamCurrent(), node = document.querySelector('[data-team-id="' + CSS.escape(teamStudio.selected) + '"]')
@@ -52,15 +54,19 @@ function teamSelect(id, tab = teamStudio.tab) {
   document.getElementById('team-inspector-title')?.focus({ preventScroll: true })
   if (matchMedia('(max-width: 960px)').matches) document.getElementById('team-inspector')?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
 }
+function teamNextWorkerId(workers) {
+  let index = 1
+  while (workers.some(worker => worker.id === 'worker-' + index) || (S.snap?.retiredWorkerIds || []).includes('worker-' + index)) index++
+  return 'worker-' + index
+}
 function teamAddWorker(cloneSelected = false) {
   const workers = teamWorkers()
   if (workers.length >= teamWorkerLimit()) return
   const selected = workers.find(worker => worker.id === teamStudio.selected)
-  let index = 1
-  while (workers.some(worker => worker.id === 'worker-' + index) || (S.snap?.retiredWorkerIds || []).includes('worker-' + index)) index++
-  const worker = cloneSelected && selected ? { ...clone(selected), id: 'worker-' + index,
+  const id = teamNextWorkerId(workers)
+  const worker = cloneSelected && selected ? { ...clone(selected), id,
     label: (selected.label || L('Worker', '执行者')) + L(' copy', ' 副本') }
-    : { id: 'worker-' + index, backend: executionDraft().router }
+    : { id, backend: executionDraft().router }
   if (Object.hasOwn(worker, 'state')) worker.state = 'enabled'
   workers.push(worker)
   set(S.draft, 'execution.workers', workers)
@@ -84,6 +90,23 @@ function teamPoolLimit() {
   field.classList.add('team-pool-limit')
   return field
 }
+function removeWorkerDraft(id) {
+  const previous = teamWorkers(), workers = previous.filter(worker => worker.id !== id)
+  for (const map of [S.buffers, S.errors]) {
+    const moved = []
+    for (const [path, value] of map) {
+      const match = /^execution\.workers\.(\d+)(\..*)$/.exec(path)
+      if (!match) continue
+      map.delete(path)
+      const index = workers.findIndex(worker => worker.id === previous[Number(match[1])]?.id)
+      if (index >= 0) moved.push(['execution.workers.' + index + match[2], value])
+    }
+    for (const [path, value] of moved) map.set(path, value)
+  }
+  S.draft.execution.workers = workers
+  S.draft.concurrency = workers.length
+  S.preview = null
+}
 function teamRemoveWorker() {
   const current = teamCurrent()
   if (current.router) return
@@ -91,20 +114,7 @@ function teamRemoveWorker() {
     L('Remove it from the configuration. Finish or cancel its tasks before saving. History is retained.',
       '将其从配置中移除。保存前需完成或取消其任务，历史记录会保留。'),
     L('Remove Worker', '移除 Worker'), () => {
-      const previous = teamWorkers(), workers = previous.filter(worker => worker.id !== teamStudio.selected)
-      for (const map of [S.buffers, S.errors]) {
-        const moved = []
-        for (const [path, value] of map) {
-          const match = /^execution\.workers\.(\d+)(\..*)$/.exec(path)
-          if (!match) continue
-          map.delete(path)
-          const index = workers.findIndex(worker => worker.id === previous[Number(match[1])]?.id)
-          if (index >= 0) moved.push(['execution.workers.' + index + match[2], value])
-        }
-        for (const [path, value] of moved) map.set(path, value)
-      }
-      S.draft.execution.workers = workers
-      S.draft.concurrency = workers.length
+      removeWorkerDraft(current.value.id)
       teamStudio.selected = 'router'
       render()
       document.getElementById('team-node-router')?.focus()
@@ -178,18 +188,18 @@ function teamReasoning(current) {
       L('Model support is not reported. Unsupported values are rejected by the provider; off is never mapped to low.', '尚未取得模型能力。不支持的选项由服务商拒绝；关闭思考不会被替换成低强度。')
   })
 }
-function teamPrompt(current) {
+function teamPrompt(current, hint = true) {
   const independent = teamFeatures().options
   const value = independent ? current.value.prompt || '' : S.draft.prompts?.[current.router ? 'router' : 'worker'] || ''
-  const input = el('textarea', 'team-prompt'); input.id = 'team-prompt'; input.value = value; input.rows = 6
+  const input = el('textarea', 'team-prompt'); input.id = 'team-prompt'; input.value = value; input.rows = 6; input.maxLength = 64000
   input.placeholder = current.router
     ? L('What should Router coordinate, and when should it ask you?', 'Router 负责协调什么？哪些情况需要向你确认？')
     : L('Describe this Worker’s responsibilities and how it should verify its work.', '描述该 Worker 的职责，以及如何验证工作结果。')
-  input.oninput = () => independent || current.router ? teamWrite('prompt', input.value || undefined) : editPrompt('worker', input.value)
+  input.oninput = () => independent || current.router ? writeTeamField(current, 'prompt', input.value || undefined) : editPrompt('worker', input.value)
   const label = el('label', '', independent ? L('Instructions', '职责与提示词') : current.router ? L('Router instructions', 'Router 指令') : L('Shared Worker instructions', '所有 Worker 的共同指令'))
   label.htmlFor = input.id
   return add(el('div', 'control-field'), label, input,
-    el('small', 'team-help', independent ? L('Added to the system instructions for this agent.', '补充到此 Agent 的系统指令中。') : L('This host currently supports shared role instructions.', '此宿主目前支持按角色共享指令。')))
+    hint ? el('small', 'team-help', independent ? L('Added to the system instructions for this agent.', '补充到此 Agent 的系统指令中。') : L('This host currently supports shared role instructions.', '此宿主目前支持按角色共享指令。')) : null)
 }
 function teamBasics(current) {
   const route = executionDraft(), backend = current.router ? route.router : current.value.backend
@@ -221,10 +231,17 @@ function teamBasics(current) {
     values: [['enabled', L('Accept tasks', '接收任务')], ['paused', L('Pause new tasks', '暂停新任务')], ['retiring', L('Finish existing tasks', '完成现有任务后退出')]],
     help: L('Existing work continues. Pausing or retiring does not cancel running tasks.', '已有任务继续执行。暂停或退出不会取消运行中的任务。')
   }))
+  fields.append(teamPersonalRules(current))
+  return fields
+}
+function teamPersonalRules(current, hint = true) {
+  const fields = el('div', 'team-fields')
+  const profile = () => structuredProfile(current.router ? null : current.value.id)?.profile || current.value
+  const write = (key, value) => writeTeamField(current, key, value)
   if (teamFeatures().options) {
     for (const [key, label, rows] of [['identity', L('Identity', '身份介绍'), 2], ['soul', L('Personality', '性格与表达'), 3]]) {
       const input=el('textarea','team-prompt');input.id='team-persona-'+key;input.rows=rows;input.maxLength=key==='identity'?2000:4000;input.value=current.value.persona?.[key]||''
-      input.oninput=()=>teamWrite('persona',{...teamCurrent().value.persona,[key]:input.value})
+      input.oninput=()=>write('persona',{...profile().persona,[key]:input.value})
       const field=el('label');field.htmlFor=input.id;field.textContent=label
       fields.append(add(el('div','control-field'),field,input))
     }
@@ -233,8 +250,8 @@ function teamBasics(current) {
     const files=el('div','team-fields'),actions=el('div','actions')
     for(const file of ['IDENTITY.md','SOUL.md','AGENTS.md']) {
       actions.append(opButton(file,()=>{
-        const agent=teamCurrent().value
-        const text='# '+file+'\n\n'+(file==='IDENTITY.md'?'Name: '+(agent.label||teamCurrent().name)+'\n\n'+(agent.persona?.identity||''):file==='SOUL.md'?(agent.persona?.soul||''):(agent.prompt||''))
+        const agent=profile()
+        const text='# '+file+'\n\n'+(file==='IDENTITY.md'?'Name: '+(agent.label||current.name)+'\n\n'+(agent.persona?.identity||''):file==='SOUL.md'?(agent.persona?.soul||''):(agent.prompt||''))
         const url=URL.createObjectURL(new Blob([text],{type:'text/markdown;charset=utf-8'})),a=el('a');a.href=url;a.download=file;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
       },'text-button'))
     }
@@ -242,21 +259,21 @@ function teamBasics(current) {
     upload.onchange=async()=>{
       const file=upload.files?.[0];if(!file)return
       if(!['IDENTITY.md','SOUL.md','AGENTS.md'].includes(file.name)||file.size>64000){setNotice('error','Choose IDENTITY.md, SOUL.md or AGENTS.md under 64 KB.','请选择 64 KB 以内的 IDENTITY.md、SOUL.md 或 AGENTS.md。');render();return}
-      const selected=teamStudio.selected
+      const epoch=workspaceContext.epoch
       let text=(await file.text()).replace(/^\uFEFF/,'').replace(/^#\s+(?:IDENTITY|SOUL|AGENTS)\.md\s*\n/,'').trim()
-      if(selected!==teamStudio.selected)return
+      if(!upload.isConnected||epoch!==workspaceContext.epoch)return
       const name=file.name==='IDENTITY.md'?text.match(/^Name:\s*([^\n]+)\n?/):null
       if(name)text=text.slice(name[0].length).trim()
       if(text.length>(file.name==='IDENTITY.md'?2000:file.name==='SOUL.md'?4000:64000)||name&&name[1].length>100){setNotice('error','File content is too long.','文件内容过长。');render();return}
-      if(name)teamWrite('label',name[1].trim())
-      if(file.name==='AGENTS.md')teamWrite('prompt',text)
-      else teamWrite('persona',{...teamCurrent().value.persona,[file.name==='SOUL.md'?'soul':'identity']:text})
+      if(name)write('label',name[1].trim())
+      if(file.name==='AGENTS.md')write('prompt',text)
+      else write('persona',{...profile().persona,[file.name==='SOUL.md'?'soul':'identity']:text})
       setNotice('success','Imported into the draft. Save to apply.','已导入草稿，保存后生效。');render()
     }
     const label=el('label');label.htmlFor=upload.id;label.textContent=L('Import personality file','导入人格文件')
     files.append(actions,label,upload);fields.append(detail(L('Personality files','人格文件'),files))
   }
-  fields.append(teamPrompt(current))
+  fields.append(teamPrompt(current, hint))
   return fields
 }
 function teamLimits(current) {
@@ -321,6 +338,19 @@ function teamAdvanced(current) {
   result.append(preview)
   return result
 }
+function teamNativeTool(current) {
+  const backend = current.value.backend || (current.router ? S.draft.execution.roles?.router : S.draft.execution.roles?.worker) || S.draft.execution.backend || 'codex'
+  const definition = S.draft.backends?.[backend]
+  const driver = definition?.kind === 'plugin' ? definition.plugin : definition?.kind || backend
+  const search = ['codex', 'codex-cli'].includes(driver)
+  if ((!current.router || current.value.mode === 'host') && (search || ['claude-code', 'gemini-cli', 'opencode-cli'].includes(driver))) {
+    const native = search ? 'cached-web-search' : 'task-list'
+    const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = current.value.nativeTool === native
+    checkbox.onchange = () => writeTeamField(current, 'nativeTool', checkbox.checked ? native : undefined)
+    return add(el('label', 'team-toggle'), checkbox, el('span', '', search ? L('Codex cached web search', 'Codex 缓存网页搜索') : L('CLI task list', 'CLI 原生任务清单')))
+  }
+  return null
+}
 function teamTools(current) {
   const fields = el('div', 'team-fields')
   if (!current.router && teamFeatures().options) {
@@ -343,16 +373,8 @@ function teamTools(current) {
     fields.append(add(label, enabled, el('span', '', L('Allow Router to manage Workers', '允许 Router 管理 Worker'))),
       teamJson('execution.management.backends', L('External Router connection IDs (JSON array)', '外部 Router 可用连接 ID（JSON 数组）'), 'array'))
   }
-  const backend = current.value.backend || (current.router ? S.draft.execution.roles?.router : S.draft.execution.roles?.worker) || S.draft.execution.backend || 'codex'
-  const definition = S.draft.backends?.[backend]
-  const driver = definition?.kind === 'plugin' ? definition.plugin : definition?.kind || backend
-  const search = ['codex', 'codex-cli'].includes(driver)
-  if ((!current.router || current.value.mode === 'host') && (search || ['claude-code', 'gemini-cli', 'opencode-cli'].includes(driver))) {
-    const native = search ? 'cached-web-search' : 'task-list'
-    const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = current.value.nativeTool === native
-    checkbox.onchange = () => teamWrite('nativeTool', checkbox.checked ? native : undefined)
-    fields.append(add(el('label', 'team-toggle'), checkbox, el('span', '', search ? L('Codex cached web search', 'Codex 缓存网页搜索') : L('CLI task list', 'CLI 原生任务清单'))))
-  }
+  const native = teamNativeTool(current)
+  if (native) fields.append(native)
   if (integrations.data || S.snap?.toolConnections) fields.append(integrationGrants(current))
   fields.append(el('h3', '', L('Host tool catalog', '宿主工具目录')))
   if (!tools.length) fields.append(el('p', 'team-help', L('No tool catalog has been reported.', '尚未取得工具目录。')))

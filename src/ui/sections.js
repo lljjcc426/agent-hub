@@ -241,6 +241,7 @@ function renderWorkspaceSettings() {
     ['memory', L('Memory', '记忆')],
     ['browser', L('Browser', '浏览器')],
     ['intake', L('Find tasks in messages', '从消息中发现任务')],
+    ['configuration', L('Run settings', '运行配置')],
     ['runtime', L('Runtime and isolation', '运行与隔离')],
     ['delivery', L('Publishing and merging', '发布与合并')],
     ['json', L('Configuration maintenance', '配置维护')]
@@ -248,6 +249,11 @@ function renderWorkspaceSettings() {
   const maintenance = page === 'json' || page === 'revisions'
   const select = view => opNavigate('advanced', '', { view })
   const views = { browser: () => typeof configurationHost !== 'undefined' && configurationHost ? [configurationHost.browser()] : [], chat: () => typeof configurationHost !== 'undefined' && configurationHost ? [configurationHost.chat()] : [], host: renderHostStatus, intake: renderPolicy, runtime: renderWork,
+    configuration: () => {
+      const link = el('a', 'button', L('Open run settings', '打开运行配置'))
+      link.href = '/configure#advanced/configuration'
+      return [link]
+    },
     delivery: renderDelivery, json: renderSettingsJson, revisions: renderRevisions, memory: () => {
       if(typeof configurationHost !== 'undefined' && configurationHost)return [configurationHost.memory()]
       const link=el('a','text-button',L('Manage memory','管理记忆'));link.href='/configure#advanced/memory';return [link]
@@ -255,9 +261,11 @@ function renderWorkspaceSettings() {
   if (typeof configurationHost !== 'undefined' && configurationHost) {
     if (page === 'memory') return views.memory()
     const names = {host: L('Host status', '主机状态'), chat: L('Chat preferences', '对话设置'),
-      runtime: L('Run limits and isolation', '运行限制与隔离'), json: L('Configuration editor', '配置编辑器'),
+      chat: L('Conversations and context', '对话与上下文'),
+      runtime: L('Run limits and isolation', '运行限制与隔离'), json: L('Raw configuration', '原始配置'),
       revisions: L('Version history', '版本记录')}
     const title = names[page] || tabs.find(([key]) => key === page)?.[1]
+    if (page === 'configuration') return []
     if (page === 'intake') return [opHeading(title, null)]
     return [opHeading(title, null), add(el('div', 'workspace-settings settings-stack'), ...views[page]())]
   }

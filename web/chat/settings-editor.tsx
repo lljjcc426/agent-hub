@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { AlertCircle, ListFilter, LoaderCircle, Plus, Trash2, X } from 'lucide-react';
 import { Button, ChoiceGroup, Dialog, EmptyState, IconButton, TextAreaField, TextField, Toast } from '../ui';
+import type { StructuredSettings } from './structured-settings.ts';
 
 type Label = (en: string, zh: string) => string;
 type Mode = 'off' | 'observe' | 'auto';
@@ -19,6 +20,7 @@ export interface SettingsEditorState {
   draft: { count: number; invalid?: string; conflict: boolean } | null;
   busy: string;
   blocked: boolean;
+  structured: StructuredSettings | null;
   notice: { level: 'success' | 'warning' | 'error'; en: string; zh: string; details?: string } | null;
   dismiss: () => void;
   save: () => void;
@@ -42,6 +44,9 @@ function subscribe(listener: () => void) {
   return () => { listeners.delete(listener); };
 }
 const snapshot = () => current;
+export function useSettingsEditor() {
+  return useSyncExternalStore(subscribe, snapshot);
+}
 
 function IntakeForm({ intake, L }: { intake: Intake; L: Label }) {
   const [remove, setRemove] = useState<number | null>(null);
@@ -124,7 +129,7 @@ function Feedback({ view, L }: { view: SettingsEditorState; L: Label }) {
   const problem = !busy && !draft?.conflict && notice && notice.level !== 'success' ? notice : null;
   const status = progress[busy];
   const text = problem ? L(problem.en, problem.zh) : draft?.conflict ? L('Revision conflict', '版本冲突')
-    : draft?.invalid ? L('Check field · ', '请修正字段 · ') + draft.invalid
+    : draft?.invalid ? view.structured?.problems[draft.invalid] ?? L('Check field · ', '请修正字段 · ') + draft.invalid
     : status ? L(...status) : draft && !saving ? L('Unsaved changes', '有未保存的更改') : '';
   return <div className="settings-feedback roppo-ui">
     <Toast message={!busy && notice?.level === 'success' ? L(notice.en, notice.zh) : ''} />

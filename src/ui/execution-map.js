@@ -11,8 +11,12 @@ const executionActorValue=actor=>actor.kind+':'+actor.id
 function executionCurrentActor(){const actors=executionActors();return actors.find(actor=>actor.kind===executionView.selected?.kind&&(actor.kind==='router'||actor.id===executionView.selected.id))||actors[0]}
 function executionCallsPage(page){
  page.classList.add('execution-calls-page')
- page.append(opHeading(L('Agent team','Agent 团队')),executionModeTabs())
- const panel=el('section','execution-call-overview');panel.id='execution-mode-panel';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','execution-mode-tab-calls')
+ const embedded = typeof configurationHost !== 'undefined' && !!configurationHost
+ if (embedded) page.append(opHeading(L('Model calls', '模型调用'), null,
+   opButton(L('Activity', '运行记录'), () => opNavigate('activity'), 'button', 'activity')))
+ else page.append(opHeading(L('Agent team','Agent 团队')),executionModeTabs())
+ const panel=el('section','execution-call-overview');panel.id='execution-mode-panel'
+ if (!embedded) { panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','execution-mode-tab-calls') }
  const actor=executionCurrentActor();executionView.selected={kind:actor.kind,id:actor.id}
  panel.append(el('div','execution-map-topline'))
  const tabs=affectSegmented({id:'execution-actor-tab',label:L('Select Router or Worker','选择 Router 或 Worker'),value:executionActorValue(actor),options:executionActors().map(a=>({value:executionActorValue(a),label:a.name,controls:'execution-map-body'})),onChange:value=>{const selected=executionActors().find(a=>executionActorValue(a)===value);if(selected)executionPickActor(selected)}});tabs.id='execution-actor-tabs';tabs.classList.add('execution-actor-tabs');tabs.dataset.actors=JSON.stringify(executionActors().map(executionActorValue));panel.append(tabs,el('div','execution-map-body'));panel.querySelector('.execution-map-body').id='execution-map-body'
@@ -51,8 +55,16 @@ function executionMapBody(){
  }
  const center=el('section','execution-map-center tam-node');center.dataset.mapKey='center'
  const title=el('h2','',actor.name),state=el('span','execution-map-center-state'),model=el('p','execution-map-model'),task=el('p','execution-map-task'),stats=el('button','execution-map-history');stats.type='button';stats.id='execution-map-center-history';stats.onclick=()=>executionOpenCalls(actor.kind,actor.id,stats.id)
- const configure=affectButton(L('Configure','配置'),()=>opNavigate('execution','',{view:'configuration'}),{variant:'ghost'});configure.classList.add('execution-map-configure')
- center.append(add(el('div','execution-map-center-content'),add(el('div','execution-map-center-heading'),icon(actor.kind==='router'?'activity':'cpu'),title,state),model,task,stats,add(el('div','execution-map-center-actions'),configure,executionEditInstructions(actor.kind))))
+ const embedded = typeof configurationHost !== 'undefined' && !!configurationHost
+ const configure = embedded ? el('a', 'button', L('Configure', '配置'))
+   : affectButton(L('Configure','配置'),()=>opNavigate('execution','',{view:'configuration'}),{variant:'ghost'})
+ configure.classList.add('execution-map-configure')
+ const instructions = embedded ? el('a', 'button', L('Behavior rules', '行为规则')) : executionEditInstructions(actor.kind)
+ if (embedded) {
+   configure.href = '/configure#team/' + encodeURIComponent(actor.id)
+   instructions.href = '/configure#prompts/member/' + encodeURIComponent(actor.id)
+ }
+ center.append(add(el('div','execution-map-center-content'),add(el('div','execution-map-center-heading'),icon(actor.kind==='router'?'activity':'cpu'),title,state),model,task,stats,add(el('div','execution-map-center-actions'),configure,instructions)))
  map.style.setProperty('--map-rows',String(Math.max(left.children.length,right.children.length)));map.style.minHeight=Math.max(390,Math.max(left.children.length,right.children.length)*82+24)+'px';map.append(left,center,right);return map
 }
 function executionMountCallMap(){

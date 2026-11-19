@@ -16,6 +16,7 @@ function controlField(id,label,value,onChange,options=null,placeholder=''){
  return add(el('div','control-field'),title,input)
 }
 let promptTarget = 'shared'
+let promptMember = 'router'
 let promptPreviewOpen = false
 let promptPreviewFocus = 'prompt-preview-close'
 function executionDraft() {
@@ -114,7 +115,8 @@ function promptRuleField(target, title, placeholder = '') {
 function updatePromptActions() {
   const button = document.getElementById('prompt-rules-save')
   if (!button) return
-  button.disabled = !!S.busy || !!entryState.busy || (!S.latest && (S.errors.size > 0 || !changed().includes('prompts')))
+  const group = promptTarget === 'member' ? 'execution' : 'prompts'
+  button.disabled = !!S.busy || !!entryState.busy || (!S.latest && (S.errors.size > 0 || !changed().includes(group)))
   button.querySelector('span').textContent = S.latest ? L('Review conflict', '核对冲突')
     : S.busy === 'save' ? L('Saving…', '保存中…') : L('Save changes', '保存更改')
 }
@@ -125,10 +127,24 @@ function closePromptPreview() {
   document.getElementById('prompt-rules-preview')?.focus({ preventScroll: true })
 }
 function openPromptPreview() {
+  if (promptTarget === 'member') applyPromptMemberPreview()
   promptPreviewFocus = 'prompt-preview-close'
   promptPreviewOpen = true
   S.preview = null
   void previewPrompt()
+}
+function promptRuleMember() {
+  const worker = teamWorkers().find(member => 'worker:' + member.id === promptMember)
+  const member = structuredProfile(worker?.id ?? null)
+  return { router: !worker, path: member.path, value: member.profile,
+    name: member.profile.label || worker?.id || 'Router' }
+}
+function applyPromptMemberPreview() {
+  const current = promptRuleMember()
+  S.previewRole = current.router ? 'router' : 'worker'
+  S.previewWorkerId = current.router ? '' : current.value.id
+  S.previewMode = ''
+  S.preview = null
 }
 function promptPreviewDialog() {
   if (!promptPreviewOpen) return null
@@ -188,18 +204,22 @@ function controlPrompts() {
   preview.id = 'prompt-rules-preview'
   const actions = [preview]
   if (typeof configurationHost === 'undefined' || !configurationHost) {
-    const saveButton = opButton(L('Save changes', '保存更改'), () => S.latest ? revealRecovery() : save(['prompts']), 'button primary')
+    const saveButton = opButton(L('Save changes', '保存更改'), () => S.latest ? revealRecovery() : save([promptTarget === 'member' ? 'execution' : 'prompts']), 'button primary')
     saveButton.id = 'prompt-rules-save'
     actions.push(saveButton)
   }
   page.append(opHeading(L('Behavior rules', '行为规则'), null, ...actions))
   const roles = [['shared', L('General rules', '通用规则')], ['router', L('Router rules', 'Router 规则')], ['worker', L('Worker rules', 'Worker 规则')]]
+  if (typeof configurationHost !== 'undefined' && configurationHost && teamFeatures().options && keys().includes('execution'))
+    roles.push(['member', L('Member rules', '成员专属')])
+  else if (promptTarget === 'member') promptTarget = 'shared'
   const tabs = el('div', 'prompt-rules-tabs')
   tabs.setAttribute('role', 'tablist')
   tabs.setAttribute('aria-label', L('Rule target', '规则对象'))
   const select = target => {
     promptTarget = target
-    if (target !== 'shared') S.previewRole = target
+    if (target === 'member') applyPromptMemberPreview()
+    else if (target !== 'shared') { S.previewRole = target; S.previewWorkerId = '' }
     S.previewMode = ''
     S.preview = null
     render()
@@ -233,6 +253,16 @@ function controlPrompts() {
       promptRuleField('team.communication', L('Communication', '沟通方式'), L('Use the language of the request; lead with the result.', '使用用户的语言，先说结论，再说明依据。'))),
       rulesGroup(L('Tasks', '任务'), promptRuleField('team.scope', L('Work scope', '工作范围'), L('Describe the work your team handles.', '填写团队负责的工作和处理范围。')),
       promptRuleField('team.delivery', L('Delivery standards', '交付标准'), L('Provide usable results, files and verification.', '提供可直接使用的结果、文件或链接，以及检查情况。'))))
+  } else if (promptTarget === 'member') {
+    form.classList.add('prompt-rules-role', 'prompt-member-form')
+    const current = promptRuleMember()
+    const profiles = [['router', S.draft.execution.router?.label || 'Router'],
+      ...teamWorkers().map((worker, index) => ['worker:' + worker.id, worker.label || L('Worker ', '执行者 ') + (index + 1)])]
+    form.append(teamField('prompt-member', L('Member', '选择成员'), current.router ? 'router' : promptMember, value => {
+      promptMember = value
+      applyPromptMemberPreview()
+      render()
+    }, { values: profiles }), teamPersonalRules(current, false))
   } else {
     form.classList.add('prompt-rules-role')
     form.append(promptRuleField(promptTarget, promptTarget === 'router' ? L('Task coordination', '任务协调要求') : L('Task execution', '任务执行要求'),
@@ -252,7 +282,8 @@ function controlPrompts() {
     entryState.promptView = advanced.open ? 'templates' : 'roles'
   }
   advanced.querySelector('summary').append(icon('forward'))
-  page.append(tabs, form, advanced)
+  page.append(tabs, form)
+  if (promptTarget !== 'member') page.append(advanced)
   const dialog = promptPreviewDialog()
   if (dialog) page.append(dialog)
   return [page]

@@ -21,6 +21,7 @@ export const configurationScripts = [
   "execution-live.js",
   "execution-map.js",
   "team-studio.js",
+  "structured-settings.js",
   "workspaces.js",
   "connection-studio.js",
   "connection-native.js",

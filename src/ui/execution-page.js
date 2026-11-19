@@ -49,5 +49,6 @@ function executionInstructions(){
 function controlExecution() {
   if (!S.base) return [accessPanel()]
   if (executionView.mode === 'calls') return executionCallsPage(el('section', 'execution-page'))
+  if (typeof configurationHost !== 'undefined' && configurationHost) return []
   return teamConfiguration()
 }

@@ -41,6 +41,7 @@ function updateBar() {
       busy: S.busy || (entryState.busy ? 'working' : ''),
       blocked: !!S.busy || !!entryState.busy,
       notice,
+      structured: structuredSettings(),
       dismiss: () => { if (notice && S.notice === notice) { S.notice = null; updateBar() } },
       save: () => S.latest ? revealRecovery() : save(),
       savePrompts: entryState.page === 'prompts' && groups.includes('prompts') && count > 1 && !S.latest
@@ -430,7 +431,15 @@ async function save(only) {
     )
     try {
       adopt(await snapshot())
-      await readEntries()
+      if (needsEntryInventory()) await readEntries()
+      else {
+        // Refresh installed clients when an entry page needs the inventory.
+        entryState.inventoryRequest++
+        entryState.inventoryLoading = false
+        entryState.inventoryError = false
+        entryState.data = null
+        await Promise.all([readOperatorWork(), connectionDiscover(), integrationsDiscover()])
+      }
     } catch (error) {
       if (error.status === 401) entryError(error)
       setNotice('warning', 'Revision ' + version.revision + ' saved. Refresh to update workspace status.',

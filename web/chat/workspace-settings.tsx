@@ -1,11 +1,12 @@
 import {
   ArchiveRestore,
   ArrowDownToLine,
+  BookOpen,
   ChevronRight,
   Code2,
   GitMerge,
   Globe,
-  MessagesSquare,
+  Layers,
   Monitor,
   ShieldCheck,
 } from 'lucide-react';
@@ -16,24 +17,25 @@ export function workspaceGroups(L: Labels) {
     {
       label: L('Workspace', '工作环境'),
       items: [
-        { route: 'host', name: L('Host status', '主机状态'), Icon: Monitor },
-        { route: 'chat', name: L('Chat preferences', '对话设置'), Icon: MessagesSquare },
-        { route: 'browser', name: L('Browser', '浏览器'), Icon: Globe },
+        { hash: 'advanced/browser', name: L('Browser', '浏览器'), Icon: Globe },
       ],
     },
     {
       label: L('Task handling', '任务处理'),
       items: [
-        { route: 'intake', name: L('Find tasks in messages', '从消息中发现任务'), Icon: ArrowDownToLine },
-        { route: 'runtime', name: L('Run limits and isolation', '运行限制与隔离'), Icon: ShieldCheck },
-        { route: 'delivery', name: L('Publishing and merging', '发布与合并'), Icon: GitMerge },
+        { hash: 'advanced/intake', name: L('Follow-up rules', '跟进规则'), Icon: ArrowDownToLine },
+        { hash: 'advanced/runtime', name: L('Run limits and isolation', '运行限制与隔离'), Icon: ShieldCheck },
+        { hash: 'advanced/delivery', name: L('Publishing and merging', '发布与合并'), Icon: GitMerge },
       ],
     },
     {
-      label: L('Configuration', '配置管理'),
+      label: L('Maintenance', '维护'),
       items: [
-        { route: 'json', name: L('Configuration editor', '配置编辑器'), Icon: Code2 },
-        { route: 'revisions', name: L('Version history', '版本记录'), Icon: ArchiveRestore },
+        { hash: 'advanced/host', name: L('Host status', '主机状态'), Icon: Monitor },
+        { hash: 'deployments', name: L('Deployments', '部署'), Icon: Layers },
+        { hash: 'advanced/json', name: L('Raw configuration', '原始配置'), Icon: Code2 },
+        { hash: 'advanced/revisions', name: L('Version history', '版本记录'), Icon: ArchiveRestore },
+        { hash: 'usage', name: L('User guide', '使用指引'), Icon: BookOpen },
       ],
     },
   ];
@@ -45,11 +47,11 @@ export function WorkspaceSettings({ L }: { L: Labels }) {
       <article className="settings-directory">
         <h1>{L('Workspace settings', '工作区设置')}</h1>
         {workspaceGroups(L).map((group) => (
-          <section className="settings-group" key={group.items[0]!.route}>
+          <section className="settings-group" key={group.items[0]!.hash}>
             <h2>{group.label}</h2>
             <div className="settings-links">
-              {group.items.map(({ route, name, Icon }) => (
-                <a key={route} href={'/configure#advanced/' + route}>
+              {group.items.map(({ hash, name, Icon }) => (
+                <a key={hash} href={'/configure#' + hash}>
                   <span className="settings-glyph">
                     <Icon size={19} />
                   </span>

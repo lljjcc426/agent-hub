@@ -21,6 +21,7 @@ export function Dialog({
   onClose,
   onAfterClose,
   placement = 'center',
+  className = '',
   role = 'dialog',
   children,
   footer,
@@ -31,6 +32,7 @@ export function Dialog({
   onClose: () => void
   onAfterClose?: () => void
   placement?: 'center' | 'side' | 'start'
+  className?: string
   role?: 'dialog' | 'alertdialog'
   children: ReactNode
   footer?: ReactNode
@@ -48,7 +50,7 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      className="rp-dialog"
+      className={'rp-dialog ' + className}
       role={role}
       inert={!open}
       aria-hidden={!open}

@@ -101,7 +101,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   const toolsTab = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const { activity, span } = record
-  const tools = record.calls.filter(call => call.kind === 'tool')
+  const tools = record.calls.filter(call => call.kind === 'tool' && call.name !== 'chat_opening')
   const ticketById = new Map(activity.tickets.map(ticket => [ticket.id,ticket]))
   const executors = new Map<string,TaskExecutionCall>()
   for (const call of record.calls) {
@@ -111,9 +111,8 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   }
   const entries = useMemo(() => {
     const milestones = new Set(record.events.map(event => event.kind))
-    const visibleCalls = record.calls.filter(call => call.kind !== 'tool' || call.state !== 'completed' ||
-      !(call.name === 'chat_opening' && milestones.has('opening') ||
-        call.name === 'superagent_plan' && milestones.has('plan')))
+    const visibleCalls = record.calls.filter(call => call.name !== 'chat_opening' &&
+      !(call.kind === 'tool' && call.state === 'completed' && call.name === 'superagent_plan' && milestones.has('plan')))
     const all: Entry[] = [
       ...record.events.map(event => ({id:'event:'+event.id,at:event.at,event})),
       ...visibleCalls.map(call => ({id:'call:'+call.id,at:call.startedAt,call})),

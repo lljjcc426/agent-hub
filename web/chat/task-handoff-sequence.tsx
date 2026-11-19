@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from 'react'
 import { ChevronDown, Workflow } from 'lucide-react'
 import type { TaskExecutionDetail, TaskExecutionHandoff } from '../../src/chat-task-detail.ts'
+import { Dialog } from '../ui/overlays.tsx'
 import { taskStatus } from '../ui/task-activity.tsx'
 import { AgentSequence, type SequenceMessage, type SequenceParticipant } from '../ui/run-visualizations.tsx'
 import type { Localize } from './composer-commands.tsx'
@@ -14,11 +15,15 @@ export function taskSequence(record:TaskExecutionDetail,L:Localize,agentName:(id
   const router = 'router'
   const user = 'user'
   const tools = 'tool'
+  function recordedModel(id?:string){
+    const call=record.calls.findLast(call=>!!call.model && (id ? call.workerId===id : call.kind==='router'))
+    return call?.model
+  }
   participants.set(user,{id:user,name:L('You','你'),kind:'person'})
-  participants.set(router,{id:router,name:agentName(),kind:'agent'})
+  participants.set(router,{id:router,name:agentName(),kind:'agent',avatarKind:'router',model:recordedModel()})
   const worker = (id:string, name = agentName(id)) => {
     const key = 'worker:'+id
-    if(!participants.has(key)) participants.set(key,{id:key,name,kind:'agent'})
+    if(!participants.has(key)) participants.set(key,{id:key,name,kind:'agent',avatarId:id,avatarKind:'worker',model:recordedModel(id)})
     return key
   }
   const actor = (value:TaskExecutionHandoff['from']) =>
@@ -81,26 +86,36 @@ export function taskSequence(record:TaskExecutionDetail,L:Localize,agentName:(id
   }
 }
 
-function ExpandedSequence({record,L,agentName}: Parameters<typeof TaskHandoffSequence>[0]) {
-  const {participants,messages} = useMemo(() => taskSequence(record,L,agentName),[record,L,agentName])
-  if (!messages.length) return <p className="task-run-note">{L('No exchanges were recorded for this task.','这个任务暂无接力记录。')}</p>
-  return <AgentSequence title={record.activity.title || L('Task','任务')} participants={participants} messages={messages}
-    running={record.activity.state==='running'} statusLabel={taskStatus(record.activity.state,L)} L={L}/>
-}
-
 export function TaskHandoffSequence({record,L,agentName}: {
   record:TaskExecutionDetail;L:Localize;agentName:(id?:string)=>string
 }) {
-  const id = useId()
-  const [open,setOpen] = useState(false)
-  const [mounted,setMounted] = useState(false)
+  const id=useId()
+  const [open,setOpen]=useState(false)
+  const [round,setRound]=useState(0)
+  const [large,setLarge]=useState(false)
+  const [largeRound,setLargeRound]=useState(0)
+  const data=useMemo(()=>round?taskSequence(record,L,agentName):null,[round,record,L,agentName])
+  const title=record.activity.title||L('Task','任务')
+  const heading=L('Handoff sequence','接力时序')
+  const running=record.activity.state==='running'
+  const statusLabel=taskStatus(record.activity.state,L)
   return <div className="task-run-sequence">
     <button className="task-run-record task-run-sequence-toggle" type="button"
-      aria-controls={id} aria-expanded={open} onClick={() => {setMounted(true);setOpen(value => !value)}}>
-      <Workflow size={15} aria-hidden="true"/><span>{L('Handoff sequence','接力时序')}</span><ChevronDown size={14} aria-hidden="true"/>
+      aria-controls={id} aria-expanded={open}
+      onClick={()=>{if(!open)setRound(value=>value+1);setOpen(!open)}}>
+      <Workflow size={15} aria-hidden="true"/><span>{heading}</span><ChevronDown size={14} aria-hidden="true"/>
     </button>
     <div className="task-run-fold" id={id} data-open={open} inert={!open} aria-hidden={!open}>
-      <div>{mounted && <ExpandedSequence record={record} L={L} agentName={agentName}/>}</div>
+      <div>{data && (data.messages.length ?
+        <AgentSequence key={round} {...data} title={title} running={running} statusLabel={statusLabel}
+          playOnMount active={open} L={L}
+          onExpand={()=>{setLargeRound(value=>value+1);setLarge(true)}}/>
+        : <p className="task-run-note">{L('No exchanges were recorded for this task.','这个任务暂无接力记录。')}</p>)}</div>
     </div>
+    {!!largeRound&&data&&<Dialog className="task-sequence-dialog" open={large} title={heading}
+      closeLabel={L('Close enlarged sequence','关闭放大时序图')} onClose={()=>setLarge(false)}>
+      <AgentSequence key={largeRound} {...data} title={title} running={running} statusLabel={statusLabel}
+        playOnMount active={large} L={L}/>
+    </Dialog>}
   </div>
 }

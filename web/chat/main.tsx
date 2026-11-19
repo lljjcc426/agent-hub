@@ -53,11 +53,10 @@ import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
 import {ChatTray} from '../ui/pending-requests.tsx';
-import {ChatRunThinking} from './run-thinking.tsx';
+import {ThinkingActivity} from './run-thinking.tsx';
 import type {GetCommitHistory} from './commit-trail-panel.tsx';
 import './run-components.css';
 import {ContextCard, useCurrentContext} from './context-card.tsx';
-import {ToolTrace} from './tool-trace.tsx';
 import '../ui/theme.css';
 import '../ui/components.css';
 import '../ui/agent-components.css';
@@ -363,10 +362,11 @@ function StatusIcon({ state }: { state: string }) {
     <span className="idle-dot" />
   );
 }
-function ToolCalls({calls,workers}:{calls:Snapshot['calls'];workers:Worker[]}){
+function ThinkingCalls({calls,model,workers,live}:{calls:Snapshot['calls'];model?:Snapshot['calls'][number];workers:Worker[];live:boolean}){
   const {L,lang,routerLabel}=useUI();
-  const arrival=useArrival('tools:'+calls[0]!.id,calls[0]!.startedAt);
-  return <ToolTrace calls={calls} L={L} locale={lang} arrival={arrival}
+  const first=model??calls[0]!;
+  const arrival=useArrival('thinking:'+first.id,first.startedAt);
+  return <ThinkingActivity calls={calls} model={model} L={L} locale={lang} arrival={arrival} live={live}
     actor={id=>workers.find(w=>w.id===id)?.label??id??routerLabel}/>;
 }
 function Readiness({ ready }: { ready: Ready | null }) {
@@ -1372,7 +1372,7 @@ function Chat(p: ChatProps) {
         arrivals:arrivals.current,
       }}
     >
-      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,tools:calls=><ToolCalls calls={calls} workers={workers}/>,
+      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,thinking:(calls,model)=><ThinkingCalls calls={calls} model={model} workers={workers} live={connected&&!around}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});if(matchMedia('(max-width:600px)').matches)closeTray()}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
@@ -1548,8 +1548,6 @@ function Chat(p: ChatProps) {
                         <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                         <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                       </div>)}
-                      {snapshot && snapshot.conversation.id===id && connected && !readonly && !around && !configuring && run &&
-                        <ChatRunThinking key={run.id} snapshot={snapshot} L={L}/>}
                       {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}

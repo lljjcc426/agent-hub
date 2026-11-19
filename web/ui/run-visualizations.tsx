@@ -6,10 +6,11 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type PointerEvent,
+  type FocusEvent,
   type ReactNode,
 } from 'react'
 import {
-  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -19,16 +20,15 @@ import {
   Globe,
   Hourglass,
   LoaderCircle,
+  Maximize2,
   Search,
   UserRound,
-  Wrench,
   X,
 } from 'lucide-react'
 import { AgentAvatar } from '../chat/agent-avatar.tsx'
 import { CopyButton } from '../chat/copy-button.tsx'
 import type { Localize } from '../chat/composer-commands.tsx'
 import { SelectField } from './controls.tsx'
-import { Dialog } from './overlays.tsx'
 import './run-visualizations.css'
 
 const chinese: Localize = (_, zh) => zh
@@ -44,8 +44,8 @@ function timecode(ms: number) {
 
 function moveRowFocus(event: KeyboardEvent<HTMLElement>) {
   const keys = ['ArrowUp', 'ArrowDown', 'Home', 'End']
-  if (!keys.includes(event.key) || !(event.target instanceof HTMLButtonElement)) return
-  const rows = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-run-row]'))
+  if (!keys.includes(event.key) || !(event.target instanceof HTMLElement)) return
+  const rows = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-run-row]'))
     .filter((row) => !row.closest('[inert]'))
   const index = rows.indexOf(event.target)
   if (index < 0) return
@@ -76,6 +76,7 @@ export interface ThinkingStep {
   state: 'working' | 'done'
   kind?: 'search'
   activeLabel?: string
+  content?: ReactNode
   detail?: string
   sources?: ThinkingSource[]
 }
@@ -159,7 +160,7 @@ export function ThinkingState({
               <li className="rv-thinking-step" key={step.id} data-active={active || undefined} data-search={search || undefined}>
                 <span className="rv-step-mark" aria-hidden="true">{search ? <Search size={15} /> : <i />}</span>
                 <div className="rv-step-content">
-                  <span className={active ? 'rv-thinking-sheen' : undefined}>{active && step.activeLabel ? step.activeLabel : step.label}</span>
+                  {step.content ?? <span className={active ? 'rv-thinking-sheen' : undefined}>{active && step.activeLabel ? step.activeLabel : step.label}</span>}
                   {step.detail && <p>{step.detail}</p>}
                   {!!step.sources?.length && <ThinkingSources sources={step.sources} L={L} />}
                 </div>
@@ -475,6 +476,8 @@ export interface SequenceParticipant {
   kind: 'person' | 'agent' | 'tool'
   model?: string
   description?: string
+  avatarId?: string
+  avatarKind?: 'router' | 'worker'
 }
 
 export interface SequenceMessage {
@@ -490,16 +493,71 @@ export interface SequenceMessage {
   detail?: string
 }
 
-type SequenceSelection = {
-  title: string
-  route: string
-  detail?: string
-  timeMs?: number
-  state?: SequenceMessage['state']
-  status?: string
+type SequenceTip = {key: string; anchor: HTMLElement; title: string; details: string[]; x?: number}
+
+function SequenceTooltip({tip,id}: {tip:SequenceTip|null; id:string}) {
+  const ref=useRef<HTMLDivElement>(null)
+  useLayoutEffect(()=>{
+    const popup=ref.current!
+    if (!tip) return
+    const {anchor,x: pointerX}=tip
+    function place(){
+      const target=anchor.getBoundingClientRect()
+      const scroll=anchor.closest('.rv-sequence-scroll')?.getBoundingClientRect()
+      const visible=anchor.isConnected && (!scroll ||
+        (target.bottom>scroll.top&&target.top<scroll.bottom&&target.right>scroll.left&&target.left<scroll.right))
+      if(!visible){
+        if(popup.matches(':popover-open'))popup.hidePopover()
+        return
+      }
+      if(!popup.matches(':popover-open'))popup.showPopover()
+      const width=popup.offsetWidth,height=popup.offsetHeight
+      const center=pointerX??target.left+target.width/2
+      const x=Math.max(8,Math.min(center-width/2,innerWidth-width-8))
+      const below=target.bottom+6,above=target.top-height-6
+      popup.style.left=x+'px'
+      popup.style.top=Math.max(8,below+height<=innerHeight-8?below:above)+'px'
+    }
+    place()
+    window.addEventListener('scroll',place,true)
+    window.addEventListener('resize',place)
+    return ()=>{
+      window.removeEventListener('scroll',place,true)
+      window.removeEventListener('resize',place)
+      if(popup.matches(':popover-open'))popup.hidePopover()
+    }
+  },[tip])
+  return <div ref={ref} id={id} role="tooltip" popover="manual" className="rv-sequence-tooltip">
+    {tip && <><strong>{tip.title}</strong>{tip.details.map((line,index)=><span key={index}>{line}</span>)}</>}
+  </div>
 }
 
-const participantIcons = { person: UserRound, agent: Bot, tool: Wrench }
+function useSequenceReveal(count:number,playOnMount:boolean,active:boolean) {
+  const [total]=useState(count)
+  const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)')
+  const [visible,setVisible]=useState(()=>playOnMount && total>1 && !reduced().matches?1:Infinity)
+  useEffect(()=>{
+    if(!playOnMount||!active||total<=1)return
+    const media=reduced()
+    if(media.matches)return
+    const step=Math.min(220,4700/(total-1))
+    const started=performance.now()
+    const timer=window.setInterval(()=>{
+      const next=1+Math.floor((performance.now()-started)/step)
+      if(next>=total){setVisible(Infinity);window.clearInterval(timer)}
+      else setVisible(previous=>Math.max(previous,next))
+    },Math.max(32,step))
+    function end(){
+      if(!media.matches)return
+      window.clearInterval(timer)
+      setVisible(Infinity)
+    }
+    media.addEventListener('change',end)
+    return ()=>{window.clearInterval(timer);media.removeEventListener('change',end)}
+  },[total,playOnMount,active])
+  return Math.min(count,visible)
+}
+
 const messageStatuses = { failed: ['Failed', '失败'], waiting: ['Waiting', '等待确认'] } as const
 
 function SequenceArrow({ backward, self, state }: { backward: boolean; self: boolean; state?: SequenceMessage['state'] }) {
@@ -520,6 +578,9 @@ export function AgentSequence({
   messages,
   running,
   statusLabel,
+  playOnMount = false,
+  active = true,
+  onExpand,
   L = chinese,
 }: {
   L?: Localize
@@ -528,12 +589,18 @@ export function AgentSequence({
   messages: SequenceMessage[]
   running: boolean
   statusLabel?: string
+  playOnMount?: boolean
+  active?: boolean
+  onExpand?: () => void
 }) {
   const [focused, setFocused] = useState('')
-  const [selection, setSelection] = useState<SequenceSelection | null>(null)
-  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [tip,setTip] = useState<SequenceTip|null>(null)
+  const tipId=useId()
   const participantIndex = new Map(participants.map((participant, index) => [participant.id, index]))
-  const rows = messages.filter((message) => participantIndex.has(message.from) && participantIndex.has(message.to))
+  const exchanges = messages.filter((message) => participantIndex.has(message.from) && participantIndex.has(message.to))
+  const count=useSequenceReveal(exchanges.length,playOnMount,active)
+  const rows=exchanges.slice(0,count)
+  const currentTip=active?tip:null
   const restingRow = rows.some((row) => row.id === focused) ? focused : rows[0]?.id
   const positions = new Map(rows.map((row, index) => [row.id, index]))
   const replies = new Map(rows.flatMap((row, index) => {
@@ -546,47 +613,62 @@ export function AgentSequence({
     return [{ id: message.id, owner: message.to, start, end: end ?? rows.length, active: running && end === undefined }]
   })
   const busy = new Set(calls.filter((call) => call.active).map((call) => call.owner))
-  const failed = rows.filter((row) => row.state === 'failed').length
+  const failed = exchanges.filter((row) => row.state === 'failed').length
   const last = rows.at(-1)
   const laneX = (lane: number) => ((lane + .5) / participants.length) * 100
-  function inspect(value: SequenceSelection) {
-    setSelection(value)
-    setInspectorOpen(true)
+  function tipEvents(key:string,title:string,details:Array<string|undefined>) {
+    function show(anchor:HTMLElement,x?:number) {
+      setTip({key,title,anchor,x,details:details.filter((line):line is string=>!!line)})
+    }
+    function hide(){
+      setTip(current=>current?.key===key?null:current)
+    }
+    return {
+      'aria-describedby':currentTip?.key===key?tipId:undefined,
+      onPointerEnter:(event:PointerEvent<HTMLElement>)=>{
+        if(event.pointerType!=='touch')show(event.currentTarget,event.clientX)
+      },
+      onPointerLeave:hide,
+      onFocus:(event:FocusEvent<HTMLElement>)=>show(event.currentTarget),
+      onBlur:hide,
+    }
   }
   return (
-    <section className="rv-sequence" aria-label={L("Handoff sequence", "接力时序")}>
+    <section className="rv-sequence" aria-label={L("Handoff sequence", "接力时序")} onKeyDown={event=>{
+      if(event.key==='Escape'&&currentTip){
+        event.preventDefault()
+        setTip(null)
+      }
+    }}>
       <header className="rv-sequence-head">
         <div>
           <strong>{title}</strong>
-          <small>{L(rows.length + ' exchanges', rows.length + ' 条消息')}{failed ? L(' · ' + failed + ' failed', ' · ' + failed + ' 次失败') : ''}</small>
+          <small>{L(exchanges.length + ' exchanges', exchanges.length + ' 条消息')}{failed ? L(' · ' + failed + ' failed', ' · ' + failed + ' 次失败') : ''}</small>
         </div>
-        <span className="rv-sequence-state" data-running={running}>{statusLabel ?? (running ? L('Running', '运行中') : L('Ended', '已结束'))}</span>
+        <div className="rv-sequence-actions">
+          <span className="rv-sequence-state" data-running={running}>{statusLabel ?? (running ? L('Running', '运行中') : L('Ended', '已结束'))}</span>
+          {onExpand&&<button className="rv-sequence-expand" type="button" aria-haspopup="dialog"
+            aria-label={L('Enlarge sequence diagram','放大时序图')} title={L('Enlarge sequence diagram','放大时序图')} onClick={event=>{event.currentTarget.focus({preventScroll:true});onExpand()}}>
+            <Maximize2 size={16} aria-hidden="true"/>
+          </button>}
+        </div>
       </header>
       <div className="rv-sequence-scroll">
         <div className="rv-sequence-board" style={{ '--rv-lanes': Math.max(1, participants.length) } as CSSProperties}>
           <div className="rv-participants" aria-label={L("Participants", "参与者")}>
             {participants.map((participant) => {
-              const Icon = participantIcons[participant.kind]
               const working = busy.has(participant.id)
+              const role={person:L('User','用户'),agent:L('Agent','助手'),tool:L('Tool','工具')}[participant.kind]
               return (
-                <button
-                  key={participant.id}
-                  type="button"
-                  aria-haspopup="dialog"
-                  className="rv-participant"
-                  data-kind={participant.kind}
-                  data-working={working || undefined}
-                  onClick={() => inspect({
-                    title: participant.name,
-                    route: { person: L('User', '用户'), agent: L('Agent', '助手'), tool: L('Tool', '工具') }[participant.kind],
-                    status: participant.model,
-                    detail: participant.description,
-                  })}
-                >
-                  <span className="rv-participant-icon"><Icon size={16} aria-hidden="true" /></span>
-                  <span>{participant.name}</span>
-                  {working && <span className="rp-sr-only">{L("Working", "工作中")}</span>}
-                </button>
+                <div key={participant.id} role="group" tabIndex={0} aria-label={participant.name}
+                  className="rv-participant" data-kind={participant.kind} data-working={working||undefined}
+                  {...tipEvents('participant:'+participant.id,participant.name,
+                    [role,participant.model,working?L('Working','工作中'):undefined,participant.description])}>
+                  <AgentAvatar id={participant.avatarId??participant.id}
+                    kind={participant.avatarKind??(participant.id==='router'||participant.id==='lead'?'router':'worker')} size={28}/>
+                  <span className="rv-participant-name">{participant.name}</span>
+                  {working&&<span className="rp-sr-only">{L('Working','工作中')}</span>}
+                </div>
               )
             })}
           </div>
@@ -621,6 +703,8 @@ export function AgentSequence({
                 const status = message.state ? L(messageStatuses[message.state][0],messageStatuses[message.state][1]) : message.kind === 'reply' ? L('Reply','回复') : L('Call','调用')
                 const route = `${sender.name} → ${receiver.name}`
                 const parent = message.replyTo ? rows[positions.get(message.replyTo) ?? -1] : undefined
+                const tooltip=tipEvents('exchange:'+message.id,message.label||status,
+                  [route,[status,stamp].filter(Boolean).join(' · '),message.detail??parent?.label])
                 return (
                   <li
                     key={message.id}
@@ -629,24 +713,19 @@ export function AgentSequence({
                     data-frame-start={frameStart || undefined}
                     data-frame-end={frameEnd || undefined}
                   >
-                    <button
-                      type="button"
+                    <div
+                      role="group"
                       className="rv-sequence-message"
                       data-run-row
                       data-kind={message.kind ?? 'call'}
                       data-state={message.state}
-                      aria-label={[route, status, message.label, stamp].filter(Boolean).join('，')}
-                      aria-haspopup="dialog"
-                      tabIndex={restingRow === message.id ? 0 : -1}
-                      onFocus={() => setFocused(message.id)}
-                      onClick={() => inspect({
-                        title: message.label || status,
-                        route,
-                        status: parent ? `${status} · ${parent.label}` : status,
-                        detail: message.detail,
-                        timeMs: message.timeMs,
-                        state: message.state,
-                      })}
+                      aria-label={[route,status,message.label,stamp].filter(Boolean).join('，')}
+                      tabIndex={restingRow===message.id?0:-1}
+                      {...tooltip}
+                      onFocus={event=>{
+                        setFocused(message.id)
+                        tooltip.onFocus(event)
+                      }}
                       style={{
                         '--rv-left': `${laneX(Math.min(from, to))}%`,
                         '--rv-span': `${Math.abs(to - from) / participants.length * 100}%`,
@@ -655,8 +734,8 @@ export function AgentSequence({
                     >
                       <span className="rv-sequence-time">{frameStart && <span>{message.frame}</span>}{stamp}</span>
                       <SequenceArrow backward={to < from || (self && from === participants.length - 1)} self={self} state={message.state} />
-                      {message.label && <span className="rv-sequence-label" title={message.label}>{message.label}</span>}
-                    </button>
+                      {message.label && <span className="rv-sequence-label">{message.label}</span>}
+                    </div>
                   </li>
                 )
               })}
@@ -672,25 +751,7 @@ export function AgentSequence({
         <span><X size={13} />{L("Failed", "失败")}</span>
       </footer>
       <span role="status" className="rp-sr-only">{last && `${participants[participantIndex.get(last.from)!]?.name}：${last.label}`}</span>
-      <Dialog
-        open={inspectorOpen}
-        title={selection?.title ?? L('Exchange details', '消息详情')}
-        closeLabel={L("Close details", "关闭详情")}
-        onClose={() => setInspectorOpen(false)}
-      >
-        {selection && (
-          <div className="rv-inspector">
-            <p>{selection.route}</p>
-            {(selection.status || Number.isFinite(selection.timeMs)) && (
-              <div data-state={selection.state}>
-                {selection.status && <strong>{selection.status}</strong>}
-                {Number.isFinite(selection.timeMs) && <span>{timecode(selection.timeMs!)}</span>}
-              </div>
-            )}
-            {selection.detail && <p>{selection.detail}</p>}
-          </div>
-        )}
-      </Dialog>
+      <SequenceTooltip tip={currentTip} id={tipId}/>
     </section>
   )
 }

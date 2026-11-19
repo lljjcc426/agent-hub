@@ -406,7 +406,14 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
   --rv-flight-ease: cubic-bezier(.33,.02,.24,1);
 }
 .rv-sequence-head { padding: 10px 14px; background: var(--rp-soft); border-radius: var(--rp-corner-field) var(--rp-corner-field) 0 0; }
-.rv-sequence-head > div { display: grid; }
+.rv-sequence-head > div:first-child { display: grid; min-width: 0; }
+.rv-sequence-head strong { overflow-wrap: anywhere; }
+.rv-sequence-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.rv-sequence-expand {
+  border: 0; padding: 5px; border-radius: 5px; display: grid; place-items: center;
+  background: transparent; color: var(--rp-muted); cursor: pointer;
+}
+.rv-sequence-expand:hover { color: var(--rp-ink); background: var(--rp-hover); }
 .rv-sequence-head small { color: var(--rp-muted); font-size: 11px; }
 .rv-sequence-state { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--rp-muted); font-size: 11px; }
 .rv-sequence-state::before { content: ""; width: 6px; aspect-ratio: 1; border: 1px solid currentColor; border-radius: 50%; }
@@ -423,34 +430,20 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
   justify-self: center;
   justify-items: center;
   gap: 4px;
-  min-width: 66px;
+  min-width: 0;
   max-width: calc(100% - 8px);
   padding: 3px 5px;
   border: 0;
-  border-radius: var(--rp-corner-control);
   background: transparent;
-  cursor: pointer;
   color: var(--rp-muted);
   font-size: 11px;
 }
-.rv-participant > span:nth-child(2) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rv-participant:hover { background: var(--rp-soft); color: var(--rp-ink); }
-.rv-participant-icon {
-  display: grid;
-  place-items: center;
-  width: 33px;
-  aspect-ratio: 1;
-  border: 1px solid var(--rp-line);
-  border-radius: 8px;
-  color: var(--rp-ink);
-  background: var(--rp-soft);
-}
-.rv-participant[data-kind="agent"] .rv-participant-icon { color: var(--rv-mint); }
-.rv-participant[data-working] .rv-participant-icon {
-  border-color: color-mix(in srgb, var(--rv-mint) 35%, var(--rp-line));
-  background: color-mix(in srgb, var(--rv-mint) var(--rv-surface-tint), var(--rp-panel));
-  animation: rv-participant-pulse 1.8s ease-in-out infinite;
-}
+.rv-participant-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-participant:is(:hover,:focus-visible) { color: var(--rp-ink); }
+.rv-participant:focus-visible { outline: none; }
+.rv-participant:focus-visible .rv-participant-name { text-decoration: underline; text-underline-offset: .25em; }
+.rv-participant > .agent-portrait { width: var(--rv-avatar-size, 28px); height: var(--rv-avatar-size, 28px); }
+.rv-participant[data-working] > .agent-portrait { animation: rv-participant-pulse 1.8s ease-in-out infinite; }
 .rv-sequence-plot { position: relative; min-height: 66px; }
 .rv-lifeline, .rv-activation { position: absolute; inset-block: 0; transform: translateX(-50%); pointer-events: none; }
 .rv-lifeline { width: 1px; border-inline-start: 1px dashed var(--rp-line-strong); opacity: .66; }
@@ -499,7 +492,7 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
   border-radius: 5px;
   text-align: start;
   background: transparent;
-  cursor: pointer;
+  cursor: default;
 }
 .rv-sequence-message[data-kind="reply"] { --rv-line-color: var(--rv-violet); --rv-light: var(--rv-purple-light); }
 .rv-sequence-message[data-state="failed"] { --rv-line-color: var(--rv-red); --rv-light: #fda9a2; }
@@ -654,11 +647,33 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
 .rv-sequence-key i[data-key="reply"] { border-color: var(--rv-violet); border-top-style: dashed; }
 .rv-sequence-key i[data-key="working"] { border: 1px solid var(--rv-mint); width: 6px; height: 11px; border-radius: 2px; }
 .rv-sequence-key svg { color: var(--rv-red); }
-.rv-inspector { display: grid; gap: 10px; font-size: 13px; overflow-wrap: anywhere; }
-.rv-inspector p { margin: 0; }
-.rv-inspector > div { display: flex; gap: 8px; justify-content: space-between; color: var(--rp-muted); }
-.rv-inspector > div[data-state="failed"] { color: var(--rv-red); }
-.rv-inspector > div[data-state="waiting"] { color: var(--rv-amber); }
+.rv-sequence-tooltip {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(270px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border: 1px solid var(--rp-line);
+  border-radius: 9px;
+  background: var(--rp-panel);
+  color: var(--rp-muted);
+  box-shadow: 0 6px 20px #0002;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.rv-sequence-tooltip:popover-open { display: grid; gap: 2px; }
+.rv-sequence-tooltip :is(strong,span) {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.rv-sequence-tooltip strong { color: var(--rp-ink); font-weight: 650; }
 
 @keyframes rv-reasoning-spark { 0%, 100% { opacity: .22; } 46% { opacity: 1; } }
 @keyframes rv-reasoning-enter { from { opacity: 0; filter: blur(2.5px); transform: translateY(4px); } to { opacity: 1; filter: blur(0); transform: translateY(0); } }
@@ -670,7 +685,7 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
 @keyframes rv-commit-marker-in { from { opacity: 0; scale: .65; } to { opacity: 1; scale: 1; } }
 @keyframes rv-commit-fill { from { background: var(--rp-panel); } to { background: color-mix(in srgb, var(--rv-rail) 13%, var(--rp-panel)); } }
 @keyframes rv-check-draw { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
-@keyframes rv-participant-pulse { 50% { box-shadow: 0 0 13px color-mix(in srgb, var(--rv-green-light) 47%, transparent); } }
+@keyframes rv-participant-pulse { 50% { opacity: .72; transform: translateY(-1px); } }
 @keyframes rv-active-sweep { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
 @keyframes rv-draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @keyframes rv-flight { 0% { opacity: 0; transform: translateX(-100%); } 13%, 82% { opacity: 1; } 100% { opacity: 0; transform: translateX(0); } }

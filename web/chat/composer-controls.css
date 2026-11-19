@@ -41,6 +41,7 @@
   overscroll-behavior: contain;
   padding: 0;
   height: calc(var(--palette-height) + 2px);
+  max-height: var(--palette-available-height);
   border: 1px solid var(--rp-line);
   border-radius: 15px;
   background: var(--rp-panel);
@@ -53,6 +54,11 @@
   opacity: 0;
   transform: translateY(var(--palette-lift)) scale(.975);
   transition: opacity .16s ease, transform .24s var(--rp-settle), height .22s var(--rp-sweep);
+}
+.composer-palette[data-slash-list] {
+  max-height: min(var(--palette-available-height), var(--palette-slash-limit));
+  scroll-padding-block: 5px;
+  scrollbar-width: thin;
 }
 .composer-palette[data-side=below] { --palette-lift: -7px; transform-origin: left top; }
 .composer-palette:popover-open:not([data-closing]) { opacity: 1; transform: none; }

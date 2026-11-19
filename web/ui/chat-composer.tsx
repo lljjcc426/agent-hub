@@ -178,7 +178,8 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     panel.showPopover()
     const place = () => {
       const rect = form.getBoundingClientRect(), viewport = window.visualViewport
-      const top = viewport?.offsetTop ?? 0, bottom = top + (viewport?.height ?? innerHeight)
+      const height = viewport?.height ?? innerHeight
+      const top = viewport?.offsetTop ?? 0, bottom = top + height
       const left = viewport?.offsetLeft ?? 0, right = left + (viewport?.width ?? innerWidth)
       const width = Math.min(320, rect.width, right - left - 16)
       panel.style.width = width + 'px'
@@ -188,7 +189,8 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
       panel.dataset.side = up ? 'above' : 'below'
       panel.style.top = up ? 'auto' : rect.bottom + 8 + 'px'
       panel.style.bottom = up ? innerHeight - rect.top + 8 + 'px' : 'auto'
-      panel.style.maxHeight = Math.max(0, up ? above : below) + 'px'
+      panel.style.setProperty('--palette-available-height', Math.max(0, up ? above : below) + 'px')
+      panel.style.setProperty('--palette-slash-limit', height / 4 + 'px')
     }
     function dismiss(event: Event) {
       const target = event.target
@@ -299,6 +301,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     </div>
     {source && page && createPortal(
       <div ref={palette} id={paletteId} popover="manual" tabIndex={-1} className="roppo-ui composer-palette"
+        data-slash-list={slashList || undefined}
         data-closing={closing ? '' : undefined} inert={closing} aria-hidden={closing || undefined}
         role={page === 'model' || page === 'context' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Chat model','对话模型') : title} onKeyDown={moveInMenu}>

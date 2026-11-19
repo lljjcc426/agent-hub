@@ -29,13 +29,21 @@ def open_chat(browser, width, touch=False, dark=False):
 
 
 def assert_side(line, user):
-    surface = line.locator('.message-surface').bounding_box()
-    actions = line.locator('.message-actions').bounding_box()
-    assert abs(surface['y'] + surface['height'] / 2 - actions['y'] - actions['height'] / 2) <= 1
+    surface, actions = line.evaluate("""line => ['.message-surface', '.message-actions']
+        .map(selector => line.querySelector(selector).getBoundingClientRect().toJSON())""")
+    assert abs(surface['y'] + surface['height'] / 2 - actions['y'] - actions['height'] / 2) <= 1, (surface, actions)
     if user:
         assert actions['x'] + actions['width'] <= surface['x'] + 1
     else:
         assert surface['x'] + surface['width'] <= actions['x'] + 1
+
+
+def check_slash_height(page):
+    menu = page.locator('.composer-palette:popover-open')
+    limit = page.evaluate("((window.visualViewport?.height ?? window.innerHeight) / 4) + 'px'")
+    expect(menu).to_have_css('height', limit)
+    assert menu.evaluate('menu => menu.scrollHeight > menu.clientHeight')
+    return menu
 
 
 def show_timestamp(message):
@@ -118,9 +126,21 @@ with sync_playwright() as pw:
     expect(reaction).to_be_focused()
 
     box.fill('/')
-    expect(page.get_by_role('listbox', name='Chat 命令')).to_be_visible()
+    commands = page.get_by_role('listbox', name='Chat 命令')
+    skill = commands.get_by_role('option', name='/release-review', exact=True)
+    expect(skill).to_be_visible()
+    menu = check_slash_height(page)
+    page.set_viewport_size({'width': 1440, 'height': 720})
+    check_slash_height(page)
+    box.press('ArrowUp')
+    selected = commands.get_by_role('option', selected=True)
+    expect(selected).to_be_in_viewport(ratio=0.99)
+    assert menu.evaluate('menu => menu.scrollTop > 0')
     box.fill('/release-rev')
-    expect(page.get_by_role('option', name='/release-review', exact=True)).to_be_visible()
+    expect(skill).to_be_visible()
+    expect(menu).not_to_have_css('height', '180px')
+    assert menu.bounding_box()['height'] < 180
+    page.set_viewport_size({'width': 1440, 'height': 900})
     box.press('Enter')
     expect(page.locator('.composer-skill')).to_have_text('/release-review')
     expect(box).to_have_value('')
@@ -168,6 +188,10 @@ with sync_playwright() as pw:
     assert long_bubble.bounding_box()['width'] == before_width
     assert long_bubble.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
     assert_side(long_line, True)
+    mobile.set_viewport_size({'width': 320, 'height': 640})
+    mobile.locator('.composer-input').fill('/')
+    expect(mobile.get_by_role('option', name='/release-review', exact=True)).to_be_visible()
+    check_slash_height(mobile)
     assert not errors, errors
-    print('Passed slash skill selection, draft reload, date disclosure, bubble colors, action centering, clipboard, quote, reactions, keyboard and touch.')
+    print('Passed slash height, resize, keyboard scrolling, skill selection, draft reload, timestamps, bubble colors, action centering, clipboard, quote and reactions.')
     browser.close()

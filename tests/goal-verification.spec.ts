@@ -4,7 +4,8 @@ import * as XLSX from 'xlsx'
 import AdmZip from 'adm-zip'
 import {backendDefinition} from '../src/backend-config.ts'
 import {it,expect,afterEach} from 'vitest'
-import {mkdtempSync,writeFileSync,rmSync,symlinkSync,readFileSync,appendFileSync} from 'node:fs'
+import {createHash,randomUUID} from 'node:crypto'
+import {mkdirSync,mkdtempSync,writeFileSync,rmSync,symlinkSync,readFileSync,appendFileSync,realpathSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {Runtime} from '../src/runtime.ts'
@@ -19,6 +20,10 @@ import {operatorTask} from '../src/operator-workspace.ts'
 import {backupState,verifyBackup} from '../src/backup.ts'
 import {planHistory} from '../src/history-cleanup.ts'
 import {DatabaseSync} from 'node:sqlite'
+import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
+import {BackendPluginError} from '../src/backends/plugin-contract.ts'
+import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
+import type {Run} from '../src/store.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[]
 afterEach(async()=>{for(const h of hosts.splice(0))await h.close();for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true})})
@@ -264,6 +269,97 @@ it('dispatches an explicit resume of a settled blocked Worker with the human cla
  await until(f,()=>f.goal().state==='completed')
  expect(f.goal().taskIds).toEqual(g.taskIds)
  expect([...f.attempts.values()]).toEqual([2])
+})
+
+async function interruptedGithubGoal(){
+ const f=fixture((request,attempt)=>{
+  request.onBackend?.('codex')
+  if(attempt===1){
+   request.onTurn?.(randomUUID())
+   writeFileSync(join(request.cwd,'checkpoint.txt'),'retained artifact')
+   throw new BackendPluginError('outcome_unknown','codex')
+  }
+  expect(request.threadId).toBeUndefined()
+  expect(request.input).toContain('Use github_read')
+  expect(request.input).toContain('Continue the repository research')
+  expect(readFileSync(join(request.cwd,'checkpoint.txt'),'utf8')).toBe('retained artifact')
+  writeFileSync(join(request.cwd,'result.json'),'{"total":42}')
+  return ready()
+ })
+ f.start()
+ await until(f,()=>f.goal().state==='held'&&f.h.activeExecutions===0)
+ const goal=f.goal(),ticketId=goal.taskIds[0]!,store=f.h.store
+ const ticket=store.tickets.get(ticketId)!,run=store.get<Run>('run',ticketId)!
+ expect(run.phase).toBe('uncertain')
+ expect(ticket.undelivered).toEqual([])
+ const turnId=run.turnId!,threadId=run.threadId!,nativeId='ses_interrupted'
+ const folder=randomUUID(),identity=stableDigest('opencode config'),digest=stableDigest('opencode package')
+ const result={success:true,contentItems:[{type:'inputText' as const,text:'read result'}]}
+ const calls=[
+  {id:'number:2',name:'superagent_status',args:{message:'Reading the repository'},result},
+  {id:'web-call',name:'opencode/webfetch_batch',args:{},result:{success:true}},
+  {id:'number:3',name:'superagent_read',args:{resource:'catalog'},result},
+  {id:'number:4',name:'superagent_read',args:{resource:'github/directory/',limit:20}},
+ ]
+ const effectIds=calls.filter(call=>!call.name.startsWith('opencode/')).map(call=>{
+  const id=stableDigest([threadId,turnId,call.id]),fingerprint=stableDigest([call.name,call.args])
+  const receipt:PluginToolEffect=call.result?{fingerprint,state:'complete',result}:{fingerprint,state:'running',failure:{operation:'tool',reason:'exception'}}
+  store.put('backend-plugin-tool',id,receipt)
+  return id
+ })
+ const thread:PluginThread={id:threadId,backendId:'codex',pluginId:'opencode-cli',digest,stateVersion:1,nativeId,cwd:realpathSync(run.cwd),
+  identity,state:'failed',effectIds,turnId,lastFailure:{code:'outcome_unknown',at:Date.now()}}
+ store.put('backend-plugin-thread',threadId,thread)
+ store.put('backend-binding',threadId,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
+ const data=join(f.config.stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
+ const journalRoot=join(data,'sessions',folder),sessionPath=join(journalRoot,'session.json'),operations=join(journalRoot,turnId+'.operations')
+ mkdirSync(journalRoot,{recursive:true})
+ mkdirSync(join(data,'index'))
+ const key=createHash('sha256').update(nativeId).digest('hex')
+ writeFileSync(join(data,'index',key+'.json'),JSON.stringify({id:nativeId,folder}))
+ writeFileSync(sessionPath,JSON.stringify({format:1,cwd:thread.cwd,folder,nativeId,turns:[{id:turnId,state:'interrupted',tools:calls}]}))
+ writeFileSync(join(journalRoot,turnId+'.ready'),'ready')
+ writeFileSync(operations,JSON.stringify({id:'web-call',tool:'webfetch_batch'})+'\n')
+
+ const message=f.h.receive('local','alice',{id:'continue-research',thread:'test',scope:'test',text:'Continue the repository research',addressed:true}) as {triggerId:string}
+ const context=f.h.scopes.context(store.triggers.get(message.triggerId)!,'local:test')!
+ const resume=()=>f.h.goals.command({action:'resume',id:goal.id,expectedRevision:goal.revision,operationId:'continue-github-read'},context)
+ return {f,store,goal,ticket,run,thread,effectId:effectIds.at(-1)!,journalRoot,sessionPath,operations,resume}
+}
+
+it('reconciles a proven interrupted GitHub read and resumes the original goal in a fresh session',async()=>{
+ const {f,store,goal,ticket,run,thread,effectId,sessionPath,resume}=await interruptedGithubGoal()
+ const journal=readFileSync(sessionPath,'utf8')
+ expect(resume().state).toBe('active')
+ expect(resume().revision).toBe(goal.revision+1)
+ await until(f,()=>f.goal().state==='completed')
+ const continued=store.tickets.get(ticket.id)!,restarted=store.get<Run>('run',ticket.id)!
+ expect(f.goal().taskIds).toEqual([ticket.id])
+ expect(f.goal().contract).toEqual(goal.contract)
+ expect(continued.mandate).toEqual(ticket.mandate)
+ expect(continued.assignments).toHaveLength(2)
+ expect(continued.assignments[0]).toMatchObject({id:run.assignmentId,endedReason:'retried',report:{state:'blocked'}})
+ expect(restarted.cwd).toBe(run.cwd)
+ expect(restarted.threadId).not.toBe(run.threadId)
+ expect([...f.attempts.values()]).toEqual([2])
+ expect(store.get('backend-plugin-tool',effectId)).toMatchObject({state:'complete',result:{success:false},
+  failure:{operation:'tool',reason:'exception'},reconciliation:{reason:'interrupted_github_read_failed',ticketId:ticket.id,threadId:thread.id,turnId:run.turnId}})
+ expect(store.get('backend-plugin-thread',thread.id)).toEqual(thread)
+ expect(readFileSync(sessionPath,'utf8')).toBe(journal)
+})
+
+it.each(['native write','receipt mismatch','active writer','uncertain repository effect'] as const)('holds GitHub recovery with %s',async blocker=>{
+ const {f,store,goal,ticket,run,effectId,journalRoot,operations,resume}=await interruptedGithubGoal()
+ if(blocker==='native write')appendFileSync(operations,JSON.stringify({id:'unreturned-call',tool:'bash'})+'\n')
+ if(blocker==='receipt mismatch')store.put('backend-plugin-tool',effectId,{...store.get<PluginToolEffect>('backend-plugin-tool',effectId),fingerprint:stableDigest('different arguments')})
+ if(blocker==='active writer')writeFileSync(join(journalRoot,'writer.lock'),String(process.pid))
+ if(blocker==='uncertain repository effect')store.put('pr-delivery',ticket.id+':1',{phase:'uncertain'})
+ const receipt=store.get('backend-plugin-tool',effectId)
+ expect(()=>resume()).toThrow('Reconcile the current task or its effects before resuming')
+ expect(store.get('backend-plugin-tool',effectId)).toEqual(receipt)
+ expect(store.get('run',ticket.id)).toEqual(run)
+ expect(store.tickets.get(ticket.id)?.assignments).toEqual(ticket.assignments)
+ expect(f.goal()).toEqual(goal)
 })
 
 it.each(['ready','blocked'] as const)('processes a same-entry follow-up before releasing an obsolete %s report',async state=>{

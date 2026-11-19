@@ -22,7 +22,7 @@ import {backendEnvelope,backendResult,backendDiagnosticSchema,backendWorkerActiv
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
 
 export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
-interface Effect {fingerprint:string;state:'running'|'complete';result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>;failure?:BackendDiagnostic}
+export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>;failure?:BackendDiagnostic}
 const text=z.string().min(1).max(1000)
 const healthSchema=z.object({available:z.boolean(),authenticated:z.union([z.boolean(),z.literal('unknown')]),remoteVerified:z.literal(false),accountIdentity:z.string().regex(/^[a-f0-9]{64}$/).optional(),version:z.string().max(200).optional()}).strict()
 const historySchema=z.object({id:z.string().min(1).max(1000),turns:z.array(z.unknown())}).passthrough()
@@ -71,7 +71,7 @@ export class ProcessBackend implements Model {
   const cwd=canonical(request.cwd)
   if(old&&old.cwd!==cwd)throw Error('Execution backend workspace changed; explicit migration required')
   const record:PluginThread=old??{id:'plugin:'+randomUUID(),backendId:this.id,pluginId:pkg.manifest.id,digest:pkg.digest,stateVersion:pkg.manifest.stateVersion,identity:this.sessionIdentity,cwd,state:'running',effectIds:[]}
-  if(record.effectIds.some(id=>this.store.get<Effect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
+  if(record.effectIds.some(id=>this.store.get<PluginToolEffect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
   let transport:Awaited<ReturnType<ProcessBackend['launch']>>|undefined
   try{
    transport=await this.launch(pkg,cwd,request,record)
@@ -87,7 +87,7 @@ export class ProcessBackend implements Model {
    // Keep activity private except the bounded task ID needed to match the full Worker input.
    const activity=request.managed===true&&!request.operator&&request.role==='worker'?backendWorkerActivitySchema.safeParse({ticketId:request.activity?.ticketId}):undefined
    const result=backendResult.parse(await transport.call('run',{...input,...(activity?.success?{activity:activity.data}:{}),model:request.model??this.definition.model,threadId:record.nativeId,callbacks}))
-   if(record.effectIds.some(id=>this.store.get<Effect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
+   if(record.effectIds.some(id=>this.store.get<PluginToolEffect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
    if(!record.nativeId||result.threadId!==record.nativeId||result.turnId!==record.turnId)throw new BackendPluginError('invalid_output',this.id)
    if(Object.keys(request.schema).length){let output:unknown;try{output=JSON.parse(result.text)}catch{throw new BackendPluginError('invalid_output',this.id)}if(!ajv.compile(request.schema)(output))throw new BackendPluginError('invalid_output',this.id)}
    record.state='completed';this.save(record)
@@ -164,7 +164,7 @@ export class ProcessBackend implements Model {
      if(uncertainTool)throw new BackendPluginError('outcome_unknown',this.id)
      const p=z.object({name:text,args:z.unknown(),callId:text}).strict().parse(m.params),spec=toolSpecs.get(p.name)
      if(!spec||!request.onTool)throw new BackendPluginError('unsupported',this.id)
-     const id=stableDigest([record.id,record.turnId,p.callId]),fingerprint=stableDigest([p.name,p.args]),saved=this.store.get<Effect>('backend-plugin-tool',id)
+     const id=stableDigest([record.id,record.turnId,p.callId]),fingerprint=stableDigest([p.name,p.args]),saved=this.store.get<PluginToolEffect>('backend-plugin-tool',id)
      if(saved){if(saved.fingerprint!==fingerprint||saved.state!=='complete')throw new BackendPluginError('outcome_unknown',this.id);result=saved.result}
      else{
       if(inflightTools.has(id)||record.effectIds.length>=modelToolCalls.max*4)throw new BackendPluginError('outcome_unknown',this.id)

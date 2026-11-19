@@ -3,12 +3,12 @@ import {startCodeProject,type GoalProject,type CodeReceipt} from './project-code
 import {projectBudget} from './project-budget.ts'
 import type {Runtime} from './runtime.ts'
 import type {ScopeContext} from './router-scope.ts'
-import type {Trigger,Mandate} from './vendor/dsh-core/index.ts'
+import type {Trigger,Mandate,Ticket} from './vendor/dsh-core/index.ts'
 import type {RouterAdmission} from './router-ingress.ts'
 import type {ToolSpec} from './model.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {bodyDigest,stableDigest} from './sources.ts'
-import {workerPermissions} from './worker-pool.ts'
+import {workerPermissions,workerProfiles} from './worker-pool.ts'
 import {repositoryEffectsSettled} from './repository-source.ts'
 import {goalDetailsSchema,criterionSchema,nodeSchema,validateGraph,classifyGoalFailure,classifyVerificationFailure,type GoalNode,type GoalFailure} from './goal-contract.ts'
 import type {GoalDelivery,VerificationRound} from './goal-verification.ts'
@@ -16,6 +16,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
+import {proveInterruptedGithubRead} from './backends/opencode-read-recovery.ts'
 
 const id=z.string().min(1).max(300)
 const criterion=criterionSchema
@@ -203,6 +204,36 @@ export class RouterGoals {
   if(!repositoryEffectsSettled(this.host.store,ticketId)||this.host.workflows.unsettled(ticketId))return false
   const run=this.host.store.get<Run>('run',ticketId)
   return !run||run.phase==='idle'&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
+ }
+ private reconcileInterruptedGithubRead(task:Ticket,run:Run|undefined,c:ScopeContext){
+  const {store}=this.host
+  if(!run?.threadId||run.ticketId!==task.id||run.assignmentId!==task.assignments.at(-1)?.id||this.host.work.list(task.id).length)return false
+  // Approval effects can execute outside the adapter's tool journal.
+  const otherActivity=store.db.prepare(`SELECT 1 FROM records WHERE
+   (kind='model-session' AND id<>? AND json_extract(body,'$.ticketId')=?)
+   OR (kind='approval' AND json_extract(body,'$.ticketId')=?)
+   OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=?) LIMIT 1`).get(run.threadId,task.id,task.id,task.id)
+  if(otherActivity)return false
+  const proof=proveInterruptedGithubRead(store,this.host.config.stateDir,run)
+  if(!proof)return false
+  const assigned=store.get<{workerId:string}>('worker-assignment',task.id)
+  const worker=workerProfiles(this.host.config).find(profile=>profile.id===assigned?.workerId)
+  if(!worker||worker.id!==run.workerId||worker.backend!==run.backendId)return false
+  const model=worker.model??this.host.config.backends[worker.backend]?.model??this.host.config.models.worker
+  if(run.model&&run.model!==model)return false
+  // Reuse the normal binding check for changed endpoints, accounts and connectors.
+  this.host.model.describe?.(run.threadId)
+  // The caller's goal transaction also checks all other effects before it can retry.
+  const {id,receipt}=proof.interrupted
+  store.put('backend-plugin-tool',id,{...receipt,state:'complete',
+   result:{success:false,contentItems:[{type:'inputText',text:'The interrupted GitHub resource read failed before returning a result.'}]},
+   reconciliation:{reason:'interrupted_github_read_failed',previousState:receipt.state,ticketId:task.id,
+    assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,at:this.now()},
+  })
+  // The old adapter turn still has an interrupted journal. Start a new model session on the same task.
+  const {threadId,turnId,error,result,toolsVersion,toolsDigest,waitingForWriter,...retained}=run
+  store.put('run',task.id,{...retained,phase:'idle'} satisfies Run)
+  return true
  }
  recoverFromWatchdog(g:RouterGoal,ticketId:string,recoveryId:string,reason:string){
   const c=this.context(g),n=g.nodes?.find(n=>n.ticketId===ticketId),task=this.host.store.tickets.get(ticketId)
@@ -654,13 +685,18 @@ export class RouterGoals {
       const task=store.tickets.get(node.ticketId),report=task?.assignments.at(-1)?.report
       if(!task||task.ended||!report||!['blocked','failed'].includes(report.state)||store.get('goal-delivery',task.id))continue
       this.host.scopes.checkTask(task.id,c,true)
-      if(node.failure?.kind==='uncertain'||store.get<Run>('run',task.id)?.phase==='uncertain')throw Error('Reconcile the current task or its effects before resuming')
+      const uncertain=node.failure?.kind==='uncertain'||run?.phase==='uncertain'
+      const recovered=uncertain&&!task.undelivered.length&&this.reconcileInterruptedGithubRead(task,run,c)
+      if(uncertain&&!recovered)throw Error('Reconcile the current task or its effects before resuming')
       if(task.undelivered.length)continue
       if(!this.effectsSettled(task.id))throw Error('Reconcile the current task or its effects before resuming')
       const prior=task.inputs.map(i=>i.id)
       this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
       this.host.retry(task.id)
-      this.host.engine.note(task.id,JSON.stringify({instruction:'Continue the existing task from its retained work and check the outstanding blocker against the current request.',previousReport:report.summary,userInput:c.trigger.text}))
+      const instruction=recovered
+       ?'The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
+       :'Continue the existing task from its retained work and check the outstanding blocker against the current request.'
+      this.host.engine.note(task.id,JSON.stringify({instruction,previousReport:report.summary,userInput:c.trigger.text}))
       allowNewTaskInputs(store,task.id,prior)
      }
      for(const id of [g.finalRoundId,...(g.nodes??[]).map(n=>n.roundId)].filter((id):id is string=>!!id)){const round=store.get<VerificationRound>('goal-verification',id);if(round?.state==='errored'){store.put('goal-verification',id,{...round,state:'pending',error:undefined,finishedAt:undefined});store.jobState('goal-verify:'+id,'pending')}}

@@ -12,6 +12,7 @@ import {readResponsesStream,readChatStream,readAnthropicStream} from './stream.t
 import {contextProjection,recall,recallSpec} from './context.ts'
 import {providerUsage} from '../model-usage.ts'
 import {ApiOutputLimitError,apiResponseError} from './api-errors.ts'
+import {isParallelRead,ToolDispatch} from '../tool-dispatch.ts'
 export {readResponsesStream} from './stream.ts'
 
 import {ApiFailure,ApiNetworkFailure} from './api-failure.ts'
@@ -174,8 +175,10 @@ export class ApiModel implements Model {
      // before executing any effect; a refusal receipt still closes every call.
      let budgetError:ContextBudgetExceeded|undefined
      try{checkBudget({request:this.body(t,instructions,r),pendingResults:accepted.calls.map(c=>({callId:c.id,result:'reserved'}))},r.contextBudget,'api-wire','before_tools',r.onBudget,true)}catch(error){if(!(error instanceof ContextBudgetExceeded))throw error;budgetError=error}
-     for(const call of accepted.calls){
-      if(!budgetError)try{checkBudget({request:this.body(t,instructions,r),completedResults:results},r.contextBudget,'api-wire','before_tool',r.onBudget,true)}catch(error){if(!(error instanceof ContextBudgetExceeded))throw error;budgetError=error}
+     const dispatch=new ToolDispatch()
+     const calls=[...accepted.calls.entries()].sort(([,a],[,b])=>Number(b.name==='chat_opening')-Number(a.name==='chat_opening'))
+     const settled=await Promise.allSettled(calls.map(([index,call])=>dispatch.run(isParallelRead(call.name),async()=>{
+      if(!budgetError)try{checkBudget({request:this.body(t,instructions,r),completedResults:results.filter(Boolean)},r.contextBudget,'api-wire','before_tool',r.onBudget,true)}catch(error){if(!(error instanceof ContextBudgetExceeded))throw error;budgetError=error}
       signal.throwIfAborted();const effect:Effect={call,digest:hash(call.name+'\n'+call.arguments),state:'started'};t.effects[call.id]=effect;persist()
       let result:ToolResult
       try{const args=JSON.parse(call.arguments),validate=validators.get(call.name);if(budgetError)result=failure('Context budget exceeded before execution; tool was not executed');else if(!validate||!r.onTool&&!(canRecall&&call.name===recallSpec.name))result=failure('Tool is not in this activation capability set');else if(!validate(args))result=failure('Invalid tool arguments: '+ajv.errorsText(validate.errors));else{r.onProgress?.('backend/tool/'+call.name);result=canRecall&&call.name===recallSpec.name?recall(t,args as Parameters<typeof recall>[1],r.contextBudget?.toolReserveBytes):await r.onTool!(call.name,args,call.id)}}
@@ -184,8 +187,10 @@ export class ApiModel implements Model {
       for(const item of result.contentItems)if(item.type==='inputImage')image(item.imageUrl!)
       effect.state='completed';effect.result=result;persist();turn.items.push({type:'functionCallOutput',callId:call.id,success:result.success,contentItems:result.contentItems})
       const reference=r.contextBudget&&protocolBytes(result)>r.contextBudget.toolReserveBytes&&r.retainToolResult?receiptReference(result,await r.retainToolResult(call.id,result),r.tools?.some(t=>t.name==='router_read')?'router_read':'superagent_read'):undefined
-      results.push(reference??result)
-     }
+      results[index]=reference??result
+     })))
+     const rejected=settled.find(result=>result.status==='rejected')
+     if(rejected)throw rejected.reason
      this.appendResults(t,accepted.calls,results);delete t.pending;persist();if(budgetError)throw budgetError;continue
     }
     persist();checkBudget(this.body(t,instructions,r),r.contextBudget,'api-wire','complete',r.onBudget);if(queue.length)continue

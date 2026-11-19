@@ -16,6 +16,16 @@ export const firstReplySchema={
  type:'object',additionalProperties:false,required:['reply','opening'],
  properties:{reply:{type:'string'},opening:{type:'string'}},
 }
+
+export const chatOpeningSchema=z.object({
+  text:z.string().trim().min(1).max(320).refine(value=>!/[\r\n\x00-\x1f]/.test(value),'Use one short line'),
+}).strict()
+
+export const chatOpeningTool={
+  type:'function',name:'chat_opening',
+  description:'Publish the one model-authored Chat opening before starting substantive work. Write one short first-person sentence in the user language that names the concrete next step. Include this call first in the same tool batch as independent reads. For a direct answer without tools, reply normally.',
+  inputSchema:{type:'object',additionalProperties:false,required:['text'],properties:{text:{type:'string',minLength:1,maxLength:320}}},
+} satisfies ToolSpec
 export const firstReplyInstructions=[
  'Speak to the user in your usual voice and reply language. This is your first turn for this message. No tools or execution are available yet.',
  'When you can fully answer from the conversation and your knowledge, put the answer in reply and leave opening empty. This includes greetings and clarifying questions.',

@@ -48,13 +48,13 @@ export const opencodeDriver:CliDriver={
    ...(guardPlugin?{external_directory:{'*':'deny',[cwd]:'allow',[join(cwd,'**')]:'allow'}}:{})}
   const tools={'*':false,'roppo_*':true,...Object.fromEntries(allowed.map(tool=>[tool,true]))}
   const agentPrompt=request.instructions+(allowed.includes('webfetch_batch')
-   ?'\nFor two or more known URLs, use one webfetch_batch call in OpenCode. It fetches each requested URL in parallel and returns source evidence for each page. If the user also asks for a search and the URLs are supplied independently of search results, send websearch and webfetch_batch together in the same tool-calling step. When the URLs must come from search results, search first, then batch the chosen URLs.'
+   ?'\nFor two or more known URLs, use one OpenCode webfetch_batch call for parallel fetching with source excerpts. If the task supplies the URLs and asks for a separate search, the fetch does not depend on search results. Put any required roppo_chat_opening first, then websearch and webfetch_batch, all in the same response. If the task needs URLs discovered by the search, batch-fetch those URLs in the next response.'
    :'')
   const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
   const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
   const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
-   agent:{roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
+   agent:{...(request.managed?{title:{disable:true}}:{}),roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
    mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},
    ...(config.baseUrl?{provider:{[provider]:providerOptions}}:{})}
   privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))

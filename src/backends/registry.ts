@@ -17,6 +17,7 @@ import {SubscriptionAccounts} from './subscription.ts'
 import {CodexModel,nativeContextProfile} from '../../plugins/backend-codex/model.ts'
 import type {BackendDescription,Model,ModelRequest,ModelResult} from '../model.ts'
 import {ApiModel,type ThreadStore} from './api.ts'
+import {supportsOpenCodeTools} from '../../plugins/backend-opencode/native-tools.ts'
 interface Binding {
  id:string;kind:string;endpoint?:string;identity?:string
  harness?:string;harnessIdentity?:string;harnessDigest?:string;harnessModel?:string;harnessAccount?:string
@@ -28,6 +29,19 @@ export class BackendRegistry implements Model {
  private writers=new Set<string>()
  constructor(private config:Config,private store:ThreadStore){validateBackendSelection(config)}
  selected(role:'router'|'worker'|'subagent'='worker'){return (role==='router'?this.config.execution.router?.backend:undefined)??this.config.execution.roles[role]??this.config.execution.backend}
+ supportsChatOpening(threadId?:string,backendId?:string){
+  const binding=threadId?this.store.get<Binding>('backend-binding',threadId):undefined
+  if(binding?.harness===bundledEngineId){
+   const pkg=this.pinnedBundle(binding)
+   return !!pkg&&supportsOpenCodeTools(pkg.manifest,4)
+  }
+  const d=this.definition(binding?.harness??(threadId?this.forThread(threadId):backendId??this.selected('router')))
+  if(isApiBackend(d))return true
+  if(d.kind!=='plugin'||d.plugin!=='opencode-cli')return false
+  const thread=threadId?this.store.get<PluginThread>('backend-plugin-thread',threadId):undefined
+  const pkg=thread?readBackendPackage(join(backendObjects(this.config.stateDir),thread.digest),thread.digest):backendPackages(this.config).get(d.plugin)
+  return !!pkg&&supportsOpenCodeTools(pkg.manifest,4)
+ }
  definition(id:string):BackendDefinition{
   const d=this.config.backends[id]??(id==='codex'?{kind:'codex' as const}:undefined)
   if(!d)throw Error('Backend '+id+' is no longer configured; existing threads cannot migrate implicitly')

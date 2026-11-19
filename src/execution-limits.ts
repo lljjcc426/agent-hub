@@ -2,6 +2,7 @@
 export const resourcePage = {defaultCharacters: 32_000, maxCharacters: 128_000, defaultItems: 100, maxItems: 1_000}
 export const modelSteps = {default: 256, max: 2_048}
 export const modelToolCalls = {default: 1_024, max: 32_768}
+export const toolParallelism = 32
 export const maxOutputTokens = 512_000
 export const maxJobWaitMs = 120_000
 export const maxTurnMs = 4 * 60 * 60_000

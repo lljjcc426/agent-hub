@@ -119,6 +119,42 @@ it('ranks focused passages from the CLI archive so links and navigation cannot c
  }
 })
 
+it('shares a 32-fetch window across concurrent native batches and bounds returned evidence',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'opencode-web-window-')))
+ const guard=workspaceGuard(root,{...request,webEvidenceQuery:'Cache directive for a response',opencodeNativeTools:{network:true}},'web-window')
+ let release!:()=>void,full!:()=>void,active=0,peak=0
+ const waiting=new Promise<void>(resolve=>{release=resolve}),atLimit=new Promise<void>(resolve=>{full=resolve})
+ const attempted:string[]=[]
+ const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async url=>{
+  const name=String(url);attempted.push(name);peak=Math.max(peak,++active)
+  if(active===32)full()
+  await waiting
+  active--
+  return new Response('The response cache directive requires validation before reuse. '+name,{headers:{'content-type':'text/plain'}})
+ })
+ try{
+  const plugin=await import(guard.url+'/index.mjs'),hooks=await plugin.default.server()
+  const batch=hooks.tool.webfetch_batch
+  const context={ask:async()=>{},abort:new AbortController().signal}
+  const urls=Array.from({length:32},(_,i)=>'https://example.org/'+i)
+  const results=Promise.all([batch.execute({urls},context),batch.execute({urls:['https://example.org/overflow']},context)])
+  try{
+   await Promise.race([atLimit,results])
+   expect(attempted).toEqual(urls)
+  }finally{release()}
+  const [first,second]=await results
+  expect(peak).toBe(32)
+  expect(first.metadata.pages.map((p:{url:string})=>p.url)).toEqual(urls)
+  expect(Buffer.byteLength(first.output)).toBeLessThanOrEqual(48*1024)
+  expect(second.output).toContain('https://example.org/overflow')
+ }finally{
+  release()
+  fetch.mockRestore()
+  rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
+  rmSync(root,{recursive:true,force:true})
+ }
+})
+
 it('applies the saved API connection, structured output, request budget and step limit on the final wire',async()=>{
  const requests:{url?:string;headers:any;body:any}[]=[]
  const server=createServer(async(req,res)=>{
@@ -145,6 +181,24 @@ it('applies the saved API connection, structured output, request budget and step
   expect((await call(gateway.url+'/chat/completions')).status).toBe(400)
   expect(requests).toHaveLength(1)
  }finally{await gateway.close();await bounded.close();server.closeAllConnections();await new Promise<void>(ok=>server.close(()=>ok()))}
+})
+
+it('retries one pre-response connection reset inside the same harness model step',async()=>{
+ let requests=0
+ const server=createServer(async(req,res)=>{
+  for await(const _chunk of req){}
+  if(++requests===1){req.socket.destroy();return}
+  res.writeHead(200,{'content-type':'text/event-stream'}).end('data: [DONE]\n\n')
+ })
+ await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok))
+ const backend=apiBackendDefinition.parse({kind:'openai-responses',baseUrl:'http://127.0.0.1:'+(server.address() as {port:number}).port+'/v1',model:'test',maxSteps:1})
+ const gateway=await openHarnessProvider(backend,'test',request)
+ try{
+  const response=await fetch(gateway.url+'/responses',{method:'POST',body:JSON.stringify({stream:true,model:'test',tools:[{type:'function'}]})})
+  expect(response.status).toBe(200)
+  expect(await response.text()).toBe('data: [DONE]\n\n')
+  expect(requests).toBe(2)
+ }finally{await gateway.close();server.closeAllConnections();await new Promise<void>(ok=>server.close(()=>ok()))}
 })
 
 it('binds subscription harness runs to the authorized principal and original signed-in account',async()=>{

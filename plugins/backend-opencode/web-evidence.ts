@@ -4,7 +4,6 @@ import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const inputLimit = 8 * 1024 * 1024
-const resultLimit = 4000
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' })
 const eastAsian = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
 const ignored = new Set(('about an and are as at be by can compare could did do does for from had has have how i in is it its me of on or our please show that the their them then there these this those to use used was we what when where which who why will with would you your search fetch webfetch websearch page pages results http https markdown text url '+
@@ -129,7 +128,7 @@ function passages(source, weights) {
   return selected
 }
 
-export function pageEvidence(source, focus, search, url) {
+export function pageEvidence(source, focus, search, url, resultLimit = 4000) {
   const selected = passages(source, terms(focus, search))
   if (Buffer.byteLength(url) > 2000) url = new URL(url).origin + ' (long URL in tool input)'
   let output = 'Source: ' + url + '\n'

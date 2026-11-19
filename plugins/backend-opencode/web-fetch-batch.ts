@@ -1,10 +1,29 @@
+import {toolParallelism} from '../../src/execution-limits.ts'
+
 // Supplies a single parallel web-fetch call to the isolated OpenCode child.
 export const webFetchBatchModule = String.raw`
 import { pageEvidence } from './web-evidence.mjs'
 
-const maxUrls = 6
+const maxUrls = ${toolParallelism}
+const maxBatchBytes = 48 * 1024
 const maxPageBytes = 5 * 1024 * 1024
 const deadlineMs = 15000
+const waiting = []
+let active = 0
+
+async function limitedFetch(run) {
+  await new Promise(resolve => {
+    const start = () => { active++; resolve() }
+    if (active < maxUrls) start()
+    else waiting.push(start)
+  })
+  try {
+    return await run()
+  } finally {
+    active--
+    waiting.shift()?.()
+  }
+}
 
 async function readPage(response) {
   if (Number(response.headers.get('content-length')) > maxPageBytes) {
@@ -74,8 +93,9 @@ function targetUrl(value) {
   return url
 }
 
-async function fetchPage(url, focus, search, signal) {
+async function fetchPage(url, index, focus, search, signal, resultLimit) {
   const startedAt = Date.now()
+  const reference = Buffer.byteLength(url.href) <= resultLimit - 320 ? url.href : 'URL #' + index + ' from tool input'
   try {
     const response = await fetch(url, {
       headers: {
@@ -96,27 +116,29 @@ async function fetchPage(url, focus, search, signal) {
     }
     const text = await readPage(response)
     const source = mime === 'text/html' || mime === 'application/xhtml+xml' ? htmlText(text, response.url || url.href) : text
-    const { output, evidence } = pageEvidence(source, focus, search(), url.href)
+    const { output, evidence } = pageEvidence(source, focus, search(), reference, resultLimit)
     return { output, page: { url: url.href, status: 'completed', startedAt, endedAt: Date.now(), ...evidence } }
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 240) : 'Request failed'
-    return { output: 'Source: ' + url.href + '\nFetch failed: ' + message,
+    return { output: 'Source: ' + reference + '\nFetch failed: ' + message,
       page: { url: url.href, status: 'failed', startedAt, endedAt: Date.now(), error: message } }
   }
 }
 
 export function webFetchBatch(focus, search) {
   return {
-    description: 'Fetch up to six independent HTTP or HTTPS pages concurrently in one call, with a 15-second deadline per page. Returns source URLs and relevant passages. Cite the exact section links supplied with passages. Use this for two or more known URLs.',
+    description: 'Fetch up to ' + maxUrls + ' independent HTTP or HTTPS pages concurrently in one call, with a 15-second deadline per page. Returns source URLs and relevant passages. Cite the exact section links supplied with passages. Use this for two or more known URLs.',
     args: {
       urls: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: maxUrls,
         description: 'Specific page URLs to retrieve together' },
     },
     async execute({ urls }, context) {
-      if (!Array.isArray(urls) || urls.length < 1 || urls.length > maxUrls) throw Error('Provide one to six URLs')
+      if (!Array.isArray(urls) || urls.length < 1 || urls.length > maxUrls) throw Error('Provide 1–' + maxUrls + ' URLs')
       const inputs = [...new Set(urls)].map(targetUrl)
       await context.ask({ permission: 'webfetch', patterns: inputs.map(url => url.href), always: ['*'], metadata: {} })
-      const results = await Promise.all(inputs.map(url => fetchPage(url, focus, search, context.abort)))
+      const resultLimit = Math.min(4000, Math.floor((maxBatchBytes - (inputs.length - 1) * 7) / inputs.length))
+      const results = await Promise.all(inputs.map((url, i) =>
+        limitedFetch(() => fetchPage(url, i + 1, focus, search, context.abort, resultLimit))))
       return {
         title: 'Fetch ' + results.length + ' pages in parallel',
         output: results.map(result => result.output).join('\n\n---\n\n'),

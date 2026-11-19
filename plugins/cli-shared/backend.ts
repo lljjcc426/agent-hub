@@ -112,6 +112,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      wire?.check('before-native-tool',{name,args})
      const call={id,name,args} as Turn['tools'][number];turn.tools.push(call);save()
      let result=await request.onTool(name,args,id)
+     if(request.requiresChatOpening&&name==='chat_opening'&&result.success)privateFile(join(root,turn.id+'.opening'),'delivered')
      if(request.contextBudget&&protocolBytes(result)>request.contextBudget.toolReserveBytes){
       if(!request.retainToolResult)throw new BackendAdapterError('unsupported')
       result=receiptReference(result,await request.retainToolResult(id,result),request.tools?.some(t=>t.name==='router_read')?'router_read':'superagent_read')

@@ -16,7 +16,8 @@ export function workspaceGuard(root:string,request:ModelRequest,turnId:string){
  const policy={cwd:request.cwd,hidden:[...(request.harnessPrivateFiles??[]),...(request.privateState?[request.privateState]:[])],tools:nativeTools(request),
   native:!!request.opencodeNativeTools,writable:request.sandbox==='workspace-write'&&request.role==='worker',
   limit:request.options?.maxToolCalls??modelToolCalls.default,ready,journal,sessionDirectory:root,
-  evidenceQuery:(request.webEvidenceQuery??request.input).slice(0,4000)}
+  evidenceQuery:(request.webEvidenceQuery??request.input).slice(0,4000),
+  opening:request.requiresChatOpening?join(root,turnId+'.opening'):null}
  const source=`import fs from 'node:fs'
 import path from 'node:path'
 import { focusWebFetch } from './web-evidence.mjs'
@@ -111,6 +112,11 @@ export default {id:'roppo-workspace',server:async function () {
    if (count > policy.limit) throw Error('Task tool-call limit reached')
    if (input.tool.startsWith('roppo_')) return
    if (!policy.tools.includes(input.tool)) throw Error('Tool unavailable for this role')
+   if (policy.opening && !fs.existsSync(policy.opening)) {
+    const deadline = Date.now() + 1000
+    while (!fs.existsSync(policy.opening) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20))
+    if (!fs.existsSync(policy.opening)) throw Error('Call roppo_chat_opening before exercising this tool, then retry the call')
+   }
    if (input.tool==='websearch') {
     output.args.numResults ??= 3
     output.args.contextMaxCharacters ??= 6000

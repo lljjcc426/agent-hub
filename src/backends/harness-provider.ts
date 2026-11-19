@@ -52,7 +52,13 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    let headers:Record<string,string>
    try{headers=apiHeaders(d,await credential?.())}
    catch(error){failure=error;res.writeHead(401).end();return}
-   const response=await fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})
+   const send=()=>fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})
+   const response=await send().catch(error=>{
+    // A reset before the response arrives cannot have executed a host tool.
+    // Keep the same model step and deadline without resuming a native tool turn.
+    if(!taskStep||signal.aborted||!['ECONNRESET','UND_ERR_SOCKET'].includes(error?.cause?.code))throw error
+    return send()
+   })
    if(!response.ok||!response.body){res.writeHead(response.ok?502:response.status).end();await response.body?.cancel();return}
    if(!response.headers.get('content-type')?.includes('text/event-stream')){
     await response.body.cancel()

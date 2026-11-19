@@ -6,7 +6,10 @@ import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
-import {chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
+import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
+import {codeModeTool,withCodeMode} from './code-mode.ts'
+import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
+import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
@@ -465,6 +468,30 @@ export class Runtime {
       validate()
       return this.runModel({...request,instructions:request.instructions+'\nThe opening for this request was already delivered. Continue the work without repeating it.'})
     }
+    if(request.onTool&&(!(this.model instanceof BackendRegistry)||this.model.supportsChatOpening(request.threadId,request.backendId))){
+      const invoke=request.onTool
+      let delivered!:()=>void
+      const opening=new Promise<void>(resolve=>{delivered=resolve})
+      return this.runModel({...request,requiresChatOpening:true,tools:[chatOpeningTool,...request.tools??[]],
+        instructions:request.instructions+'\nWhen the task needs tools, emit chat_opening (roppo_chat_opening in OpenCode) as the FIRST tool call of your first response. Use a brief, specific opening in the user language. In the SAME response, emit any independent tools that can already start. Do not wait for the opening result. Answer direct questions without tools.',
+        chatOpeningReady:async()=>{
+          if(!this.chat.opening(triggerId))await Promise.race([opening,delay(1000,undefined,{signal:request.signal,ref:false})])
+          return !!this.chat.opening(triggerId)
+        },
+        onTool:async(name,args,id)=>{
+          request.signal?.throwIfAborted()
+          if(name===chatOpeningTool.name){
+            const parsed=chatOpeningSchema.safeParse(args)
+            if(!parsed.success)return {success:false,contentItems:[{type:'inputText',text:'Give one short, single-line opening.'}]}
+            validate()
+            this.chat.introduce(triggerId,parsed.data.text)
+            delivered()
+            return {success:true,contentItems:[{type:'inputText',text:'Opening delivered. Continue the work.'}]}
+          }
+          return invoke(name,args,id)
+        },
+      })
+    }
     const first=await this.runModel({...request,
       instructions:request.instructions+'\n'+firstReplyInstructions,schema:firstReplySchema,
       tools:[],options:{...request.options,tools:[],toolConnections:[]},onTool:undefined,
@@ -514,8 +541,9 @@ export class Runtime {
         return {success:ok,contentItems:[{type:'inputText',text:JSON.stringify({ok})}]}
       }}
     }
-    request={...request,options,principal:request.principal??(trigger?{source:trigger.source,actor:trigger.actor.id}:undefined),instructions:this.model instanceof BackendRegistry?request.instructions:appendAgentPrompt(request.instructions,options.prompt,options.persona),tools:options.tools?request.tools?.filter(t=>options.tools!.includes(t.name)):request.tools}
-    if(request.onTool&&options.tools){const invoke=request.onTool;request.onTool=async(name,args,callId)=>{if(!options.tools!.includes(name))return {success:false,contentItems:[{type:'inputText',text:'Tool is disabled for this Agent'}]};return invoke(name,args,callId)}}
+    const toolEnabled=(name:string)=>!options.tools||options.tools.includes(name)||request.requiresChatOpening===true&&name===chatOpeningTool.name
+    request={...request,options,principal:request.principal??(trigger?{source:trigger.source,actor:trigger.actor.id}:undefined),instructions:this.model instanceof BackendRegistry?request.instructions:appendAgentPrompt(request.instructions,options.prompt,options.persona),tools:request.tools?.filter(t=>toolEnabled(t.name))}
+    if(request.onTool&&options.tools){const invoke=request.onTool;request.onTool=async(name,args,callId)=>{if(!toolEnabled(name))return {success:false,contentItems:[{type:'inputText',text:'Tool is disabled for this Agent'}]};return invoke(name,args,callId)}}
     const onActive=request.onActive
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt,options.persona))}:{})})
     request=this.delegation.restrict(request)
@@ -549,6 +577,19 @@ export class Runtime {
     request.retainToolResult=(callId,result)=>{const id=activity+':'+callId;this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result});return id}
     const onBackend=request.onBackend,onModel=request.onModel,onTool=request.onTool
     request={...request,onBackend:id=>{this.activity.update(activity,{backend:id});this.usage.update(activity,{backend:id});onBackend?.(id)},onModel:model=>{this.activity.update(activity,{model});this.usage.update(activity,{model});onModel?.(model)},...(role==='router'&&onTool?{onTool:(name,args,callId)=>this.activity.tool(name,context,()=>onTool(name,args,callId),activity,chatToolDetails(name,args))}:{})}
+    request=withCodeMode(request)
+    if(request.onTool){
+      const invoke=request.onTool,dispatch=new ToolDispatch(),{chatOpeningReady,signal}=request
+      request={...request,onTool:async(name,args,id)=>{
+        if(name!==chatOpeningTool.name&&chatOpeningReady&&!await chatOpeningReady()){
+          return {success:false,contentItems:[{type:'inputText',text:'Publish chat_opening before executing this tool, then retry this call.'}]}
+        }
+        return dispatch.run(isParallelRead(name),()=>{
+          signal?.throwIfAborted()
+          return name===codeModeTool.name?this.activity.tool(name,context,()=>invoke(name,args,id),activity):invoke(name,args,id)
+        })
+      }}
+    }
     this.activity.update(activity,{backend:request.backendId,model:request.model})
     try{
     let threadId=request.threadId
@@ -631,7 +672,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs(){return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&(s.name!=='superagent_artifact'||this.delegation.enabled))}
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}

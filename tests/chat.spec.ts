@@ -27,13 +27,15 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
 
-it('publishes the model’s specific opening once before any tools are available',async()=>{
+it('publishes the model-authored opening before tools run in the same activation',async()=>{
   const opening='我先核对摘要的截断规则，再验证表情符号是否完整。'
   const visible:string[][]=[]
   const {h,calls}=fixture(async r=>{
     visible.push(h.chat.view(c.id,'owner').messages.map(m=>m.text))
-    if(!r.onTool)return {opening,reply:''}
-    await r.onTool('worker_manage',{action:'list'},'list')
+    const work=r.onTool!('worker_manage',{action:'list'},'list')
+    expect(await r.onTool!('chat_opening',{text:opening},'opening')).toMatchObject({success:true})
+    visible.push(h.chat.view(c.id,'owner').messages.map(m=>m.text))
+    expect(await work).toMatchObject({success:true})
     return {reply:'已检查摘要。'}
   })
   const c=h.chat.create('owner'),input={text:'帮我检查摘要',clientMessageId:randomUUID(),openingLocale:'zh-CN' as const}
@@ -42,10 +44,9 @@ it('publishes the model’s specific opening once before any tools are available
   expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text])
   await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
   expect(visible).toEqual([[input.text],[input.text,opening]])
-  expect(calls[0]).toMatchObject({tools:[],options:{tools:[],toolConnections:[]}})
-  expect(calls[0]!.onTool).toBeUndefined()
-  expect(calls[1]!.threadId).toBeTruthy()
-  expect(JSON.parse(calls[1]!.input)).toEqual({kind:'continue_after_opening',triggerId:run.runId,runtimeContext:expect.objectContaining({role:'router',channel:'chat',eventAt:h.store.triggers.get(run.runId)!.at})})
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.tools?.map(t=>t.name)).toContain('chat_opening')
+  expect(JSON.parse(calls[0]!.input)).toMatchObject({trigger:{id:run.runId,text:input.text},runtimeContext:{role:'router',channel:'chat',eventAt:h.store.triggers.get(run.runId)!.at}})
   h.chat.introduce(run.runId,'Duplicate retry')
   expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([input.text,opening,'已检查摘要。'])
   expect(h.chat.history(run.runId).map(m=>m.text)).toEqual([input.text,'已检查摘要。'])
@@ -57,7 +58,6 @@ it('answers a simple desktop question in a single tool-free activation',async()=
   h.chat.send(c.id,'owner',{clientMessageId:randomUUID(),text,openingLocale:'zh-CN'})
   await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
   expect(calls).toHaveLength(1)
-  expect(calls[0]!.onTool).toBeUndefined()
   expect(h.chat.view(c.id,'owner').messages.map(m=>m.text)).toEqual([text,'apple'])
 })
 

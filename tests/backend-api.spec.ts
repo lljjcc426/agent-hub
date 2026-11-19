@@ -55,6 +55,33 @@ it.each(kinds)('%s integrates streaming text with the managed tool loop without 
  expect(JSON.parse(deltas.join(''))).toEqual({answer:'Streamed marker'});expect(JSON.parse(result.text)).toEqual({answer:'Streamed marker'})
 })
 function results(kind:Kind,b:any){return kind==='openai-chat'?b.messages.filter((m:any)=>m.role==='tool'):kind==='anthropic'?b.messages.flatMap((m:any)=>Array.isArray(m.content)?m.content.filter((c:any)=>c.type==='tool_result'):[]):b.input.filter((i:any)=>i.type==='function_call_output')}
+it('admits up to 32 independent reads and preserves write order and provider result pairing',async()=>{
+ const calls=[...Array.from({length:33},(_,i)=>({id:'read-'+i,name:'router_read',args:{path:'read-'+i}})),
+  {id:'write',name:'write_marker',args:{path:'write'}},{id:'last',name:'router_read',args:{path:'last'}}]
+ const f=await server(body=>results('openai-responses',body).length?output('openai-responses','{"answer":"done"}'):output('openai-responses','',calls))
+ const model=new ApiModel('test',definition('openai-responses',f.url),memory(),5000)
+ const inputSchema=request().tools![0]!.inputSchema
+ const started:string[]=[],completed:string[]=[]
+ let release!:()=>void,full!:()=>void
+ const barrier=new Promise<void>(resolve=>{release=resolve}),atLimit=new Promise<void>(resolve=>{full=resolve})
+ const run=model.run(request({tools:['router_read','write_marker'].map(name=>({type:'function',name,description:name,inputSchema})),
+  onTool:async(name,_args,id)=>{
+   started.push(id)
+   if(started.length===32)full()
+   if(id==='read-0')await barrier
+   else if(id.startsWith('read-')){await barrier;await new Promise(ok=>setTimeout(ok,5))}
+   if(name==='write_marker')expect(completed).toHaveLength(33)
+   if(id==='last')expect(completed.at(-1)).toBe('write')
+   completed.push(id)
+   return {success:true,contentItems:[{type:'inputText',text:id}]}
+  }}))
+ try{
+  await Promise.race([run,atLimit])
+  expect(started).toEqual(calls.slice(0,32).map(c=>c.id))
+ }finally{release();await run}
+ expect(completed.at(-1)).toBe('last')
+ expect(results('openai-responses',f.requests[1].body).map((r:any)=>[r.call_id,r.output[0].text])).toEqual(calls.map(c=>[c.id,c.id]))
+})
 it.each(kinds)('%s budgets full instructions, tools and provider parameters before HTTP',async kind=>{
  const f=await server(()=>output(kind,'{"answer":"never"}')),store=memory()
  const model=new ApiModel('test',definition(kind,f.url,{parameters:{metadata:{padding:'x'.repeat(9000)}}}),store,10000)

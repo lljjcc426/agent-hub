@@ -1,4 +1,5 @@
 import {chatStatusTool} from './chat-status.ts'
+import {codeModeTool} from './code-mode.ts'
 import {evidenceTools} from './goal-evidence.ts'
 import {builtinSources} from './source-plugins.ts'
 import {Client} from '@modelcontextprotocol/sdk/client/index.js'
@@ -42,7 +43,7 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     const grant=assigned(router??{},routerBackend,'tools')
     put('Roppo','router/'+tool.name,{kind:'tool',name:tool.name,status:grant&&!grant.includes(tool.name)?'disabled':'conditional',description:tool.description,roles:['Router'],tools:[toolInfo(tool)]})
   }
-  for(const tool of [...host.availableWorkerSpecs(),chatStatusTool]){
+  for(const tool of [...host.availableWorkerSpecs(),chatStatusTool,codeModeTool]){
     const roles=workers.filter(w=>w.state!=='retiring'&&w.state!=='paused'&&(assigned(w,w.backend,'tools')??[tool.name]).includes(tool.name)).map(w=>w.id)
     put('Roppo','worker/'+tool.name,{kind:'tool',name:tool.name,status:roles.length?'conditional':'disabled',description:tool.description,roles,tools:[toolInfo(tool)]})
   }

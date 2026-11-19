@@ -16,7 +16,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
-import {proveInterruptedGithubRead} from './backends/opencode-read-recovery.ts'
+import {proveInterruptedOpenCodeRead} from './backends/opencode-read-recovery.ts'
 
 const id=z.string().min(1).max(300)
 const criterion=criterionSchema
@@ -27,7 +27,13 @@ interface Wake {id:string;goalId:string;scopeId:string;entryId:string;triggerId:
 const terminal=new Set(['completed','cancelled'])
 const githubReadContinuation='The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
 const heldReason=(nodes:GoalNode[])=>nodes.filter(n=>n.state==='held').map(n=>n.title+': '+n.reason).join('; ')
-type GithubReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedGithubRead>>}
+type ReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedOpenCodeRead>>}
+function readContinuation(proof:ReadRecovery['proof']){
+ return proof.kind==='github'?{instruction:githubReadContinuation}:{
+  instruction:'Continue the original task in its retained workspace. Retry the interrupted webfetch_batch with these same URLs. The tool reuses saved excerpts and fetches pages with missing results.',
+  urls:proof.urls,
+ }
+}
 export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. inspect returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
 
 export class RouterGoals {
@@ -211,7 +217,7 @@ export class RouterGoals {
   const run=this.host.store.get<Run>('run',ticketId)
   return !run||run.phase===phase&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
  }
- private interruptedGithubRead(task:Ticket,run:Run|undefined):GithubReadRecovery|undefined{
+ private interruptedRead(task:Ticket,run:Run|undefined):ReadRecovery|undefined{
   const {store}=this.host
   if(run?.phase!=='uncertain'||!run.threadId||run.ticketId!==task.id||run.assignmentId!==task.assignments.at(-1)?.id||
    this.host.executionActive(task.id)||!this.effectsSettledAtPhase(task.id,'uncertain')||this.host.work.list(task.id).length)return
@@ -221,7 +227,7 @@ export class RouterGoals {
    OR (kind='approval' AND json_extract(body,'$.ticketId')=?)
    OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=?) LIMIT 1`).get(run.threadId,task.id,task.id,task.id)
   if(otherActivity)return
-  const proof=proveInterruptedGithubRead(store,this.host.config.stateDir,run)
+  const proof=proveInterruptedOpenCodeRead(store,this.host.config.stateDir,run)
   if(!proof)return
   const assigned=store.get<{workerId:string}>('worker-assignment',task.id)
   const worker=workerProfiles(this.host.config).find(profile=>profile.id===assigned?.workerId)
@@ -232,17 +238,19 @@ export class RouterGoals {
   this.host.model.describe?.(run.threadId)
   return {run,proof}
  }
- private settleInterruptedGithubRead({run,proof}:GithubReadRecovery,c:ScopeContext,mode:'automatic'|'requested'){
+ private settleInterruptedRead({run,proof}:ReadRecovery,c:ScopeContext,mode:'automatic'|'requested'){
   const {store}=this.host
-  const {id,receipt}=proof.interrupted
-  store.put('backend-plugin-tool',id,{...receipt,state:'complete',
-   result:{success:false,contentItems:[{type:'inputText',text:'The interrupted GitHub resource read failed before returning a result.'}]},
-   reconciliation:{reason:'interrupted_github_read_failed',mode,previousState:receipt.state,ticketId:run.ticketId,
-    assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,at:this.now()},
-  })
+  if(proof.kind==='github'){
+   const {id,receipt}=proof.interrupted
+   store.put('backend-plugin-tool',id,{...receipt,state:'complete',
+    result:{success:false,contentItems:[{type:'inputText',text:'The interrupted GitHub resource read failed before returning a result.'}]},
+    reconciliation:{reason:'interrupted_github_read_failed',mode,previousState:receipt.state,ticketId:run.ticketId,
+     assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,at:this.now()},
+   })
+  }else store.audit({type:'opencode.web_batch.recovered',mode,ticketId:run.ticketId,assignmentId:run.assignmentId,...proof.replay})
   // The old adapter turn still has an interrupted journal. Start a new model session on the same task.
-  const {threadId,turnId,error,result,toolsVersion,toolsDigest,waitingForWriter,...retained}=run
-  store.put('run',run.ticketId,{...retained,phase:'idle'} satisfies Run)
+  const {threadId,turnId,error,result,toolsVersion,toolsDigest,waitingForWriter,webFetchReplay,...retained}=run
+  store.put('run',run.ticketId,{...retained,phase:'idle',...(proof.kind==='web_batch'?{webFetchReplay:proof.replay}:{})} satisfies Run)
  }
  private automaticReadRecoveryAllowed(g:RouterGoal){
   return this.host.config.work.autoRecover&&g.managed&&g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
@@ -250,13 +258,13 @@ export class RouterGoals {
  awaitingReadRecovery(run:Run){
   const g=this.forTask(run.ticketId)
   return !!g&&this.automaticReadRecoveryAllowed(g)&&['active','waiting'].includes(g.state)&&
-   !!proveInterruptedGithubRead(this.host.store,this.host.config.stateDir,run)
+   !!proveInterruptedOpenCodeRead(this.host.store,this.host.config.stateDir,run)
  }
- private recoverInterruptedGithubReads(g:RouterGoal,c:ScopeContext,nodes:GoalNode[]){
+ private recoverInterruptedReads(g:RouterGoal,c:ScopeContext,nodes:GoalNode[]){
   if(!this.automaticReadRecoveryAllowed(g))return false
   const {store}=this.host
   return store.atomic(()=>{
-   const recoveries=new Map<GoalNode,{task:Ticket;summary:string;recovery:GithubReadRecovery}>()
+   const recoveries=new Map<GoalNode,{task:Ticket;summary:string;recovery:ReadRecovery}>()
    for(const node of nodes){
     if(!node.ticketId||node.recoveries>=5||node.teamTargetId||node.dependsOn.some(id=>g.nodes?.find(n=>n.id===id)?.state!=='passed'))return false
     const task=store.tickets.get(node.ticketId),assignment=task?.assignments.at(-1),report=assignment?.report
@@ -266,14 +274,14 @@ export class RouterGoals {
     this.host.scopes.checkTask(task.id,c,true)
     const manifest=store.get<{manifest:ContextManifest}>('task-context',task.id)?.manifest
     if(manifest)this.host.memory.validate(manifest)
-    const recovery=this.interruptedGithubRead(task,store.get<Run>('run',task.id))
+    const recovery=this.interruptedRead(task,store.get<Run>('run',task.id))
     if(!recovery)return false
     recoveries.set(node,{task,summary:report.summary,recovery})
    }
    for(const {task,summary,recovery} of recoveries.values()){
-    this.settleInterruptedGithubRead(recovery,c,'automatic')
+    this.settleInterruptedRead(recovery,c,'automatic')
     this.host.retry(task.id)
-    this.host.engine.note(task.id,JSON.stringify({instruction:githubReadContinuation,previousReport:summary}))
+    this.host.engine.note(task.id,JSON.stringify({...readContinuation(recovery.proof),previousReport:summary}))
     allowNewTaskInputs(store,task.id,task.inputs.map(i=>i.id))
    }
    const resumed=g.state==='held'?{state:'active' as const,reason:undefined,nextAt:undefined}:{}
@@ -466,7 +474,7 @@ export class RouterGoals {
     // Back off repeated evidence checks while a hold has no safe recovery.
     if(checkHeldRead){g.nextAt=this.now()+60_000;this.host.store.put('router-goal',g.id,g)}
     const c=this.context(g)
-    if(checkHeldRead){this.recoverInterruptedGithubReads(g,c,held);continue}
+    if(checkHeldRead){this.recoverInterruptedReads(g,c,held);continue}
     if(refreshReview){
      this.host.store.atomic(()=>{
       const review=g.project!.review!
@@ -538,7 +546,7 @@ export class RouterGoals {
       if(task.undelivered.length||run?.phase==='running'||run?.phase==='starting')continue // A replacement turn has not reported yet.
       if(run?.phase==='uncertain'){
        if(this.host.executionActive(task.id))continue
-       if(this.recoverInterruptedGithubReads(g,c,[n]))continue
+       if(this.recoverInterruptedReads(g,c,[n]))continue
       }
       // A just-finished Worker can still have a Router-inbox report awaiting flush.
       // Let that bounded delivery/turn settle before deciding that replanning is unavailable.
@@ -746,18 +754,18 @@ export class RouterGoals {
       if(!task||task.ended||!report||!['blocked','failed'].includes(report.state)||store.get('goal-delivery',task.id))continue
       this.host.scopes.checkTask(task.id,c,true)
       const uncertain=node.failure?.kind==='uncertain'||run?.phase==='uncertain'
-      const recovered=uncertain&&!task.undelivered.length?this.interruptedGithubRead(task,run):undefined
+      const recovered=uncertain&&!task.undelivered.length?this.interruptedRead(task,run):undefined
       if(uncertain&&!recovered)throw Error('Reconcile the current task or its effects before resuming')
       if(task.undelivered.length)continue
-      if(recovered)this.settleInterruptedGithubRead(recovered,c,'requested')
+      if(recovered)this.settleInterruptedRead(recovered,c,'requested')
       if(!this.effectsSettled(task.id))throw Error('Reconcile the current task or its effects before resuming')
       const prior=task.inputs.map(i=>i.id)
       this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
       this.host.retry(task.id)
-      const instruction=recovered
-       ?githubReadContinuation
-       :'Continue the existing task from its retained work and check the outstanding blocker against the current request.'
-      this.host.engine.note(task.id,JSON.stringify({instruction,previousReport:report.summary,userInput:c.trigger.text}))
+      const continuation=recovered?readContinuation(recovered.proof):{
+       instruction:'Continue the existing task from its retained work and check the outstanding blocker against the current request.'
+      }
+      this.host.engine.note(task.id,JSON.stringify({...continuation,previousReport:report.summary,userInput:c.trigger.text}))
       allowNewTaskInputs(store,task.id,prior)
      }
      for(const id of [g.finalRoundId,...(g.nodes??[]).map(n=>n.roundId)].filter((id):id is string=>!!id)){const round=store.get<VerificationRound>('goal-verification',id);if(round?.state==='errored'){store.put('goal-verification',id,{...round,state:'pending',error:undefined,finishedAt:undefined});store.jobState('goal-verify:'+id,'pending')}}

@@ -24,6 +24,8 @@ import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
 import {BackendPluginError} from '../src/backends/plugin-contract.ts'
 import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
 import type {Run,Store} from '../src/store.ts'
+import {retainedWebPages} from '../src/backends/opencode-read-recovery.ts'
+import {webPageDirectory,webPageFile} from '../src/backends/opencode-web-checkpoint.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[]
 afterEach(async()=>{for(const h of hosts.splice(0))await h.close();for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true})})
@@ -271,12 +273,12 @@ it('dispatches an explicit resume of a settled blocked Worker with the human cla
  expect([...f.attempts.values()]).toEqual([2])
 })
 
-function recordInterruptedGithubRead(store:Store,stateDir:string,run:Run){
+function recordInterruptedRead(store:Store,stateDir:string,run:Run,urls?:string[]){
  const turnId=run.turnId!,threadId=run.threadId!,nativeId='ses_interrupted'
  const folder=randomUUID(),identity=stableDigest('opencode config'),digest=stableDigest('opencode package')
  const result={success:true,contentItems:[{type:'inputText' as const,text:'read result'}]}
- const calls=[
-  {id:'number:2',name:'superagent_status',args:{message:'Reading the repository'},result},
+ const status={id:'number:2',name:'superagent_status',args:{message:'Reading the repository'},result}
+ const calls=urls?[status]:[status,
   {id:'web-call',name:'opencode/webfetch_batch',args:{},result:{success:true}},
   {id:'number:3',name:'superagent_read',args:{resource:'catalog'},result},
   {id:'number:4',name:'superagent_read',args:{resource:'github/directory/',limit:20}},
@@ -288,7 +290,7 @@ function recordInterruptedGithubRead(store:Store,stateDir:string,run:Run){
   return id
  })
  const thread:PluginThread={id:threadId,backendId:'codex',pluginId:'opencode-cli',digest,stateVersion:1,nativeId,cwd:realpathSync(run.cwd),
-  identity,state:'failed',effectIds,turnId,lastFailure:{code:'outcome_unknown',at:Date.now()}}
+  identity,state:'failed',effectIds,turnId,lastFailure:{code:urls?'process_failed':'outcome_unknown',at:Date.now()}}
  store.put('backend-plugin-thread',threadId,thread)
  store.put('backend-binding',threadId,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
  const data=join(stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
@@ -297,14 +299,14 @@ function recordInterruptedGithubRead(store:Store,stateDir:string,run:Run){
  mkdirSync(join(data,'index'))
  const key=createHash('sha256').update(nativeId).digest('hex')
  writeFileSync(join(data,'index',key+'.json'),JSON.stringify({id:nativeId,folder}))
- writeFileSync(sessionPath,JSON.stringify({format:1,cwd:thread.cwd,folder,nativeId,turns:[{id:turnId,state:'interrupted',tools:calls}]}))
+ writeFileSync(sessionPath,JSON.stringify({format:1,cwd:thread.cwd,folder,nativeId,turns:[{id:turnId,state:urls?'running':'interrupted',tools:calls}]}))
  writeFileSync(join(journalRoot,turnId+'.ready'),'ready')
- writeFileSync(operations,JSON.stringify({id:'web-call',tool:'webfetch_batch'})+'\n')
+ writeFileSync(operations,JSON.stringify({id:'web-call',tool:'webfetch_batch',urls})+'\n')
  return {thread,effectId:effectIds.at(-1)!,journalRoot,sessionPath,operations}
 }
 
 function githubReadRecoveryFixture(mode:'requested'|'held'|'new'){
- let initial:{run:Run;evidence:ReturnType<typeof recordInterruptedGithubRead>}|undefined
+ let initial:{run:Run;evidence:ReturnType<typeof recordInterruptedRead>}|undefined
  const f:ReturnType<typeof fixture>=fixture((request,attempt)=>{
   request.onBackend?.('codex')
   if(attempt===1){
@@ -312,7 +314,7 @@ function githubReadRecoveryFixture(mode:'requested'|'held'|'new'){
    writeFileSync(join(request.cwd,'checkpoint.txt'),'retained artifact')
    if(mode==='new'){
     const run=f.h.store.get<Run>('run',request.activity!.ticketId!)!
-    initial={run,evidence:recordInterruptedGithubRead(f.h.store,f.config.stateDir,run)}
+    initial={run,evidence:recordInterruptedRead(f.h.store,f.config.stateDir,run)}
    }
    throw new BackendPluginError('outcome_unknown','codex')
   }
@@ -334,7 +336,7 @@ async function interruptedGithubGoal(mode:'requested'|'held'='requested'){
  const ticket=store.tickets.get(ticketId)!,run=store.get<Run>('run',ticketId)!
  expect(run.phase).toBe('uncertain')
  expect(ticket.undelivered).toEqual([])
- const evidence=recordInterruptedGithubRead(store,f.config.stateDir,run)
+ const evidence=recordInterruptedRead(store,f.config.stateDir,run)
  let context:ReturnType<typeof f.context>|undefined
  const resume=()=>{
   if(!context){
@@ -390,6 +392,42 @@ it('recovers a retained held read across a restart without new user input or dup
  expect(f.h.store.get<Run>('run',ticket.id)).toMatchObject({cwd:run.cwd})
  expect(f.h.store.get('backend-plugin-tool',effectId)).toMatchObject({state:'complete',reconciliation:{mode:'automatic',triggerId:goal.triggerId}})
  expect([...f.attempts.values()]).toEqual([2])
+})
+
+it.each([false,true])('recovers batch checkpoints for the original task when effects are accounted for (native write: %s)',async pendingWrite=>{
+ const urls=['https://example.org/one','https://example.org/two']
+ const readyPage={url:urls[0]!,startedAt:1,endedAt:2,sourceBytes:120,excerpts:['Retained evidence from the completed page.']}
+ let previous:ReturnType<typeof recordInterruptedRead>|undefined
+ const f:ReturnType<typeof fixture>=fixture((request,attempt)=>{
+  request.onBackend?.('codex')
+  const ticketId=request.activity!.ticketId!
+  if(attempt===1){
+   request.onTurn?.(randomUUID())
+   const run=f.h.store.get<Run>('run',ticketId)!
+   previous=recordInterruptedRead(f.h.store,f.config.stateDir,run,urls)
+   const directory=webPageDirectory(previous.journalRoot,run.turnId!)
+   mkdirSync(directory)
+   writeFileSync(webPageFile(directory,readyPage.url),JSON.stringify(readyPage))
+   if(pendingWrite)appendFileSync(previous.operations,JSON.stringify({id:'started-write',tool:'bash'})+'\n')
+   throw new BackendPluginError('process_failed','codex')
+  }
+  expect(pendingWrite).toBe(false)
+  expect(request.threadId).toBeUndefined()
+  const {thread}=previous!
+  expect(request.webFetchReplay).toEqual({threadId:thread.id,turnId:thread.turnId,callId:'web-call'})
+  for(const url of urls)expect(request.input).toContain(url)
+  const owner={ticketId,cwd:thread.cwd,backendId:thread.backendId,identity:thread.identity}
+  expect(retainedWebPages(f.h.store,f.config.stateDir,request.webFetchReplay!,owner)).toEqual([readyPage])
+  expect(retainedWebPages(f.h.store,f.config.stateDir,request.webFetchReplay!,{...owner,ticketId:'different-task'})).toEqual([])
+  writeFileSync(join(request.cwd,'result.json'),'{"total":42}')
+  return ready()
+ })
+ f.start()
+ await until(f,()=>f.goal().state===(pendingWrite?'held':'completed'))
+ expect([...f.attempts.values()]).toEqual([pendingWrite?1:2])
+ const ticketId=f.goal().taskIds[0]!
+ expect(f.h.store.tickets.get(ticketId)?.assignments).toHaveLength(pendingWrite?1:2)
+ expect(f.h.store.get<Run>('run',ticketId)?.webFetchReplay).toBeUndefined()
 })
 
 it.each(['uncertain repository effect','explicit pause','operator disabled automatic recovery'] as const)('honors %s during automatic read recovery',async blocker=>{

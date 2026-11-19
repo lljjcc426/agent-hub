@@ -23,6 +23,7 @@ export interface Run {
   toolsVersion?:number;toolsDigest?:string;model?:string;backendId?:string;backendKind?:string
   agentOptions?:import('./backend-config.ts').AgentOptions;migration?:string
   rebuild?:string
+  webFetchReplay?:import('./backends/opencode-web-checkpoint.ts').WebBatchReplay
   workerId?:string;interactiveReserve?:boolean
 }
 

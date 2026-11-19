@@ -1,8 +1,12 @@
 import {toolParallelism} from '../../src/execution-limits.ts'
+import {maxWebPageCheckpointBytes} from '../../src/backends/opencode-web-checkpoint.ts'
 
 // Supplies a single parallel web-fetch call to the isolated OpenCode child.
 export const webFetchBatchModule = String.raw`
-import { pageEvidence } from './web-evidence.mjs'
+import { capturePageEvidence, renderPageEvidence } from './web-evidence.mjs'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync, realpathSync, writeFileSync, renameSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 
 const maxUrls = ${toolParallelism}
 const maxBatchBytes = 48 * 1024
@@ -93,9 +97,25 @@ function targetUrl(value) {
   return url
 }
 
-async function fetchPage(url, index, focus, search, signal, resultLimit) {
+function checkpointPage(directory, snapshot) {
+  if (!directory) return
+  const text = JSON.stringify(snapshot)
+  if (Buffer.byteLength(text) > ${maxWebPageCheckpointBytes}) return
+  const path = join(directory, createHash('sha256').update(snapshot.url).digest('hex') + '.json')
+  const temporary = path + '.' + randomUUID() + '.tmp'
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    if (realpathSync(directory) !== directory) return
+    writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 })
+    renameSync(temporary, path)
+  } catch {
+    // A page can still be returned to the model if its checkpoint cannot be written.
+    try { if (realpathSync(directory) === directory) rmSync(temporary, { force: true }) } catch {}
+  }
+}
+
+async function fetchPage(url, focus, search, signal) {
   const startedAt = Date.now()
-  const reference = Buffer.byteLength(url.href) <= resultLimit - 320 ? url.href : 'URL #' + index + ' from tool input'
   try {
     const response = await fetch(url, {
       headers: {
@@ -116,16 +136,16 @@ async function fetchPage(url, index, focus, search, signal, resultLimit) {
     }
     const text = await readPage(response)
     const source = mime === 'text/html' || mime === 'application/xhtml+xml' ? htmlText(text, response.url || url.href) : text
-    const { output, evidence } = pageEvidence(source, focus, search(), reference, resultLimit)
-    return { output, page: { url: url.href, status: 'completed', startedAt, endedAt: Date.now(), ...evidence } }
+    const evidence = capturePageEvidence(source, focus, search)
+    return { url: url.href, startedAt, endedAt: Date.now(), ...evidence }
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 240) : 'Request failed'
-    return { output: 'Source: ' + reference + '\nFetch failed: ' + message,
-      page: { url: url.href, status: 'failed', startedAt, endedAt: Date.now(), error: message } }
+    return { url: url.href, startedAt, endedAt: Date.now(), error: message }
   }
 }
 
-export function webFetchBatch(focus, search) {
+export function webFetchBatch(focus, search, directory, seed = []) {
+  const recovered = new Map(seed.map(page => [page.url, page]))
   return {
     description: 'Fetch up to ' + maxUrls + ' independent HTTP or HTTPS pages concurrently in one call, with a 15-second deadline per page. Returns source URLs and relevant passages. Cite the exact section links supplied with passages. Use this for two or more known URLs.',
     args: {
@@ -134,11 +154,22 @@ export function webFetchBatch(focus, search) {
     },
     async execute({ urls }, context) {
       if (!Array.isArray(urls) || urls.length < 1 || urls.length > maxUrls) throw Error('Provide 1–' + maxUrls + ' URLs')
-      const inputs = [...new Set(urls)].map(targetUrl)
+      const inputs = [...new Set(urls.map(value => targetUrl(value).href))].map(url => new URL(url))
       await context.ask({ permission: 'webfetch', patterns: inputs.map(url => url.href), always: ['*'], metadata: {} })
       const resultLimit = Math.min(4000, Math.floor((maxBatchBytes - (inputs.length - 1) * 7) / inputs.length))
-      const results = await Promise.all(inputs.map((url, i) =>
-        limitedFetch(() => fetchPage(url, i + 1, focus, search, context.abort, resultLimit))))
+      const query = search()
+      const results = await Promise.all(inputs.map(async (url, i) => {
+        const reference = Buffer.byteLength(url.href) <= resultLimit - 320 ? url.href : 'URL #' + (i + 1) + ' from tool input'
+        const saved = recovered.get(url.href)
+        const page = saved ?? await limitedFetch(() => fetchPage(url, focus, query, context.abort))
+        if (page.error !== undefined) {
+          return { output: 'Source: ' + reference + '\nFetch failed: ' + page.error, page: { ...page, status: 'failed' } }
+        }
+        checkpointPage(directory, page)
+        const { output, evidence } = renderPageEvidence(page, reference, resultLimit)
+        return { output, page: { url: page.url, status: 'completed', startedAt: page.startedAt, endedAt: page.endedAt,
+          ...evidence, ...(saved ? { reused: true } : {}) } }
+      }))
       return {
         title: 'Fetch ' + results.length + ' pages in parallel',
         output: results.map(result => result.output).join('\n\n---\n\n'),

@@ -128,19 +128,26 @@ function passages(source, weights) {
   return selected
 }
 
-export function pageEvidence(source, focus, search, url, resultLimit = 4000) {
-  const selected = passages(source, terms(focus, search))
+export function capturePageEvidence(source, focus, search) {
+  return { sourceBytes: Buffer.byteLength(source), excerpts: passages(source, terms(focus, search)) }
+}
+
+export function renderPageEvidence({ sourceBytes, excerpts }, url, resultLimit = 4000) {
   if (Buffer.byteLength(url) > 2000) url = new URL(url).origin + ' (long URL in tool input)'
   let output = 'Source: ' + url + '\n'
   let count = 0
-  for (const passage of selected) {
+  for (const passage of excerpts) {
     const next = '\n' + passage + '\n'
     if (Buffer.byteLength(output + next) > resultLimit) continue
     output += next
     count++
   }
   output = count ? output.trimEnd() : output + 'No passage matched the task in the retrieved text.'
-  return { output, evidence: { sourceBytes: Buffer.byteLength(source), evidenceBytes: Buffer.byteLength(output), passages: count } }
+  return { output, evidence: { sourceBytes, evidenceBytes: Buffer.byteLength(output), passages: count } }
+}
+
+export function pageEvidence(source, focus, search, url, resultLimit = 4000) {
+  return renderPageEvidence(capturePageEvidence(source, focus, search), url, resultLimit)
 }
 
 export function focusWebFetch(root, focus, search, args, result) {

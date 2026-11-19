@@ -119,6 +119,29 @@ it('persists uncertain effects and blocks retry after an effect throws',async()=
  await expect(restarted.run({...r,threadId})).rejects.toMatchObject({code:'outcome_unknown'})
  expect(calls).toBe(1)
 })
+it('closes a trusted read failure as a result and permits the next call in the same native turn',async()=>{
+ const f=await fixture(),seen:unknown[]=[]
+ const response=await f.registry.run({...f.request,input:'fence',
+  tools:[{type:'function',name:'allowed',description:'Read example',inputSchema:{type:'object'}}],
+  isReadOnlyTool:name=>name==='allowed',
+  onTool:async(_name,args)=>{
+   seen.push(args)
+   if(seen.length===1)throw Error('private provider diagnostics')
+   return {contentItems:[],success:true}
+  },
+ })
+ expect(JSON.parse(response.text).history).toEqual(['fence'])
+ expect(seen).toEqual([{value:3},{value:4}])
+ const receipts=f.store.list('backend-plugin-tool')
+ expect(receipts).toEqual(expect.arrayContaining([
+  expect.objectContaining({state:'complete',result:expect.objectContaining({success:false,contentItems:[
+   expect.objectContaining({text:expect.stringContaining('read_failed')}),
+  ]}),failure:{operation:'tool',reason:'exception'}}),
+  expect.objectContaining({state:'complete',result:{contentItems:[],success:true}}),
+ ]))
+ expect(JSON.stringify(receipts)).not.toContain('private provider diagnostics')
+})
+
 it('reuses completed tool receipts for replayed native calls',async()=>{
  const f=await fixture();let calls=0
  const r={...f.request,input:'replay',tools:[{type:'function' as const,name:'allowed',description:'test',inputSchema:{type:'object'}}],onTool:async()=>{calls++;return {contentItems:[],success:true}}}

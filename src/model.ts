@@ -32,6 +32,8 @@ export interface ModelRequest {
   archiveOnComplete?:boolean
   tools?:ToolSpec[]
   onTool?:(name:string,args:unknown,callId:string)=>Promise<{contentItems:ToolContent[];success:boolean}>
+  /** Host classification for calls whose failure cannot leave an unknown write. */
+  isReadOnlyTool?:(name:string)=>boolean
   workerMcp?:{command:string;args:string[]}
   /** Set only on foreground coordination and assigned Worker turns. */
   allowNativeTools?:boolean
@@ -40,6 +42,10 @@ export interface ModelRequest {
   chatOpeningReady?:()=>Promise<boolean>
   /** Current task text for ranking excerpts in the managed OpenCode adapter. */
   webEvidenceQuery?:string
+  /** Host-owned reference to a previous read in the same task. */
+  webFetchReplay?:import('./backends/opencode-web-checkpoint.ts').WebBatchReplay
+  /** Scoped excerpts transferred only to the native batch adapter. */
+  opencodeWebPages?:import('./backends/opencode-web-checkpoint.ts').WebPageCheckpoint[]
   /** Ephemeral host transport, only supplied to the selected OpenCode adapter. */
   harnessProviderUrl?:string
   harnessWorkspace?:'read'|'edit'

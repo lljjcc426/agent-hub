@@ -17,6 +17,7 @@ import {hostPrivateFiles} from '../private-files.ts'
 import {stableDigest} from '../sources.ts'
 import {ContextBudgetExceeded,type BudgetReceipt} from '../context-budget.ts'
 import {TransientModelError} from '../model.ts'
+import {retainedWebPages} from './opencode-read-recovery.ts'
 import {normalizeUsage} from '../model-usage.ts'
 import {backendEnvelope,backendResult,backendDiagnosticSchema,backendWorkerActivitySchema,BackendPluginError,type BackendDiagnostic} from './plugin-contract.ts'
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
@@ -59,7 +60,7 @@ export class ProcessBackend implements Model {
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
   const defaultOpenCodeTools=supportsOpenCodeTools(pkg.manifest)&&request.allowNativeTools===true&&request.managed===true&&
    !request.ephemeral&&request.options?.tools===undefined&&!!request.onTool&&!!request.tools?.length&&(request.role==='router'||request.role==='worker')
-  const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,webEvidenceQuery,...activation}=request
+  const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,webEvidenceQuery,webFetchReplay,opencodeWebPages:unusedPages,...activation}=request
   request=defaultOpenCodeTools?{...activation,opencodeNativeTools:{network:this.config.work.network},
    ...(this.config.work.network&&webEvidenceQuery&&supportsOpenCodeTools(pkg.manifest,3)?{webEvidenceQuery}:{}),
   }:activation
@@ -71,6 +72,11 @@ export class ProcessBackend implements Model {
   const cwd=canonical(request.cwd)
   if(old&&old.cwd!==cwd)throw Error('Execution backend workspace changed; explicit migration required')
   const record:PluginThread=old??{id:'plugin:'+randomUUID(),backendId:this.id,pluginId:pkg.manifest.id,digest:pkg.digest,stateVersion:pkg.manifest.stateVersion,identity:this.sessionIdentity,cwd,state:'running',effectIds:[]}
+  const ticketId=request.activity?.ticketId
+  if(webFetchReplay&&ticketId&&request.role==='worker'&&!request.operator&&this.hostHarness&&request.opencodeNativeTools?.network&&supportsOpenCodeTools(pkg.manifest,5)){
+   const pages=retainedWebPages(this.store,this.config.stateDir,webFetchReplay,{ticketId,backendId:this.id,identity:record.identity,cwd})
+   if(pages.length)request={...request,opencodeWebPages:pages}
+  }
   if(record.effectIds.some(id=>this.store.get<PluginToolEffect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
   let transport:Awaited<ReturnType<ProcessBackend['launch']>>|undefined
   try{
@@ -167,6 +173,7 @@ export class ProcessBackend implements Model {
      const id=stableDigest([record.id,record.turnId,p.callId]),fingerprint=stableDigest([p.name,p.args]),saved=this.store.get<PluginToolEffect>('backend-plugin-tool',id)
      if(saved){if(saved.fingerprint!==fingerprint||saved.state!=='complete')throw new BackendPluginError('outcome_unknown',this.id);result=saved.result}
      else{
+      let failure:BackendDiagnostic|undefined
       if(inflightTools.has(id)||record.effectIds.length>=modelToolCalls.max*4)throw new BackendPluginError('outcome_unknown',this.id)
       if(++toolCalls>(request.options?.maxToolCalls??modelToolCalls.default))throw new BackendPluginError('unsupported',this.id)
       const validate=ajv.compile(spec.inputSchema)
@@ -177,10 +184,20 @@ export class ProcessBackend implements Model {
        inflightTools.add(id)
        this.store.put('backend-plugin-tool',id,{fingerprint,state:'running'})
        try{result=await request.onTool(p.name,p.args,p.callId)}
-       catch(error){uncertainTool=true;const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic);this.store.put('backend-plugin-tool',id,{fingerprint,state:'running',failure:diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}});throw error}
-       inflightTools.delete(id)
+       catch(error){
+        const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic)
+        failure=diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}
+        if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||!request.isReadOnlyTool?.(p.name)){
+         uncertainTool=true
+         this.store.put('backend-plugin-tool',id,{fingerprint,state:'running',failure})
+         throw error
+        }
+        result={success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+         status:'read_failed',tool:p.name,message:'The read returned no result. Check the arguments or continue with another available read tool.'
+        })}]}
+       }finally{inflightTools.delete(id)}
       }
-      this.store.put('backend-plugin-tool',id,{fingerprint,state:'complete',result})
+      this.store.put('backend-plugin-tool',id,{fingerprint,state:'complete',result,...(failure?{failure}:{})})
      }
     }else if(m.method==='human'){
      if(!request.onHumanRequest)throw new BackendPluginError('unsupported',this.id)

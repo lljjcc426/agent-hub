@@ -2,7 +2,9 @@ import {it,expect,vi} from 'vitest'
 import {createServer} from 'node:http'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync,existsSync,readFileSync} from 'node:fs'
+import {spawn} from 'node:child_process'
+import {once} from 'node:events'
 import {fileURLToPath} from 'node:url'
 import {digest} from '../plugins/cli-shared/files.ts'
 import {workspaceGuard} from '../plugins/backend-opencode/workspace.ts'
@@ -18,6 +20,7 @@ import {Settings} from '../src/settings.ts'
 import {workerProfileSchema} from '../src/backend-config.ts'
 import {configSchema} from '../src/config.ts'
 import type {ModelRequest} from '../src/model.ts'
+import {webPageDirectory,webPageFile,webPageCheckpointSchema} from '../src/backends/opencode-web-checkpoint.ts'
 
 const request:ModelRequest={instructions:'',input:'',schema:{type:'object'},cwd:tmpdir()}
 
@@ -151,6 +154,58 @@ it('shares a 32-fetch window across concurrent native batches and bounds returne
   release()
   fetch.mockRestore()
   rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
+  rmSync(root,{recursive:true,force:true})
+ }
+})
+
+it('keeps a fast page when the process dies mid-batch and fetches only the missing page',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'opencode-web-replay-')))
+ const activation={...request,webEvidenceQuery:'Cache directive for a response',opencodeNativeTools:{network:true}}
+ const first=workspaceGuard(root,activation,'old-turn')
+ const urls=['https://example.org/fast','https://example.org/slow']
+ const child=spawn(process.execPath,['--input-type=module','-e',`
+   const urls=${JSON.stringify(urls)}
+   globalThis.fetch=async url=>{
+    if(String(url)===urls[0])return new Response('# Cache directive\\n\\nThe response cache directive requires validation before reuse.',{headers:{'content-type':'text/plain'}})
+    await new Promise(()=>setInterval(()=>{},1000))
+   }
+   const {default:plugin}=await import(${JSON.stringify(first.url+'/index.mjs')})
+   const hooks=await plugin.server()
+   await hooks['tool.execute.before']({tool:'webfetch_batch',callID:'call-one'},{args:{urls}})
+   await hooks.tool.webfetch_batch.execute({urls},{ask:async()=>{},abort:new AbortController().signal})
+ `],{stdio:'ignore'})
+ const exited=once(child,'exit')
+ const directory=webPageDirectory(root,'old-turn')
+ let second:ReturnType<typeof workspaceGuard>|undefined
+ try{
+  const completed=webPageFile(directory,urls[0]!)
+  await vi.waitFor(()=>expect(existsSync(completed)).toBe(true))
+  expect(child.exitCode).toBeNull()
+  expect(existsSync(webPageFile(directory,urls[1]!))).toBe(false)
+  child.kill('SIGKILL')
+  expect(await exited).toEqual([null,'SIGKILL'])
+  expect(first.operations()).toEqual([{id:'call-one',tool:'webfetch_batch',urls}])
+  const saved=webPageCheckpointSchema.parse(JSON.parse(readFileSync(completed,'utf8')))
+  expect(saved.excerpts.join('\n')).toContain('requires validation before reuse')
+  second=workspaceGuard(root,{...activation,opencodeWebPages:[saved]},'new-turn')
+  const hooks=await (await import(second.url+'/index.mjs')).default.server()
+  const ask=vi.fn(async()=>{})
+  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('The slow page explains the cache directive for stale responses.',{headers:{'content-type':'text/plain'}}))
+  try{
+   // The fresh activation can request the same pages in a different order.
+   const result=await hooks.tool.webfetch_batch.execute({urls:[...urls].reverse()},{ask,abort:new AbortController().signal})
+   expect(fetch).toHaveBeenCalledTimes(1)
+   expect(String(fetch.mock.calls[0]![0])).toBe(urls[1])
+   expect(ask).toHaveBeenCalledWith(expect.objectContaining({permission:'webfetch',patterns:[...urls].reverse()}))
+   expect(result.metadata.pages).toMatchObject([{url:urls[1],status:'completed'},{url:urls[0],status:'completed',reused:true}])
+   expect(result.output).toContain('Source: '+urls[0])
+   expect(result.output).toContain('requires validation before reuse')
+   expect(result.output).toContain('Source: '+urls[1])
+  }finally{fetch.mockRestore()}
+ }finally{
+  if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL')
+  await exited
+  for(const guard of [first,second])if(guard)rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
   rmSync(root,{recursive:true,force:true})
  }
 })

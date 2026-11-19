@@ -2,12 +2,13 @@ import {modelToolCalls} from '../../src/execution-limits.ts'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {pathToFileURL} from 'node:url'
-import {existsSync,readFileSync,mkdtempSync} from 'node:fs'
+import {existsSync,readFileSync,mkdtempSync,realpathSync} from 'node:fs'
 import {privateFile} from '../cli-shared/files.ts'
 import type {ModelRequest} from '../backend-sdk.ts'
 import {nativeTools} from './native-tools.ts'
 import {webEvidenceModule} from './web-evidence.ts'
 import {webFetchBatchModule} from './web-fetch-batch.ts'
+import {webPageDirectory} from '../../src/backends/opencode-web-checkpoint.ts'
 
 /** OpenCode runs in a private project. Its own builtins resolve paths against the task,
  * without loading plugins, settings, instructions or custom tools from that task. */
@@ -16,6 +17,7 @@ export function workspaceGuard(root:string,request:ModelRequest,turnId:string){
  const policy={cwd:request.cwd,hidden:[...(request.harnessPrivateFiles??[]),...(request.privateState?[request.privateState]:[])],tools:nativeTools(request),
   native:!!request.opencodeNativeTools,writable:request.sandbox==='workspace-write'&&request.role==='worker',
   limit:request.options?.maxToolCalls??modelToolCalls.default,ready,journal,sessionDirectory:root,
+  webPages:webPageDirectory(realpathSync(root),turnId),retainedWebPages:request.opencodeWebPages,
   evidenceQuery:(request.webEvidenceQuery??request.input).slice(0,4000),
   opening:request.requiresChatOpening?join(root,turnId+'.opening'):null}
  const source=`import fs from 'node:fs'
@@ -100,7 +102,7 @@ export default {id:'roppo-workspace',server:async function () {
  fs.writeFileSync(policy.ready, 'ready', {mode:0o600})
  return {
   ...(policy.tools.includes('webfetch_batch') ? {
-   tool:{webfetch_batch:webFetchBatch(policy.evidenceQuery,()=>searchQuery)},
+   tool:{webfetch_batch:webFetchBatch(policy.evidenceQuery,()=>searchQuery,policy.webPages,policy.retainedWebPages)},
   } : {}),
   'tool.definition': async (input,output) => {
    if (input.toolID==='webfetch' && policy.tools.includes('webfetch')) {
@@ -127,7 +129,8 @@ export default {id:'roppo-workspace',server:async function () {
     if (operation.scan) await checkSearchTree(operation.target,input.tool==='grep')
     output.args[operation.field]=operation.target
    }
-   fs.appendFileSync(policy.journal, JSON.stringify({id:input.callID,tool:input.tool,path:operation&&path.relative(root,operation.target)})+'\\n',{mode:0o600})
+   fs.appendFileSync(policy.journal, JSON.stringify({id:input.callID,tool:input.tool,path:operation&&path.relative(root,operation.target),
+    ...(input.tool==='webfetch_batch'&&Array.isArray(output.args.urls)?{urls:output.args.urls}:{})})+'\\n',{mode:0o600})
   },
   'tool.execute.after': async (input,output) => {
    if (input.tool==='websearch' && typeof input.args.query==='string') {

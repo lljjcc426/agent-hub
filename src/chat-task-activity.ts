@@ -1,8 +1,20 @@
-import type { ChatSessions } from '../../src/chat.ts'
+import type { ChatPlan, goalPlan } from './chat-workflow.ts'
 
-type View = ReturnType<ChatSessions['view']>
-type Task = View['tasks'][number]
 type Step = { id: string; title: string; state?: string }
+type Plan = Omit<ChatPlan, 'conversationId' | 'activityId'>
+
+export interface ChatTask {
+  id: string
+  workerId: string
+  title: string
+  state: string
+  reviewing: boolean
+  updatedAt: number
+  parentPlanId?: string
+  question?: string
+  summary?: string
+  failed?: boolean
+}
 
 export interface TaskActivity {
   id: string
@@ -12,10 +24,15 @@ export interface TaskActivity {
   nextAction?: string
   updatedAt: number
   steps: Step[]
-  tickets: Task[]
+  tickets: ChatTask[]
 }
 
-type ActivityInput = Pick<View, 'plans' | 'publicPlans' | 'tasks'> & Partial<Pick<View, 'sessionRouterPlans'>>
+interface ActivityInput {
+  plans: ReturnType<typeof goalPlan>[]
+  publicPlans: Plan[]
+  sessionRouterPlans?: Plan[]
+  tasks: ChatTask[]
+}
 
 export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }: ActivityInput): TaskActivity[] {
   const activities: TaskActivity[] = []
@@ -24,7 +41,7 @@ export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }
   const goalRuns = new Set(plans.map(goal => goal.runId))
   const goalPlanIds = new Set<string>()
   for (const goal of plans) {
-    const tickets: Task[] = []
+    const tickets: ChatTask[] = []
     for (const id of goal.ticketIds) {
       goalTickets.add(id)
       const ticket = tasksById.get(id)

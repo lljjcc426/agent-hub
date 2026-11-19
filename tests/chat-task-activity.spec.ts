@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { taskActivities } from '../web/chat/task-activity.ts'
+import { taskActivities } from '../src/chat-task-activity.ts'
 
 type Input = Parameters<typeof taskActivities>[0]
 const empty: Input = { plans: [], tasks: [], publicPlans: [] }

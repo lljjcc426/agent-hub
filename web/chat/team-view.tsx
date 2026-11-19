@@ -18,7 +18,7 @@ import { DeliveryFileCard } from '../ui/delivery-files.tsx'
 import { TaskActivityRow } from '../ui/task-activity.tsx'
 import { AgentAvatar, teamName } from './agent-avatar.tsx'
 import { RoppoCharacter } from './roppo-character.tsx'
-import { taskActivities } from './task-activity.ts'
+import { taskActivities, type TaskActivity } from '../../src/chat-task-activity.ts'
 
 type View = ReturnType<ChatSessions['view']>
 type Localize = (en: string, zh: string) => string
@@ -43,6 +43,7 @@ interface TeamOverviewProps {
   setTab: (tab: TeamTab) => void
   close: () => void
   select: (id: string) => void
+  openTask?: (activity: TaskActivity, source: HTMLButtonElement) => void
   openFile: (file: ChatDelivery) => void
   resource: (kind: 'browser' | 'files') => void
   locateMessage: (id: string) => void
@@ -61,6 +62,7 @@ export function TeamOverview({
   setTab,
   close,
   select,
+  openTask,
   openFile,
   resource,
   changeSchedule, locateMessage,
@@ -150,6 +152,7 @@ export function TeamOverview({
             {activities.length ? (
               activities.map(activity => (
                 <TaskActivityRow key={activity.id} activity={activity} L={L} onAgent={select}
+                  onOpen={openTask ? source => openTask(activity, source) : undefined}
                   agentName={id => participants.find(p => p.id === id)?.label ?? id}/>
               ))
             ) : (

@@ -47,6 +47,7 @@ import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
 import {deliveryFile} from "./delivery-links.ts";
 import {TeamOverview,type TeamTab} from './team-view.tsx';
+import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
@@ -67,6 +68,7 @@ import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
+const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDetail})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
@@ -90,6 +92,7 @@ import "./rich-content.css";
 import "./navigation.css";
 import "./chat-layout.css";
 import "./team-view.css";
+import "./task-detail.css";
 import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";
@@ -692,19 +695,26 @@ function Chat(p: ChatProps) {
   };
   useEffect(() => write(resourceKey(id), JSON.stringify(resources)), [id, resources]);
   const [teamTab,setTeamTab]=useState<TeamTab>('activity'),[file,setFile]=useState<ChatDelivery|null>(null);
+  const [selectedTask,setSelectedTask]=useState<string|null>(null);
+  const taskOpener=useRef<HTMLButtonElement>(null);
+  const loadTask=useCallback((task:string,signal:AbortSignal) =>
+    api<TaskExecutionDetail>('/conversations/'+id+'/task-detail?'+new URLSearchParams({task}),undefined,'GET',signal),[id]);
   useEffect(()=>{
     if(route === '/chat#schedules'){setTeamTab('schedules');setResources(state=>openResource(state,'activity'))}
   },[route]);
   const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
   const [panelExpanded, setPanelExpanded] = useState(false);
-  const sessionView = useMemo(() => panel && !configuring ? { overview, expanded:panelExpanded, cards:sidebarCards, tab:teamTab } : null,
-    [panel, configuring, overview, panelExpanded, sidebarCards, teamTab]);
+  const sessionView = useMemo(() => panel && !configuring ? { overview, expanded:panelExpanded, cards:sidebarCards, tab:teamTab, task:selectedTask } : null,
+    [panel, configuring, overview, panelExpanded, sidebarCards, teamTab, selectedTask]);
   const sessionPresence = usePanelPresence(sessionView);
   const displayedSession = sessionPresence.view;
+  const shownTask = displayedSession?.overview ? displayedSession.task : null;
+  const taskPresence = usePanelPresence(shownTask);
   const [pickerRequest,setPickerRequest]=useState(0);
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
     if(next&&panelOverlay&&trayOpen)changeTray(false);
+    setSelectedTask(null);
     if (next === "browser" && !id) {
       if (creating.current) return;
       creating.current = true;
@@ -1188,6 +1198,8 @@ function Chat(p: ChatProps) {
       if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
         if (menu) {
           closeNavigation();
+        } else if (panel && overview && selectedTask && !configuring) {
+          backToTasks();
         } else if (trayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
           closeTray();
         } else if (sidebarCards.revealing) {
@@ -1199,7 +1211,7 @@ function Chat(p: ChatProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, configuring, panelExpanded]);
+  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, configuring, panelExpanded, overview, selectedTask]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1232,6 +1244,7 @@ function Chat(p: ChatProps) {
   const selectAgent=(agentId:string)=>{locateRequest.current++;locateAfterLoad.current=null;setAround(undefined);setSelectedAgent(agentId);setSidebarCards(emptySidebarCards)};
   function revealCard(card: "context") {
     if(panelOverlay&&trayOpen)changeTray(false);
+    setSelectedTask(null);
     if (!panel) {
       panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
       setTeamTab('activity');
@@ -1258,6 +1271,10 @@ function Chat(p: ChatProps) {
   function closePanel() {
     void choosePanel(null);
     restorePanelFocus(() => panelOpener.current?.isConnected ? panelOpener.current : teamButton.current);
+  }
+  function backToTasks() {
+    setSelectedTask(null);
+    restorePanelFocus(() => taskOpener.current?.isConnected ? taskOpener.current : document.getElementById('team-tab-activity'));
   }
   const readAgent=(agentId:string)=>{selectAgent(agentId);void choosePanel(null);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
   const quoteMessage=(value:DraftQuote)=>{
@@ -1513,15 +1530,22 @@ function Chat(p: ChatProps) {
               </div>
               {displayedSession && <aside ref={sessionPresence.ref} id="session-panel" aria-label={L('Session panel', '会话面板')}
                 data-closing={sessionPresence.closing||undefined} inert={sessionPresence.closing} aria-hidden={sessionPresence.closing||undefined}
-                className={'session-panel '+(displayedSession.overview ? 'chat-inspector team-drawer' : 'resource-workspace'+(displayedSession.expanded?' expanded':''))}>
+                className={'session-panel '+(displayedSession.overview ? 'chat-inspector team-drawer task-drawer' : 'resource-workspace'+(displayedSession.expanded?' expanded':''))}>
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>
-                {displayedSession.overview && <TeamOverview active={!sessionPresence.closing} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                {displayedSession.overview && <div className="task-drawer-stack">
+                  <div className="task-drawer-layer task-overview-layer" data-inactive={!!shownTask||undefined} inert={!!shownTask} aria-hidden={!!shownTask||undefined}>
+                  <TeamOverview active={!sessionPresence.closing} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
                   tab={displayedSession.cards.revealing ? 'activity' : displayedSession.tab} focusOnOpen={!displayedSession.cards.revealing}
                   setTab={tab => {
                     if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');
                     setTeamTab(tab);
                   }}
                   close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
+                  openTask={id ? (activity,source)=>{
+                    taskOpener.current=source;
+                    setSidebarCards(state=>state.revealing?{...state,revealing:false}:state);
+                    setSelectedTask(activity.id);
+                  } : undefined}
                   cards={!configuring && !readonly && displayedSession.cards.items.length > 0 && displayedSession.cards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
                       current={usage} L={L} focusOnReveal={panelOverlay && displayedSession.cards.revealing}
@@ -1531,7 +1555,15 @@ function Chat(p: ChatProps) {
                   changeSchedule={async (planId,expectedRevision,patch)=>{
                     try{await api('/conversations/'+id+'/schedules',{id:planId,expectedRevision,operationId:crypto.randomUUID(),...patch},'PATCH')}finally{await refresh()}
                   }}
-                />}
+                  />
+                  </div>
+                  {id && taskPresence.view && <Suspense fallback={<div className="task-drawer-layer task-run-scroll"><p className="task-run-note" role="status">{L('Loading task history…','正在读取任务记录…')}</p></div>}>
+                    <TaskDetail key={taskPresence.view} id={taskPresence.view} load={loadTask}
+                    active={!sessionPresence.closing&&!taskPresence.closing} closing={taskPresence.closing}
+                    layerRef={taskPresence.ref} back={backToTasks} close={closePanel} locale={lang} L={L} selectAgent={readAgent}
+                    agentName={id=>id ? participants.find(agent=>agent.id===id)?.label??id : teamName(currentRouter.label)}/>
+                  </Suspense>}
+                </div>}
                 <ResourceWorkspace
                   hidden={displayedSession.overview}
                   state={resources}

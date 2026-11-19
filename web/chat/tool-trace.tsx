@@ -52,7 +52,7 @@ function summary(group: Group, L: Localize, done: boolean) {
       return done ? L('Used tools', '调用了工具') : L('Using tools', '调用工具')
   }
 }
-function rowLabel(c: ExecutionCall, L: Localize) {
+export function toolLabel(c: ExecutionCall, L: Localize) {
   const item = c.trace
   if (item?.kind === 'read')
     return item.label ? L('Read ' + item.label, '读取 ' + item.label) : L('Read resource', '读取资源')
@@ -76,6 +76,8 @@ function rowLabel(c: ExecutionCall, L: Localize) {
     pause: ['Pause Worker', '暂停 Worker'],
     resume: ['Resume Worker', '恢复 Worker'],
     superagent_progress: ['Update progress', '更新进度'],
+    superagent_status: ['Update status', '更新状态'],
+    superagent_plan: ['Update plan', '更新计划'],
     superagent_tools: ['Inspect tools', '查看工具'],
     superagent_job: ['Check job', '查看任务状态'],
     superagent_read: ['Read resource', '读取资源'],
@@ -86,9 +88,14 @@ function rowLabel(c: ExecutionCall, L: Localize) {
     'opencode/websearch': ['Search the web', '搜索网页'],
     'opencode/webfetch': ['Read a web page', '读取网页'],
     'opencode/webfetch_batch': ['Fetch pages in parallel', '并行抓取网页'],
+    superagent_browser: ['Use browser', '使用浏览器'],
+    workspace_browser: ['Use browser', '使用浏览器'],
     superagent_spawn: ['Delegate subtask', '分派子任务'],
     router_manage: ['Manage task', '管理任务'],
     chat_deliver_file: ['Prepare file', '准备交付文件'],
+    chat_request_decision: ['Ask for a decision', '请求确认'],
+    router_goal: ['Manage goal', '管理任务目标'],
+    router_journal: ['Update work notes', '更新工作记录'],
     open: ['Open browser', '打开浏览器'],
     navigate: ['Open website', '打开网页'],
     snapshot: ['Read page', '读取页面'],
@@ -108,7 +115,20 @@ function rowLabel(c: ExecutionCall, L: Localize) {
     close_tab: ['Close tab', '关闭标签页'],
   }
   const key = c.action?.replace(/^browser:/, '') ?? c.name
-  return enZh[key] ? L(...enZh[key]) : key
+  const label = Object.hasOwn(enZh,key) ? enZh[key] : undefined
+  return label ? L(...label) : key || L('Tool call', '调用工具')
+}
+export function toolStatus(c: ExecutionCall, L: Localize) {
+  if (c.permission === 'pending') return L('Requested approval', '已请求批准')
+  if (c.permission === 'denied') return L('Declined', '已拒绝')
+  if (c.permission === 'uncertain') return L('Outcome unconfirmed', '结果待核对')
+  if (c.permission === 'cancelled') return L('Cancelled', '已取消')
+  return {
+    running: L('Running', '进行中'),
+    completed: L('Complete', '已完成'),
+    failed: L('Failed', '失败'),
+    interrupted: L('Interrupted', '已中断'),
+  }[c.state]
 }
 export function ToolTrace({
   calls,
@@ -145,18 +165,6 @@ export function ToolTrace({
         ? L('Tool activity · needs attention', '工具调用有异常')
         : calls.some(c => c.permission === 'pending') ? L('Tool activity', '工具调用') : finished
   const clock = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-  function state(c: ExecutionCall) {
-    if (c.permission === 'pending') return L('Requested approval', '已请求批准')
-    if (c.permission === 'denied') return L('Declined', '已拒绝')
-    if (c.permission === 'uncertain') return L('Outcome unconfirmed', '结果待核对')
-    if (c.permission === 'cancelled') return L('Cancelled', '已取消')
-    return {
-      running: L('Running', '进行中'),
-      completed: L('Complete', '已完成'),
-      failed: L('Failed', '失败'),
-      interrupted: L('Interrupted', '已中断'),
-    }[c.state]
-  }
   return (
     <DisclosureRoot
       className="trace-inline"
@@ -181,7 +189,7 @@ export function ToolTrace({
                   : c.action === 'list'
                     ? ListChecks
                     : icons[group(c)]
-          const text = rowLabel(c, L),
+          const text = toolLabel(c, L),
             target = c.target ? actor(c.target) : undefined
           return (
             <DisclosureRoot key={c.id} className="trace-step" data-state={c.state}>
@@ -192,14 +200,14 @@ export function ToolTrace({
                   {target ? ' · ' + target : ''}
                 </span>
                 <small>
-                  {c.permission || c.state === 'failed' || c.state === 'interrupted' ? state(c) : null}
+                  {c.permission || c.state === 'failed' || c.state === 'interrupted' ? toolStatus(c,L) : null}
                 </small>
                 <time dateTime={new Date(c.startedAt).toISOString()}>{clock.format(c.startedAt)}</time>
               </DisclosureSummary>
               <div className="trace-meta">
                 <code>{c.name}</code>
                 <span>{actor(c.workerId)}</span>
-                <span>{state(c)}</span>
+                <span>{toolStatus(c,L)}</span>
                 {c.endedAt != null && (
                   <span>
                     {new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(

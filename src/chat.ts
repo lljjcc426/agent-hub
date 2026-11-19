@@ -33,6 +33,8 @@ import type {UsageRecord} from './usage-ledger.ts'
 import type {BudgetReceipt} from './context-budget.ts'
 import {ChatError} from './chat-errors.ts'
 import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentReaction,type ChatQuote,type ChatQuoteView} from './chat-interactions.ts'
+import {taskActivities,type ChatTask} from './chat-task-activity.ts'
+import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
 export {ChatError} from './chat-errors.ts'
 
 interface Conversation {
@@ -52,10 +54,6 @@ type PendingCard =
 interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[]}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
-interface ChatTask {
-  id:string; workerId:string; title:string; state:string; reviewing:boolean; updatedAt:number
-  parentPlanId?:string; question?:string; summary?:string; failed?:boolean
-}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
 type ChatCall=ExecutionCall&{conversationId:string;runId:string;usageRevision?:number}
 function transcriptText(id:string,text:string){
@@ -938,6 +936,26 @@ export class ChatSessions {
       return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
     })
   }
+  private conversationTasks(c:Conversation){
+    const conversationPlans=this.rows<ChatPlan>('chat-plan','conversationId',c.id)
+    const routerPlanIds=new Set(conversationPlans.filter(plan=>!plan.ticketId&&!plan.workerId).map(plan=>plan.id))
+    return {conversationPlans,tasks:this.tasks(c,undefined,routerPlanIds)}
+  }
+  taskDetail(id:string,owner:string,taskId:string):TaskExecutionDetail {
+    const c=this.get(id,owner),{conversationPlans,tasks}=this.conversationTasks(c)
+    const goals=this.rows<RouterGoal>('router-goal','discussion',c.discussion)
+    const cleanup=this.host.memory.cleanup
+    const cleaning=cleanup.plans().length>0
+    const visible=(kind:string,key:string,value:unknown)=>!cleaning||!cleanup.blocked(kind,key,value)
+    const plan=conversationPlans.find(item=>item.id===taskId)
+    const goal=goals.find(item=>'goal:'+item.id===taskId)
+    const specifiedTasks=cleaning?tasks.filter(task=>visible('ticket',task.id,this.host.store.tickets.get(task.id))):tasks
+    const activity=taskActivities({plans:goals.map(goalPlan),publicPlans:conversationPlans,tasks:specifiedTasks}).find(item=>item.id===taskId)
+    if(!activity || plan&&!visible('chat-plan',plan.id,plan) || goal&&!visible('router-goal',goal.id,goal))
+      throw new ChatError('task_missing','Task not found in this conversation.',404)
+    const planTurn=plan&&this.turnPlan(c.id,plan.runId)===plan.id?plan.runId:undefined
+    return taskExecutionDetail(this.host.store,c.id,activity,{plan,planTurn,goalCreatedAt:goal?.at},visible)
+  }
   async files(id:string,owner:string,input:{ticket?:string;path?:string;kind?:'directory'|'files';offset?:number;cursor?:string}={}){
     const c=this.get(id,owner),tasks=this.tasks(c).filter(t=>this.host.store.get<Run>('run',t.id))
     if(!input.ticket)return {tasks}
@@ -1009,9 +1027,8 @@ export class ChatSessions {
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
     const goals=runId?this.rows<RouterGoal>('router-goal','discussion',c.discussion).filter(g=>g.triggerId===runId):[]
-    const conversationPlans=this.rows<ChatPlan>('chat-plan','conversationId',id)
-    const routerPlanIds=new Set(conversationPlans.filter(plan=>!plan.ticketId&&!plan.workerId).map(plan=>plan.id))
-    const tasks=this.tasks(c,undefined,routerPlanIds),currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||goals.some(g=>g.taskIds.includes(t.id)))
+    const {conversationPlans,tasks}=this.conversationTasks(c)
+    const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||goals.some(g=>g.taskIds.includes(t.id)))
     const replying=this.host.store.db.prepare("SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId') WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running') ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid LIMIT 1").get(id)
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
     const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]

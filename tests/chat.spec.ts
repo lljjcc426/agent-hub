@@ -97,6 +97,7 @@ it('keeps the plan through a decision and reuses the latest measured Router inpu
   await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='waiting')
   const m=h.chat.view(c.id,'owner').messages.find(m=>m.decision)!
   expect(h.chat.view(c.id,'owner').publicPlans[0]?.steps[0]?.state).toBe('running')
+  expect(h.chat.taskDetail(c.id,'owner',h.chat.view(c.id,'owner').publicPlans[0]!.id).activity.state).toBe('needs_input')
   expect(()=>h.chat.answerDecision(other.id,'another-owner',m.id,'English')).toThrow('no longer available')
   const firstUsage=h.chat.contextUsage(c.id,'owner')
   expect(firstUsage.inputTokens).toBe(321)
@@ -115,6 +116,15 @@ it('keeps the plan through a decision and reuses the latest measured Router inpu
   expect(latest.composition!.system).toBeGreaterThan(0)
   expect(latest.composition!.tools).toBeGreaterThan(0)
   expect(latest.activity).not.toBe(firstUsage.activity)
+  const taskId=view.publicPlans[0]!.id, detail=h.chat.taskDetail(c.id,'owner',taskId)
+  expect(detail.activity).toMatchObject({title:'Guide',state:'completed'})
+  expect(detail.calls).toEqual(expect.arrayContaining([
+    expect.objectContaining({id:firstUsage.activity,kind:'router',model:'router-one'}),
+    expect.objectContaining({id:latest.activity,kind:'router',model:'router-one'}),
+  ]))
+  expect(detail.events.filter(event=>event.kind==='received')).toHaveLength(2)
+  expect(detail.events.some(event=>event.kind==='reply')).toBe(true)
+  expect(()=>h.chat.taskDetail(other.id,'another-owner',taskId)).toThrow('not found')
   expect(latest.previous).toBe(false)
   expect(latest).not.toHaveProperty('modelInputs')
   expect(()=>h.chat.contextUsage(other.id,'another-owner',latest.activity!)).toThrow('not found')
@@ -839,6 +849,26 @@ it('projects real Router-to-Worker dialogue with distinct speakers and no extra 
   for(const call of calls)expect(call.instructions).toContain('"replyLocale":"en-GB"')
   expect(calls[1]!.instructions).toContain('"agentName":"Research"')
   expect(view.workers[0]?.tasks[0]).toMatchObject({state:'completed',title:'Check evidence'})
+  const task=view.tasks[0]!,start=h.store.tickets.get(task.id)!.createdAt
+  const legacy={kind:'tool',name:'opencode/webfetch',state:'completed',workerId:'research',ticketId:task.id,
+    conversationId:c.id,startedAt:Date.parse(start)+10,endedAt:Date.parse(start)+10,arguments:{secret:'internal tool payload'}}
+  h.store.put('chat-call','legacy-fetch',{...legacy,id:'legacy-fetch'})
+  h.store.put('chat-call','unrelated-ticket',{...legacy,id:'unrelated-ticket',ticketId:'someone-else'})
+  h.store.put('chat-call','unrelated-chat',{...legacy,id:'unrelated-chat',conversationId:randomUUID()})
+  for(let i=0;i<201;i++)h.store.put('chat-call','more-recent-'+i,{...legacy,id:'more-recent-'+i,ticketId:undefined,startedAt:legacy.startedAt+100+i})
+  expect(h.chat.view(c.id,'owner').calls.some(call=>call.id==='legacy-fetch')).toBe(false)
+  const detail=h.chat.taskDetail(c.id,'owner','ticket:'+task.id)
+  expect(detail.calls).toEqual(expect.arrayContaining([
+    expect.objectContaining({id:'legacy-fetch',reported:true}),
+    expect.objectContaining({kind:'worker',model:'research-model'}),
+  ]))
+  expect(detail.calls.every(call=>call.ticketId===task.id)).toBe(true)
+  expect(detail.calls.some(call=>call.id==='unrelated-chat')).toBe(false)
+  expect(detail.events.map(event=>event.kind)).toEqual(expect.arrayContaining(['created','started','report','result']))
+  expect(detail.span?.from).toBe(Date.parse(start))
+  expect(JSON.stringify(detail)).not.toContain('internal tool payload')
+  expect(()=>h.chat.taskDetail(c.id,'other','ticket:'+task.id)).toThrow('not found')
+  expect(()=>h.chat.taskDetail(c.id,'owner','ticket:someone-else')).toThrow('not found')
   expect(view.messages.find(m=>m.text==='Worker result')).toMatchObject({speaker:{id:'research',label:'Research',kind:'worker'},recipient:{kind:'router'}})
   expect(view.messages.find(m=>m.text==='Check evidence')).toMatchObject({speaker:{kind:'router'},recipient:{id:'research'}})
   expect(view.participants.find(p=>p.id==='research')?.latestMessage).toMatchObject({text:'Worker result',role:'assistant',speaker:'Research'})

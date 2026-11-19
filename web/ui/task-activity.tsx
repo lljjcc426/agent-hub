@@ -1,14 +1,10 @@
 import {ArrowUpRight, ChevronRight, List, Play} from 'lucide-react'
-import type {TaskActivity} from '../chat/task-activity.ts'
+import type {TaskActivity} from '../../src/chat-task-activity.ts'
 import type {Localize} from '../chat/composer-commands.tsx'
 import './task-activity.css'
 
-export function TaskActivityRow({activity, agentName, onAgent, replayTicket, L}: {
-  activity: TaskActivity; agentName: (id: string) => string; onAgent: (id: string) => void; L: Localize
-  replayTicket?: (ticketId: string) => (() => void) | undefined
-}) {
-  const taskStatus = (state: string) =>
-    ({
+export function taskStatus(state: string, L: Localize) {
+  return ({
       pending: L('Pending', '待开始'),
       planned: L('Planned', '已计划'),
       active: L('Working', '进行中'),
@@ -22,24 +18,42 @@ export function TaskActivityRow({activity, agentName, onAgent, replayTicket, L}:
       completed: L('Complete', '已完成'),
       waiting: L('Waiting', '待处理'),
       cancelled: L('Cancelled', '已取消'),
+      failed: L('Failed', '失败'),
+      interrupted: L('Interrupted', '已中断'),
+      ready: L('Result submitted', '已提交结果'),
+      progress: L('Progress reported', '已报告进度'),
+      dropped: L('No further work', '无需继续'),
+      merged: L('Merged', '已合并'),
+      closed: L('Closed', '已关闭'),
+      stopped: L('Stopped', '已停止'),
     })[state] ?? state
+}
+
+export function TaskActivityRow({activity, agentName, onAgent, onOpen, replayTicket, L}: {
+  activity: TaskActivity; agentName: (id: string) => string; onAgent: (id: string) => void; L: Localize
+  onOpen?: (source: HTMLButtonElement) => void
+  replayTicket?: (ticketId: string) => (() => void) | undefined
+}) {
+  const heading = <>
+    <List size={19} aria-hidden="true"/>
+    <span><strong>{activity.title}</strong><small>{taskStatus(activity.state,L)}</small></span>
+    <ChevronRight size={15} aria-hidden="true"/>
+  </>
+  if (onOpen) return <button type="button" className="team-row task-activity" data-activity-id={activity.id}
+    onClick={event => onOpen(event.currentTarget)}>{heading}</button>
   return (
     <details className="task-activity" data-activity-id={activity.id}>
-      <summary className="team-row">
-        <List size={19} aria-hidden="true"/>
-        <span><strong>{activity.title}</strong><small>{taskStatus(activity.state)}</small></span>
-        <ChevronRight size={15} aria-hidden="true"/>
-      </summary>
+      <summary className="team-row">{heading}</summary>
       <div className="task-activity-detail">
         {activity.objective && activity.objective !== activity.title && <p>{activity.objective}</p>}
         {activity.nextAction && !activity.steps.length && <p>{activity.nextAction}</p>}
         {activity.steps.length > 0 && <ol>{activity.steps.map(step =>
-          <li key={step.id}>{step.title}{step.state && <small>{taskStatus(step.state)}</small>}</li>
+          <li key={step.id}>{step.title}{step.state && <small>{taskStatus(step.state,L)}</small>}</li>
         )}</ol>}
         {activity.tickets.map(ticket => {const replay = replayTicket?.(ticket.id); return <div key={ticket.id}>
           {ticket.title !== activity.title && <strong>{ticket.title}</strong>}
           <button type="button" onClick={() => onAgent(ticket.workerId)}>
-            {agentName(ticket.workerId)} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state)}
+            {agentName(ticket.workerId)} · {taskStatus(ticket.reviewing ? 'reviewing' : ticket.state,L)}
             <ArrowUpRight size={13}/>
           </button>
           {replay && <button type="button" className="handoff-replay" onClick={replay}><Play size={12}/>{L('Replay handoffs','回放任务交接')}</button>}

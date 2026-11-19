@@ -90,8 +90,12 @@ export class RouterScopes {
    for(const backend of [...x.scope.backendIds,...(x.scope.router?.backend?[x.scope.router.backend]:[])])if(backend!=='codex'&&!this.config.backends[backend])throw Error('Unknown backend')
    if(x.scope.router?.backend&&!x.scope.backendIds.includes(x.scope.router.backend))throw Error('Router backend is outside scope permission')
    for(const entryId of x.scope.dataEntryIds)if(this.binding(entryId).tenantId!==x.scope.tenantId)throw Error('Data entry is outside tenant')
-   const next:ManagementScope={...x.scope,routerId:old?.routerId??'router-'+randomUUID(),revision:(old?.revision??0)+1,epoch:(old?.epoch??0)+1}
-   this.store.put('management-scope',next.id,next);this.bump(next.tenantId);return next
+   const next:ManagementScope={...x.scope,routerId:old?.routerId??'router-'+randomUUID(),revision:(old?.revision??0)+1,epoch:old?.epoch??0}
+   // More space for the same authorized context keeps existing receipts and conversations readable.
+   const onlyRaisedBudget=old&&next.contextBytes>old.contextBytes&&
+    stableDigest(next)===stableDigest({...old,contextBytes:next.contextBytes,revision:next.revision})
+   if(!onlyRaisedBudget){next.epoch++;this.bump(next.tenantId)}
+   this.store.put('management-scope',next.id,next);return next
   }
   if(x.action==='entry.bind'){
    const scope=this.scope(x.scopeId),source=this.config.sources.find(s=>s.id===x.sourceId)

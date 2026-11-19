@@ -280,6 +280,19 @@ it('C05 enforces byte budgets without truncating the required request',()=>{
  expect(()=>f.memory.build(f.context(),{request:'字'.repeat(100000)},'api')).toThrow('budget')
  const p=f.memory.build(f.context(),{request:'keep'},'api');expect(JSON.parse(p.input).request).toBe('keep');expect(p.manifest.bytes).toBe(Buffer.byteLength(p.input))
 })
+it.each(['lower budget','change access'] as const)('preserves a saved context across a budget increase and invalidates it on %s',change=>{
+ const f=fixture(),c=f.context(),packet=f.memory.build(c,{request:'Continue reading the file'},'router')
+ const {revision,epoch,routerId,...scope}=f.scopes.scope(c.route.scopeId)
+ const raised={...scope,contextBytes:scope.contextBytes+1_000_000}
+ const command={action:'scope.put',operationId:'raise-context',expectedRevision:revision,scope:raised}
+ const saved=f.scopes.command(command)
+ expect(saved).toMatchObject({revision:revision+1,epoch,routerId,contextBytes:raised.contextBytes})
+ expect(f.scopes.command(command)).toEqual(saved)
+ expect(()=>f.memory.validate(packet.manifest)).not.toThrow()
+ const next=change==='lower budget'?scope:{...raised,contextBytes:raised.contextBytes+1_000_000,workerIds:[]}
+ f.scopes.command({...command,operationId:'next-change',expectedRevision:revision+1,scope:next})
+ expect(()=>f.memory.validate(packet.manifest)).toThrow('expired')
+})
 it('C05 explicit budget rebuild retains task, pending inputs, backend and effect receipts without scheduling work',async()=>{
  const f=fixture();f.store.close();stores.splice(stores.indexOf(f.store),1)
  const h=new Runtime(f.config,{model:{async run(){throw Error('Rebuild must not invoke a model')}}});hosts.push(h)

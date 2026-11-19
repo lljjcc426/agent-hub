@@ -12,6 +12,7 @@ import type {Runtime} from './runtime.ts'
 import type {ToolConnection} from './connector-config.ts'
 import type {ToolSpec} from './model.ts'
 import type {ToolResult} from './chat-permissions.ts'
+import {remoteCommitHistory,type CommitHistory} from './chat-commit-trail.ts'
 
 const mcpName={
  create_pull:'create_pull_request',update_pull:'update_pull_request',review_pull:'pull_request_review_write',
@@ -166,6 +167,27 @@ export class GithubConnector {
    if(statuses.includes('"status":"auth_required"'))this.authFailure={id:used.id,status:'auth_required'}
   }
   return result
+ }
+ async commitHistory(repository:string,requested:string|undefined,check:()=>void,signal:AbortSignal):Promise<CommitHistory>{
+  check()
+  const access=this.access(repository)
+  const root='repos/'+repository
+  const get=(path:string)=>this.reader.get(root+path,access.token,signal)
+  const [metadata,rawBranches]=await Promise.all([get(''),get('/branches?per_page=60')])
+  if(typeof metadata?.default_branch!=='string'||!Array.isArray(rawBranches))throw new GithubError('unavailable')
+  const heads=new Map<string,string>(rawBranches.flatMap(item=>typeof item?.name==='string'&&typeof item.commit?.sha==='string'
+    ? [[item.name,item.commit.sha]] : []))
+  const branches=[...new Set<string>([metadata.default_branch,...heads.keys()])]
+  const branch=requested&&branches.includes(requested)?requested:metadata.default_branch
+  const head=heads.get(branch)
+  const raw=await get('/commits?'+new URLSearchParams({sha:head??branch,per_page:'60'})).catch(error=>{
+   if(error instanceof GithubError&&error.code==='conflict')return []
+   throw error
+  })
+  check()
+  this.live(access)
+  if(!Array.isArray(raw))throw new GithubError('unavailable')
+  return {branch,branches,...remoteCommitHistory(raw,head)}
  }
  async prepare(name:'github_write'|'github_git',input:unknown,workspace?:string,signal?:AbortSignal):Promise<Plan>{
   if(name==='github_git'){

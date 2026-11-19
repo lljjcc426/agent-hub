@@ -1,0 +1,54 @@
+.chat-run-thinking.roppo-ui {
+  max-width: min(100%, 31rem);
+  background: transparent;
+}
+.task-run-sequence {
+  margin-block: 0 12px;
+  min-width: 0;
+}
+.task-run-sequence-toggle.task-run-record {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  background: var(--rp-soft);
+  text-align: start;
+}
+.task-run-sequence .rv-sequence {
+  margin-top: 6px;
+  --rv-gutter: 40px;
+  --rv-lane-size: 63px;
+}
+.task-run-sequence .rv-sequence-scroll {
+  max-height: min(48dvh, 460px);
+}
+.task-run-sequence .rv-participants {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--rp-panel);
+}
+.task-run-sequence .rv-participant { min-width: 52px; }
+.task-run-sequence .task-run-note { padding: 9px 4px 0; }
+.commit-tray-content {
+  padding: 10px 11px 12px;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.commit-tray-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.commit-tray-controls h3 { margin: 0; font-size: 13px; }
+.commit-tray-controls .rp-select-field { min-width: 0; max-width: 75%; }
+.commit-tray-content .pending-empty { padding: 8px 2px 10px; }
+.commit-tray-content .pending-empty a { text-decoration: underline; text-underline-offset: .2em; }
+.commit-tray-content .rv-commit-trail { --rv-commit-row-h: 34px; }
+.commit-tray-content .rv-commits-scroll { max-height: min(44dvh, 330px); }
+.commit-tray-repository {
+  margin: -3px 0 7px;
+  color: var(--rp-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}

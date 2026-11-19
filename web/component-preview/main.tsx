@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
+  Activity,
   ArrowDownToLine,
   ArrowUpRight,
   FileText,
@@ -52,11 +53,13 @@ import './preview.css'
 import { sampleSchedule } from './schedule.ts'
 import { nextTime } from '../../src/schedule-calendar.ts'
 import { AgentGallery } from './agent-gallery.tsx'
+import { RunGallery } from './run-gallery.tsx'
 import { DeliveredFileExample, DeliveryExample, sampleWorkbook, type ExampleReview } from './delivery.tsx'
 
 const pages = [
   { id: 'overview', title: '总览', icon: LayoutGrid },
   { id: 'agents', title: 'Agent 组件', icon: Workflow },
+  { id: 'run', title: '运行过程', icon: Activity },
   { id: 'basics', title: '基础控件', icon: SlidersHorizontal },
   { id: 'navigation', title: '导航与布局', icon: PanelsTopLeft },
   { id: 'chat', title: '对话', icon: MessageSquare },
@@ -365,6 +368,7 @@ function App() {
               </div>
             )}
             {page === 'agents' && <AgentGallery delivery={deliveryExample} />}
+            {page === 'run' && <RunGallery />}
             {page === 'basics' && <div className="dedicated solo">{basics()}</div>}
             {page === 'navigation' && (
               <div className="dedicated">

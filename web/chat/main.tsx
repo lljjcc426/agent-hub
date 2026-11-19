@@ -32,6 +32,7 @@ import {
   FileText,
   PanelRight,
   Inbox,
+  GitCommitHorizontal,
   Menu,
   Settings,
   X,
@@ -51,6 +52,10 @@ import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
 import {ComposerControls} from './composer-actions.tsx';
+import {ChatTray} from '../ui/pending-requests.tsx';
+import {ChatRunThinking} from './run-thinking.tsx';
+import type {GetCommitHistory} from './commit-trail-panel.tsx';
+import './run-components.css';
 import {ContextCard, useCurrentContext} from './context-card.tsx';
 import {ToolTrace} from './tool-trace.tsx';
 import '../ui/theme.css';
@@ -69,6 +74,7 @@ const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({de
 const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
 const UsageStatisticsPage = lazy(() => import("./usage-statistics.tsx").then(module => ({default: module.UsageStatisticsPage})));
+const CommitTrailPanel=lazy(()=>import("./commit-trail-panel.tsx"));
 const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDetail})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
@@ -651,6 +657,16 @@ function Chat(p: ChatProps) {
   const configuring = !route.startsWith("/chat");
   const [trayOpen,setTrayOpen]=useState(()=>read('roppo.chat.pendingTray')==='open');
   const trayButton=useRef<HTMLButtonElement>(null);
+  const [activityTrayOpen,setActivityTrayOpen]=useState(false);
+  const activityButton=useRef<HTMLButtonElement>(null);
+  const activityOpener=useRef<HTMLElement|null>(null);
+  const loadCommitHistory=useCallback<GetCommitHistory>((target,signal)=>{
+    const query=new URLSearchParams();
+    if(id)query.set('conversation',id);
+    if(target.repository)query.set('repository',target.repository);
+    if(target.branch)query.set('branch',target.branch);
+    return api('/commit-trail?'+query,undefined,'GET',signal);
+  },[id]);
   const requestedItem=chatLocation(route.slice(route.indexOf('#')));
   const linkedItem=requestedItem?.conversation===id ? requestedItem?.item : undefined;
   const linkOrigin=useRef<HTMLAnchorElement|null>(null);
@@ -677,6 +693,12 @@ function Chat(p: ChatProps) {
     if(target && document.activeElement!==target)requestAnimationFrame(()=>target.focus({preventScroll:true}));
     linkOrigin.current=null;
   };
+  function closeActivityTray(restoreFocus=true){
+    setActivityTrayOpen(false);
+    const origin=activityOpener.current;
+    activityOpener.current=null;
+    if(restoreFocus)(origin?.isConnected?origin:activityButton.current)?.focus({preventScroll:true});
+  }
   const [resources, setResources] = useState(() =>
     initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
   );
@@ -715,6 +737,7 @@ function Chat(p: ChatProps) {
   const creating = useRef(false);
   const choosePanel = async (next: ResourceKind | null, url?: string) => {
     if(next&&panelOverlay&&trayOpen)changeTray(false);
+    if(next&&panelOverlay&&activityTrayOpen)closeActivityTray(false);
     setSelectedTask(null);
     if (next === "browser" && !id) {
       if (creating.current) return;
@@ -1204,6 +1227,8 @@ function Chat(p: ChatProps) {
       if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
         if (menu) {
           closeNavigation();
+        } else if (activityTrayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
+          closeActivityTray();
         } else if (panel && overview && selectedTask && !configuring) {
           backToTasks();
         } else if (trayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
@@ -1217,7 +1242,7 @@ function Chat(p: ChatProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, configuring, panelExpanded, overview, selectedTask]);
+  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, activityTrayOpen, configuring, panelExpanded, overview, selectedTask]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1231,8 +1256,20 @@ function Chat(p: ChatProps) {
   const trayPresence = usePanelPresence<NonNullable<typeof trayView>, HTMLDivElement>(trayView, '#pending-tray');
   const displayedTray = trayPresence.view;
   const displayedPendingItem = displayedTray?.linkedItem;
+  const activityTrayVisible=activityTrayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
+  const activityPresence=usePanelPresence<string,HTMLDivElement>(activityTrayVisible ? id??'new' : null,'#activity-tray');
+  useEffect(()=>{
+    if(activityTrayVisible)document.getElementById('activity-tray')?.focus({preventScroll:true});
+  },[activityTrayVisible]);
+  const openActivityTray=(origin:HTMLElement|null)=>{
+    if(trayOpen)changeTray(false);
+    if((panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+    activityOpener.current=origin;
+    setActivityTrayOpen(true);
+  };
   useEffect(()=>{
     if(linkedItem){
+      closeActivityTray(false);
       changeTray(true);
       if((panelOverlay||panelExpanded)&&panel)void choosePanel(null);
     }else if(previousLinkedItem.current){
@@ -1243,6 +1280,7 @@ function Chat(p: ChatProps) {
   },[linkedItem]);
   const toggleTray=()=>{
     linkOrigin.current=null;
+    if(!trayVisible)closeActivityTray(false);
     if(!trayVisible&&(panelOverlay||panelExpanded)&&panel)void choosePanel(null);
     changeTray(!trayVisible);
     if(!trayVisible)requestAnimationFrame(()=>document.getElementById('pending-tray')?.focus({preventScroll:true}));
@@ -1430,6 +1468,12 @@ function Chat(p: ChatProps) {
                     title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
                     <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
                   </button>
+                  <button ref={activityButton} type="button" className="icon-button"
+                    aria-label={L('Work activity','工作动态')} title={L('Work activity','工作动态')}
+                    aria-expanded={activityTrayVisible} aria-controls="activity-tray"
+                    onClick={()=>activityTrayVisible?closeActivityTray():openActivityTray(activityButton.current)}>
+                    <GitCommitHorizontal size={19} aria-hidden="true"/>
+                  </button>
                   <button
                     ref={teamButton}
                     className={"icon-button" + (panel ? " selected" : "")}
@@ -1453,6 +1497,16 @@ function Chat(p: ChatProps) {
                   if('messageId' in card)void locateMessage(card.messageId,card.id);
                   else void locateMessage(card.id);
                 }}/></div>}
+                {activityPresence.view!==null&&<div ref={activityPresence.ref} className="tray-presence"
+                  data-closing={activityPresence.closing||undefined} inert={activityPresence.closing} aria-hidden={activityPresence.closing||undefined}>
+                  <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close work activity','关闭工作动态')} onClick={()=>closeActivityTray()}/>
+                  <ChatTray id="activity-tray" heading={L('Work activity','工作动态')} icon={<GitCommitHorizontal size={17} aria-hidden="true"/>}
+                    closeLabel={L('Hide work activity','隐藏工作动态')} close={()=>closeActivityTray()}>
+                    <Suspense fallback={<p className="pending-empty" role="status">{L('Loading commits…','正在读取提交记录…')}</p>}>
+                      <CommitTrailPanel key={activityPresence.view} load={loadCommitHistory} active={!activityPresence.closing} locale={lang} L={L}/>
+                    </Suspense>
+                  </ChatTray>
+                </div>}
                 <ThreadPrimitive.Root
                   onClickCapture={event=>{
                     const target=event.target;
@@ -1494,6 +1548,8 @@ function Chat(p: ChatProps) {
                         <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
                         <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                       </div>)}
+                      {snapshot && snapshot.conversation.id===id && connected && !readonly && !around && !configuring && run &&
+                        <ChatRunThinking key={run.id} snapshot={snapshot} L={L}/>}
                       {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}
@@ -1522,7 +1578,7 @@ function Chat(p: ChatProps) {
                       <ComposerControls visible={!configuring} L={L} sending={outstanding?.stage==='sending'} router={currentRouter.label}
                         model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
-                        onContext={() => revealCard('context')} saveMode={p.saveApprovalMode}
+                        onContext={() => revealCard('context')} onCommitTrail={openActivityTray} saveMode={p.saveApprovalMode}
                         onModelSaved={id ? refresh : p.refreshReady}
                         onEnter={text => {
                           if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }

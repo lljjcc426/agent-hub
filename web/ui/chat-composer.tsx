@@ -8,7 +8,7 @@ import type { CurrentContext } from '../chat/context-card.tsx'
 import { finishLayerExit } from './overlays.tsx'
 import '../chat/composer-controls.css'
 
-type Subpage = Exclude<ChatCommand, 'attach'>
+type Subpage = Exclude<ChatCommand, 'attach' | 'commits'>
 type Source = Subpage | 'slash' | 'plus'
 type Menu = { source: Source; page: Subpage | 'commands'; query: string }
 
@@ -23,12 +23,13 @@ export type ComposerActionsProps = {
   L: Localize; visible: boolean; sending: boolean; mode?: Mode; usage: CurrentContext
   router: string; model?: string; modelBusy: boolean; uploadDisabled: boolean
   onContext: () => void; saveMode: (next: Mode) => Promise<void>; onModelSaved: () => Promise<void>
+  onCommitTrail?: (opener: HTMLElement | null) => void
   onEnter: (text: string) => void
 }
 export type TextInputProps = Omit<ComponentPropsWithRef<'textarea'>, 'style'>
 
 export function ChatComposer({ L, visible, sending, mode, usage, router, model, modelBusy, uploadDisabled,
-  onContext, saveMode, onModelSaved, onEnter, Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
+  onContext, saveMode, onModelSaved, onCommitTrail, onEnter, Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
   Input?: ComponentType<TextInputProps> | 'textarea'; value?: string; canSend: boolean
   setText: (text: string) => void; onAttach: () => void; onSend: () => void; modelStore?: ModelConnectionStore
 }) {
@@ -45,7 +46,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   const slashList = source === 'slash' && page === 'commands'
   const slash = slashList && !closing
   const nested = page !== 'commands' && (source === 'slash' || source === 'plus')
-  const items = matchingCommands(menu?.query ?? '', L)
+  const items = matchingCommands(menu?.query ?? '', L, !!onCommitTrail)
   const readout = windowReadout(usage, L)
   const modelLabel = model || L('Model', '模型')
   const policyGroup = L('Approval policy', '审批策略')
@@ -80,7 +81,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   }
   function updateQuery(text: string) {
     const query = /^\/[^\s/]*$/u.test(text) ? text.slice(1).toLowerCase() : null
-    if (query === null || !matchingCommands(query, L).length) {
+    if (query === null || !matchingCommands(query, L, !!onCommitTrail).length) {
       if (menu) close(false)
       return
     }
@@ -94,6 +95,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     if (command === 'attach') {
       close()
       onAttach()
+    } else if (command === 'commits') {
+      close(false)
+      onCommitTrail?.(opener.current)
     } else show({ ...menu, page: command })
   }
   function moveInMenu(event: KeyboardEvent) {

@@ -566,6 +566,13 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/chat/memory'&&req.method==='GET'){send(res,200,memoryWorkspace(runtime,owner));return}
       if(path==='/api/chat/memory'&&req.method==='POST'){send(res,200,await changeMemoryWorkspace(runtime,owner,await body(req)));return}
       if(path==='/api/chat/readiness'&&req.method==='GET'){send(res,200,{...runtime.chat.readiness(),...(options.configurationPreview?{ready:false,code:'preview_restricted'}:{}),user:account.status(req).user??null});return}
+      if(path==='/api/chat/commit-trail'&&req.method==='GET'){
+        const input=z.object({conversation:z.string().uuid().optional(),repository:z.string().max(250).optional(),branch:z.string().max(300).optional()}).parse(Object.fromEntries(query))
+        const controller=new AbortController()
+        res.once('close',()=>controller.abort())
+        res.setHeader('cache-control','private, no-store')
+        send(res,200,await runtime.chat.commitHistory(owner,input,()=>requireCurrentOperator(req),controller.signal));return
+      }
       if(path==='/api/chat/space'){
         if(req.method==='GET'){send(res,200,runtime.chat.space(owner));return}
         if(req.method==='POST'){send(res,200,runtime.chat.space(owner,true));return}

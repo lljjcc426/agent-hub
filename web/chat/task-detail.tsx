@@ -6,6 +6,7 @@ import { taskStatus } from '../ui/task-activity.tsx'
 import { AgentIdentity } from '../ui/work.tsx'
 import type { Localize } from './composer-commands.tsx'
 import { toolLabel, toolStatus } from './tool-trace.tsx'
+import { TaskHandoffSequence } from './task-handoff-sequence.tsx'
 
 type Tab = 'progress' | 'tools'
 type LoadTask = (id: string, signal: AbortSignal) => Promise<TaskExecutionDetail>
@@ -163,6 +164,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
         <strong>{duration(span.to-span.from)}</strong>
       </> : <span>{L('No recorded duration','暂无耗时记录')}</span>}
     </div>
+    <TaskHandoffSequence record={record} L={L} agentName={agentName}/>
     <div className="team-tabs task-run-tabs" role="tablist" aria-label={L('Task record tabs','执行详情分组')} data-tab={tab} onKeyDown={keys}>
       <button id="task-run-tab-progress" role="tab" type="button" aria-controls="task-run-progress" aria-selected={tab==='progress'}
         tabIndex={tab==='progress'?0:-1} onClick={() => setTab('progress')}><Clock3 size={16} aria-hidden="true"/>{L('Progress','进度')}</button>

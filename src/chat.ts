@@ -35,6 +35,8 @@ import {ChatError} from './chat-errors.ts'
 import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentReaction,type ChatQuote,type ChatQuoteView} from './chat-interactions.ts'
 import {taskActivities,type ChatTask} from './chat-task-activity.ts'
 import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
+import {basename} from 'node:path'
+import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 export {ChatError} from './chat-errors.ts'
 
 interface Conversation {
@@ -955,6 +957,29 @@ export class ChatSessions {
       throw new ChatError('task_missing','Task not found in this conversation.',404)
     const planTurn=plan&&this.turnPlan(c.id,plan.runId)===plan.id?plan.runId:undefined
     return taskExecutionDetail(this.host.store,c.id,activity,{plan,planTurn,goalCreatedAt:goal?.at},visible)
+  }
+  async commitHistory(owner:string,input:{conversation?:string;repository?:string;branch?:string},
+    authorize:()=>void,signal:AbortSignal):Promise<ChatCommitHistory>{
+    const conversation=input.conversation ? this.get(input.conversation,owner) : undefined
+    const source=conversation
+      ? this.host.config.sources.find(s=>s.id===conversation.sourceId&&s.enabled&&s.kind==='local'&&s.allowedActors.includes(conversation.actor))
+      : this.source()?.source
+    const local=source && await commitRepository(source.cwd,signal)
+    const github=this.host.github.snapshot()
+    const remote=this.host.config.work.network && 'repositories' in github && github.status==='connected' ? github.repositories : []
+    const repositories=[
+      ...(local ? [{id:'local',label:source?.label || basename(local)}] : []),
+      ...remote.map(name=>({id:'github:'+name,label:name})),
+    ]
+    const repository=input.repository ?? repositories[0]?.id
+    if(!repository)return {repositories}
+    if(!repositories.some(item=>item.id===repository))throw new ChatError('commit_repository_missing','Repository not available in this conversation.',404)
+    const history=repository==='local'
+      ? await localCommitHistory(local!,input.branch,signal)
+      : await this.host.github.commitHistory(repository.slice('github:'.length),input.branch,authorize,signal)
+    authorize()
+    if(conversation)this.get(conversation.id,owner)
+    return {repositories,repository,...history}
   }
   async files(id:string,owner:string,input:{ticket?:string;path?:string;kind?:'directory'|'files';offset?:number;cursor?:string}={}){
     const c=this.get(id,owner),tasks=this.tasks(c).filter(t=>this.host.store.get<Run>('run',t.id))

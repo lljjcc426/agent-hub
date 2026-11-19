@@ -8,6 +8,7 @@ export const openCodeBuiltins = [
 ] as const
 
 const networkTools = new Set(['bash','webfetch','websearch','lsp'])
+export const openCodeReadOnlyTools:ReadonlySet<string>=new Set(['read','glob','grep','websearch','webfetch','webfetch_batch'])
 
 export function supportsOpenCodeTools(manifest: {id: string; version: string}, minimumMinor = 2): boolean {
   const [major = 0, minor = 0] = manifest.version.split('.').map(Number)

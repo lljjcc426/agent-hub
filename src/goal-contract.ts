@@ -1,5 +1,6 @@
 import {isAbsolute,normalize} from 'node:path'
 import {z} from 'zod'
+import type {ExecutionFailure} from './execution-failure.ts'
 
 export const goalDetailsSchema=z.object({nonGoals:z.array(z.string().min(1).max(4000)).max(30).optional(),inputs:z.array(z.string().min(1).max(4000)).max(30).optional(),deadline:z.string().min(1).max(1000).optional()}).strict()
 export type GoalDetails=z.infer<typeof goalDetailsSchema>
@@ -27,7 +28,14 @@ export interface GoalNode extends z.infer<typeof nodeSchema> {
  ticketId?:string;delegationId?:string;state:'pending'|'running'|'verifying'|'passed'|'held'|'waiting_dependency';roundId?:string;
  pausedAssignment?:string;repairs:number;recoveries:number;repairStart?:number;refreshFrom?:string;retryAt?:number;failure?:GoalFailure;reason?:string;
 }
-export interface GoalFailure {kind:'transient'|'quota'|'environment'|'uncertain'|'quality'|'protocol';reason:string;retryAt?:number}
+export interface GoalFailure {kind:'transient'|'quota'|'environment'|'uncertain'|'unconfirmed_effect'|'quality'|'protocol';reason:string;retryAt?:number}
+export function classifyExecutionFailure(failure:ExecutionFailure,reason:string,now:number,attempt:number):GoalFailure {
+ if(failure.code==='rate_limited'||failure.code==='transient'){
+  const delay=Math.max(failure.retryAfterMs??0,Math.min(60_000,2_000*2**attempt))
+  return {kind:failure.code==='rate_limited'?'quota':'transient',reason,retryAt:now+delay}
+ }
+ return {kind:'environment',reason}
+}
 export function classifyGoalFailure(error:string,now:number,attempt:number):GoalFailure {
  const reason=error.slice(0,1000)
  if(/uncertain|reconciliation|could not be confirmed|interrupted|host stopped/i.test(error))return {kind:'uncertain',reason}

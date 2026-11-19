@@ -9,7 +9,9 @@ export const webPageCheckpointSchema=z.object({
  sourceBytes:z.number().int().nonnegative(),excerpts:z.array(z.string().max(1800)).max(4),
 }).strict()
 export type WebPageCheckpoint=z.infer<typeof webPageCheckpointSchema>
-export interface WebBatchReplay {threadId:string;turnId:string;callId:string}
+export interface WebBatchReplayRef {threadId:string;turnId:string;callId:string;callIds?:string[]}
+export interface WebBatchReplay extends WebBatchReplayRef {previous?:WebBatchReplayRef[]}
+export const maxWebReplayPages=toolParallelism*4
 
 export function webBatchUrls(value:unknown){
  if(!Array.isArray(value)||!value.length||value.length>toolParallelism)return

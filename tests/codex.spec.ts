@@ -4,6 +4,7 @@ import {join} from 'node:path'
 import {it,expect,afterEach} from 'vitest'
 import {CodexModel,nativeProtocolHistory} from '../src/codex.ts'
 import {scopeBudget} from '../src/context-budget.ts'
+import type {BackendIssue} from '../src/backends/plugin-contract.ts'
 const roots:string[]=[]
 const originalEnvFile=process.env.AGENTHUB_ENV_FILE
 afterEach(()=>{for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true});if(originalEnvFile===undefined)delete process.env.AGENTHUB_ENV_FILE;else process.env.AGENTHUB_ENV_FILE=originalEnvFile})
@@ -101,6 +102,33 @@ it('binds native output to the acknowledged turn even when notifications share i
  await expect(model.run({cwd:root,instructions:'test',input:'test',schema:{},onOutput:e=>events.push(e)})).resolves.toMatchObject({text:'correct',turnId:'current'})
  expect(events.filter(e=>e.type==='delta').map(e=>e.text).join('')).toBe('correct')
  expect(JSON.stringify(events)).not.toContain('stale')
+})
+
+it.each([false,true])('keeps typed Codex errors across stdout framing and checks native effects (write observed: %s)',async(writeObserved)=>{
+ const root=mkdtempSync(join(tmpdir(),'native-typed-failure-'));roots.push(root)
+ const binary=join(root,'codex'),issues:BackendIssue[]=[]
+ const program=[
+  '#!'+process.execPath,
+  'const send = value => process.stdout.write(JSON.stringify(value) + "\\n")',
+  'const event = (method, params) => ({method, params:{threadId:"thread",turnId:"current",...params}})',
+  'require("node:readline").createInterface({input:process.stdin}).on("line", line => {',
+  ' const message = JSON.parse(line); if (!message.id) return',
+  ' if (message.method === "config/read") return send({id:message.id,result:{config:{mcp_servers:{},plugins:{}}}})',
+  ' if (message.method === "mcpServerStatus/list") return send({id:message.id,result:{data:[]}})',
+  ' if (message.method !== "turn/start") return send({id:message.id,result: message.method === "thread/start" ? {thread:{id:"thread"}} : {}})',
+  ' send(event("error",{turnId:"stale",error:{codexErrorInfo:"unauthorized"},willRetry:false}))',
+  ' send({id:message.id,result:{turn:{id:"current"}}})',
+  ' send(event("error",{error:{codexErrorInfo:{responseStreamConnectionFailed:{httpStatusCode:503}}},willRetry:true}))',
+  ...(writeObserved?[' send(event("item/started",{item:{type:"commandExecution",id:"prior-write"}}))']:[]),
+  ' send(event("turn/completed",{turn:{id:"current",status:"failed",error:{codexErrorInfo:"rateLimitExceeded",message:"provider prose"}}}))',
+  '})',
+ ].join('\n')
+ writeFileSync(binary,program+'\n',{mode:0o700})
+ const model=new CodexModel({codex:binary,effort:'medium',turnTimeoutMs:5000})
+ const error=await model.run({cwd:root,role:'worker',managed:true,instructions:'test',input:'test',schema:{},onBackendIssue:issue=>issues.push(issue)}).catch(error=>error)
+ expect(error).toMatchObject({code:'rate_limited',diagnostic:{reason:'provider_status'}})
+ expect(error.diagnostic.effectFree).toBe(writeObserved?undefined:true)
+ expect(issues).toEqual([{code:'transient',willRetry:true,httpStatus:503}])
 })
 
 it('deduplicates native step identity across repeated snapshots and excludes other threads and stale turns',async()=>{

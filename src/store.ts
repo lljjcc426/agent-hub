@@ -20,6 +20,7 @@ export interface Run {
   ticketId: string; assignmentId: string; threadId?: string; cwd: string
   phase: 'idle' | 'starting' | 'running' | 'background' | 'interrupted' | 'uncertain' | 'human' | 'delivering' | 'merging'
   turnId?: string; prepared?:boolean; waitingForWriter?:boolean; error?: string; result?: string
+  failure?:import('./execution-failure.ts').ExecutionFailure
   toolsVersion?:number;toolsDigest?:string;model?:string;backendId?:string;backendKind?:string
   agentOptions?:import('./backend-config.ts').AgentOptions;migration?:string
   rebuild?:string

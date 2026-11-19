@@ -57,7 +57,17 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
     if((response.statusCode??500)>=300&&(response.statusCode??500)<400){response.resume();fatal(new BackendAdapterError('provider_rejected'));deny();return}
     if((response.statusCode??500)>=400){
      let errorBody='',finished=false
-     const finish=()=>{if(finished)return;finished=true;clearTimeout(timer);fatal(new BackendAdapterError(cliFailure(String(response.statusCode)+' '+errorBody)));deny()}
+     const finish=()=>{
+      if(finished)return
+      finished=true;clearTimeout(timer)
+      const httpStatus=response.statusCode??502
+      const classified=response.headers['x-roppo-provider-code']==='quota_exhausted'&&httpStatus===429?'quota_exhausted':cliFailure(httpStatus+' '+errorBody)
+      const code=classified==='process_failed'&&(httpStatus===408||httpStatus>=500)?'transient':classified
+      const retryHeader=response.headers['retry-after']
+      const retry=retryHeader===undefined?NaN:/^\d+$/.test(retryHeader)?Number(retryHeader)*1000:Date.parse(retryHeader)-Date.now()
+      const retryAfterMs=Number.isFinite(retry)?Math.min(86_400_000,Math.max(0,retry)):undefined
+      fatal(new BackendAdapterError(code,{operation:'run',reason:'provider_status',httpStatus,retryAfterMs}));deny()
+     }
      const timer=setTimeout(finish,5000);timer.unref()
      response.on('data',chunk=>{errorBody=(errorBody+chunk.toString()).slice(0,64000)})
      response.once('end',finish);response.once('error',finish);response.once('close',finish)

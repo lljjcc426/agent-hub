@@ -25,10 +25,11 @@ import { Store, type Run, type Job } from './store.ts'
 import { makePolicy, makeScope } from './policy.ts'
 import { UncertainDelivery, incomingSchema, bodyDigest,stableDigest, type Source, type Incoming, type SourceChange } from './sources.ts'
 import type { Config } from './config.ts'
-import {ChatPermissions,routerRisk,permissionInstructions,type ToolResult} from './chat-permissions.ts'
+import {ChatPermissions,routerRisk,permissionInstructions,unconfirmedEffectMessage,type ToolResult} from './chat-permissions.ts'
 import { Approvals,withinNativeTask } from './approvals.ts'
 import type { NativeControl } from './model.ts'
 import {TransientModelError} from './model.ts'
+import {backendFailure,safeWorkerFailure} from './execution-failure.ts'
 import { Settings } from './settings.ts'
 import {compose,promptStatus,digest} from './prompts.ts'
 import {composeExecutionPrompt,previewInstructions} from './execution-prompts.ts'
@@ -312,9 +313,13 @@ export class Runtime {
           this.engine.report(ticket.id,{state:'waiting',summary:'Waiting for the saved permission decision',question:null})
           continue
         }
-        const recover=!this.watchdog.recovering(run.ticketId)&&config.work.autoRecover&&['running','starting','background','interrupted'].includes(run.phase)&&ticket&&!ticket.ended
+        const unconfirmed=this.permissions.hasUnconfirmedEffect(run.ticketId)
+        const native=run.threadId?this.store.get<{pluginId:string;state:string}>('backend-plugin-thread',run.threadId):undefined
+        const managedOpenCode=native?.pluginId==='opencode-cli'&&native.state!=='completed'&&this.goals.forTask(run.ticketId)?.managed
+        const recover=!unconfirmed&&!managedOpenCode&&!this.watchdog.recovering(run.ticketId)&&config.work.autoRecover&&['running','starting','background','interrupted'].includes(run.phase)&&ticket&&!ticket.ended
         if (ticket && !ticket.ended && runningAssignment(ticket)) {
-          if(recover)this.engine.report(ticket.id,{state:'blocked',summary:'Execution interrupted; resuming with retained history',question:null})
+          if(unconfirmed)this.engine.report(ticket.id,{state:'blocked',summary:unconfirmedEffectMessage,question:null})
+          else if(recover||managedOpenCode)this.engine.report(ticket.id,{state:'blocked',summary:'Execution interrupted; checking retained history for safe recovery',question:null})
           else this.reportWork(ticket.id, { state: 'blocked', summary: 'Execution interrupted; reconciliation required', question: ticket.attention?.question??'Inspect the native thread and workspace, then retry or take over.',...(ticket.attention?.triggerId?{askedBy:ticket.attention.triggerId}:{}) })
         }
         if(recover){
@@ -371,6 +376,12 @@ export class Runtime {
   /** Keep reports and the messages requiring a person's attention in one durable transaction. */
   private reportWork(ticketId:string,value:WorkerReport & {decision?:DecisionTerms|null},reply?:string,accepted=false,files?:string[]):void {
     this.store.atomic(()=>{
+      if(value.state==='ready'&&this.permissions.hasUnconfirmedEffect(ticketId)){
+        if(accepted)throw Error(unconfirmedEffectMessage)
+        if(!this.verification.capture(ticketId,value,reply,files))
+          this.engine.report(ticketId,{state:'blocked',summary:unconfirmedEffectMessage,question:null})
+        return
+      }
       if(value.state==='ready')this.delegation.captureExecution(ticketId)
       if(!accepted&&this.verification.capture(ticketId,value,reply,files))return
       const publishedFiles=files?.length && this.chat.publishFiles(ticketId,files)
@@ -564,6 +575,12 @@ export class Runtime {
     let usingOpenCode=false
     request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools);this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
+    const onBackendIssue=request.onBackendIssue
+    request.onBackendIssue=issue=>{this.activity.issue(activity,issue);onBackendIssue?.(issue)}
+    if(this.model instanceof BackendRegistry){
+      const onNativeToolBatch=request.onNativeToolBatch
+      request.onNativeToolBatch=batch=>{this.activity.webBatch(context,activity,batch);onNativeToolBatch?.(batch)}
+    }
     if(this.model instanceof BackendRegistry){
       const progress=request.onProgress
       request.onProgress=event=>{
@@ -585,14 +602,16 @@ export class Runtime {
       ?Math.min(request.options?.maxToolCalls??backend.maxToolCalls,backend.limits?.maxToolCalls??Infinity)
       :request.options?.maxToolCalls
     request=withCodeMode(request,toolLimit)
+    let invokedEffect=false
     if(request.onTool){
-      const invoke=request.onTool,dispatch=new ToolDispatch(),{chatOpeningReady,signal}=request
+      const invoke=request.onTool,{chatOpeningReady,signal}=request,dispatch=new ToolDispatch(signal)
       request={...request,isReadOnlyTool:isParallelRead,onTool:async(name,args,id)=>{
         if(name!==chatOpeningTool.name&&chatOpeningReady&&!await chatOpeningReady()){
           return {success:false,contentItems:[{type:'inputText',text:'Publish chat_opening before executing this tool, then retry this call.'}]}
         }
         return dispatch.run(isParallelRead(name),()=>{
           signal?.throwIfAborted()
+          if(!isParallelRead(name))invokedEffect=true
           return name===codeModeTool.name?this.activity.tool(name,context,()=>invoke(name,args,id),activity):invoke(name,args,id)
         })
       }}
@@ -602,6 +621,7 @@ export class Runtime {
     let threadId=request.threadId
     const originalInput=request.input
     for(let attempt=0;;attempt++){
+      let activeTurn=false
       enforceBudget()
       this.usage.attempt(activity,attempt,'running')
       if(threadId||attempt>0)this.usage.update(activity,{sessionKey:threadId?stableDigest([request.backendId,threadId]):undefined})
@@ -614,6 +634,7 @@ export class Runtime {
           onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},
           onUsage:value=>{if(this.usage.record(activity,attempt,value)&&(role==='worker'||role==='router'))this.chat.usageChanged(activity);const g=project();if(g?.project?.policy.budget)this.goals.holdBudget(g);request.onUsage?.(value)},
           onThread:id=>{threadId=id;this.usage.update(activity,{sessionKey:stableDigest([request.backendId,id])});this.store.put('model-session',id,{threadId:id,cwd:request.cwd,ephemeral:request.ephemeral??false,activity,...context,scopeId,contextId:manifest?.id,at:Date.now()});request.onThread?.(id)},
+          onTurn:id=>{activeTurn=true;request.onTurn?.(id)},
         }
         const recordInput=role==='router'
           ? (prepared:ModelRequest)=>this.chat.recordContextInput(activity,attempt,prepared) : undefined
@@ -628,10 +649,14 @@ export class Runtime {
       catch(error){
         this.usage.attempt(activity,attempt,request.signal?.aborted?'interrupted':'failed')
         if(error instanceof ContextBudgetExceeded){this.store.put('context-rebuild',context.ticketId??activity,{...context,activity,threadId,scopeId,state:'held',reason:error.code,receipt:error.receipt,at:Date.now()});throw error}
-        if(request.signal?.aborted||attempt>=3||!(error instanceof TransientModelError)&&!/HTTP (408|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection reset|stream disconnected|temporar(?:y|ily)|error sending request/i.test(String(error)))throw error
+        const typed=backendFailure(error)
+        const transient=typed?typed.code==='transient':error instanceof TransientModelError||/HTTP (408|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection reset|stream disconnected|temporar(?:y|ily)|error sending request/i.test(String(error))
+        if(request.signal?.aborted||invokedEffect||attempt>=3||!transient||
+         typed&&(role==='worker'||activeTurn&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
+         (typed?.diagnostic?.retryAfterMs??0)>10_000)throw error
         this.store.audit({type:'model.retry',threadId,attempt:attempt+1,error:String(error).slice(0,300)})
         request.input=JSON.stringify({retry:attempt+1,notice:'Continue the same work after a transient provider failure. Inspect native history and retained managed jobs before repeating any action.',previousInput:originalInput})
-        await new Promise(resolve=>setTimeout(resolve,Math.min(10000,1000*2**attempt)))
+        await delay(Math.max(typed?.diagnostic?.retryAfterMs??0,1000*2**attempt),undefined,{signal:request.signal})
       }
     }
     }catch(error){this.usage.finish(activity,request.signal?.aborted?'interrupted':'failed');this.activity.finish(activity,request.signal?.aborted?'interrupted':'failed');throw error}
@@ -838,7 +863,7 @@ export class Runtime {
       this.pollSources()
       if(!this.paused)this.proactive.tick()
       await this.watchdog.advance()
-      if(!this.paused){this.webhooks.dispatch();this.webhooks.reconcile();await this.goals.advance();this.goals.tick();this.webhooks.flush()}
+      if(!this.paused){this.webhooks.dispatch();this.webhooks.reconcile();this.github.enqueueReadbacks();await this.goals.advance();this.goals.tick();this.webhooks.flush()}
       this.engine.evaluateDue()
       if(!this.paused)this.chat.flushReactions()
       reconsiderRouterFollowups(this)
@@ -910,6 +935,14 @@ export class Runtime {
   private async perform(job: Job,dispatch?:{profile:WorkerProfile;reserve:boolean}): Promise<void> {
     if(job.kind==='goal-replan'){if(await this.replanning.perform((job.payload as any).roundId)===false){this.store.jobState(job.id,'pending');return}}
     else if(job.kind==='goal-verify'){if(await this.verification.perform((job.payload as any).roundId)===false){this.store.jobState(job.id,'pending');return}}
+    else if(job.kind==='github-confirm'){
+      const {ticketId,permissionId}=job.payload as {ticketId:string;permissionId:string}
+      const outcome=await this.github.confirmTaskEffect(ticketId,permissionId)
+      if(outcome==='pending'&&job.attempts<3){
+        this.store.db.prepare("UPDATE jobs SET state='pending',attempts=?,next_at=? WHERE id=?").run(job.attempts+1,Date.now()+3000*2**job.attempts,job.id)
+        return
+      }
+    }
     else if(['router','router-admit','router-followup'].includes(job.kind))await this.coordinate(job)
     else if(job.kind==='router-batch')await this.proactive.evaluate((job.payload as any).batchId)
     else if(job.kind==='workflow-decision')await this.workflows.decideReply((job.payload as any).triggerId)
@@ -1342,9 +1375,10 @@ export class Runtime {
     this.controllers.set(ticket.id, controller)
     const live:LiveInputs={context:context?.manifest,assignmentId,inputs,offered:new Set(),accepting:true,retryAt:0,failures:0}
     this.liveInputs.set(ticket.id,live)
-    const run: Run = { ...saved, ticketId: ticket.id, assignmentId, cwd: saved?.cwd ?? source.cwd, phase: 'starting',...(dispatch?{workerId:dispatch.profile.id,interactiveReserve:dispatch.reserve}:{}) }
+    const run: Run = { ...saved, ticketId: ticket.id, assignmentId, cwd: saved?.cwd ?? source.cwd, phase: 'starting',error:undefined,failure:undefined,...(dispatch?{workerId:dispatch.profile.id,interactiveReserve:dispatch.reserve}:{}) }
     this.store.put('run', ticket.id, run)
     let eventAttempt:WorkerAttempt|undefined
+    let turnStarted=false,toolInvoked=false
     const persist = (committed=false) => {
       const current=this.store.tickets.get(ticket.id)
       if(!current||this.memory.cleanup.blocked('ticket',ticket.id,current)||latestAssignment(current)?.id!==assignmentId)return
@@ -1401,8 +1435,10 @@ export class Runtime {
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
       const permissionReceipts:ToolResult[]=[]
       for(const action of this.permissions.forWorker(ticket.id)){
-        if(action.phase==='approved'&&!action.actor.agentId)
+        if(action.phase==='approved'&&!action.actor.agentId){
+          toolInvoked=true
           permissionReceipts.push(await this.workerTools.call(owner,action.tool,action.args,action.id,attempt,controller.signal))
+        }
       }
       const result = await this.runModel({
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
@@ -1411,7 +1447,10 @@ export class Runtime {
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
         webFetchReplay:saved?.webFetchReplay,
         instructions:builtInChat?instructions+'\n'+permissionInstructions+' Effective mode: '+(this.chat.permissionActor(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId,ticket.id)?.mode??'ask')+'. Native permission requests defer the current attempt while the request is in Pending items; the provider withholds that attempt. Continue independent work. On a native_permission_decision input, repeat the exact native operation once if approved, or leave it undone if declined. Native questions likewise return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Only a recorded decline is a user refusal. Never retry a declined action.\nFor a requested file delivery, read the provided chatFiles paths for uploaded originals. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
-        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,attempt,controller.signal),onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
+        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>{
+          if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
+          return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal)
+        },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
         input: JSON.stringify({...(permissionReceipts.length?{permissionReceipts}:{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs: inputs.map(i => i.kind === 'trigger' ? { ...i, event: this.store.triggers.get(i.triggerId) } : i) }),
         signal: controller.signal,
         onHumanRequest:request=>{
@@ -1431,7 +1470,7 @@ export class Runtime {
         })},
         onThread: id => { delete run.error;run.toolsVersion=5;run.toolsDigest=toolsDigest; run.waitingForWriter=false; run.threadId = id; persist() },
         onModel:model=>{run.model=model;persist()},
-        onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
+        onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;turnStarted=true;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
       },latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId)
       delete run.webFetchReplay
       live.accepting=false
@@ -1550,12 +1589,14 @@ export class Runtime {
           return
         }
         await this.work.handoff(ticket.id,assignmentId)
-        run.phase = 'uncertain'; run.error = String(error).slice(0, 500)
+        run.failure=safeWorkerFailure(error,turnStarted,toolInvoked||this.permissions.hasUnconfirmedEffect(ticket.id))
+        run.phase = run.failure?'idle':'uncertain'; run.error = String(error).slice(0, 500)
         persist()
         const humanInputs=inputs.filter((i):i is Extract<TicketInput,{kind:'trigger'}>=>i.kind==='trigger'&&!!i.human&&!i.context)
         const apply=(receipt?:WorkerEventReceipt)=>{
           const previousMessages=new Set(this.store.deliveries().map(d=>d.id))
-          const attention=this.goals.awaitingReadRecovery(run)?{}:{
+          if(run.failure)this.engine.inputsDelivered(ticket.id,assignmentId,inputs.map(i=>i.id))
+          const attention=run.failure||this.goals.awaitingReadRecovery(run)?{}:{
             question:'Execution could not be confirmed. Review task records and the actual outcome before continuing.',
             ...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{})
           }
@@ -1802,6 +1843,7 @@ export class Runtime {
     if (this.controllers.has(id)) throw new Error('Wait for the current activation to stop')
     if (run?.phase === 'human') throw new Error('Return human control before retrying')
     this.store.atomic(() => {
+      if(this.permissions.hasUnconfirmedEffect(id))throw Error(unconfirmedEffectMessage)
       if (run) this.store.put('run', id, { ...run, phase: 'idle' })
       this.engine.retryTicket(id)
     })

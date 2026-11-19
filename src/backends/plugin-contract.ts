@@ -20,17 +20,25 @@ export const backendManifestSchema=z.object({
 }).strict()
 export type BackendManifest=z.infer<typeof backendManifestSchema>
 export type BackendCapabilities=z.infer<typeof backendCapabilitiesSchema>
-export const backendErrorCodes=['auth_required','provider_rejected','quota_exhausted','rate_limited','transient','cancelled','invalid_output','unsupported','process_failed','outcome_unknown','configuration_invalid','context_budget_exceeded'] as const
+export const backendErrorCodes=['auth_required','provider_rejected','quota_exhausted','rate_limited','transient','cancelled','invalid_output','unsupported','process_failed','outcome_unknown','configuration_invalid','context_budget_exceeded','read_loop'] as const
 export type BackendErrorCode=typeof backendErrorCodes[number]
 // Only bounded protocol metadata crosses the sandbox. Never forward stderr,
 // provider messages, tool arguments or credential-bearing exception text.
 export const backendDiagnosticSchema=z.object({
  operation:z.enum(['initialize','probe','run','history','purge','expose','catalog','control','tool','transport']),
- reason:z.enum(['exception','timeout','process_exit','spawn_error','rpc_rejected','repository_push_unconfirmed']),
+ reason:z.enum(['exception','timeout','process_exit','spawn_error','rpc_rejected','provider_status','repeated_read','repository_push_unconfirmed']),
  nativeMethod:z.enum(['initialize','account/read','thread/start','thread/resume','thread/read','thread/archive','thread/unarchive','thread/delete','thread/inject_items','turn/start','turn/steer','turn/interrupt','config/read','model/list']).optional(),
  rpcCode:z.number().int().optional(),exitCode:z.number().int().nullable().optional(),
+ httpStatus:z.number().int().min(400).max(599).optional(),
+ retryAfterMs:z.number().int().min(0).max(86_400_000).optional(),
+ effectFree:z.literal(true).optional(),
+ readOnlyHistory:z.literal(true).optional(),
 }).strict()
 export type BackendDiagnostic=z.infer<typeof backendDiagnosticSchema>
+export const backendIssueSchema=z.object({
+ code:z.enum(backendErrorCodes),willRetry:z.boolean(),httpStatus:backendDiagnosticSchema.shape.httpStatus,
+}).strict()
+export type BackendIssue=z.infer<typeof backendIssueSchema>
 // Goal recovery currently consumes durable error strings. Preserve the typed
 // failure's meaning there: an unknown effect must never look like poor output
 // and trigger a new plan/session that bypasses the original effect fence.
@@ -42,13 +50,14 @@ const recoveryMeaning:Partial<Record<BackendErrorCode,string>>={
  provider_rejected:'forbidden by provider',
  configuration_invalid:'invalid configuration or credentials',
  unsupported:'permission or capability unavailable',
+ read_loop:'repeated unsuccessful reads without new evidence',
 }
 export class BackendPluginError extends Error {
  constructor(readonly code:BackendErrorCode,readonly backendId:string,readonly diagnostic?:BackendDiagnostic){super('Execution backend '+backendId+': '+code+(recoveryMeaning[code]?' ('+recoveryMeaning[code]+')':'')+(diagnostic?' ['+diagnostic.operation+'/'+diagnostic.reason+(diagnostic.nativeMethod?'/'+diagnostic.nativeMethod:'')+']':''));this.name='BackendPluginError'}
 }
 export const backendEnvelope=z.discriminatedUnion('type',[
  z.object({type:z.literal('result'),id:z.number().int().positive(),result:z.unknown().optional(),error:z.object({code:z.enum(backendErrorCodes),diagnostic:backendDiagnosticSchema.optional()}).strict().optional()}).strict(),
- z.object({type:z.literal('event'),event:z.enum(['thread','turn','model','configuration','capabilities','progress','output','budget','contextReady','active','inputRead','usage']),value:z.unknown().optional()}).strict(),
+ z.object({type:z.literal('event'),event:z.enum(['thread','turn','model','configuration','capabilities','progress','issue','toolBatch','output','budget','contextReady','active','inputRead','usage']),value:z.unknown().optional()}).strict(),
  z.object({type:z.literal('request'),id:z.number().int().positive(),method:z.enum(['tool','human','retain']),params:jsonObject}).strict(),
 ])
 export const backendResult=z.object({threadId:z.string().min(1).max(1000),turnId:z.string().min(1).max(1000),text:z.string().min(1).max(8_000_000)}).strict()

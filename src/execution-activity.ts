@@ -2,6 +2,8 @@ import type {ToolTrace} from './tool-trace.ts'
 import {randomUUID} from 'node:crypto'
 import type {Store} from './store.ts'
 import {chatStatusSchema,type ChatStatus} from './chat-status.ts'
+import type {BackendIssue} from './backends/plugin-contract.ts'
+import type {NativeToolBatch} from './backends/native-tool-batch.ts'
 
 export interface ExecutionContext {ticketId?:string;workerId?:string;agentId?:string;sourceId?:string;triggerId?:string}
 export interface ExecutionCall extends ExecutionContext {
@@ -9,6 +11,8 @@ export interface ExecutionCall extends ExecutionContext {
  backend?:string;model?:string;startedAt:number;endedAt?:number
  state:'running'|'completed'|'failed'|'interrupted'
  action?:string;target?:string;trace?:ToolTrace;permission?:'pending'|'denied'|'uncertain'|'cancelled';status?:ChatStatus
+ backendIssue?:BackendIssue
+ webBatch?:NativeToolBatch
 }
 /** Execution metadata and explicit public status only; never copy prompts, arbitrary arguments, output or provider errors. */
 export class ExecutionActivity {
@@ -44,6 +48,18 @@ export class ExecutionActivity {
   if(call.status?.phase===parsed.phase&&call.status.label===parsed.label)return true
   const next={...call,status:{...parsed,updatedAt:Date.now()}}
   this.store.put('execution-call',id,next);this.changed(next);return true
+ }
+ issue(id:string,issue:BackendIssue){
+  const call=this.store.get<ExecutionCall>('execution-call',id)
+  if(!call||call.state!=='running')return
+  const next={...call,backendIssue:issue}
+  this.store.put('execution-call',id,next);this.changed(next)
+ }
+ webBatch(context:ExecutionContext,parentId:string,batch:NativeToolBatch){
+  const call:ExecutionCall={...context,id:randomUUID(),kind:'tool',name:'opencode/webfetch_batch',parentId,
+   startedAt:Math.min(...batch.items.map(item=>item.queuedAt)),endedAt:Math.max(...batch.items.map(item=>item.endedAt)),
+   state:batch.items.some(item=>item.status==='completed')?'completed':'failed',webBatch:batch}
+  this.store.put('execution-call',call.id,call);this.changed(call);this.prune()
  }
  finish(id:string,state:Exclude<ExecutionCall['state'],'running'>,permission?:ExecutionCall['permission']){
   const call=this.store.get<ExecutionCall>('execution-call',id);if(!call||call.state!=='running')return

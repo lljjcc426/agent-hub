@@ -2,11 +2,14 @@
 import {createInterface} from 'node:readline'
 import {pathToFileURL} from 'node:url'
 let model,controller,control,busy=false,sequence=0
-const pending=new Map(),codes=new Set(['auth_required','provider_rejected','quota_exhausted','rate_limited','transient','cancelled','invalid_output','unsupported','process_failed','outcome_unknown','configuration_invalid','context_budget_exceeded'])
+const pending=new Map(),codes=new Set(['auth_required','provider_rejected','quota_exhausted','rate_limited','transient','cancelled','invalid_output','unsupported','process_failed','outcome_unknown','configuration_invalid','context_budget_exceeded','read_loop'])
 const methods=new Set(['initialize','account/read','thread/start','thread/resume','thread/read','thread/archive','thread/unarchive','thread/delete','thread/inject_items','turn/start','turn/steer','turn/interrupt','config/read','model/list'])
 function diagnostic(error,operation){
- const d=error?.diagnostic,reason=['timeout','process_exit','spawn_error','rpc_rejected'].includes(d?.reason)?d.reason:'exception'
- return {operation,reason,...(methods.has(d?.nativeMethod)?{nativeMethod:d.nativeMethod}:{}),...(Number.isSafeInteger(d?.rpcCode)?{rpcCode:d.rpcCode}:{}),...(d?.exitCode===null||Number.isSafeInteger(d?.exitCode)?{exitCode:d.exitCode}:{})}
+ const d=error?.diagnostic,reason=['timeout','process_exit','spawn_error','rpc_rejected','provider_status','repeated_read'].includes(d?.reason)?d.reason:'exception'
+ return {operation,reason,...(methods.has(d?.nativeMethod)?{nativeMethod:d.nativeMethod}:{}),...(Number.isSafeInteger(d?.rpcCode)?{rpcCode:d.rpcCode}:{}),...(d?.exitCode===null||Number.isSafeInteger(d?.exitCode)?{exitCode:d.exitCode}:{}),
+  ...(Number.isSafeInteger(d?.httpStatus)&&d.httpStatus>=400&&d.httpStatus<=599?{httpStatus:d.httpStatus}:{}),
+  ...(Number.isSafeInteger(d?.retryAfterMs)&&d.retryAfterMs>=0&&d.retryAfterMs<=86_400_000?{retryAfterMs:d.retryAfterMs}:{}),
+  ...(d?.effectFree===true?{effectFree:true,...(d.readOnlyHistory===true?{readOnlyHistory:true}:{})}:{})}
 }
 const emit=value=>process.stdout.write(JSON.stringify(value)+'\n')
 const event=(name,value)=>emit({type:'event',event:name,...value===undefined?{}:{value}})
@@ -16,7 +19,7 @@ function request(raw){
  const {callbacks=[],...input}=raw
  controller=new AbortController()
  const r={...input,signal:controller.signal}
- const events={onThread:'thread',onTurn:'turn',onModel:'model',onConfiguration:'configuration',onCapabilities:'capabilities',onProgress:'progress',onOutput:'output',onBudget:'budget',onContextReady:'contextReady',onUsage:'usage'}
+ const events={onThread:'thread',onTurn:'turn',onModel:'model',onConfiguration:'configuration',onCapabilities:'capabilities',onProgress:'progress',onBackendIssue:'issue',onNativeToolBatch:'toolBatch',onOutput:'output',onBudget:'budget',onContextReady:'contextReady',onUsage:'usage'}
  for(const [key,name] of Object.entries(events))if(callbacks.includes(key))r[key]=value=>event(name,value)
  r.onActive=value=>{control=value;event('active',{steering:typeof value.steer==='function',refresh:typeof value.refresh==='function'})}
  if(callbacks.includes('onTool'))r.onTool=(name,args,callId)=>ask('tool',{name,args,callId})

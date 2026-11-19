@@ -10,6 +10,8 @@ import {Store} from '../../src/store.ts'
 import {BackendRegistry} from '../../src/backends/registry.ts'
 import {bundledCLI,bundledEngineId} from '../../src/backends/bundled-opencode.ts'
 import type {ModelRequest} from '../../src/model.ts'
+import {BackendPluginError} from '../../src/backends/plugin-contract.ts'
+import type {NativeToolBatch} from '../../src/backends/native-tool-batch.ts'
 
 const root=realpathSync(mkdtempSync(join(tmpdir(),'roppo-harness-')))
 const cwd=join(root,'task'),file=join(cwd,'endpoint.txt'),created=join(cwd,'native-result.txt')
@@ -22,6 +24,8 @@ const nativeEvents=sequence.slice(0,-1).map(([name])=>'opencode/completed/'+name
 const webPaths=['/article-one','/article-two']
 const webRequests=new Map<string,{start:number;end:number}>()
 let checkParallelFetch=false,requestedFetch=false
+let modelFailure:'auth_required'|'rate_limited'|'quota_exhausted'|undefined
+let loop=false,batchesIssued=0,unavailableRequests=0
 const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,decision:null,handbacks:[]})
 const server=createServer(async(req,res)=>{
  try{
@@ -36,7 +40,7 @@ const server=createServer(async(req,res)=>{
    )
    return
   }
-  if(req.method==='GET'&&req.url==='/unavailable'){res.writeHead(503).end();return}
+  if(req.method==='GET'&&req.url?.startsWith('/unavailable')){unavailableRequests++;res.writeHead(503).end();return}
   let raw='';for await(const chunk of req)raw+=chunk
   const input=JSON.parse(raw)
   if(input.model==='assessment'){
@@ -52,6 +56,12 @@ const server=createServer(async(req,res)=>{
    if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
    else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
    if(input.tools?.length){for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert(input.tools.some((t:any)=>t.name===name),name)}
+   if(modelFailure&&input.tools?.length){
+    const status=modelFailure==='auth_required'?401:429
+    res.writeHead(status,{'content-type':'application/json',...(modelFailure==='rate_limited'?{'retry-after':'7'}:{})})
+    res.end(JSON.stringify({error:{code:modelFailure==='quota_exhausted'?'insufficient_quota':modelFailure}}))
+    return
+   }
    res.writeHead(200,{'content-type':'text/event-stream'})
    let n=0
    const event=(type:string,data:any)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data,...(anthropic?{}:{sequence_number:n++})})+'\n\n')
@@ -59,12 +69,13 @@ const server=createServer(async(req,res)=>{
     event('message_start',{message:{id:'msg_sample',type:'message',role:'assistant',model:'sample',content:[],stop_reason:null,usage:{input_tokens:10,output_tokens:0}}})
     event('content_block_start',{index:0,content_block:{type:'text',text:''}});event('content_block_delta',{index:0,delta:{type:'text_delta',text:answer}})
     event('content_block_stop',{index:0});event('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:5}});event('message_stop',{})
-   }else if(checkParallelFetch&&input.tools?.some((t:any)=>t.name==='webfetch_batch')&&!requestedFetch){
+   }else if((loop||checkParallelFetch&&!requestedFetch)&&input.tools?.some((t:any)=>t.name==='webfetch_batch')){
     requestedFetch=true
+    const ordinal=++batchesIssued
     const origin='http://127.0.0.1:'+(server.address() as {port:number}).port
-    const output=[{type:'function_call',id:'fc_fetch',call_id:'fetch_pages',name:'webfetch_batch',status:'completed',
-     arguments:JSON.stringify({urls:[...webPaths,webPaths[0],'/unavailable'].map(path=>origin+path)})}]
-    const response={id:'resp_fetch',object:'response',model:'sample',created_at:1,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+    const output=[{type:'function_call',id:'fc_fetch_'+ordinal,call_id:'fetch_pages_'+ordinal,name:'webfetch_batch',status:'completed',
+     arguments:JSON.stringify({urls:(loop?['/unavailable','/unavailable-alt']:[...webPaths,webPaths[0],'/unavailable']).map(path=>origin+path)})}]
+    const response={id:'resp_fetch_'+ordinal,object:'response',model:'sample',created_at:1,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
     event('response.created',{response:{...response,status:'in_progress',output:[]}})
     for(const [output_index,item] of output.entries()){
      event('response.output_item.added',{output_index,item:{...item,arguments:'',status:'in_progress'}})
@@ -174,7 +185,8 @@ try{
   const api=config.backends.api!;assert(api.kind==='openai-chat');config.backends[kind]={...api,kind}
   config.execution.router!.backend=kind
   checkParallelFetch=kind==='openai-responses'
-  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.',webEvidenceQuery:'Find evidence about conditional cache requests.'})
+  const batches:NativeToolBatch[]=[]
+  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.',webEvidenceQuery:'Find evidence about conditional cache requests.',onNativeToolBatch:batch=>batches.push(batch)})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
   if(checkParallelFetch){
    const timings=[...webRequests.values()]
@@ -182,10 +194,35 @@ try{
    const overlap=Math.min(...timings.map(t=>t.end))-Math.max(...timings.map(t=>t.start))
    assert(overlap>0,'Native webfetch calls ran serially')
    assert.equal((await registry.history(response.threadId,cwd)).turns[0].items.filter((i:any)=>i.name==='opencode/webfetch_batch').length,1)
+   assert.deepEqual(batches.map(batch=>batch.items.map(item=>[item.status,item.httpStatus])),[[['completed',undefined],['completed',undefined],['failed',503]]])
+   assert(batches[0]!.items[0]!.endedAt-batches[0]!.items[0]!.startedAt>=600)
    console.log(JSON.stringify({tool:'opencode/webfetch_batch',calls:1,pages:timings.length,overlapMs:Math.round(overlap),verified:true}))
   }
  }
  checkParallelFetch=false
+ const failureRequest={...request,backendId:'openai-responses',sandbox:'read-only' as const}
+ for(const code of ['auth_required','rate_limited','quota_exhausted'] as const){
+  modelFailure=code
+  await assert.rejects(registry.run({...failureRequest,signal:AbortSignal.timeout(15_000)}),error=>{
+   assert(error instanceof BackendPluginError)
+   assert.equal(error.code,code)
+   assert.equal(error.diagnostic?.effectFree,true)
+   assert.equal(error.diagnostic?.httpStatus,code==='auth_required'?401:429)
+   assert.equal(error.diagnostic?.retryAfterMs,code==='rate_limited'?7000:undefined)
+   return true
+  })
+ }
+ modelFailure=undefined
+ loop=true
+ const loopBatches:NativeToolBatch[]=[],before=unavailableRequests
+ const issuedBefore=batchesIssued
+ await assert.rejects(registry.run({...failureRequest,onNativeToolBatch:batch=>loopBatches.push(batch),signal:AbortSignal.timeout(15_000)}),
+  error=>error instanceof BackendPluginError&&error.code==='read_loop'&&error.diagnostic?.effectFree===true)
+ loop=false
+ assert.deepEqual(loopBatches.map(batch=>batch.items.map(item=>item.status)),[['failed','failed'],['failed','failed'],['skipped','skipped'],['skipped','skipped']])
+ assert.equal(unavailableRequests-before,4)
+ console.log(JSON.stringify({scenario:'repeated HTTP 503',httpRequests:unavailableRequests-before,modelBatches:batchesIssued-issuedBefore,stopped:'read_loop'}))
+ console.log(JSON.stringify({scenario:'provider errors',codes:['auth_required','rate_limited','quota_exhausted'],retryAfterMs:7000,verified:true}))
  const api=config.backends['openai-responses'];assert(api?.kind==='openai-responses')
  config.backends.plan={...api,baseUrl:'https://api.openai.com/v1',apiKeyEnv:undefined,subscription:{provider:'chatgpt',account:'sample',owner:{source:'local',actor:'alice'},backgroundAuthorized:true}}
  config.execution.router!.backend='plan'

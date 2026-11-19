@@ -12,6 +12,8 @@ import {toolBridge} from './mcp.ts'
 import {wireBridge} from './wire.ts'
 import type {CliDriver,CliConfig} from './contract.ts'
 import {cliFailure} from './errors.ts'
+import {openCodeReadOnlyTools} from '../backend-opencode/native-tools.ts'
+import {isParallelRead} from '../../src/tool-dispatch.ts'
 export {cliFailure} from './errors.ts'
 
 type Turn={id:string;input:string;instructions:string;state:'running'|'completed'|'interrupted';text:string;protocolBytes:number;tools:{id:string;name:string;args:unknown;result?:unknown}[]}
@@ -81,8 +83,18 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    session.turns.push(turn)
    const save=()=>privateFile(join(root,'session.json'),JSON.stringify(session))
    let child:ReturnType<typeof spawn>|undefined,bridge:Awaited<ReturnType<typeof toolBridge>>|undefined,failure:unknown,done=false,buffer='',stderr='',outputBytes=0
+   let repeatedBatches=0
+   let repeatedTargets=''
    const allowedNative=new Set(driver.nativeTools?.(request))
    const guard=(config.apiProtocol&&request.harnessWorkspace||request.opencodeNativeTools)?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
+   const readHistory=()=>{
+    if(driver.id!=='opencode-cli'||!guard?.ready())return
+    let ops:ReturnType<NonNullable<typeof guard>['operations']>
+    try{ops=guard.operations()}catch{return}
+    if(ops.some(op=>!openCodeReadOnlyTools.has(op.tool))||turn.tools.some(t=>
+     !t.name.startsWith('opencode/')&&(!t.result||t.name!=='superagent_status'&&!isParallelRead(t.name))))return
+    return {effectFree:true as const,...(ops.length||turn.tools.length?{readOnlyHistory:true as const}:{})}
+   }
    const decoder=new StringDecoder('utf8'),errorDecoder=new StringDecoder('utf8')
    let wire:Awaited<ReturnType<typeof wireBridge>>|undefined
    const fail=(error:unknown)=>{failure??=error;child?.kill('SIGKILL')}
@@ -147,8 +159,16 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      if(nativeTool){
       const op=guard?.operations().find(o=>o.id===event.callId&&o.tool===event.tool)
       if(!event.callId||!op&&!event.toolError)throw new BackendAdapterError('invalid_output')
-      turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?.path===undefined?{}:{path:op.path},result:{success:!event.toolError}})
-      request.onProgress?.('opencode/'+(event.toolError?'failed/':'completed/')+event.tool)
+      const batch=event.batch,success=!event.toolError&&(!batch||batch.items.some(item=>item.status==='completed'))
+      turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?.path===undefined?{}:{path:op.path},result:{success}})
+      if(batch&&request.onNativeToolBatch)request.onNativeToolBatch(batch)
+      else request.onProgress?.('opencode/'+(success?'completed/':'failed/')+event.tool)
+      const targets=batch&&batch.items.every(item=>item.status==='skipped'||item.reused)?batch.items.map(item=>item.target).sort().join(','):''
+      repeatedBatches=targets?(targets===repeatedTargets?repeatedBatches+1:1):0
+      repeatedTargets=targets
+      if(repeatedBatches>=2){
+       throw new BackendAdapterError('read_loop',{operation:'tool',reason:'repeated_read',...readHistory()})
+      }
      }
      if(event.usage)request.onUsage?.(event.usage)
      const nativeTask=event.tool===driver.taskListTool&&request.nativeTool==='task-list'
@@ -173,7 +193,14 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
     turn.state='completed';save()
     request.onOutput?.({id:turn.id,type:'start',phase:'answer'});request.onOutput?.({id:turn.id,type:'delta',phase:'answer',text:turn.text});request.onOutput?.({id:turn.id,type:'end',phase:'answer'})
     return {threadId:session.nativeId,turnId:turn.id,text:turn.text}
-   }catch(error){turn.state='interrupted';save();throw error}
+   }catch(error){
+    turn.state='interrupted';save()
+    if(error instanceof BackendAdapterError&&error.diagnostic?.reason==='provider_status'){
+     const history=readHistory()
+     if(history)throw new BackendAdapterError(error.code,{...error.diagnostic,...history})
+    }
+    throw error
+   }
    finally{request.signal?.removeEventListener('abort',abort);child?.kill('SIGKILL');await bridge?.close();await wire?.close();unlock()}
   },
   async history(id,cwd){const {session}=locate(id,cwd);return {id,source:'native-cli-events',turns:session!.turns.map(t=>({id:t.id,state:t.state==='running'?'interrupted':t.state,items:[{type:'userMessage',text:t.input},...t.tools.map(x=>({type:'toolCall',...x})),...(t.text?[{type:'agentMessage',text:t.text}]:[])]}))}},

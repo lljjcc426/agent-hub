@@ -33,6 +33,7 @@ export function projectExecutionBlocker(problem:string,unknown:boolean,scheduled
  }
  if(['context_permissions_changed','context_budget_exceeded'].includes(problem))return {...base,kind:'contextChanged',owner:'operator',resource:'context',resolution:'review_context',retryPolicy:retry('after_repair')}
  if(problem==='configuration_invalid')return {...base,kind:'configuration',owner:'operator',resource:'backend',resolution:'review_configuration',retryPolicy:retry('after_repair')}
- if(['interrupted','failed','transient'].includes(problem))return {...base,kind:problem==='interrupted'?'interrupted':'failed',owner:'operator',resource:'task',resolution:'inspect',retryPolicy:retry('manual')}
+ if(problem==='transient'&&Number.isSafeInteger(scheduledAt)&&scheduledAt!>0)return {...base,kind:'failed',owner:'runtime',resource:'backend',resolution:'wait_for_policy',retryPolicy:{...retry('scheduled'),notBefore:scheduledAt}}
+ if(['interrupted','failed','transient','read_loop','provider_rejected','unsupported'].includes(problem))return {...base,kind:problem==='interrupted'?'interrupted':'failed',owner:'operator',resource:'task',resolution:'inspect',retryPolicy:retry('manual')}
  return null
 }

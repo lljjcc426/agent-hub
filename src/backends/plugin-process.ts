@@ -16,10 +16,10 @@ import {supportsOpenCodeTools} from '../../plugins/backend-opencode/native-tools
 import {hostPrivateFiles} from '../private-files.ts'
 import {stableDigest} from '../sources.ts'
 import {ContextBudgetExceeded,type BudgetReceipt} from '../context-budget.ts'
-import {TransientModelError} from '../model.ts'
 import {retainedWebPages} from './opencode-read-recovery.ts'
 import {normalizeUsage} from '../model-usage.ts'
-import {backendEnvelope,backendResult,backendDiagnosticSchema,backendWorkerActivitySchema,BackendPluginError,type BackendDiagnostic} from './plugin-contract.ts'
+import {nativeToolBatchSchema} from './native-tool-batch.ts'
+import {backendEnvelope,backendResult,backendDiagnosticSchema,backendIssueSchema,backendWorkerActivitySchema,BackendPluginError,type BackendDiagnostic} from './plugin-contract.ts'
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
 
 export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
@@ -98,7 +98,7 @@ export class ProcessBackend implements Model {
    if(Object.keys(request.schema).length){let output:unknown;try{output=JSON.parse(result.text)}catch{throw new BackendPluginError('invalid_output',this.id)}if(!ajv.compile(request.schema)(output))throw new BackendPluginError('invalid_output',this.id)}
    record.state='completed';this.save(record)
    return {threadId:record.id,turnId:result.turnId,text:result.text}
-  }catch(error){record.state=request.signal?.aborted?'interrupted':'failed';record.lastFailure={at:Date.now(),code:error instanceof BackendPluginError?error.code:error instanceof TransientModelError?'transient':'process_failed',...(error instanceof BackendPluginError&&error.diagnostic?{diagnostic:error.diagnostic}:error instanceof TransientModelError&&record.lastFailure?.diagnostic?{diagnostic:record.lastFailure.diagnostic}:{})};this.save(record);throw error}
+  }catch(error){record.state=request.signal?.aborted?'interrupted':'failed';record.lastFailure={at:Date.now(),code:error instanceof BackendPluginError?error.code:'process_failed',...(error instanceof BackendPluginError&&error.diagnostic?{diagnostic:error.diagnostic}:{})};this.save(record);throw error}
   finally{await transport?.close()}
  }
  async history(threadId:string,cwd:string){return this.inspect('history',threadId,cwd)}
@@ -222,6 +222,8 @@ export class ProcessBackend implements Model {
     case 'configuration':request.onConfiguration?.(z.object({requested:z.record(z.string(),z.unknown()),sent:z.record(z.string(),z.unknown()),confirmed:z.record(z.string(),z.unknown()).optional()}).strict().parse(value) as any);break
     case 'capabilities':request.onCapabilities?.(z.object({mcpServers:z.array(text),disabledPlugins:z.array(text),managed:z.boolean()}).strict().parse(value));break
     case 'progress':request.onProgress?.(text.parse(value));break
+    case 'issue':request.onBackendIssue?.(backendIssueSchema.parse(value));break
+    case 'toolBatch':if(supportsOpenCodeTools(pkg.manifest))request.onNativeToolBatch?.(nativeToolBatchSchema.parse(value));break
     case 'output':request.onOutput?.(z.object({id:text,type:z.enum(['start','delta','end']),text:z.string().max(1_000_000).optional(),phase:z.enum(['answer','commentary'])}).strict().parse(value));break
     case 'contextReady':request.onContextReady?.();break
     case 'budget':{lastBudget=z.object({basis:z.enum(['api-wire','native-protocol']),phase:text,bytes:z.number().nonnegative(),maxBytes:z.number().positive(),reservedBytes:z.number().nonnegative(),status:z.enum(['within_budget','exceeded'])}).strict().parse(value);request.onBudget?.(lastBudget);if(lastBudget.status==='exceeded')throw new ContextBudgetExceeded(lastBudget);break}
@@ -261,7 +263,17 @@ export class ProcessBackend implements Model {
       const m=backendEnvelope.parse(JSON.parse(line))
       if(m.type==='event')event(m)
       else if(m.type==='request')void callback(m)
-      else{const waiter=pending.get(m.id);if(!waiter)throw Error('Unexpected backend response');pending.delete(m.id);if(m.error){const code=m.error.code;if(record)record.lastFailure={at:Date.now(),code,diagnostic:m.error.diagnostic};waiter.reject(code==='context_budget_exceeded'&&lastBudget?new ContextBudgetExceeded(lastBudget):code==='transient'?new TransientModelError('Execution backend temporarily unavailable'):new BackendPluginError(code,this.id,m.error.diagnostic))}else waiter.resolve(m.result)}
+      else{
+       const waiter=pending.get(m.id);if(!waiter)throw Error('Unexpected backend response');pending.delete(m.id)
+       if(m.error){
+        const {code,diagnostic}=m.error
+        if(diagnostic?.effectFree&&!supportsOpenCodeTools(pkg.manifest)){
+         delete diagnostic.readOnlyHistory
+         if(pkg.manifest.id!=='codex-cli')delete diagnostic.effectFree
+        }
+        waiter.reject(code==='context_budget_exceeded'&&lastBudget?new ContextBudgetExceeded(lastBudget):new BackendPluginError(code,this.id,diagnostic))
+       }else waiter.resolve(m.result)
+      }
      }catch(error){fail(error instanceof ContextBudgetExceeded?error:new BackendPluginError('invalid_output',this.id))}
     }
    })

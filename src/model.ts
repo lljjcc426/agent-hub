@@ -65,6 +65,8 @@ export interface ModelRequest {
   onActive?: (control:NativeControl)=>void
   onHumanRequest?: (request:NativeRequest)=>Promise<unknown>
   onProgress?: (event:string)=>void
+  onBackendIssue?: (issue:import('./backends/plugin-contract.ts').BackendIssue)=>void
+  onNativeToolBatch?: (batch:import('./backends/native-tool-batch.ts').NativeToolBatch)=>void
   onOutput?: (event:ModelOutput)=>void
   onThread?: (id: string) => void; onTurn?: (id: string) => void
 }

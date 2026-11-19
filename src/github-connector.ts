@@ -213,6 +213,66 @@ export class GithubConnector {
    version:stableDigest([plan.access.connection.id,plan.name==='github_git'?plan.revision:null]),
    ...(plan.name==='github_git'&&plan.revision.sha?{sha:plan.revision.sha,branch:plan.revision.branch!}:{})}
  }
+ enqueueReadbacks(){
+  if(!this.host.config.work.network||!this.host.config.work.autoRecover||!this.current())return
+  const {store}=this.host
+  const rows=store.db.prepare(`SELECT r.id,json_extract(r.body,'$.actor.ticketId') AS ticket
+    FROM records r WHERE r.kind='chat-permission' AND json_extract(r.body,'$.phase')='uncertain'
+    AND json_extract(r.body,'$.actor.ticketId') IS NOT NULL
+    AND EXISTS (SELECT 1 FROM records t WHERE t.kind='ticket' AND t.id=json_extract(r.body,'$.actor.ticketId') AND json_extract(t.body,'$.ended') IS NULL)
+    AND ((json_extract(r.body,'$.tool')='github_write' AND json_extract(r.body,'$.args.action') IN ('create_pull','merge_pull','update_pull','update_issue'))
+      OR (json_extract(r.body,'$.tool')='github_git' AND json_extract(r.body,'$.args.action')='push'))
+    AND NOT EXISTS (SELECT 1 FROM jobs WHERE id='github-confirm:'||r.id) LIMIT 32`).all()
+  for(const {id,ticket} of rows){
+   const ticketId=String(ticket)
+   if(this.host.executionActive(ticketId))continue
+   store.enqueue('github-confirm:'+id,'github-confirm',{ticketId,permissionId:id})
+  }
+ }
+ async confirmTaskEffect(ticketId:string,id:string):Promise<'settled'|'pending'|'unavailable'>{
+  const {store}=this.host
+  const action=this.host.permissions.get(id)
+  if(action?.phase!=='uncertain'||action.actor.ticketId!==ticketId)return 'settled'
+  if(action.tool!=='github_write'&&action.tool!=='github_git')return 'unavailable'
+  const check=()=>{
+   const ticket=store.tickets.get(ticketId),actor=this.host.chat.permissionActor(action.actor.triggerId,ticketId)
+   if(!this.host.config.work.network||!this.host.config.work.autoRecover||!ticket||ticket.ended||this.host.executionActive(ticketId)||
+    !this.host.scopes.taskRunnable(ticketId)||!this.host.webhooks.taskExecutionAllowed(ticketId)||
+    actor?.runId!==action.actor.runId||actor.conversationId!==action.actor.conversationId||
+    actor.workerId!==action.actor.workerId)throw new GithubError('access_denied')
+  }
+  const signal=AbortSignal.timeout(8000)
+  try{
+   check()
+   const workspace=store.get<{cwd:string}>('run',ticketId)?.cwd
+   const plan=await this.prepare(action.tool,action.args,workspace,signal),facts=this.facts(plan)
+   if(facts.version!==action.facts.version||facts.account!==action.facts.account||facts.target!==action.facts.target)return 'unavailable'
+   const get=(path:string)=>{
+    check();this.live(plan.access)
+    return this.reader.get('repos/'+plan.args.repository+path,plan.access.token,signal)
+   }
+   let result:ToolResult|undefined
+   if(plan.name==='github_git'){
+    const {sha,branch}=plan.revision
+    if(plan.args.action!=='push'||!branch||!sha)return 'unavailable'
+    const head=await get('/branches/'+encodeURIComponent(branch))
+    if(head.name===branch&&head.commit?.sha===sha)result=githubResult({status:'complete',repository:plan.args.repository,branch,sha,reconciled:true})
+   }else{
+    const args=plan.args
+    const update=args.action==='update_issue'||args.action==='update_pull'
+    if(update&&!Object.entries(args).some(([key,value])=>!['action','repository','number'].includes(key)&&value!==undefined))return 'unavailable'
+    const observed=update
+     ? await this.confirm(args,{},get,plan.access.connection.account,action.createdAt)
+     : await this.reconcile(args,get)
+    if(observed)result=githubResult({...receipt(args),...observed,status:'complete',reconciled:true})
+   }
+   check();this.live(plan.access)
+   if(!result)return 'pending'
+   return this.host.permissions.confirmEffect(id,result)?'settled':'unavailable'
+  }catch(error){
+   return error instanceof GithubError&&['auth_required','access_denied','unconfigured','conflict'].includes(error.code)?'unavailable':'pending'
+  }
+ }
  async execute(plan:Plan,check:()=>void,signal?:AbortSignal):Promise<ToolResult>{
  const {access}=plan
   const current=()=>{signal?.throwIfAborted();check();this.live(access)}

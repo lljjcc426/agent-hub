@@ -5,6 +5,7 @@ import type {WatchdogRecovery} from './watchdog-contract.ts'
 import type {Runtime} from './runtime.ts'
 import type {RouterGoal} from './router-goals.ts'
 import type {GoalCriterion,GoalNode} from './goal-contract.ts'
+import {unconfirmedEffectMessage} from './chat-permissions.ts'
 import type {WorkerReport} from './vendor/dsh-core/index.ts'
 import type {Run} from './store.ts'
 import {stableDigest} from './sources.ts'
@@ -55,7 +56,7 @@ export class GoalVerification {
   if(previous?.files)this.host.chat.discardFiles(previous.files.filter(id=>!files?.includes(id)))
   const body={...(files?.length?{files}:{}),goalId:g.id,ticketId,triggerId:g.triggerId,scopeId:g.scopeId,assignmentId:task.assignments.at(-1)!.id,report,reply,inputRevision:owner.dataRevision??1}
   this.host.store.put('goal-delivery',ticketId,{...body,id:stableDigest(body),at:this.now()} satisfies GoalDelivery)
-  this.host.engine.report(ticketId,{state:'waiting',summary:'Delivery retained; independent acceptance is pending',question:null})
+  this.host.engine.report(ticketId,{state:'waiting',summary:this.host.permissions.hasUnconfirmedEffect(ticketId)?unconfirmedEffectMessage:'Delivery retained; independent acceptance is pending',question:null})
   return true
  }
  private execution(ticketId:string){

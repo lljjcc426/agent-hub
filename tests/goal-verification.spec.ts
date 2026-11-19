@@ -430,6 +430,38 @@ it.each([false,true])('recovers batch checkpoints for the original task when eff
  expect(f.h.store.get<Run>('run',ticketId)?.webFetchReplay).toBeUndefined()
 })
 
+it('restores two unfinished batches and retries a second interruption on the same task',async()=>{
+ const first=['https://example.org/one','https://example.org/two']
+ const second=['https://example.org/three','https://example.org/four']
+ const saved={url:first[0]!,startedAt:1,endedAt:2,sourceBytes:160,excerpts:['Evidence saved before the first interruption.']}
+ const f:ReturnType<typeof fixture>=fixture(async(request,attempt)=>{
+  const ticketId=request.activity!.ticketId!
+  request.onBackend?.('codex')
+  if(attempt===3){
+   const replay=request.webFetchReplay!
+   expect(replay.callIds).toEqual(['web-call','second-batch'])
+   expect(replay.previous).toHaveLength(1)
+   const thread=f.h.store.get<PluginThread>('backend-plugin-thread',replay.threadId)!
+   expect(retainedWebPages(f.h.store,f.config.stateDir,replay,{ticketId,cwd:thread.cwd,backendId:thread.backendId,identity:thread.identity})).toEqual([saved])
+   writeFileSync(join(request.cwd,'result.json'),'{"total":42}')
+   return ready()
+  }
+  request.onTurn?.(randomUUID())
+  const run=f.h.store.get<Run>('run',ticketId)!,record=recordInterruptedRead(f.h.store,f.config.stateDir,run,first)
+  if(attempt===1){
+   const dir=webPageDirectory(record.journalRoot,run.turnId!)
+   mkdirSync(dir);writeFileSync(webPageFile(dir,saved.url),JSON.stringify(saved))
+  }else expect(request.webFetchReplay?.callIds).toEqual(['web-call','second-batch'])
+  appendFileSync(record.operations,JSON.stringify({id:'second-batch',tool:'webfetch_batch',urls:second})+'\n')
+  throw new BackendPluginError('process_failed','codex')
+ })
+ const goal=f.start()
+ await until(f,()=>f.goal().state==='completed')
+ expect(f.goal().id).toBe(goal.id)
+ expect(f.goal().nodes![0]!.recoveries).toBe(2)
+ expect(f.h.store.tickets.get(f.goal().taskIds[0]!)?.assignments).toHaveLength(3)
+})
+
 it.each(['uncertain repository effect','explicit pause','operator disabled automatic recovery'] as const)('honors %s during automatic read recovery',async blocker=>{
  const {f,store,goal,ticket,run,effectId}=await interruptedGithubGoal('held')
  if(blocker==='uncertain repository effect')store.put('pr-delivery',ticket.id+':1',{phase:'uncertain'})

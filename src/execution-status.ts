@@ -52,6 +52,7 @@ function effects(host:Runtime,ticket:Ticket,deliveries:Delivery[]):TaskStatusPro
   else if(!closed.includes(state??''))unknown=true
  }
  for(const kind of ['tool-receipt','browser-receipt'])for(const {value:r} of recordRows(host,kind))if(r.ticketId===ticket.id)observe(r.state,['running'],['complete'])
+ for(const state of host.permissions.effectStates(ticket.id))observe(state,['executing'],['complete'])
  for(const r of host.work.list(ticket.id))observe(r.state,['starting','running'],['completed','failed','cancelled'])
  for(const {value:r} of recordRows(host,'workflow-action'))if(r.ticketId===ticket.id)observe(r.state,['pending','applying'],['applied','declined','stale','observed'])
  for(const {key,value:r} of recordRows(host,'pr-delivery'))if(r.ticketId===ticket.id||r.id===ticket.id||key.startsWith(ticket.id+':'))observe(r.phase,['pushing','creating'],['pushed','draft'])

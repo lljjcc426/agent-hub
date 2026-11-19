@@ -4,11 +4,26 @@ import {workspaceGuard} from './workspace.ts'
 import {join} from 'node:path'
 import {existsSync,realpathSync} from 'node:fs'
 import {DatabaseSync} from 'node:sqlite'
+import {createHash} from 'node:crypto'
 import {createCliPlugin} from '../cli-shared/backend.ts'
 import {BackendAdapterError} from '../backend-sdk.ts'
 import {privateFile,readJson,digest,endpoint} from '../cli-shared/files.ts'
 import {isolatedEnvironment} from '../cli-shared/environment.ts'
 import type {CliDriver} from '../cli-shared/contract.ts'
+import {nativeToolBatchSchema} from '../../src/backends/native-tool-batch.ts'
+import {toolParallelism} from '../../src/execution-limits.ts'
+
+function batchReport(part:any){
+ const pages=part?.state?.metadata?.pages
+ if(part?.tool!=='webfetch_batch'||!Array.isArray(pages)||!pages.length||pages.length>toolParallelism)return
+ const items=pages.map(page=>({
+  target:typeof page?.url==='string'&&page.url.length<=6100?createHash('sha256').update(page.url).digest('hex').slice(0,16):undefined,
+  status:page?.status,queuedAt:page?.queuedAt,startedAt:page?.startedAt,endedAt:page?.endedAt,
+  reused:page?.reused,failure:page?.failure,httpStatus:page?.httpStatus,
+ }))
+ const report=nativeToolBatchSchema.safeParse({callId:part.callID,items})
+ return report.success?report.data:undefined
+}
 export const opencodeDriver:CliDriver={
  workspaceTools,nativeTools,workspaceGuard,
  taskListTool:'todowrite',
@@ -66,7 +81,7 @@ export const opencodeDriver:CliDriver={
  },
  event(value){
   if(value.type==='error')return {error:JSON.stringify(value.error)}
-  return {session:value.sessionID,...(value.type==='text'?{text:value.part?.text}:{}),...(value.type==='tool_use'?{tool:value.part?.tool,callId:value.part?.callID,toolError:value.part?.state?.status==='error'}:{}),
+  return {session:value.sessionID,...(value.type==='text'?{text:value.part?.text}:{}),...(value.type==='tool_use'?{tool:value.part?.tool,callId:value.part?.callID,toolError:value.part?.state?.status==='error',batch:batchReport(value.part)}:{}),
    ...(value.type==='step_finish'&&value.part?.tokens?{usage:{id:value.part.id,inputTokens:value.part.tokens.input+(value.part.tokens.cache?.read??0)+(value.part.tokens.cache?.write??0),outputTokens:value.part.tokens.output,reasoningOutputTokens:value.part.tokens.reasoning,cachedInputTokens:value.part.tokens.cache?.read}}:{}),...(value.type==='step_finish'&&value.part?.reason==='stop'?{done:true}:{})}
  },
  toolName:name=>name.startsWith('roppo_')?name.slice('roppo_'.length):undefined,

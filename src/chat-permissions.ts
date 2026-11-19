@@ -33,6 +33,7 @@ export interface PermissionAction {
 export const permissionInstructions =
   'The host enforces the permission mode. A pending approval defers only that operation. Keep working on independent steps now, including local checks and drafts. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. On your next user-facing reply after an approval decision, mention its observed outcome once, in one natural sentence in the user’s language. Approval alone does not establish execution success. If denied, failed, pending or unconfirmed, accurately state that result. Use the actual execution receipt. Explicit requests to review a file or make a user choice still apply.'
 const kind = 'chat-permission'
+export const unconfirmedEffectMessage = 'An external operation is awaiting confirmation. Verify its saved receipt before completing or retrying this task.'
 const result = (state: Phase, id: string, extra?: string): ToolResult => ({
   permission:
     state === 'pending' || state === 'denied' || state === 'uncertain' || state === 'cancelled'
@@ -75,6 +76,23 @@ export class ChatPermissions {
       )
       .all(ticketId)
       .map((r) => JSON.parse(String(r.body)) as PermissionAction)
+  }
+  effectStates(ticketId: string): Phase[] {
+    return this.store.db.prepare(
+      "SELECT json_extract(body,'$.phase') AS phase FROM records WHERE kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=? AND json_extract(body,'$.phase') IN ('executing','uncertain','complete')"
+    ).all(ticketId).map(row => row.phase as Phase)
+  }
+  hasUnconfirmedEffect(ticketId: string): boolean {
+    return this.effectStates(ticketId).some(phase => phase !== 'complete')
+  }
+  confirmEffect(id: string, receipt: ToolResult): boolean {
+    return this.store.atomic(() => {
+      const action = this.get(id)
+      if (action?.phase !== 'uncertain' || !receipt.success || receipt.permission) return false
+      this.save({ ...action, phase: 'complete', receipt })
+      this.store.audit({type:'permission.reconciled',id,ticketId:action.actor.ticketId,tool:action.tool})
+      return true
+    })
   }
   decide(id: string, accept: boolean, wake: (action: PermissionAction) => void) {
     return this.store.atomic(() => {

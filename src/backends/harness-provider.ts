@@ -6,6 +6,7 @@ import type {ApiDefinition} from '../backend-config.ts'
 import type {ModelRequest} from '../model.ts'
 import {checkBudget,ContextBudgetExceeded} from '../context-budget.ts'
 import {apiHeaders,apiOutputFormat} from './api-request.ts'
+import {apiCheckFailure,apiResponseError} from './api-errors.ts'
 
 /** One private loopback endpoint per activation. Only the host authenticates upstream. */
 export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRequest,credential?:()=>Promise<string>){
@@ -51,7 +52,7 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
 
    let headers:Record<string,string>
    try{headers=apiHeaders(d,await credential?.())}
-   catch(error){failure=error;res.writeHead(401).end();return}
+   catch{res.writeHead(401).end();return}
    const send=()=>fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})
    const response=await send().catch(error=>{
     // A reset before the response arrives cannot have executed a host tool.
@@ -59,7 +60,16 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
     if(!taskStep||signal.aborted||!['ECONNRESET','UND_ERR_SOCKET'].includes(error?.cause?.code))throw error
     return send()
    })
-   if(!response.ok||!response.body){res.writeHead(response.ok?502:response.status).end();await response.body?.cancel();return}
+   if(!response.ok||!response.body){
+    const retryAfter=response.headers.get('retry-after')
+    const parsed=response.status===429?await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined):undefined
+    res.writeHead(response.ok?502:response.status,{
+     ...(retryAfter&&retryAfter.length<=100?{'retry-after':retryAfter}:{}),
+     ...(parsed&&apiCheckFailure(parsed).code==='api_quota_exhausted'?{'x-roppo-provider-code':'quota_exhausted'}:{}),
+    }).end()
+    if(!response.bodyUsed)await response.body?.cancel()
+    return
+   }
    if(!response.headers.get('content-type')?.includes('text/event-stream')){
     await response.body.cancel()
     res.writeHead(502).end()

@@ -9,9 +9,27 @@ import type { Config } from '../../src/config.ts'
 import {hostPrivateFiles} from '../../src/private-files.ts'
 import {codexToolBridge} from '../../src/codex-tools.ts'
 import {BackendAdapterError} from '../backend-sdk.ts'
+import type {BackendIssue} from '../../src/backends/plugin-contract.ts'
 import {NativeContext} from './context.ts'
 import {workerInputTransport} from './worker-input.ts'
 import {codexParameterNames} from './options.ts'
+
+function codexIssue(error:any,willRetry:boolean):BackendIssue|undefined {
+ const info=error?.codexErrorInfo
+ const kind=typeof info==='string'?info:info&&typeof info==='object'?Object.keys(info)[0]:undefined
+ if(!kind)return
+ const status=info?.[kind]?.httpStatusCode
+ const httpStatus=Number.isInteger(status)&&status>=400&&status<=599?Number(status):undefined
+ let code:BackendIssue['code']|undefined
+ if(httpStatus===401||kind==='unauthorized')code='auth_required'
+ else if(httpStatus===402||['usageLimitExceeded','apiKeySpendLimitExceeded','projectSpendLimitExceeded','organizationSpendLimitExceeded'].includes(kind))code='quota_exhausted'
+ else if(httpStatus===429||kind==='rateLimitExceeded')code='rate_limited'
+ else if(httpStatus===403)code='provider_rejected'
+ else if(kind==='modelNotFound')code='configuration_invalid'
+ else if(kind==='contextWindowExceeded')code='context_budget_exceeded'
+ else if((httpStatus??0)>=500||['serverOverloaded','httpConnectionFailed','responseStreamConnectionFailed','responseStreamDisconnected','internalServerError','responseTooManyFailedAttempts'].includes(kind))code='transient'
+ if(code)return {code,willRetry,httpStatus}
+}
 export {nativeProtocolHistory} from './context.ts'
 
 import type {Model,ModelRequest,ModelResult,ToolContent} from '../../src/model.ts'
@@ -119,7 +137,15 @@ export class CodexModel implements Model {
       }finally{if(pending)context.toolReturned(pending)}
     }:undefined
     const search=request.nativeTool==='cached-web-search'?'cached':'disabled'
+    let possibleNativeEffect=false
     const client = new AppServer(this.config.codex, [...this.extraArgs,...(request.managed?[...managedStartup,'-c','web_search='+JSON.stringify(search)]:[])], request.cwd,request.onHumanRequest,request.onProgress,guardedTool,this.environment,request.onOutput,(method,params)=>{
+      if(params?.threadId===client.threadId&&params?.turnId===client.turnId){
+        if(method==='item/started'&&!['userMessage','agentMessage','reasoning','plan'].includes(params.item?.type))possibleNativeEffect=true
+        if(method==='error'&&typeof params.willRetry==='boolean'){
+          const issue=codexIssue(params.error,params.willRetry)
+          if(issue)request.onBackendIssue?.(issue)
+        }
+      }
       if(request.contextBudget&&method==='rawResponseItem/completed'&&params?.threadId===client.threadId&&params?.turnId===client.turnId){
         context.observe(params.item)
         if(!budgetError)try{check('native_item')}catch(error){exceeded(error)}
@@ -229,6 +255,10 @@ export class CodexModel implements Model {
       if(budgetError)throw budgetError
       check('complete')
       if (client.humanRequest) throw new Error('Human input required: ' + client.humanRequest)
+      if(terminal.status==='failed'){
+        const issue=codexIssue(terminal.error,false)
+        if(issue)throw new BackendAdapterError(issue.code,{operation:'run',reason:'provider_status',httpStatus:issue.httpStatus,...(request.managed&&!possibleNativeEffect?{effectFree:true as const}:{})})
+      }
       if (terminal.status !== 'completed') throw new Error('Codex turn ' + terminal.status + ': ' + (terminal.error?.message ?? ''))
       const text = client.answer
       if (!text.trim()) throw new Error('Codex completed without a final answer')
@@ -383,7 +413,7 @@ export class AppServer {
       }
       return
     }
-    if(!this.turnId&&/^(?:item\/(?:started|completed|agentMessage\/delta)|turn\/(?:started|completed)|thread\/tokenUsage\/updated|rawResponseItem\/completed)$/.test(message.method)){
+    if(!this.turnId&&/^(?:error|item\/(?:started|completed|agentMessage\/delta)|turn\/(?:started|completed)|thread\/tokenUsage\/updated|rawResponseItem\/completed)$/.test(message.method)){
       if(this.earlyOutput.length>=1000)throw Error('Native output arrived without a confirmed turn')
       this.earlyOutput.push(message);return
     }

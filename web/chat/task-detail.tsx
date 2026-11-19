@@ -66,6 +66,9 @@ function eventLabel(event: TaskExecutionEvent, L: Localize) {
 function callState(call: TaskExecutionCall, L: Localize) {
   if (call.state === 'running')
     return { tone:'working' as const, label:L('In progress','进行中') }
+  const items=call.webBatch?.items
+  if(items?.some(item=>item.status==='completed')&&items.some(item=>item.status!=='completed'))
+    return {tone:'problem' as const,label:L('Partial success','部分成功')}
   const problem = problems.has(call.state) || call.permission === 'denied' || call.permission === 'uncertain'
   return { tone:problem ? 'problem' as const : 'done' as const, label:toolStatus(call,L) }
 }
@@ -254,6 +257,10 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
             toggle={() => setTool(tool===call.id ? undefined : call.id)}>
             <p>{call.name && <code>{call.name} · </code>}{agentName(call.workerId)} · {dateTime.format(call.startedAt)}</p>
             <p>{status.label}{status.tone!=='working' && (took===undefined ? ' · '+L('Duration unavailable','未记录耗时') : ' · '+duration(took))}</p>
+            {call.webBatch?.items.map((item,index)=><p key={item.target}>
+              {L('Page','网页')} {index+1} · {item.reused?L('Reused','复用'):item.status==='completed'?L('Succeeded','成功'):item.status==='skipped'?L('Skipped','跳过'):L('Failed','失败')}
+              {item.httpStatus?(' · HTTP '+item.httpStatus):''} · {duration(item.endedAt-item.startedAt)}
+            </p>)}
           </RecordRow>
         </li>
       })}</ul> : <p className="task-run-note">{L('No tool calls were recorded for this task.','这个任务暂无工具调用记录。')}</p>}

@@ -29,6 +29,8 @@ export interface TraceTask {
  asyncInbox?:AsyncInboxSummary
  recovery?:RecoveryManifest
  blocker?:ExecutionBlocker|null
+ backendIssue?:import('./backends/plugin-contract.ts').BackendIssue
+ failure?:Run['failure']
  status:TaskStatusProjection
  id:string;label:string;state:TraceState;phase?:TraceState;updatedAt:string;workerId?:string;backendId?:string;sessionRef?:string;hasResult:boolean;
  revision:number;observed:string;problem:string;unknownEffects:boolean;pendingApprovals:number;acceptance:{state:TraceState;passed:number;failed:number;insufficient:number}|null;
@@ -95,6 +97,7 @@ export function uninstallExecutionTrace(store:Store){
 }
 function visible(host:Runtime,ticketId:string){const ticket=host.store.tickets.get(ticketId);return !!ticket&&!host.memory.cleanup.blocked('ticket',ticketId,ticket)}
 function classify(run:Run|undefined,ticket:Ticket){
+ if(run?.failure&&run.phase!=='uncertain')return run.failure.code
  const problem=executionProblem(run?.error??'',run?.phase==='uncertain')
  if(problem!=='none')return problem
  if(ticket.ended?.outcome==='stopped')return 'cancelled'
@@ -152,6 +155,8 @@ export class ExecutionTrace {
   const held=!!host.store.get('context-rebuild',ticket.id)||!!host.store.get('router-migration',ticket.id)||host.scopes.ownership(ticket.id)?.state==='held'
   const observed=stableDigest({effectObservation:this.effectObservation(host,ticket.id),ticket,run,approvals:approvals.map(({id,status,expiresAt})=>({id,status,expiresAt})),jobs,deliveries:deliveries.map(({id,status,attempts})=>({id,status,attempts})),receipts:receipts.map(({id,state})=>({id,state})),work:work.map(({id,state})=>({id,state})),browser:browser.map(({id,state})=>({id,state})),workflow:workflow.map(({id,state})=>({id,state})),held,code,ownership:host.scopes.ownership(ticket.id),routing:host.store.get('task-routing',ticket.id),context:host.store.get('task-context',ticket.id),continuation:host.store.get('task-continuation',ticket.id),round:round&&{id:round.id,state:round.state,checks:round.checks}})
   const scheduled=jobs.filter(j=>j.kind==='execute'&&j.state==='pending'&&Number.isSafeInteger(j.next_at)&&Number(j.next_at)>Date.now()).map(j=>Number(j.next_at))
+  const goal=host.goals.forTask(ticket.id),node=goal?.nodes?.find(n=>n.ticketId===ticket.id)
+  if(node?.retryAt&&['active','waiting'].includes(goal!.state))scheduled.push(node.retryAt)
   const blocker=projectExecutionBlocker(problem,unknown,scheduled.length?Math.min(...scheduled):undefined,jobs.some(j=>j.kind==='execute'&&j.state==='pending'))
   const actions:TraceTask['actions']=['inspect']
   const sessionReadable=!!run?.threadId&&!!host.model.history&&!host.store.get('context-session-fence',run.threadId)&&!host.store.get('backend-deleted',run.threadId)&&!host.store.get('backend-delete-pending',run.threadId)
@@ -165,6 +170,9 @@ export class ExecutionTrace {
   const last=verifiedEvents?[...events].sort((a,b)=>b.observedAt-a.observedAt)[0]:undefined
   const asyncInbox:AsyncInboxSummary|undefined=events.length&&verifiedEvents?{schema:1,received:events.length,applied:events.filter(e=>e.disposition==='applied').length,archived:events.filter(e=>e.disposition==='archived').length,latest:last?{kind:last.kind,disposition:last.disposition,observedAt:last.observedAt}:null}:undefined
   const projected:TraceTask={...(asyncInbox?{asyncInbox}:{}),blocker,status,id:ticket.id,label:'Task '+opaque(ticket.id).slice(0,8),state:enumState(state),...(run?{phase:enumState(run.phase)}:{}),updatedAt:ticket.updatedAt,...(run?.workerId?{workerId:run.workerId}:{}),...(run?.backendId?{backendId:run.backendId}:{}),...(run?.threadId?{sessionRef:opaque(run.threadId)}:{}),hasResult:!!run?.result,evidence,revision:host.settings.current().revision,observed,problem,unknownEffects:unknown,pendingApprovals:approvals.length,acceptance,actions,next:unknown?'reconcile':approvals.length?'answer_approval':held?'review_context':['auth_required','configuration_invalid'].includes(problem)?'reconnect':ticket.attention?'follow_up':'none'}
+  if(run?.failure)projected.failure=run.failure
+  const issue=host.activity.list().findLast(call=>call.ticketId===ticket.id&&call.kind==='worker'&&call.state==='running')?.backendIssue
+  if(issue)projected.backendIssue=issue
   return {...projected,recovery:recoveryManifest(host.store,projected)}
  }
  private readAllowed(host:Runtime,ticket:Ticket){

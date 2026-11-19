@@ -26,7 +26,7 @@ type TaskActor = { id: string; label: string; kind: 'router' | 'worker' }
 
 export type TaskExecutionCall = Pick<ExecutionCall,
   'id' | 'kind' | 'name' | 'action' | 'target' | 'trace' | 'ticketId' | 'workerId' | 'agentId' | 'parentId' |
-  'state' | 'permission' | 'startedAt' | 'endedAt' | 'backend' | 'model'
+  'state' | 'permission' | 'startedAt' | 'endedAt' | 'backend' | 'model' | 'webBatch'
 > & { reported?: true }
 
 export interface TaskExecutionDetail {
@@ -142,13 +142,13 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
     if (!valid(call.startedAt) || !visible('chat-call',call.id,call)) continue
     if (calls.length === taskCallLimit) { callsTruncated = true; break }
     const { id, kind, name, action, target, trace, ticketId, workerId, agentId, parentId,
-      state, permission, startedAt, endedAt, backend, model } = call
+      state, permission, startedAt, endedAt, backend, model, webBatch } = call
     // Native OpenCode progress is recorded only when a tool reports its outcome.
-    const reported = kind === 'tool' && name.startsWith('opencode/')
+    const reported = kind === 'tool' && name.startsWith('opencode/') && !webBatch
     calls.push({ id, kind, name, action, target:name==='worker_manage'&&action==='assign'?target:undefined,
       trace, ticketId, workerId, agentId, parentId,
       state, permission, startedAt, endedAt: valid(endedAt) && endedAt >= startedAt ? endedAt : undefined,
-      backend, model, reported: reported || undefined })
+      backend, model, webBatch, reported: reported || undefined })
   }
   calls.reverse()
   const ordered = events.filter(event => valid(event.at)).sort((a,b) => a.at-b.at)

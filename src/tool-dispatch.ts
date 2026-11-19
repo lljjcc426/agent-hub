@@ -15,18 +15,24 @@ export function isParallelRead(name: string): boolean {
 export class ToolDispatch {
   private active = 0
   private exclusive = false
-  private readonly waiting: { shared: boolean; start: () => void }[] = []
+  private readonly waiting: { shared: boolean; start: () => void; reject:(reason:unknown)=>void }[] = []
+  private readonly abortQueued=()=>{
+    for(const entry of this.waiting.splice(0))entry.reject(this.signal?.reason)
+  }
+  constructor(private readonly signal?:AbortSignal){}
 
   run<T>(shared: boolean, work: () => T | Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.waiting.push({shared, start: async () => {
+      this.signal?.throwIfAborted()
+      this.waiting.push({shared,reject,start: async () => {
         await Promise.resolve()
-        try{resolve(await work())}catch(error){reject(error)}finally{
+        try{this.signal?.throwIfAborted();resolve(await work())}catch(error){reject(error)}finally{
           this.active--
           this.exclusive = false
           this.admit()
         }
       }})
+      this.signal?.addEventListener('abort',this.abortQueued,{once:true})
       this.admit()
     })
   }
@@ -34,11 +40,12 @@ export class ToolDispatch {
   private admit() {
     while (!this.exclusive && this.active < toolParallelism) {
       const next = this.waiting[0]
-      if (!next || !next.shared && this.active > 0) return
+      if (!next || !next.shared && this.active > 0) break
       this.waiting.shift()
       this.active++
       this.exclusive = !next.shared
       next.start()
     }
+    if(!this.waiting.length)this.signal?.removeEventListener('abort',this.abortQueued)
   }
 }

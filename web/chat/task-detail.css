@@ -159,6 +159,8 @@
 .task-run-layer :is(.task-run-fold,.task-run-ticket) p { margin: 0; padding: 0 7px 8px; color: var(--team-muted); font-size: 12px; }
 .task-run-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 8px; font-size: 12px; font-weight: 650; text-align: start; }
 .task-run-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.task-run-more { min-height: 32px; padding: 0 7px; }
+.task-run-timeline + .task-run-more { margin-inline-start: 24px; }
 .task-run-plan { border-top: 1px solid var(--team-line); margin-top: 12px; padding: 10px 0 0; font-size: 13px; }
 .task-run-plan h4 { margin-block: 0 8px; }
 .task-run-plan ol { padding-inline-start: 18px; }

@@ -1390,7 +1390,6 @@ function Chat(p: ChatProps) {
                 <span>{L("Settings","设置")}</span><ChevronRight size={14}/>
                 {workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}
                 {hash === "advanced/chat" && <><a href="/configure#general">{L("General", "通用")}</a><ChevronRight size={14}/></>}
-                {usageStatisticsRoute && <><a href="/configure#tasks/history">{L("Activity", "运行记录")}</a><ChevronRight size={14}/></>}
                 <strong>{pageTitle}</strong>
               </div>}
             </header> : null}

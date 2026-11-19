@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { Button, ChoiceGroup } from '../ui/controls.tsx'
 import { useOrderedListMotion } from '../ui/transitions.tsx'
@@ -9,7 +9,12 @@ type Language = 'en' | 'zh-CN'
 type Metric = 'tokens' | 'calls'
 type Labels = (en: string, zh: string) => string
 type FormatCount = (value: number) => string
-type UsageResult = {period: UsagePeriod; request: number; data?: UsageStatistics}
+type UsageView = {
+  request: {period: UsagePeriod}
+  phase: 'loading' | 'ready' | 'failed'
+  snapshot?: {period: UsagePeriod; data: UsageStatistics}
+  selected: string | null
+}
 
 const dateOf = (date: string) => new Date(date + 'T00:00:00Z')
 const valueOf = (volume: UsageVolume, metric: Metric) => metric === 'calls' ? volume.calls : volume.tokens?.total ?? null
@@ -49,14 +54,16 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
   days: UsageDay[]; metric: Metric; selected: string | null; select: (date: string | null) => void
   dayIdPrefix: string; language: Language; count: FormatCount; compact: FormatCount; L: Labels
 }) {
-  const buttons = useRef<Array<HTMLButtonElement | null>>([])
-  const [hovered, setHovered] = useState<number | null>(null)
-  const [focused, setFocused] = useState<number | null>(null)
-  const [tabStop, setTabStop] = useState(days.length - 1)
-  const selectedIndex = selected ? days.findIndex(day => day.date === selected) : -1
-  const hoveredIndex = hovered ?? focused
-  const marker = hoveredIndex ?? selectedIndex
-  const hoveredDay = hoveredIndex === null ? undefined : days[hoveredIndex]
+  const [hovered, setHovered] = useState<string | null>(null)
+  const [focused, setFocused] = useState<string | null>(null)
+  const [lastFocus, setLastFocus] = useState<string | null>(null)
+  const tabStop = days.some(day => day.date === lastFocus) ? lastFocus : days.at(-1)?.date
+  const selectedIndex = days.findIndex(day => day.date === selected)
+  const hoveredIndex = days.findIndex(day => day.date === hovered)
+  const focusedIndex = days.findIndex(day => day.date === focused)
+  const activeIndex = hoveredIndex >= 0 ? hoveredIndex : focusedIndex
+  const marker = activeIndex >= 0 ? activeIndex : selectedIndex
+  const hoveredDay = days[activeIndex]
   const hoverValue = hoveredDay ? valueOf(hoveredDay, metric) : null
   const labelValues = days.map(day => valueOf(day, metric))
   const ticks = scaleTicks(Math.max(0, ...labelValues.map(value => value ?? 0)))
@@ -74,7 +81,8 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
     const target = ({ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: days.length - 1})[event.key]
     if (target === undefined) return
     event.preventDefault()
-    buttons.current[Math.max(0, Math.min(days.length - 1, target))]?.focus()
+    const day = days[Math.max(0, Math.min(days.length - 1, target))]
+    if (day) document.getElementById(dayIdPrefix + day.date)?.focus()
   }
 
   return (
@@ -99,12 +107,11 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
             const height = value ? value / max : 0
             return (
               <button key={day.date} id={dayIdPrefix + day.date} type="button" className="usage-chart-day"
-                ref={node => {buttons.current[index] = node}}
-                tabIndex={tabStop === index ? 0 : -1}
+                tabIndex={tabStop === day.date ? 0 : -1}
                 aria-label={detailDate(dateOf(day.date)) + ' · ' + metricLabel + ' ' + valueLabel}
                 aria-pressed={day.date === selected} data-highlight={marker === index}
-                onPointerEnter={event => {if (event.pointerType !== 'touch') setHovered(index)}}
-                onFocus={() => {setTabStop(index); setFocused(index)}}
+                onPointerEnter={event => {if (event.pointerType !== 'touch') setHovered(day.date)}}
+                onFocus={() => {setLastFocus(day.date); setFocused(day.date)}}
                 onBlur={() => setFocused(null)}
                 onKeyDown={event => moveFocus(event, index)}
                 onClick={() => select(day.date === selected ? null : day.date)}>
@@ -199,30 +206,39 @@ function ModelBreakdown({ data, selected, clear, metric, language, count, compac
 }
 
 export function UsageStatisticsPage({ language }: { language: Language }) {
-  const [period, setPeriod] = useState<UsagePeriod>(7)
   const [metric, setMetric] = useState<Metric>('tokens')
-  const [selected, setSelected] = useState<string | null>(null)
-  const [request, setRequest] = useState(0)
-  const [result, setResult] = useState<UsageResult>()
+  const [view, setView] = useState<UsageView>({request: {period: 7}, phase: 'loading', selected: null})
+  const {request, phase, snapshot, selected} = view
   const sectionId = useId()
   const dayIdPrefix = sectionId + '-day-'
   const L: Labels = (en, zh) => language === 'zh-CN' ? zh : en
   const count = new Intl.NumberFormat(language).format
   const compact = new Intl.NumberFormat(language, {notation: 'compact', maximumFractionDigits: 1}).format
-  const response = result?.period === period && result.request === request ? result : undefined
-  const data = response?.data
+  const data = snapshot?.data
   const selectedDay = data?.days.find(day => day.date === selected)
-  const loading = !response
+  const loading = phase === 'loading'
+  const period = loading ? request.period : snapshot?.period ?? request.period
+
+  function loadPeriod(period: UsagePeriod) {
+    setView(current => {
+      if (current.phase !== 'failed' && current.request.period === period) return current
+      return {...current, request: {period}, phase: 'loading'}
+    })
+  }
+
+  function selectDay(selected: string | null) {
+    setView(current => ({...current, selected}))
+  }
 
   function clearDay() {
     if (selected) document.getElementById(dayIdPrefix + selected)?.focus({preventScroll: true})
-    setSelected(null)
+    selectDay(null)
   }
 
   useEffect(() => {
     const controller = new AbortController()
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-    const query = new URLSearchParams({days: String(period), timeZone})
+    const query = new URLSearchParams({days: String(request.period), timeZone})
     const timeout = window.setTimeout(() => controller.abort(), 12_000)
     let mounted = true
     void fetch('/api/usage-statistics?' + query, {signal: controller.signal, cache: 'no-store'})
@@ -230,15 +246,27 @@ export function UsageStatisticsPage({ language }: { language: Language }) {
         if (!response.ok) throw Error('Usage statistics request failed')
         return response.json() as Promise<UsageStatistics>
       })
-      .then(data => {if (mounted) setResult({period, request, data})})
-      .catch(() => {if (mounted) setResult({period, request})})
+      .then(data => {
+        if (!mounted) return
+        setView(current => {
+          if (current.request !== request) return current
+          const selected = current.snapshot?.period === request.period && data.days.some(day => day.date === current.selected)
+            ? current.selected : null
+          return {...current, phase: 'ready', snapshot: {period: request.period, data}, selected}
+        })
+      })
+      .catch(() => {
+        if (mounted) setView(current => current.request === request ? {...current, phase: 'failed'} : current)
+      })
       .finally(() => clearTimeout(timeout))
     return () => {
       mounted = false
       clearTimeout(timeout)
       controller.abort()
     }
-  }, [period, request])
+  }, [request])
+
+  const retry = <Button onClick={() => loadPeriod(request.period)}>{L('Try again', '重试')}</Button>
 
   return (
     <section className="settings-directory roppo-ui usage-stats" aria-labelledby="page-title">
@@ -247,19 +275,22 @@ export function UsageStatisticsPage({ language }: { language: Language }) {
         <ChoiceGroup label={L('Date range', '时间范围')} value={period === 7 ? '7' : '30'} choices={[
           {value: '7', label: L('Last 7 days', '近 7 天')},
           {value: '30', label: L('Last 30 days', '近 30 天')},
-        ]} onChange={value => {setPeriod(value === '30' ? 30 : 7); setSelected(null); setRequest(value => value + 1)}} />
+        ]} onChange={value => loadPeriod(value === '30' ? 30 : 7)} />
       </header>
+      {loading && data && <span className="usage-stats-sr" role="status">
+        {L('Updating usage statistics…', '正在更新使用统计…')}
+      </span>}
       <div aria-busy={loading || undefined}>
         {(loading || data) && <UsageSummary data={data} count={count} compact={compact} L={L} />}
         {data?.watchdogUnavailable && <p className="usage-stats-notice" role="status">
           {L('Some usage could not be read.', '部分用量暂时无法读取。')}
         </p>}
-        {loading ? <div className="usage-stats-placeholder" role="status">
+        {loading && !data ? <div className="usage-stats-placeholder" role="status">
           <span className="usage-stats-skeleton" aria-hidden="true" />
           <span className="usage-stats-sr">{L('Loading usage statistics…', '正在读取使用统计…')}</span>
         </div> : !data ? <div className="usage-stats-empty" role="alert">
           <p>{L('Could not load usage statistics.', '无法读取使用统计。')}</p>
-          <Button onClick={() => setRequest(value => value + 1)}>{L('Try again', '重试')}</Button>
+          {retry}
         </div> : data.total.calls === 0 ? <div className="usage-stats-empty">
           <p>{L('No model calls in this period.', '这段时间没有模型调用。')}</p>
           <a href="/configure#execution" className="rp-button" data-tone="quiet">
@@ -284,11 +315,15 @@ export function UsageStatisticsPage({ language }: { language: Language }) {
                 </span>}
               </>}
             </div>
-            <UsageChart days={data.days} metric={metric} selected={selected} select={setSelected} dayIdPrefix={dayIdPrefix}
+            <UsageChart days={data.days} metric={metric} selected={selected} select={selectDay} dayIdPrefix={dayIdPrefix}
               language={language} count={count} compact={compact} L={L} />
           </section>
           <ModelBreakdown data={data} selected={selectedDay} clear={clearDay}
             metric={metric} language={language} count={count} compact={compact} L={L} />
+        </div>}
+        {data && phase === 'failed' && <div className="usage-stats-refresh-error" role="alert">
+          <span>{L('Could not update usage statistics.', '使用统计更新失败。')}</span>
+          {retry}
         </div>}
       </div>
     </section>

@@ -164,10 +164,7 @@ function projectReviewCard(review,editable) {
 }
 function activityHeader(current) {
   const embedded = typeof configurationHost !== 'undefined' && !!configurationHost
-  const statistics = embedded ? el('a', 'button', L('Usage statistics', '使用统计')) : null
-  if (statistics) statistics.href = '/configure#tasks/statistics'
   return [opHeading(L('Activity', '运行记录'), null,
-    statistics,
     embedded ? opButton(L('Model calls', '模型调用'), () => opNavigate('execution', '', { view: 'calls' }), 'button', 'activity') : null,
     opButton(L('Refresh', '刷新'), refreshEntries, 'button', 'refresh')),
     workspaceTabs(L('Activity views', '记录筛选'), [

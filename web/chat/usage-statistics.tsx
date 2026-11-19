@@ -96,56 +96,60 @@ function UsageChart({ days, metric, selected, select, dayIdPrefix, language, cou
             </div>
           ))}
         </div>
-        <span className="usage-chart-marker" aria-hidden="true" data-visible={marker >= 0}
-          style={{'--usage-marker': Math.max(0, marker)} as CSSProperties} />
-        <div className="usage-chart-columns" data-spotlight={marker >= 0}>
-          {days.map((day, index) => {
-            const value = labelValues[index] ?? null
-            const split = metric === 'tokens' ? day.tokens : null
-            const unavailable = value === null && day.calls > 0
-            const valueLabel = value === null ? (day.calls ? unknown : '0') : count(value)
-            const height = value ? value / max : 0
-            return (
-              <button key={day.date} id={dayIdPrefix + day.date} type="button" className="usage-chart-day"
-                tabIndex={tabStop === day.date ? 0 : -1}
-                aria-label={detailDate(dateOf(day.date)) + ' · ' + metricLabel + ' ' + valueLabel}
-                aria-pressed={day.date === selected} data-highlight={marker === index}
-                onPointerEnter={event => {if (event.pointerType !== 'touch') setHovered(day.date)}}
-                onFocus={() => {setLastFocus(day.date); setFocused(day.date)}}
-                onBlur={() => setFocused(null)}
-                onKeyDown={event => moveFocus(event, index)}
-                onClick={() => select(day.date === selected ? null : day.date)}>
-                <span className="usage-chart-baseline" data-visible={!value} data-unknown={unavailable} aria-hidden="true" />
-                <span className="usage-chart-bar" aria-hidden="true" style={{
-                  '--usage-height': height,
-                  '--usage-draw-delay': Math.round(index / (days.length - 1) * 144) + 'ms',
-                } as CSSProperties}>
-                  <span className="usage-chart-fill">
-                    {split && split.total > 0 ? <>
-                      {split.input > 0 && <i data-part="input" style={{flexGrow: split.input}} />}
-                      {split.output > 0 && <i data-part="output" style={{flexGrow: split.output}} />}
-                      {split.unsplit > 0 && <i data-part="unsplit" style={{flexGrow: split.unsplit}} />}
-                    </> : <i data-part={metric === 'calls' ? 'calls' : 'input'} />}
+        <div className="usage-chart-window">
+          <div className="usage-chart-columns" data-spotlight={marker >= 0}>
+            <span className="usage-chart-marker" aria-hidden="true" data-visible={marker >= 0}
+              style={{'--usage-marker': Math.max(0, marker)} as CSSProperties} />
+            {days.map((day, index) => {
+              const value = labelValues[index] ?? null
+              const split = metric === 'tokens' ? day.tokens : null
+              const unavailable = value === null && day.calls > 0
+              const valueLabel = value === null ? (day.calls ? unknown : '0') : count(value)
+              const height = value ? value / max : 0
+              return (
+                <button key={day.date} id={dayIdPrefix + day.date} type="button" className="usage-chart-day"
+                  tabIndex={tabStop === day.date ? 0 : -1}
+                  aria-label={detailDate(dateOf(day.date)) + ' · ' + metricLabel + ' ' + valueLabel}
+                  aria-pressed={day.date === selected} data-highlight={marker === index}
+                  onPointerEnter={event => {if (event.pointerType !== 'touch') setHovered(day.date)}}
+                  onFocus={() => {setLastFocus(day.date); setFocused(day.date)}}
+                  onBlur={() => setFocused(null)}
+                  onKeyDown={event => moveFocus(event, index)}
+                  onClick={() => select(day.date === selected ? null : day.date)}>
+                  <span className="usage-chart-baseline" data-visible={!value} data-unknown={unavailable} aria-hidden="true" />
+                  <span className="usage-chart-bar" aria-hidden="true" style={{
+                    '--usage-height': height,
+                    '--usage-draw-delay': Math.round(index / (days.length - 1) * 144) + 'ms',
+                  } as CSSProperties}>
+                    <span className="usage-chart-fill">
+                      {split && split.total > 0 ? <>
+                        {split.input > 0 && <i data-part="input" style={{flexGrow: split.input}} />}
+                        {split.output > 0 && <i data-part="output" style={{flexGrow: split.output}} />}
+                        {split.unsplit > 0 && <i data-part="unsplit" style={{flexGrow: split.unsplit}} />}
+                      </> : <i data-part={metric === 'calls' ? 'calls' : 'input'} />}
+                    </span>
                   </span>
-                </span>
-              </button>
-            )
-          })}
+                </button>
+              )
+            })}
+          </div>
         </div>
         {noTokens && !hoveredDay && <div className="usage-chart-no-tokens">{L('No token counts reported', '暂无 Token 用量')}</div>}
         {hoveredDay && <div className="usage-chart-tooltip" aria-hidden="true"
-          style={{'--usage-tip': (marker + 0.5) / days.length} as CSSProperties}>
+          style={{'--usage-tip-offset': days.length - marker - 0.5} as CSSProperties}>
           <span>{detailDate(dateOf(hoveredDay.date))}</span>
           <strong>{metricLabel} {hoverValue === null ? (hoveredDay.calls ? unknown : '0') : count(hoverValue)}</strong>
         </div>}
       </div>
-      <div className="usage-chart-dates" aria-hidden="true">
-        {dateLabels.map(index => (
-          <span key={index} style={{gridColumn: index + 1}} data-today={index === days.length - 1}
-            data-selected={index === selectedIndex}>
-            {formatDate(dateOf(days[index]!.date))}
-          </span>
-        ))}
+      <div className="usage-chart-date-window" aria-hidden="true">
+        <div className="usage-chart-dates">
+          {dateLabels.map(index => (
+            <span key={days[index]!.date} style={{gridColumn: index + 1}} data-today={index === days.length - 1}
+              data-selected={index === selectedIndex}>
+              {formatDate(dateOf(days[index]!.date))}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   )

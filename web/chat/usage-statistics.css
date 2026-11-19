@@ -117,16 +117,30 @@
 .usage-stats [data-part="unsplit"] { background: var(--usage-unsplit); }
 .usage-stats [data-part="calls"] { background: var(--usage-calls); }
 
+@property --usage-range-days {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 7;
+}
+
 .usage-chart-frame {
   --usage-axis-space: 42px;
+  --usage-range-days: var(--usage-days);
   padding-inline-start: var(--usage-axis-space);
   font-variant-numeric: tabular-nums;
+  transition: --usage-range-days 480ms var(--rp-ease);
 }
 
 .usage-chart-plot { position: relative; container-type: inline-size; block-size: 192px; }
 .usage-chart-grid,
-.usage-chart-columns { position: absolute; inset: 0; }
+.usage-chart-window { position: absolute; inset: 0; }
 .usage-chart-grid { pointer-events: none; }
+
+.usage-chart-window,
+.usage-chart-date-window {
+  overflow: clip;
+  overflow-clip-margin: 3px;
+}
 
 .usage-chart-tick {
   position: absolute;
@@ -145,16 +159,24 @@
 
 .usage-chart-columns,
 .usage-chart-dates {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  /* Keep the latest day at the same edge while the scale interpolates. */
+  inline-size: calc(100% * var(--usage-days) / var(--usage-range-days));
   display: grid;
   grid-template-columns: repeat(var(--usage-days), minmax(0, 1fr));
 }
 
-.usage-chart-dates {
+.usage-chart-date-window {
+  position: relative;
   margin-block-start: 10px;
-  align-items: center;
+  block-size: 1.55em;
   font-size: var(--roppo-font-meta);
   color: var(--rp-muted);
 }
+
+.usage-chart-dates { align-items: center; }
 
 .usage-chart-dates > span {
   justify-self: center;
@@ -163,6 +185,9 @@
 
 .usage-chart-frame[data-period="30"] .usage-chart-dates > span:first-child { justify-self: start; }
 .usage-chart-frame[data-period="30"] .usage-chart-dates > span:last-child { justify-self: end; }
+.usage-chart-frame[data-period="7"] .usage-chart-dates > span:not(:first-child, :last-child) {
+  opacity: clamp(0, (9 - var(--usage-range-days)) / 2, 1);
+}
 .usage-chart-dates [data-today="true"] { color: var(--rp-ink); font-weight: 620; }
 .usage-chart-dates [data-selected="true"] { color: var(--usage-accent); font-weight: 650; }
 
@@ -273,11 +298,12 @@
 
 .usage-chart-tooltip {
   --usage-tip-width: min(156px, 100cqi);
+  --usage-tip-center: calc(100cqi * (1 - var(--usage-tip-offset) / var(--usage-range-days)));
   position: absolute;
   z-index: 3;
   inset-block-start: 9px;
   inset-inline-start: 0;
-  transform: translateX(clamp(0px, 100cqi * var(--usage-tip) - var(--usage-tip-width) / 2, 100cqi - var(--usage-tip-width)));
+  transform: translateX(clamp(0px, var(--usage-tip-center) - var(--usage-tip-width) / 2, 100cqi - var(--usage-tip-width)));
   display: grid;
   gap: 3px;
   inline-size: var(--usage-tip-width);
@@ -450,7 +476,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .usage-chart-fill, .usage-chart-tooltip, .usage-model-track > span::before { animation: none; }
-  .usage-chart-marker, .usage-chart-bar, .usage-chart-baseline, .usage-chart-tooltip, .usage-model-track > span {
+  .usage-chart-frame, .usage-chart-marker, .usage-chart-bar, .usage-chart-baseline, .usage-chart-tooltip,
+  .usage-model-track > span {
     transition: none;
   }
 }

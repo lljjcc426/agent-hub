@@ -63,6 +63,7 @@ async def verify(entry, origin):
         await (await take(7)).fulfill(json=snapshot(7))
 
         day_buttons = page.locator('.usage-chart-day')
+        chart = page.locator('.usage-chart-frame')
         busy = page.locator('.usage-stats [aria-busy="true"]')
         retry = page.get_by_role('button', name='重试', exact=True)
         await expect(day_buttons).to_have_count(7)
@@ -82,12 +83,28 @@ async def verify(entry, origin):
                 window.sharedUsageDay === [...document.querySelectorAll('.usage-chart-day')].at(-1)
             """)
 
+        async def switch_with_motion(route, period):
+            previous = (await day_buttons.last.bounding_box())['width']
+            await route.fulfill(json=snapshot(period))
+            await stable(period)
+            frames = await day_buttons.last.evaluate("""async day => {
+                const widths = [];
+                const start = performance.now();
+                do {
+                    await new Promise(requestAnimationFrame);
+                    widths.push(day.getBoundingClientRect().width);
+                } while (performance.now() - start < 520);
+                return widths;
+            }""")
+            before, after = sorted([previous, frames[-1]])
+            intermediate = {round(width, 1) for width in frames if before + 1 < width < after - 1}
+            assert after - before > 5 and len(intermediate) >= 3, (period, previous, frames)
+
         longer = await change(30)
         await expect(busy).to_have_count(1)
         await stable(7)
         await expect(day_buttons.last).to_have_attribute('aria-pressed', 'true')
-        await longer.fulfill(json=snapshot(30))
-        await stable(30)
+        await switch_with_motion(longer, 30)
         await expect(day_buttons.last).to_have_attribute('aria-pressed', 'false')
         await expect(busy).to_have_count(0)
 
@@ -96,8 +113,7 @@ async def verify(entry, origin):
         await expect(page.get_by_role('radio', name='近 30 天')).to_be_checked()
         await stable(30)
         await retry.click()
-        await (await take(7)).fulfill(json=snapshot(7))
-        await stable(7)
+        await switch_with_motion(await take(7), 7)
 
         late = await change(30)
         earlier = await change(7)
@@ -110,9 +126,15 @@ async def verify(entry, origin):
         await stable(7)
         await expect(page.get_by_role('radio', name='近 7 天')).to_be_checked()
         await expect(page.locator('.usage-chart-day[tabindex="0"]')).to_have_count(1)
+
+        await page.emulate_media(reduced_motion='reduce')
+        await (await change(30)).fulfill(json=snapshot(30))
+        await stable(30)
+        await expect(chart).to_have_css('transition-property', 'none')
+        assert await chart.evaluate("el => !el.getAnimations({subtree: true}).length")
         assert not errors, errors
         await browser.close()
-        print('PASS: primary navigation, retained chart and totals, range retry, stale response and keyboard tab stop.')
+        print('PASS: stable chart and totals, motion in both directions, reduced motion, range retry and stale response.')
 
 
 if __name__ == '__main__':

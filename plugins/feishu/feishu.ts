@@ -11,13 +11,21 @@ import type {ApiSample} from '../../src/api-usage.ts'
 import { MessageSource, UncertainDelivery, bodyDigest, type SourceContext } from '../../src/sources.ts'
 import type { SourceConfig } from '../../src/config.ts'
 import type { Trigger, OutboundMessage } from '../../src/vendor/dsh-core/index.ts'
+import type { WSClient } from '@larksuiteoapi/node-sdk'
 
 export type FeishuRequest=(method:string,path:string,body?:unknown,signal?:AbortSignal)=>Promise<any>
+export const feishuLifecycleEvents = ['im.chat.updated_v1', 'im.chat.disbanded_v1',
+  'im.chat.member.bot.deleted_v1', 'im.chat.member.bot.added_v1',
+  'im.chat.member.user.deleted_v1', 'im.chat.member.user.added_v1']
+export const feishuApi = (brand?: 'feishu' | 'lark') => brand === 'lark' ? 'https://open.larksuite.com/open-apis/' : 'https://open.feishu.cn/open-apis/'
 export class FeishuSource extends MessageSource {
   override get verificationCommand(){return this.config.feishu?.command??'/agent'}
   replay(scope:string|undefined,since:string){if(!this.config.feishu!.chats.includes(scope??''))throw Error('Chat not configured');return {key:this.config.id+':'+scope,since:String(Math.floor(Date.parse(since)/1000))}}
   async check(){if((this.config.feishu!.otherChats==='mentions'||this.config.feishu!.directMessages)&&!this.config.feishu!.liveEvents)throw Error('Enable Feishu liveEvents for mentions from other chats')}
   private live=new Map<string,ChildProcessWithoutNullStreams>()
+  private liveClient?:WSClient
+  private liveStarting?:Promise<void>
+  private liveRetryAt=0
   private sourceContext?:SourceContext
   private closing=false
   private pendingEvents=Promise.resolve()
@@ -29,8 +37,13 @@ export class FeishuSource extends MessageSource {
   private identityCache?:{key:string;until:number;value:{id:string;type:string;verified:boolean}}
   private identityPending?:{key:string;value:Promise<{id:string;type:string;verified:boolean}>}
   private readonly api:FeishuRequest
+  private readonly brand:'feishu'|'lark'
+  private readonly startsAt?:number
   constructor(config:SourceConfig,api?:FeishuRequest,private credentialFingerprint?:()=>string){
     super(config);if(!config.feishu)throw Error('Feishu configuration required')
+    const pairing=config.options?.feishuPairing as {brand?:unknown;startsAt?:unknown}|undefined
+    this.brand=pairing?.brand==='lark'?'lark':'feishu'
+    if(typeof pairing?.startsAt==='number'&&Number.isSafeInteger(pairing.startsAt)&&pairing.startsAt>=0)this.startsAt=pairing.startsAt
     if(!api&&!credentialFingerprint)this.credentialFingerprint=()=>{
       const hash=createHash('sha256').update(JSON.stringify(this.config.feishu))
       if(this.config.feishu!.cli){
@@ -49,13 +62,14 @@ export class FeishuSource extends MessageSource {
     signal?.throwIfAborted()
     const deadline=()=>signal?AbortSignal.any([signal,AbortSignal.timeout(15000)]):AbortSignal.timeout(15000)
     const appId=process.env[this.config.feishu!.appIdEnv??""],secret=process.env[this.config.feishu!.appSecretEnv??""]
+    const base=feishuApi(this.brand)
     const tokenKey=createHash('sha256').update(JSON.stringify([appId,secret])).digest('hex')
     const current=()=>this.tokenCredentialKey===tokenKey&&createHash('sha256').update(JSON.stringify([process.env[this.config.feishu!.appIdEnv??''],process.env[this.config.feishu!.appSecretEnv??'']])).digest('hex')===tokenKey
     if(tokenKey!==this.tokenCredentialKey){this.expiresAt=0;this.tokenCredentialKey=tokenKey}
     if(Date.now()>=this.expiresAt){
       if(!appId||!secret)throw Error('Feishu app credentials are not configured')
       const started=performance.now();let ok=false,token:any
-      try{const response=await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({app_id:appId,app_secret:secret}),signal:deadline()});token=await response.json();if(!response.ok||token.code!==0||!token.tenant_access_token)throw Error('Feishu tenant authentication failed');ok=true}
+      try{const response=await fetch(base+'auth/v3/tenant_access_token/internal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({app_id:appId,app_secret:secret}),signal:deadline()});token=await response.json();if(!response.ok||token.code!==0||!token.tenant_access_token)throw Error('Feishu tenant authentication failed');ok=true}
       finally{this.report({method:'POST',path:'auth/v3/tenant_access_token/internal',measurement:'http-request',ok,durationMs:performance.now()-started})}
       if(!current())throw Error('Feishu credentials changed during authentication')
       this.accessToken=token.tenant_access_token;this.expiresAt=Date.now()+Math.max(1,token.expire-60)*1000
@@ -63,7 +77,7 @@ export class FeishuSource extends MessageSource {
     if(!current())throw Error('Feishu credentials changed during authentication')
     const accessToken=this.accessToken
     return this.measured(method,path,'http-request',async()=>{
-    const response=await fetch('https://open.feishu.cn/open-apis/'+path,{method,headers:{authorization:'Bearer '+accessToken,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:deadline()})
+    const response=await fetch(base+path,{method,headers:{authorization:'Bearer '+accessToken,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:deadline()})
     if(!current())throw Error('Feishu credentials changed during request')
     if(path.includes('/resources/')&&response.ok){if(Number(response.headers.get('content-length')??0)>8000000)throw Error('Resource exceeds 8 MB');const data=Buffer.from(await response.arrayBuffer());if(data.length>8000000)throw Error('Resource exceeds 8 MB');return {binary:data.toString('base64'),mimeType:response.headers.get('content-type')}}
     const result=await response.json() as any
@@ -148,11 +162,14 @@ export class FeishuSource extends MessageSource {
   start(ctx:SourceContext){
     this.sourceContext=ctx
     for(const trigger of ctx.store.list<Trigger>('trigger'))if(trigger.source===this.config.id&&typeof trigger.meta.chat==='string'&&(this.config.feishu!.otherChats==='mentions'&&trigger.addressed||this.config.feishu!.directMessages&&trigger.meta.chatType==='p2p'))this.discovered.add(trigger.meta.chat)
-    if(this.closing||!this.config.feishu!.liveEvents||!this.config.feishu!.cli)return
-    const keys=['im.message.receive_v1',...(ctx.change&&this.config.feishu!.lifecycleEvents!==false?['im.chat.updated_v1','im.chat.disbanded_v1','im.chat.member.bot.deleted_v1','im.chat.member.bot.added_v1','im.chat.member.user.deleted_v1','im.chat.member.user.added_v1']:[])]
+    const config=this.config.feishu!
+    if(this.closing||!config.liveEvents)return
+    const lifecycle=ctx.change&&config.lifecycleEvents!==false?feishuLifecycleEvents:[]
+    if(!config.cli){this.startLiveClient(ctx,lifecycle);return}
+    const keys=['im.message.receive_v1',...lifecycle]
     for(const key of keys){
       if(this.live.has(key))continue
-      const health=key==='im.message.receive_v1'?this.config.id:this.config.id+':'+key,child=spawn(this.config.feishu!.cli,['event','consume',key,'--as','bot'],{stdio:['pipe','pipe','pipe'],shell:false})
+      const health=key==='im.message.receive_v1'?this.config.id:this.config.id+':'+key,child=spawn(config.cli,['event','consume',key,'--as','bot'],{stdio:['pipe','pipe','pipe'],shell:false})
       this.live.set(key,child);let ready=false,stderr=''
       child.stderr.on('data',chunk=>{stderr=(stderr+String(chunk)).slice(-65536)})
       createInterface({input:child.stderr}).on('line',line=>{
@@ -172,7 +189,46 @@ export class FeishuSource extends MessageSource {
       })
     }
   }
-  async close(){this.closing=true;await Promise.all([...this.live.values()].map(child=>new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Feishu event consumer did not stop within 10 seconds')),10000);child.once('close',()=>{clearTimeout(timer);resolve()});child.stdin.end();child.kill('SIGTERM')})));await this.pendingEvents}
+  private startLiveClient(ctx:SourceContext,lifecycle:string[]){
+    if(this.liveClient||this.liveStarting||Date.now()<this.liveRetryAt)return
+    const report=(status:string)=>{if(!this.closing)ctx.store.put('source-live',this.config.id,{status,event:'im.message.receive_v1',at:Date.now()})}
+    const config=this.config.feishu!
+    const appId=process.env[config.appIdEnv??''],appSecret=process.env[config.appSecretEnv??'']
+    if(!appId||!appSecret){report('credentials-required');return}
+    const enqueue=(event:unknown)=>{
+      // Acknowledge the platform event without waiting on Feishu reads or Router intake.
+      this.pendingEvents=this.pendingEvents.then(()=>this.closing?undefined:this.receiveEvent(event,ctx))
+        .catch(()=>report('warning'))
+    }
+    report('connecting')
+    this.liveStarting=(async()=>{
+      const {Domain,EventDispatcher,WSClient}=await import('@larksuiteoapi/node-sdk')
+      if(this.closing)return
+      const ignore=()=>{},logger={fatal:ignore,error:ignore,warn:ignore,info:ignore,debug:ignore,trace:ignore}
+      const dispatcher=new EventDispatcher({logger}).register({
+        'im.message.receive_v1':({message})=>enqueue({type:'im.message.receive_v1',chat_id:message?.chat_id,
+          chat_type:message?.chat_type,message_id:message?.message_id,mentions:message?.mentions?.map(m=>({id:m.id?.open_id}))}),
+        ...Object.fromEntries(lifecycle.map(key=>[key,(data:any)=>enqueue({
+          header:{event_type:key,event_id:data.event_id,create_time:data.create_time},event:data,
+        })])),
+      })
+      const failed=()=>{
+        if(this.liveClient!==client)return
+        this.liveClient=undefined
+        client.close({force:true})
+        this.liveRetryAt=Date.now()+30_000
+        report('error')
+      }
+      const client=new WSClient({appId,appSecret,domain:this.brand==='lark'?Domain.Lark:Domain.Feishu,logger,
+        handshakeTimeoutMs:12_000,wsConfig:{pingTimeout:20},
+        onReady:()=>report('ready'),onReconnecting:()=>report('reconnecting'),onReconnected:()=>report('ready'),onError:failed})
+      this.liveClient=client
+      void client.start({eventDispatcher:dispatcher})
+        .then(()=>{if(client.getConnectionStatus().state==='idle')failed()})
+        .catch(failed)
+    })().catch(()=>{this.liveRetryAt=Date.now()+30_000;report('error')}).finally(()=>{this.liveStarting=undefined})
+  }
+  async close(){this.closing=true;this.liveClient?.close({force:true});await this.liveStarting;await Promise.all([...this.live.values()].map(child=>new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Feishu event consumer did not stop within 10 seconds')),10000);child.once('close',()=>{clearTimeout(timer);resolve()});child.stdin.end();child.kill('SIGTERM')})));await this.pendingEvents}
   private text(item:any):string|undefined{
     const raw=item.body?.content??item.content??'{}'
     try{const content=typeof raw==='string'&&raw.startsWith('{')?JSON.parse(raw):{text:String(raw)};return content.text??JSON.stringify(content)}catch{return}
@@ -189,7 +245,10 @@ export class FeishuSource extends MessageSource {
     ctx.store.put('source-message-observation',key,{sourceId:this.config.id,scope:chat,messageId:item.message_id,hash,deleted:!!item.deleted,revised,version:at,checkedAt:Date.now()})
     return revised
   }
-  private async acceptItem(item:any,chat:string,ctx:SourceContext){return await record(ctx,'source-message-state',bodyDigest([this.config.id,chat,item.message_id]))||await this.observe(item,chat,ctx)?undefined:this.fromMessage(item,chat)}
+  private async acceptItem(item:any,chat:string,ctx:SourceContext){
+    if(this.startsAt!==undefined&&!(Number(item.create_time)>=this.startsAt))return
+    return await record(ctx,'source-message-state',bodyDigest([this.config.id,chat,item.message_id]))||await this.observe(item,chat,ctx)?undefined:this.fromMessage(item,chat)
+  }
   private async refreshKnown(ctx:SourceContext,activeRoots:Set<string>){
     if(!ctx.change||this.config.feishu!.lifecycleEvents===false)return
     const cursor=ctx.store.get<string>('plugin-state',this.config.id+':historyCursor'),page=await records<Trigger>(ctx,'trigger',{sourceId:this.config.id,cursor,limit:this.config.feishu!.historyCheckLimit??20})
@@ -228,7 +287,7 @@ export class FeishuSource extends MessageSource {
       const healthKey=this.config.id+':chat:'+chat
       try{
       const key=this.config.id+':'+chat
-      const since=ctx.store.get<{since:string}>('source-cursor',key)?.since??String(Math.floor(Date.now()/1000)-10)
+      const since=ctx.store.get<{since:string}>('source-cursor',key)?.since??String(Math.floor((this.startsAt??Date.now()-10_000)/1000))
       if(!ctx.store.get('source-cursor',key))ctx.store.put('source-cursor',key,{since})
       const progressKey=this.config.id+':history:'+chat,saved=ctx.store.get<any>('plugin-state',progressKey),window=saved?.since===since?saved:{since,boundary:String(Math.floor(Date.now()/1000)),page:''}
       const boundary=window.boundary

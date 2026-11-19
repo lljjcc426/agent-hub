@@ -34,6 +34,7 @@ import {
   Inbox,
   Menu,
   Settings,
+  Plug,
   X,
   ChevronRight,
   LoaderCircle,
@@ -65,6 +66,7 @@ import { SidebarSeparator } from "./sidebar-separator.tsx";
 import { usePanelPresence } from './panel-presence.ts';
 import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
+const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
@@ -479,6 +481,7 @@ function App() {
     let previousPath = location.pathname;
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
+      if (location.pathname === "/configure" && location.hash === "#integrations/library/app") history.replaceState(null, "", "/configure#connectors");
       if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
       if (location.pathname === "/chat" && previousHash !== location.hash) void refreshList();
       const next = location.pathname + location.search + location.hash;
@@ -734,6 +737,7 @@ function Chat(p: ChatProps) {
   const workspacePage = workspaceGroups(L).flatMap(group => group.items).find(item => hash === "advanced/" + item.route);
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
+  const connectorsRoute=configuring&&hash==='connectors';
   const marketTools=hash==='integrations/tools';
   const views=useWorkspaceViews();
   const pluginId=configuring&&hash.startsWith('plugin/')?hash.slice(7):null;
@@ -755,6 +759,7 @@ function Chat(p: ChatProps) {
     models: L("Model connections", "模型连接"),
     connections: L("Conversation entries", "会话入口"),
     integrations: L("Tools & MCP", "工具与 MCP"),
+    connectors: L("Connectors", "连接器"),
     prompts: L("Behavior rules", "行为规则"),
     advanced: L("Settings", "设置"),
     usage: L("Usage guide", "使用指引"),
@@ -1348,7 +1353,7 @@ function Chat(p: ChatProps) {
             tabIndex={-1}
             inert={configuring && narrow && menu}
           >
-            {configuring ? <header className="chat-header">
+            {configuring && (!connectorsRoute || narrow) ? <header className="chat-header">
               <button
                 className="icon-button mobile-menu"
                 ref={menuButton}
@@ -1359,18 +1364,19 @@ function Chat(p: ChatProps) {
               >
                 <Menu size={20} />
               </button>
-              <div className="studio-breadcrumb">
+              {!connectorsRoute && <div className="studio-breadcrumb">
                 <span>{L("Settings","设置")}</span><ChevronRight size={14}/>{workspacePage && <><a href="/configure#workspace">{L("Workspace settings","工作区设置")}</a><ChevronRight size={14}/></>}<strong>{pageTitle}</strong>
-              </div>
+              </div>}
             </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
             {teamSettings?<TeamSettings L={L} members={participants.map(member=>({...member,model:member.kind==='router'?ready?.model:workers.find(w=>w.id===member.id)?.model}))}/>:null}
             {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}/>:null}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
+            {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
             <Configuration
-              visible={configuring&&!general&&!workspaceIndex&&!teamSettings&&!automationRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!general&&!workspaceIndex&&!teamSettings&&!automationRoute&&!connectorsRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}
@@ -1385,6 +1391,7 @@ function Chat(p: ChatProps) {
             >
               <div className="conversation-lane">
                 <div className="chat-float chat-float-start roppo-ui">
+                  <a href="/configure#connectors" className="icon-button" aria-label={L("Connectors","连接器")} title={L("Connectors","连接器")}><Plug size={19}/></a>
                   <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>

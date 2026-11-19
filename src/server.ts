@@ -10,6 +10,7 @@ import {LocalDiagnostics,LocalDiagnosticError} from './local-diagnostics.ts'
 import {artifactCatalog,ArtifactCatalogCursorError} from './artifact-catalog.ts'
 import {WorkerTemplates,WorkerTemplateError} from './worker-templates.ts'
 import {ConnectorManagement,ConnectorError} from './connector-management.ts'
+import {FeishuPairing,feishuGroupSelection} from './feishu-pairing.ts'
 import {ExecutionTrace,TraceError} from './execution-trace.ts'
 import {ResourceUsage} from './resource-usage.ts'
 import {CredentialReferences} from './credential-references.ts'
@@ -78,6 +79,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   let changing=false,unavailable=false,runtimeClosed=false,endpoint='',stopping=false,closingRuntime:Promise<void>|undefined
   let delegationServer:Awaited<ReturnType<typeof serveDelegation>>|undefined
   const onboarding=new Onboarding(()=>runtime,options.configurationPreview===true)
+  const feishuPairing=new FeishuPairing(()=>runtime,onboarding,join(runtime.config.stateDir,'setup','feishu-pairing.json'))
   const sessions=new OperatorSessions(),entries=new EntrySetup(()=>runtime,onboarding,()=>endpoint,options.configurationPreview===true,options.clientHome,options.clientName)
   async function stopRuntime(){if(!runtimeClosed){library.close(runtime);runtimeClosed=true;closingRuntime=(async()=>{await delegationServer?.close();delegationServer=undefined;await runtime.close()})()}await closingRuntime}
   const localDiagnostics=new LocalDiagnostics(()=>runtime)
@@ -331,8 +333,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(path==='/api/connectors'||path.startsWith('/api/connectors/')){
       requireCurrentOperator(req)
       if(path==='/api/connectors'&&req.method==='GET'){send(res,200,connectors.snapshot());return}
+      if(path==='/api/connectors/feishu/setup'&&req.method==='GET'){send(res,200,options.configurationPreview?{stage:'idle'}:feishuPairing.status());return}
       if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
       const input=await operatorBody(req)
+      if(path==='/api/connectors/feishu/setup/start'){z.object({}).strict().parse(input);send(res,200,feishuPairing.start());return}
+      if(path==='/api/connectors/feishu/setup/refresh'){const {id}=z.object({id:z.string().uuid()}).strict().parse(input);send(res,200,await feishuPairing.refresh(id));return}
+      if(path==='/api/connectors/feishu/setup/apply'){
+        const prepared=await feishuPairing.prepare(feishuGroupSelection.parse(input))
+        requireCurrentOperator(req)
+        changing=true
+        try{send(res,200,await feishuPairing.apply(prepared,rebuild,()=>requireApplyOperator(req)))}finally{changing=false}
+        return
+      }
       if(path==='/api/connectors/repair/read'){send(res,200,connectors.repairRead(input));return}
       if(path==='/api/connectors/repair/plan'){const p=connectors.repairPlan(input);send(res,200,onboarding.sourceRepairPlan(p.revision,p.source,p.credentials,p.revalidate));return}
       if(path==='/api/connectors/validate'){send(res,200,connectors.validate(input));return}
@@ -857,7 +869,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(runtime.config.port, runtime.config.http?.listenHost??'127.0.0.1', resolve) })
   let webhookListener:Awaited<ReturnType<typeof serveWebhooks>>|undefined
   try{if(runtime.config.webhooks&&!options.configurationPreview)webhookListener=await serveWebhooks(()=>runtime,runtime.config.webhooks.port,()=>!changing&&!unavailable&&!runtimeClosed)}catch(error){server.close();throw error}
-  server.once('close',()=>{void webhookListener?.close().catch(()=>{})})
+  server.once('close',()=>{feishuPairing.close();void webhookListener?.close().catch(()=>{})})
   const address = server.address() as { port: number }
   runtime.endpoint='http://'+(runtime.config.http?.listenHost==='::1'?'[::1]':'127.0.0.1')+':'+address.port
   endpoint=runtime.endpoint
@@ -865,7 +877,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   try{atomicPrivateFile(connectionFile,JSON.stringify({application:'agent-hub',version:1,url:endpoint,accessToken:token},null,2)+'\n')}catch(error){await new Promise<void>(r=>server.close(()=>r()));throw error}
   try{delegationServer=runtime.delegation.enabled?await serveDelegation(runtime.delegation,runtime.delegation.preferredPort):undefined}catch(error){await new Promise<void>(resolve=>server.close(()=>resolve()));await runtime.close();throw error}
   runtime.start()
-  return {server,url:endpoint,webhookUrl:webhookListener?.url,operatorUrl:sessions.link(runtime.config.http?.publicOrigin??endpoint),tokenPath,connectionFile,get runtime(){return runtime},async closeRuntime(){stopping=true;await webhookListener?.close().catch(()=>{});await stopRuntime()}}
+  return {server,url:endpoint,webhookUrl:webhookListener?.url,operatorUrl:sessions.link(runtime.config.http?.publicOrigin??endpoint),tokenPath,connectionFile,get runtime(){return runtime},async closeRuntime(){stopping=true;feishuPairing.close();await webhookListener?.close().catch(()=>{});await stopRuntime()}}
 }
 function send(response: ServerResponse, status: number, value: unknown) {
   if (!response.headersSent) response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })

@@ -11,7 +11,8 @@ type Language='en'|'zh-CN'
 type Filter=CapabilityKind|'all'
 type Detail=Capability&{body?:string}
 const icons={mcp:Cable,skill:BookOpen,plugin:Package,app:Plug,tool:Wrench}
-const labels={all:['All','全部'],mcp:['MCP servers','MCP 服务'],skill:['Skills','Skills'],plugin:['Plugins','插件'],app:['App connections','应用连接'],tool:['Tools','工具']} as const
+const labels={all:['All','全部'],mcp:['MCP servers','MCP 服务'],skill:['Skills','Skills'],plugin:['Plugins','插件'],app:['Connectors','连接器'],tool:['Tools','工具']} as const
+const filters = ['all', 'mcp', 'skill', 'plugin', 'tool'] as const
 const states:Record<CapabilityStatus,[string,string]>={builtin:['Built in','内置'],configured:['Configured','已配置'],cli:['CLI profile','CLI 配置'],connected:['Reported by server','服务已响应'],disabled:['Disabled','未启用'],conditional:['Task dependent','按任务启用'],unavailable:['Unavailable','暂不可用'],candidate:['Candidate','候选'],installed:['Installed','已安装'],declared:['Declared by plugin','插件声明'],cached:['Last seen','上次读取']}
 const base='/configure#integrations/library'
 const sourceOf=(item:Capability)=>item.sourceGroup??item.source
@@ -69,18 +70,20 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
   const all=data?.items??[],term=query.trim().toLocaleLowerCase()
   const linked=id?all.find(item=>item.id===id):undefined
   const activeFilter=id?menuFilter:filter
+  const showApps=linked?.kind==='app'
   useEffect(()=>{
     if(!linked||location.hash!=='#integrations/library/item/'+linked.id)return
     if(source&&sourceOf(linked)!==source)setSource(sourceOf(linked))
     if(menuFilter!=='all'&&menuFilter!==linked.kind)setMenuFilter(linked.kind)
     if(!matchesSearch(linked,term))setQuery('')
   },[linked,source,menuFilter,term])
-  const sources=useMemo(()=>Array.from(new Set(data?.items.map(sourceOf))).sort(sourceOrder),[data])
+  const sources=useMemo(()=>Array.from(new Set(data?.items.filter(item=>showApps||item.kind!=='app').map(sourceOf))).sort(sourceOrder),[data,showApps])
   const activeSource=sources.includes(source)?source:''
-  const inSource=activeSource?all.filter(item=>sourceOf(item)===activeSource):all
+  const inSource=all.filter(item=>(showApps||item.kind!=='app')&&(!activeSource||sourceOf(item)===activeSource))
   const groups=useMemo(()=>{
     const result=new Map<string,Capability[]>()
     for(const item of data?.items??[]){
+      if(item.kind==='app'&&!showApps)continue
       const origin=sourceOf(item)
       if((activeSource&&origin!==activeSource)||(activeFilter!=='all'&&item.kind!==activeFilter))continue
       if(!matchesSearch(item,term))continue
@@ -90,7 +93,7 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
     }
     for(const items of result.values())items.sort((a,b)=>capabilityKinds.indexOf(a.kind)-capabilityKinds.indexOf(b.kind)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id))
     return [...result].sort(([a],[b])=>sourceOrder(a,b))
-  },[data,activeSource,activeFilter,term])
+  },[data,activeSource,activeFilter,term,showApps])
   useEffect(()=>{if(list.current)list.current.scrollTop=0},[activeSource,activeFilter,term])
   const selected=id?linked:groups[0]?.[1][0]
   const selectedId=selected?.id
@@ -114,7 +117,7 @@ export function CapabilityLibrary({language,route}:{language:Language;route:stri
       <div className="cap-actions"><label className="market-search"><Search size={16}/><InputControl ref={search} aria-label={L('Search capabilities or tool names','搜索能力或工具名')} placeholder={L('Search capabilities or tool names','搜索能力或工具名')} value={query} onChange={e=>changeQuery(e.target.value)}/>{query?<button aria-label={L('Clear search','清空搜索')} onClick={()=>changeQuery('')}><X size={14}/></button>:<kbd>/</kbd>}</label>
       <button aria-label={L('Refresh library','刷新能力库')} title={L('Refresh library','刷新能力库')} onClick={()=>setRefresh(v=>v+1)}><RefreshCw size={16}/></button></div></header>
     <MarketNavigation tab="library" language={language}/>
-    <div className="cap-toolbar"><nav className="cap-filters" aria-label={L('Capability types','能力类型')}>{(['all',...capabilityKinds] as const).map(k=><button key={k} aria-pressed={k===activeFilter} onClick={()=>filterTo(k)}>{labels[k][i]} <span>{k==='all'?inSource.length:inSource.filter(r=>r.kind===k).length}</span></button>)}</nav>
+    <div className="cap-toolbar"><nav className="cap-filters" aria-label={L('Capability types','能力类型')}>{filters.map(k=><button key={k} aria-pressed={k===activeFilter} onClick={()=>filterTo(k)}>{labels[k][i]} <span>{k==='all'?inSource.length:inSource.filter(r=>r.kind===k).length}</span></button>)}</nav>
       <SelectField aria-label={L('Filter by source','按来源筛选')} value={activeSource} onChange={e=>{setSource(e.target.value);if(id)filterTo(activeFilter)}}>
         <option value="">{L('All sources','全部来源')}</option>
         {sources.map(name=><option key={name} value={name}>{name}</option>)}

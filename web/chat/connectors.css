@@ -1,0 +1,142 @@
+.connectors-scroll {
+  height: 100%;
+  overflow: auto;
+}
+.connectors-page {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  padding: 40px clamp(20px, 5cqi, 60px) 48px;
+}
+.connectors-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 18px 32px;
+}
+.connectors-heading h1 {
+  margin: 0;
+  font-size: var(--roppo-font-page);
+  line-height: 1.25;
+  letter-spacing: -.025em;
+}
+.connectors-heading .rp-input {
+  width: min(100%, 300px);
+}
+.connectors-filter {
+  margin-block: 30px 16px;
+}
+.connectors-filter .rp-choice {
+  min-width: 100px;
+}
+.connector-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connector-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 76px;
+  padding: 12px 0;
+  border-block-start: 1px solid var(--rp-line);
+}
+.connector-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--rp-line);
+  border-radius: var(--rp-corner-field);
+  background: var(--rp-panel);
+}
+.connector-identity {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.connector-identity strong {
+  font-size: var(--roppo-font-body);
+  font-weight: 630;
+}
+.connector-identity span {
+  color: var(--rp-muted);
+}
+.connector-link {
+  white-space: nowrap;
+}
+.connector-empty,
+.connector-notice,
+.connector-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding-block: 16px;
+  color: var(--rp-muted);
+}
+.connector-notice {
+  color: var(--rp-ink);
+}
+.connector-progress {
+  justify-content: center;
+  min-height: 178px;
+}
+.connector-scan {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding-block: 6px 2px;
+}
+.connector-scan img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  margin-bottom: 5px;
+  border-radius: var(--rp-corner-field);
+  background: white; /* The QR code needs a light quiet zone in both themes. */
+}
+.connector-scan strong {
+  font-weight: 620;
+}
+.connector-group-picker {
+  display: grid;
+  gap: 12px;
+}
+.connector-group-options {
+  max-height: min(41dvh, 360px);
+  overflow: auto;
+}
+.connector-group-options .rp-check {
+  display: flex;
+  min-height: 44px;
+  gap: 12px;
+  padding: 9px 5px;
+  border-bottom: 1px solid var(--rp-line);
+  overflow-wrap: anywhere;
+}
+.connector-group-options .rp-check:last-child {
+  border-bottom: 0;
+}
+.connector-group-empty,
+.connector-pairing-error p {
+  margin-block: 0 12px;
+}
+.connector-pairing-error {
+  margin-top: 12px;
+}
+@container chat-main (max-width: 710px) {
+  .connector-list { grid-template-columns: minmax(0, 1fr); }
+}
+@container chat-main (max-width: 460px) {
+  .connectors-page { padding-top: 24px; }
+  .connectors-heading .rp-input { width: 100%; }
+  .connectors-filter { margin-top: 20px; }
+}

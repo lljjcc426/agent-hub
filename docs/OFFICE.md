@@ -40,6 +40,10 @@ flowchart LR
 
 ### 飞书配置
 
+在 Chat 左上角打开「连接器」，选择飞书。用飞书扫码确认创建机器人，再把机器人拉进需要接入的群。回到 Roppo 刷新群列表，可一次选择多个群。应用凭据保存在本机，选群后开始接收消息。租户审批未完成时，可在飞书确认后回来重试。
+
+已有应用可继续用会话入口或以下命令接入。
+
 ```sh
 ./start.sh office init feishu .local/office/feishu --chat TEST_CHAT_ID
 ```

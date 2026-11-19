@@ -27,6 +27,7 @@
   "dependencies": {
     "@assistant-ui/react": "0.15.32",
     "@assistant-ui/react-markdown": "0.14.24",
+    "@larksuiteoapi/node-sdk": "1.76.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@wecom/aibot-node-sdk": "1.0.7",
     "adm-zip": "0.6.1",
@@ -47,6 +48,7 @@
     "string-width": "7.2.0",
     "tsx": "4.23.15",
     "unified": "11.0.5",
+    "uqr": "0.1.2",
     "wrap-ansi": "9.0.2",
     "ws": "8.22.1",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",

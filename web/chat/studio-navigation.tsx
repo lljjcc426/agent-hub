@@ -157,6 +157,11 @@ export function StudioRail({
             <ArrowLeft size={17} />
             <span>{L('Back to chat', '返回对话')}</span>
           </a>
+          <NavLink href="/configure#connectors" icon={<Plug size={17} />}
+            title={L('Connectors', '连接器')} aria-label={L('Connectors', '连接器')}
+            current={hash === 'connectors'} onClick={() => { if (mobile) close() }}>
+            {L('Connectors', '连接器')}
+          </NavLink>
           <h2 className="rail-title">{L('Settings', '设置')}</h2>
           <label className="settings-find">
             <Search size={16} />

@@ -1,0 +1,17 @@
+.market-app-brand {
+  display: inline-flex;
+  position: relative;
+  flex-shrink: 0;
+}
+.market-app-brand img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.market-app-brand .market-brand-dark,
+:root[data-theme="dark"] .market-app-brand .market-brand-light {
+  display: none;
+}
+:root[data-theme="dark"] .market-app-brand .market-brand-dark {
+  display: block;
+}

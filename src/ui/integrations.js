@@ -203,7 +203,7 @@ function controlIntegrations() {
   }
   if (!integrations.data.tools.length) cards.append(opEmpty(L('No tool connections configured', '尚未配置工具连接')))
   tools.append(cards); root.append(tools)
-  const apps = el('section'); apps.append(el('h2', '', L('Apps', '应用连接')))
+  const apps = el('section'); apps.append(el('h2', '', L('Connector details', '连接器详情')))
   const grid = el('div', 'integration-grid')
   const adapterNames = { local: L('Local operator', '本地操作员'), delegation: L('Delegated team', '委派团队'), webhook: L('HTTP events', 'HTTP 事件'), wecom: L('WeCom', '企业微信'), feishu: L('Lark', 'Feishu/飞书') }
   for (const adapter of integrations.data.adapters) {

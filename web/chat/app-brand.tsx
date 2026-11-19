@@ -5,6 +5,7 @@ import slack from '../../src/ui/assets/slack.png?url'
 import linear from '../../src/ui/assets/linear.svg?url'
 import github from '../../src/ui/assets/github-black.svg?url'
 import githubDark from '../../src/ui/assets/github-white.svg?url'
+import './app-brand.css'
 
 const logos:Record<string,string>={feishu,wecom,slack,linear,github}
 export function AppBrand({id,kind,category,size}:{id?:string;kind?:string;category?:string;size:number}){

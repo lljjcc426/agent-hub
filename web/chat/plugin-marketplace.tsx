@@ -65,7 +65,7 @@ function Marketplace({route,language}:MarketProps){
   const contentType=(p:Pick<CatalogPlugin,'category'>)=>p.category==='source'?'app':'plugin'
   const installedItems=(data?.installed??[]).filter(p=>tab!=='updates'||p.update||p.active&&p.active.digest!==p.selected.digest)
   const inventory=tab==='market'?all.map(({plugin})=>plugin):installedItems
-  const categories={all:L('All','全部'),plugin:L('Plugins','插件'),skill:L('Skills','技能'),mcp:'MCP',app:L('App connections','应用连接')}
+  const categories={all:L('All','全部'),plugin:L('Plugins','插件'),skill:L('Skills','技能'),mcp:'MCP',app:L('Connectors','连接器')}
   const matches=(p:Pick<CatalogPlugin,'name'|'category'>)=>(category==='all'||contentType(p)===category)&&Object.values(p.name).some(v=>v.toLowerCase().includes(query.toLowerCase()))
   const entries=all.filter(({plugin})=>matches(plugin)),items=installedItems.filter(matches)
   const updateCount=data?.installed.filter(p=>p.update||p.active&&p.active.digest!==p.selected.digest).length??0

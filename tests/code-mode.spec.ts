@@ -20,8 +20,8 @@ it('composes host tools with a 32-read window, an exclusive write, and stable ca
   const barrier=new Promise<void>(resolve=>{release=resolve}),atLimit=new Promise<void>(resolve=>{full=resolve})
   const run=execute(`
     const calls = Array.from({length:33}, (_, n) => tools.router_read({n}));
-    calls.push(tools.write_marker({n:100}));
-    calls.push(tools.router_read({n:101}));
+    calls.push(tools.roppo_write_marker({n:100}));
+    calls.push(tools.roppo_router_read({n:101}));
     return (await Promise.all(calls)).map(r => JSON.parse(r.contentItems[0].text).n);
   `,{onTool:async(name,args,id)=>{
     started.push({name,id})
@@ -48,10 +48,11 @@ it('limits nested calls to the granted tool set, validated arguments, and the ho
     const good = await tools.router_read({n:1});
     const over = await tools.router_read({n:2});
     return [Object.keys(tools), [invalid.success, good.success, over.success],
+      typeof tools.roppo_chat_opening,
       [typeof process, typeof require, typeof fetch, typeof WebSocket]];
   `,{options:{tools:['router_read','code_mode'],maxToolCalls:2},tools:[spec('router_read'),spec('chat_opening')],
     onTool:async(_name,args)=>{seen.push(args);return reply('ok')}})
-  expect(result).toEqual(reply(JSON.stringify([['router_read'],[false,true,false],['undefined','undefined','undefined','undefined']])))
+  expect(result).toEqual(reply(JSON.stringify([['router_read'],[false,true,false],'undefined',['undefined','undefined','undefined','undefined']])))
   expect(seen).toEqual([{n:1}])
   for(const extra of [{options:{tools:['router_read']}},{role:'subagent' as const},{ephemeral:true}]){
     expect(withCodeMode(request(extra)).tools?.map(tool=>tool.name)).not.toContain('code_mode')

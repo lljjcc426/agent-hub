@@ -18,7 +18,7 @@ const message = (text: string, success: boolean): ToolResult => ({success,conten
 export const codeModeTool = {
   type:'function',
   name:'code_mode',
-  description:'Run bounded async JavaScript to combine already authorized host tools. Use tools.<name>(args) for the tool names and JSON arguments in this turn. Each call returns {success, contentItems}. Use Promise.all for independent reads and return the compact evidence or computed result. Mutating tools use their usual approvals and receipts. The script has no filesystem, network, Node, or shell APIs of its own.',
+  description:'Run bounded async JavaScript to combine already authorized host tools. Call tools.<name>(args) with the active names and JSON arguments. OpenCode roppo_ names also work. Each call returns {success, contentItems}. Use Promise.all for independent reads and return only the needed data. Mutating tools keep their normal approvals and receipts. The script has no filesystem, network, Node, or shell APIs of its own.',
   inputSchema:{type:'object',additionalProperties:false,required:['source'],properties:{source:{type:'string',minLength:1,maxLength:maxSource}}},
 } satisfies ToolSpec
 
@@ -99,7 +99,9 @@ async function runCell(source:string, tools:ToolSpec[], invoke:Invoke, parent:st
     '(async(invoke)=>{',
     'delete globalThis.__roppoInvoke;',
     'const tools=Object.create(null);',
-    'for(const name of '+JSON.stringify([...allowed.keys()])+') tools[name]=async(args={})=>JSON.parse(await invoke(name,JSON.stringify(args)));',
+    'const names='+JSON.stringify([...allowed.keys()])+';',
+    'for(const name of names) tools[name]=async(args={})=>JSON.parse(await invoke(name,JSON.stringify(args)));',
+    'for(const name of names) if(!Object.hasOwn(tools,"roppo_"+name)) Object.defineProperty(tools,"roppo_"+name,{value:tools[name]});',
     'Object.freeze(tools);',
     'const result=await (async()=>{',source,'})();',
     'return JSON.stringify(result ?? null);',

@@ -473,7 +473,7 @@ export class Runtime {
       let delivered!:()=>void
       const opening=new Promise<void>(resolve=>{delivered=resolve})
       return this.runModel({...request,requiresChatOpening:true,tools:[chatOpeningTool,...request.tools??[]],
-        instructions:request.instructions+'\nWhen the task needs tools, emit chat_opening (roppo_chat_opening in OpenCode) as the FIRST tool call of your first response. Use a brief, specific opening in the user language. In the SAME response, emit any independent tools that can already start. Do not wait for the opening result. Answer direct questions without tools.',
+        instructions:request.instructions+'\nFor tasks using tools, begin with chat_opening (roppo_chat_opening in OpenCode) and a brief, specific sentence in the user language. The opening is a notification and returns no task data. Include it as the first item in the SAME response as the first work tools; do not send an opening-only response when work can start. Answer direct questions without tools.',
         chatOpeningReady:async()=>{
           if(!this.chat.opening(triggerId))await Promise.race([opening,delay(1000,undefined,{signal:request.signal,ref:false})])
           return !!this.chat.opening(triggerId)

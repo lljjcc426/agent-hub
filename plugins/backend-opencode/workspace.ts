@@ -104,7 +104,7 @@ export default {id:'roppo-workspace',server:async function () {
   } : {}),
   'tool.definition': async (input,output) => {
    if (input.toolID==='webfetch' && policy.tools.includes('webfetch')) {
-    output.description += '\\nReturns relevant passages and the source URL for one page. Use webfetch_batch for several known URLs.'
+    output.description += '\\nReturns relevant passages and the source URL for one page. Use this for a single URL. Use one webfetch_batch for multiple known URLs.'
    }
   },
   'tool.execute.before': async (input,output) => {

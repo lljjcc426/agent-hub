@@ -48,7 +48,7 @@ export const opencodeDriver:CliDriver={
    ...(guardPlugin?{external_directory:{'*':'deny',[cwd]:'allow',[join(cwd,'**')]:'allow'}}:{})}
   const tools={'*':false,'roppo_*':true,...Object.fromEntries(allowed.map(tool=>[tool,true]))}
   const agentPrompt=request.instructions+(allowed.includes('webfetch_batch')
-   ?'\nFor two or more known URLs, use one OpenCode webfetch_batch call for parallel fetching with source excerpts. If the task supplies the URLs and asks for a separate search, the fetch does not depend on search results. Put any required roppo_chat_opening first, then websearch and webfetch_batch, all in the same response. If the task needs URLs discovered by the search, batch-fetch those URLs in the next response.'
+   ?'\nUse webfetch_batch for multiple known URLs even when the request calls the individual operations webfetch. The batch is the parallel implementation of those reads and returns source excerpts per URL. With supplied URLs and an independent search, emit any required roppo_chat_opening, websearch and webfetch_batch together in the first response. Wait for search results only when the URLs must be discovered first.'
    :'')
   const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
   const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},

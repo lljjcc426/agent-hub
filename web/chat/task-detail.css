@@ -159,8 +159,30 @@
 .task-run-layer :is(.task-run-fold,.task-run-ticket) p { margin: 0; padding: 0 7px 8px; color: var(--team-muted); font-size: 12px; }
 .task-run-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 8px; font-size: 12px; font-weight: 650; text-align: start; }
 .task-run-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-.task-run-more { min-height: 32px; padding: 0 7px; }
-.task-run-timeline + .task-run-more { margin-inline-start: 24px; }
+.task-run-layer .task-run-more {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  min-height: 34px;
+  margin: 12px auto 6px;
+  padding: 4px 13px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--team-line);
+  border-radius: 999px;
+  background: var(--team-surface);
+  color: var(--team-ink);
+  font-size: 12px;
+  font-weight: 620;
+  transition: background-color 160ms ease, transform 170ms var(--team-ease);
+}
+.task-run-more svg { flex: none; color: var(--team-muted); transition: transform 170ms var(--team-ease); }
+@media (hover: hover) {
+  .task-run-layer .task-run-more:hover { background: var(--rp-soft); }
+  .task-run-more:hover svg { transform: translateY(2px); }
+}
+.task-run-more:active { transform: scale(.96); }
 .task-run-plan { border-top: 1px solid var(--team-line); margin-top: 12px; padding: 10px 0 0; font-size: 13px; }
 .task-run-plan h4 { margin-block: 0 8px; }
 .task-run-plan ol { padding-inline-start: 18px; }
@@ -178,6 +200,9 @@
   .task-run-title h3 { font-size: 17px; }
 }
 @media (pointer: coarse) {
-  .task-run-layer :is(.task-run-record,.task-run-link,.task-run-tabs button,.task-run-heading button,.rp-button) { min-height: 44px; }
+  .task-run-layer :is(.task-run-record,.task-run-link,.task-run-more,.task-run-tabs button,.task-run-heading button,.rp-button) { min-height: 44px; }
   .task-run-heading button { width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-run-layer .task-run-more, .task-run-more svg { transition: none; transform: none; }
 }

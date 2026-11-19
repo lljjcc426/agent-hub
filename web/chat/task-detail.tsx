@@ -133,20 +133,29 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   }, [tab, tool])
 
   useLayoutEffect(() => {
-    const items = revealedList.current?.children
+    const revealed = revealedList.current
     revealedList.current = null
-    const firstNew = items?.item(taskListPreviewLimit)?.querySelector<HTMLButtonElement>('.task-run-record')
+    if (!revealed) return
+    const firstNew = revealed.children.item(taskListPreviewLimit)?.querySelector<HTMLButtonElement>('.task-run-record')
     firstNew?.focus({preventScroll:true})
     firstNew?.scrollIntoView({block:'nearest'})
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const easing = getComputedStyle(revealed).getPropertyValue('--team-ease').trim() || 'ease-out'
+    const rows = Array.from(revealed.children).slice(taskListPreviewLimit,taskListPreviewLimit+8)
+    const animations = rows.map((row,index) => row.animate([
+      { opacity: .25, transform: 'translateY(9px)' },
+      { opacity: 1, transform: 'translateY(0)' },
+    ], { duration: 260, delay: index*26, easing, fill: 'backwards' }))
+    return () => animations.forEach(animation => animation.cancel())
   }, [showAll])
 
   function showAllButton(kind: Tab, count: number, listId: string) {
     if (showAll[kind] || count <= taskListPreviewLimit) return null
-    return <button type="button" className="task-run-link task-run-more" aria-controls={listId} aria-expanded={false}
+    return <button type="button" className="task-run-more" aria-controls={listId} aria-expanded={false}
       onClick={event => {
         revealedList.current = event.currentTarget.ownerDocument.getElementById(listId)
         setShowAll(current => ({...current,[kind]:true}))
-      }}>{L('Show all','展开全部')}</button>
+      }}>{L('Show all','展开全部')} <ChevronDown size={13} aria-hidden="true"/></button>
   }
 
   function jump(id: string) {

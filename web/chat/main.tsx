@@ -13,6 +13,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   AssistantRuntimeProvider,
@@ -76,11 +77,16 @@ const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default
 const UsageStatisticsPage = lazy(() => import("./usage-statistics.tsx").then(module => ({default: module.UsageStatisticsPage})));
 const CommitTrailPanel=lazy(()=>import("./commit-trail-panel.tsx"));
 const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDetail})));
+const FirstChatWelcome=lazy(()=>import("./chat-personalization.tsx").then(m=>({default:m.FirstChatWelcome})));
+const ChatPersonalizationDialog=lazy(()=>import("./chat-personalization.tsx").then(m=>({default:m.ChatPersonalizationDialog})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { FilesPanel } from "./files.tsx";
-import { AgentAvatar } from "./agent-avatar.tsx";
+import { AgentAvatar, RoppoAppearanceContext } from "./agent-avatar.tsx";
+import type {ChatPersonalization,ChatPreferences} from '../../src/chat-personalization.ts';
+import type {ChatArrival} from './chat-arrival.ts';
+import {chatPersonalizationCopy} from './personalization-copy.ts';
 
 import {useHandoffPlayer,type HandoffCursor} from './use-handoff.ts';
 import {ChatCompanion} from "./companion.tsx";
@@ -435,6 +441,13 @@ function App() {
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
     [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>(),
     [ready, setReady] = useState<Ready | null>(null);
+  const [personalization,setPersonalization] = useState<ChatPersonalization>();
+  const receivePersonalization=useCallback((next:ChatPersonalization)=>{
+    setPersonalization(current=>!current||next.revision>=current.revision?next:current);
+  },[]);
+  const [setupDismissed,setSetupDismissed] = useState(false);
+  const [editor,setEditor] = useState<{mode:'first'|'edit';open:boolean}>();
+  const focusAfterSetup=useRef(false);
   const spaceVersion=useRef(0);
   const currentId=useRef(id);currentId.current=id;
   const sendTransport=useMemo<Parameters<typeof useMessageSend>[0]>(()=>({
@@ -483,7 +496,50 @@ function App() {
       if(!currentId.current)carryInitialDraft(space.conversation.id);
     }
     setId(linked?.conversation || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
-  }, [recoverInitial,resetSends]);
+    receivePersonalization(space.personalization);
+  }, [recoverInitial,resetSends,receivePersonalization]);
+  function focusComposer() {
+    if(location.pathname==='/chat')document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus({preventScroll:true});
+  }
+  function openPersonalization(mode:'first'|'edit') {
+    if(personalization)setEditor({mode,open:true});
+  }
+  function closePersonalization() {
+    setEditor(current=>current?{...current,open:false}:undefined);
+  }
+  async function savePersonalization(preferences:ChatPreferences,arrival?:ChatArrival) {
+    if(!personalization)return;
+    let next:ChatPersonalization;
+    try{
+      next=await api<ChatPersonalization>('/personalization',{action:'save',revision:personalization.revision,preferences},
+        'POST',AbortSignal.timeout(12000));
+    }catch(error){
+      if(error instanceof ApiError&&error.code==='personalization_conflict')await refreshList().catch(()=>{});
+      throw error;
+    }
+    focusAfterSetup.current=editor?.mode==='first';
+    if(arrival&&location.pathname==='/chat'){
+      await arrival(
+        ()=>flushSync(()=>receivePersonalization(next)),
+        dialog=>{
+          if(!dialog?.open){closePersonalization();return}
+          // The trace already owns the exit. Close the native layer without running a second one.
+          flushSync(closePersonalization);
+          dialog.close();
+        },
+      );
+    }else{
+      receivePersonalization(next);
+      closePersonalization();
+    }
+  }
+  function skipPersonalization() {
+    setSetupDismissed(true);
+    if(editor?.open){focusAfterSetup.current=true;closePersonalization()}
+    else requestAnimationFrame(focusComposer);
+    void api<ChatPersonalization>('/personalization',{action:'skip'},'POST',AbortSignal.timeout(6000))
+      .then(receivePersonalization).catch(()=>{});
+  }
   useEffect(()=>{const change=()=>void refreshList();window.addEventListener('roppo:chat-space',change);return()=>window.removeEventListener('roppo:chat-space',change)},[refreshList]);
   const navigate = useCallback((next: string | null) => {
     setId(next);
@@ -589,7 +645,7 @@ function App() {
     return () => window.removeEventListener("storage", storage);
   }, []);
   return (
-    <>
+    <RoppoAppearanceContext value={personalization?.preferences?.appearance??'classic'}>
       <div
         id="announcer"
         className="sr-only"
@@ -619,9 +675,21 @@ function App() {
           route,
           navExpanded,
           setNavExpanded,
+          preferences:personalization?.preferences,
+          offerPersonalization:!!(personalization?.offer&&ready?.user&&!setupDismissed),
+          openPersonalization:personalization?openPersonalization:undefined,
+          skipPersonalization,
         }}
       />
-    </>
+      {editor&&personalization&&<Suspense fallback={null}>
+        <ChatPersonalizationDialog open={editor.open} mode={editor.mode} state={personalization} L={L}
+          onSave={savePersonalization} onSkip={skipPersonalization} onClose={closePersonalization}
+          onAfterClose={()=>{
+            setEditor(current=>current?.open?current:undefined);
+            if(focusAfterSetup.current){focusAfterSetup.current=false;focusComposer()}
+          }}/>
+      </Suspense>}
+    </RoppoAppearanceContext>
   );
 }
 type ChatProps = {
@@ -634,6 +702,10 @@ type ChatProps = {
   approvalMode?: ChatSpace["approvalMode"];
   saveApprovalMode: (mode: ChatSpace["approvalMode"]) => Promise<void>;
   setDisplay: (value:ChatSpace["display"])=>void;
+  preferences?: ChatPreferences;
+  offerPersonalization: boolean;
+  openPersonalization?: (mode:'first'|'edit')=>void;
+  skipPersonalization: ()=>void;
   route: string;
   id: string | null;
   ready: Ready | null;
@@ -932,6 +1004,9 @@ function Chat(p: ChatProps) {
       attachmentBlocked ||
       sending;
   const welcome=!readonly&&!loading&&!snapshot?.messages.length&&!localMessages.length&&!running;
+  const firstChat=welcome&&p.offerPersonalization&&route==='/chat';
+  const preferenceStarter=welcome&&p.preferences?.purpose&&p.preferences.purpose!=='general'
+    ?chatPersonalizationCopy(L).purposes[p.preferences.purpose]:undefined;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
     routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext);
@@ -1464,7 +1539,8 @@ function Chat(p: ChatProps) {
             </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
-            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}/>:null}
+            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}
+              onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
@@ -1562,12 +1638,16 @@ function Chat(p: ChatProps) {
                         </div>
                       ) : null}
                       {!localMessages.length&&<ThreadPrimitive.Empty>
-                        <div className="empty-state">
+                        {firstChat?<Suspense fallback={null}>
+                          <FirstChatWelcome L={L} start={()=>p.openPersonalization?.('first')} skip={p.skipPersonalization}/>
+                        </Suspense>:<div className="empty-state">
                           {readonly?<AgentAvatar id={selected.id} kind="worker" size={64}/>:null}
                           <h1>
-                            {readonly ? L("No collaboration messages yet", "暂无协作消息") : L("What shall we work on?", "今天想做什么？")}
+                            {readonly ? L("No collaboration messages yet", "暂无协作消息")
+                              : p.preferences?.name ? L("What shall we work on, "+p.preferences.name+"?",p.preferences.name+"，今天想做什么？")
+                              : L("What shall we work on?", "今天想做什么？")}
                           </h1>
-                        </div>
+                        </div>}
                       </ThreadPrimitive.Empty>}
                       <ThreadPrimitive.Messages
                         components={{ UserMessage, AssistantMessage }}
@@ -1618,7 +1698,8 @@ function Chat(p: ChatProps) {
                   </div>
                   {welcome ? <div className="starter-actions">
                     {[
-                      {Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
+                      preferenceStarter?{Icon:ListChecks,label:preferenceStarter.starter,text:preferenceStarter.prompt}
+                        :{Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},
                       {Icon:UsersRound,label:L("Meet the team","查看分工"),text:L("Which Agents are in this workspace and what can they do?","我的团队里有哪些 Agent？各自负责什么？")},
                       {Icon:FileText,label:L("Draft a brief","起草简报"),text:L("Draft a short progress brief for this release.","帮我起草一份发布进度简报。")}
                     ].map(({Icon,label,text})=><button key={label} onClick={()=>{runtime.thread.composer.setText(text);threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()}}><Icon size={16}/>{label}</button>)}

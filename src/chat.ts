@@ -38,6 +38,7 @@ import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.t
 import {basename} from 'node:path'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
+import {chatPersonalization} from './chat-personalization.ts'
 export {ChatError} from './chat-errors.ts'
 
 interface Conversation {
@@ -330,7 +331,8 @@ export class ChatSessions {
       this.host.store.put('settings',key,{...saved,conversationId:current.id,display:saved?.display??'group',nativeId:saved?.nativeId??'chat:'+current.id})
     }
     const cleanup=this.host.memory.cleanup.receipts().filter(r=>r.scopeId==='@chat:'+stableDigest(owner)).at(-1)??null
-    return {conversation:current,display:saved?.display??'group',approvalMode:this.permissionSetting(owner).mode,cleanup}
+    return {conversation:current,display:saved?.display??'group',approvalMode:this.permissionSetting(owner).mode,cleanup,
+      personalization:chatPersonalization(this.host.store,owner)}
   }
   private permissionSetting(owner:string){
     const setting=this.host.store.get<{approvalMode?:ApprovalMode;permissionEpoch?:number}>('settings','chat-space:'+owner)

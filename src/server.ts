@@ -62,6 +62,7 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
+import {changeChatPersonalization,chatPersonalizationChange} from './chat-personalization.ts'
 import {chatUploadLimits} from './chat-attachments.ts'
 import {BrowserError} from './browser-contract.ts'
 import {browserRequest} from './browser-http.ts'
@@ -573,6 +574,10 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         send(res,200,library.chatSkills(runtime,endpoint,project));return
       }
       if(path==='/api/chat/readiness'&&req.method==='GET'){send(res,200,{...runtime.chat.readiness(),...(options.configurationPreview?{ready:false,code:'preview_restricted'}:{}),user:account.status(req).user??null});return}
+      if(path==='/api/chat/personalization'&&req.method==='POST'){
+        const input=chatPersonalizationChange.parse(await operatorBody(req))
+        send(res,200,changeChatPersonalization(runtime.store,owner,input));return
+      }
       if(path==='/api/chat/commit-trail'&&req.method==='GET'){
         const input=z.object({conversation:z.string().uuid().optional(),repository:z.string().max(250).optional(),branch:z.string().max(300).optional()}).parse(Object.fromEntries(query))
         const controller=new AbortController()

@@ -1,7 +1,7 @@
-import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {useCallback,useContext,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import body from '../../src/ui/assets/agents/roppo-body.webp';
 import type {CompanionPhase} from './companion-state.ts';
-import {workerColorIndex} from './agent-avatar.tsx';
+import {RoppoAppearanceContext,roppoSkin,workerColorIndex} from './agent-avatar.tsx';
 import './companion.css';
 
 const spiralEye=Array.from({length:65},(_,i)=>{
@@ -10,6 +10,7 @@ const spiralEye=Array.from({length:65},(_,i)=>{
 }).join(' ');
 
 export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:CompanionPhase;paused?:boolean;workerId?:string;greeting?:number}){
+ const appearance=useContext(RoppoAppearanceContext);
  const [visualPhase,setVisualPhase]=useState(phase);
  const characterRef=useRef<HTMLSpanElement>(null);
  const poseRef=useRef<HTMLSpanElement>(null);
@@ -85,7 +86,7 @@ export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:Com
   reduced.addEventListener('change',stop);
   return ()=>{reduced.removeEventListener('change',stop);bridge.current?.cancel();stopGreeting()};
  },[stopGreeting]);
- return <span ref={characterRef} className="roppo-character" data-phase={visualPhase} data-skin={workerId ? workerColorIndex(workerId) : undefined} data-paused={paused||undefined} aria-hidden="true">
+ return <span ref={characterRef} className="roppo-character" data-phase={visualPhase} data-skin={workerId ? workerColorIndex(workerId) : roppoSkin[appearance]} data-paused={paused||undefined} aria-hidden="true">
   <span className="roppo-pose" ref={poseRef}><span className="roppo-body" ref={bodyRef}>
    <img src={body} width="512" height="512" alt="" draggable={false}/>
    <span className="roppo-eyes">

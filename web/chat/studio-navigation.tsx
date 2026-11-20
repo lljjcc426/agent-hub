@@ -247,9 +247,11 @@ export function General({
   L,
   onDisplayChange,
   openWorkspaces,
+  onPersonalize,
 }: {
   onDisplayChange: (value: 'group' | 'agents') => void;
   openWorkspaces: () => void;
+  onPersonalize?: () => void;
   dark: boolean;
   setDark: (dark: boolean) => void;
   lang: string;
@@ -292,6 +294,12 @@ export function General({
             ]}
           />
         </section>
+        {onPersonalize && <section className="language-row">
+          <h2>{L('Personalization','个性化')}</h2>
+          <button type="button" className="workspace-choose" onClick={onPersonalize}>
+            {L('Personalize Roppo','个性化 Roppo')}<ChevronRight size={16} aria-hidden="true"/>
+          </button>
+        </section>}
         <section className="language-row">
           <h2>{L('Language', '语言')}</h2>
           <ChoiceGroup

@@ -14,6 +14,7 @@ import type {ModelRequest} from '../src/model.ts'
 import {measureChatInput} from '../src/chat-input.ts'
 import {createServer,type Server} from 'node:http'
 import {chatUploadLimits} from '../src/chat-attachments.ts'
+import {chatPersonalizationChange,changeChatPersonalization} from '../src/chat-personalization.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
 afterEach(async()=>{for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()))}for(const h of hosts.splice(0))await h.close();for(const p of roots.splice(0))rmSync(p,{recursive:true,force:true})})
 const report={state:'ready',summary:'Worker checked the evidence',reply:'Worker result',question:null,askedBy:null,handbacks:[]}
@@ -26,6 +27,44 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+
+it('offers setup for a new Chat, keeps skip and save idempotent, and preserves another owner’s changes', () => {
+  const {h}=fixture(),empty=h.chat.space('owner',true)
+  expect(empty.personalization).toEqual({revision:0,offer:true})
+  const skipped=changeChatPersonalization(h.store,'owner',{action:'skip'})
+  expect(skipped).toEqual({revision:1,offer:false})
+  expect(changeChatPersonalization(h.store,'owner',{action:'skip'})).toEqual(skipped)
+
+  const input=chatPersonalizationChange.parse({action:'save',revision:1,
+    preferences:{name:' 小林 ',purpose:'research',appearance:'sage',style:'detailed'}})
+  const saved=changeChatPersonalization(h.store,'owner',input)
+  expect(saved).toMatchObject({revision:2,offer:false,preferences:{name:'小林',appearance:'sage'}})
+  expect(changeChatPersonalization(h.store,'owner',input)).toEqual(saved)
+  expect(changeChatPersonalization(h.store,'owner',{action:'skip'})).toEqual(saved)
+  expect(()=>changeChatPersonalization(h.store,'owner',{action:'save',revision:1,
+    preferences:{name:'',purpose:'general',appearance:'classic',style:'warm'}})).toThrow('another tab')
+  expect(h.chat.space('owner').personalization).toEqual(saved)
+  expect(h.chat.space('other').personalization).toEqual({revision:0,offer:true})
+})
+
+it('uses saved reply preferences in the owner’s Chat turn and excludes them from another Chat', async () => {
+  const {h,calls}=fixture(async()=>({reply:'Done'}))
+  const preferences={name:'小林',purpose:'coding',appearance:'blue',style:'direct'} as const
+  changeChatPersonalization(h.store,'owner',{action:'save',revision:0,preferences})
+  const first=h.chat.space('owner',true).conversation!
+  const submitted=send(h,first.id)
+  await settle(h,()=>h.chat.view(first.id,'owner').run?.state==='completed')
+  const personalized=calls.map(call=>JSON.parse(call.input)).find(input=>input.trigger?.id===submitted.runId)
+  expect(personalized.replyPreferences).toMatchObject({preferredName:'小林',usualPurpose:'coding',replyStyle:expect.stringContaining('concise')})
+  expect(personalized.replyPreferences).not.toHaveProperty('appearance')
+
+  const other=h.chat.space('other',true).conversation!
+  const unconfigured=h.chat.send(other.id,'other',{clientMessageId:randomUUID(),text:'Hello'})
+  await settle(h,()=>h.chat.view(other.id,'other').run?.state==='completed')
+  const regular=calls.map(call=>JSON.parse(call.input)).find(input=>input.trigger?.id===unconfigured.runId)
+  expect(regular).not.toHaveProperty('replyPreferences')
+  expect(h.chat.space('other').personalization).toEqual({revision:0,offer:false})
+})
 
 it('publishes the model-authored opening before tools run in the same activation',async()=>{
   const opening='我先核对摘要的截断规则，再验证表情符号是否完整。'

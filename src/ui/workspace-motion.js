@@ -1,6 +1,6 @@
 // Original WAAPI transitions. Presentation only: never writes configuration or creates task state.
 const WorkspaceMotion = (() => {
-  const media = matchMedia('(prefers-reduced-motion: reduce)')
+  const media = window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')
   const active = new Map()
   const ease = 'cubic-bezier(.22,1,.36,1)'
   let previous = null

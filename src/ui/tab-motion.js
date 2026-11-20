@@ -3,7 +3,7 @@
 ;(() => {
   const key = Symbol.for('roppo.tab-motion')
   if (globalThis[key]) return
-  const media = matchMedia('(prefers-reduced-motion: reduce)')
+  const media = window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')
   const easing = 'cubic-bezier(.22,1,.36,1)'
   const groups = new Map(), animations = new Map(), observed = new Set()
   let frame = 0, route = null, disposed = false

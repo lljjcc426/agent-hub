@@ -106,7 +106,7 @@ with tempfile.TemporaryDirectory(prefix='agenthub-motion-') as root:
             expect(page.locator('.workflow-story')).to_have_attribute('data-playing','false')
             expect(page.locator('.story-position')).to_have_text('4 / 4')
             checks.append('User-started explanation plays one four-step pass and can pause; it never loops autonomously')
-            page.locator('[data-theme-toggle]').click();shot('workflow-dark')
+            page.evaluate("window.roppoAppearance.setAppearance(current=>({...current,mode:'dark'}))");shot('workflow-dark')
             page.set_viewport_size({'width':390,'height':844});shot('workflow-mobile')
             page.locator('#workflow-story-play').click()
             page.emulate_media(reduced_motion='reduce')

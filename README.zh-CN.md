@@ -69,6 +69,13 @@
 
 Router 和 Worker 都可以自定义名字、模型和工具。在**行为规则**中填写共同偏好与角色指令，保存前可以预览完整提示词。Chat 显示方式和清空内置 Chat 记忆、上下文的操作也都收在设置里。
 
+在**设置 → 外观**中选择浅色、深色或跟随系统，调整主题预设、自定义颜色与对比度、界面/内容/代码字号、减少动态效果、智能标点、对话全宽和差异标记。主题配色可以复制或导入分享。偏好保存在当前浏览器，在其中的 Roppo 页面间生效；升级时保留原来的深浅选择。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/appearance-settings-dark.jpg">
+  <img src="docs/images/appearance-settings-light.jpg" alt="隔离测试环境中的外观设置与主题预设，浅色为中文、深色为英文">
+</picture>
+
 ### 在任务发生的地方接手
 
 通过现有来源适配器和插件连接**飞书、Slack、Linear、GitHub**，通过 **MCP** 和应用集成扩充工具。任务可以关联原来的会话或 issue。

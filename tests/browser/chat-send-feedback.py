@@ -117,9 +117,7 @@ async def main():
         await page.route('**/conversations/*/messages', delay_send)
         await page.set_viewport_size({'width': 390, 'height': 780})
         await page.emulate_media(reduced_motion='reduce')
-        await page.evaluate("""window.dispatchEvent(new StorageEvent('storage', {
-            key: 'agenthub.configuration.theme', newValue: 'dark'
-        }))""")
+        await page.evaluate("""window.roppoAppearance.setAppearance(previous => ({...previous, mode:'dark'}))""")
         await expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
         await send('The receipt may be late')
         await expect(status).to_have_text('还未确认送达。', timeout=12000)

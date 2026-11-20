@@ -2,6 +2,7 @@ import {useEffect, useId, useRef, type ReactNode, type KeyboardEventHandler} fro
 import {Inbox, LocateFixed, X} from 'lucide-react'
 import type {Localize} from '../chat/composer-commands.tsx'
 import '../chat/pending-tray.css'
+import {getMotionPreference} from './motion.ts'
 
 export function ChatTray({id, heading, icon, navigation, closeLabel, close, children, onKeyDownCapture}: {
   id: string; heading: string; icon: ReactNode; navigation?: ReactNode; closeLabel: string; close: () => void;
@@ -27,7 +28,7 @@ export function PendingRequests({items, loading, close, L, selectedId, heading, 
   const found = items.some(item=>item.id===selectedId)
   useEffect(()=>{
     if(!selectedId||loading||!found)return
-    focused.current?.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'})
+    focused.current?.scrollIntoView({block:'nearest',behavior:getMotionPreference().matches?'instant':'smooth'})
     focused.current?.focus({preventScroll:true})
   },[selectedId,loading,found])
   return <ChatTray id={id} heading={heading??L('Pending requests', '待处理事项')} icon={<Inbox size={17} aria-hidden="true"/>}

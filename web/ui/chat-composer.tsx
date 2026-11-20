@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type ComponentType, type KeyboardEvent } from 'react'
+import { smartPunctuation } from '../chat/smart-punctuation.ts'
 import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowUp, Box, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
 import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
@@ -253,7 +254,24 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
         role={slash ? 'combobox' : undefined} aria-autocomplete={slash ? 'list' : undefined}
         aria-expanded={slash || undefined} aria-controls={slash ? listId : undefined}
         aria-activedescendant={slash && active >= 0 ? listId + '-' + active : undefined}
-        onInput={event => { if (!(event.nativeEvent as InputEvent).isComposing) updateQuery(event.currentTarget.value) }}
+        onInput={event => {
+          const native = event.nativeEvent as InputEvent, field = event.currentTarget
+          if (native.isComposing) return
+          if (native.inputType === 'insertText' && native.data && document.documentElement.dataset.appearanceSmart === 'true') {
+            const result = smartPunctuation(field.value, field.selectionStart, native.data)
+            if (result.text !== field.value) {
+              const end = field.selectionStart
+              let start = 0
+              while (start < end && field.value[start] === result.text[start]) start++
+              field.setSelectionRange(start, end)
+              // A native editing command keeps undo/redo; assigning value clears the browser's history.
+              document.execCommand('insertText', false, result.text.slice(start, result.caret))
+              setText(field.value)
+              field.setSelectionRange(result.caret, result.caret)
+            }
+          }
+          updateQuery(field.value)
+        }}
         onCompositionEnd={event => updateQuery(event.currentTarget.value)}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return

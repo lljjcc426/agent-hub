@@ -19,6 +19,7 @@ import {
   Search,
   Server,
   SlidersHorizontal,
+  Sun,
   Users,
   Workflow,
   X,
@@ -45,6 +46,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
   return [
     { name: L('Preferences', '偏好'), rows: [
       row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat'),
+      row('appearance', L('Appearance', '外观'), Sun, undefined, L('Theme colors fonts motion', '主题 颜色 字体 动效')),
       row('advanced/memory', L('Memory', '记忆'), Brain),
       ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
         L('Chat preferences reset', '对话设置 清空'))] : []),
@@ -222,7 +224,7 @@ export function StudioRail({
     </aside>
   );
 }
-function MiniWindow({ type }: { type: 'light' | 'dark' | 'group' | 'agents' }) {
+function MiniWindow({ type }: { type: 'group' | 'agents' }) {
   return (
     <div aria-hidden="true" className={'mini-window mini-' + type}>
       <i className="mini-menu">
@@ -239,8 +241,6 @@ function MiniWindow({ type }: { type: 'light' | 'dark' | 'group' | 'agents' }) {
   );
 }
 export function General({
-  dark,
-  setDark,
   lang,
   setLang,
   display,
@@ -250,8 +250,6 @@ export function General({
 }: {
   onDisplayChange: (value: 'group' | 'agents') => void;
   openWorkspaces: () => void;
-  dark: boolean;
-  setDark: (dark: boolean) => void;
   lang: string;
   setLang: (lang: 'en' | 'zh-CN') => void;
   display: 'group' | 'agents';
@@ -279,19 +277,6 @@ export function General({
     <div className="general-scroll roppo-ui">
       <article className="general">
         <h1>{L('General', '通用')}</h1>
-        <section>
-          <h2>{L('Appearance', '外观')}</h2>
-          <ChoiceGroup
-            appearance="tiles"
-            label={L('Appearance', '外观')}
-            value={dark ? 'dark' : 'light'}
-            onChange={(v) => setDark(v === 'dark')}
-            choices={[
-              { value: 'light', label: L('Light', '浅色'), visual: <MiniWindow type="light" /> },
-              { value: 'dark', label: L('Dark', '深色'), visual: <MiniWindow type="dark" /> },
-            ]}
-          />
-        </section>
         <section className="language-row">
           <h2>{L('Language', '语言')}</h2>
           <ChoiceGroup

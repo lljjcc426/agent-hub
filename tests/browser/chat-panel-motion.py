@@ -162,9 +162,7 @@ with sync_playwright() as pw:
     lane = page.locator('.conversation-lane')
     expect(page.locator('.conversation-body')).to_have_class('conversation-body panel-overlay')
     narrow_width = lane.bounding_box()['width']
-    page.evaluate("""window.dispatchEvent(new StorageEvent('storage', {
-        key:'agenthub.configuration.theme', newValue:'dark'
-    }))""")
+    page.evaluate("""window.roppoAppearance.setAppearance(previous => ({...previous, mode:'dark'}))""")
     expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
     page.locator('.chat-companion').click()
     assert_greeting(page)

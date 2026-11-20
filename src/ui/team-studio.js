@@ -52,7 +52,7 @@ function teamSelect(id, tab = teamStudio.tab) {
   teamStudio.tab = tab
   render()
   document.getElementById('team-inspector-title')?.focus({ preventScroll: true })
-  if (matchMedia('(max-width: 960px)').matches) document.getElementById('team-inspector')?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
+  if (matchMedia('(max-width: 960px)').matches) document.getElementById('team-inspector')?.scrollIntoView({ block: 'start', behavior: (window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')).matches ? 'instant' : 'smooth' })
 }
 function teamNextWorkerId(workers) {
   let index = 1

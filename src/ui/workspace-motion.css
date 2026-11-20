@@ -2,8 +2,8 @@
 .operator-workspace .motion-dialog[open] { animation: none; }
 .operator-workspace .motion-dialog::backdrop { animation: motion-backdrop 180ms ease-out; }
 .operator-workspace .motion-dialog[data-motion-closing=true] { pointer-events: none; }
-.operator-workspace :is(.button,.theme-toggle,.connection-kind) { transition: background-color var(--ui-feedback) ease, border-color var(--ui-feedback) ease, transform var(--ui-feedback) var(--ui-ease-out); }
-.operator-workspace :is(.button,.theme-toggle,.connection-kind):active:not(:disabled) { transform: translateY(1px); }
+.operator-workspace :is(.button,.connection-kind) { transition: background-color var(--ui-feedback) ease, border-color var(--ui-feedback) ease, transform var(--ui-feedback) var(--ui-ease-out); }
+.operator-workspace :is(.button,.connection-kind):active:not(:disabled) { transform: translateY(1px); }
 .operator-workspace .team-node > .team-node-head > .icon:last-child { transition: transform 180ms var(--ui-ease-out); }
 .operator-workspace .team-node[aria-pressed=true] > .team-node-head > .icon:last-child { transform: translateX(3px); }
 .operator-workspace .team-node { transition: border-color 180ms ease, background-color 180ms ease; }
@@ -22,6 +22,6 @@ html[data-motion-paused=true] .tam-surface .tam-flow { animation-play-state: pau
 html[data-motion-paused=true] .execution-call-map ::before { animation-play-state: paused; }
 @media (prefers-reduced-motion:reduce) {
   .operator-workspace .motion-dialog::backdrop { animation: none; }
-  .operator-workspace :is(.button,.theme-toggle,.connection-kind):active:not(:disabled) { transform: none; }
+  .operator-workspace :is(.button,.connection-kind):active:not(:disabled) { transform: none; }
   .execution-call-map ::before { animation: none !important; }
 }

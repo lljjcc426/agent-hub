@@ -277,6 +277,7 @@ export class FeishuSource extends MessageSource {
     const human=item.sender?.sender_type?item.sender.sender_type==='user':!item.sender?.open_bot_id&&item.sender?.id_type==='open_id'
     const trigger=this.trigger({id:'message:'+item.message_id+':'+bodyDigest(text),thread:chat+':'+thread,text,addressed},actor,human)
     trigger.meta={scope:chat,messageId:item.message_id,chat,root:thread}
+    if(item.chat_type==='group'||item.chat_type==='p2p')trigger.meta.chatType=item.chat_type
     trigger.channel!.address={messageId:item.message_id,chat,root:thread}
     return trigger
   }

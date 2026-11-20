@@ -10,8 +10,12 @@ import time
 from playwright.sync_api import expect, sync_playwright
 
 
-def traces(database):
+def traces(database, pending=False):
     with sqlite3.connect(database, timeout=5) as conn:
+        if pending:
+            return {trigger['meta']['messageId'] for (body,) in conn.execute(
+                "select body from records where kind='feishu-group-inbox'")
+                for trigger in json.loads(body)['messages']}
         return {
             json.loads(row[0]).get('meta', {}).get('messageId')
             for row in conn.execute("select body from records where kind='trigger'")
@@ -80,7 +84,7 @@ with TemporaryDirectory(prefix='roppo-connectors-') as tmp, sync_playwright() as
         page.screenshot(path=str(output / 'connectors-light.png'))
         page.get_by_role('searchbox', name='搜索连接器').fill('GitHub')
         expect(page.locator('.connector-row')).to_have_count(1)
-        expect(page.get_by_role('link', name='连接GitHub')).to_have_attribute('href', '/configure#connections/new/github')
+        expect(page.get_by_role('button', name='连接 GitHub', exact=True)).to_be_visible()
         page.get_by_role('searchbox', name='搜索连接器').fill('')
         page.get_by_text('已连接', exact=True).click()
         expect(page.get_by_text('还没有连接的应用')).to_be_visible()
@@ -197,15 +201,28 @@ with TemporaryDirectory(prefix='roppo-connectors-') as tmp, sync_playwright() as
             {'chat': 'oc_build', 'message': 'om_old', 'ago': 120000},
         ]))
         events.replace(root / 'events.json')
+        database = root / 'state/state.sqlite'
+        deadline = time.monotonic() + 12
+        while traces(database, pending=True) != {'om_build', 'om_launch'} and time.monotonic() < deadline:
+            time.sleep(.1)
+        assert traces(database, pending=True) == {'om_build', 'om_launch'}
+        assert not traces(database)
+
+        more = [{'chat': 'oc_' + group, 'message': f'om_{group}_{n}'}
+                for group in ('build', 'launch') for n in range(2, 6)]
+        events.write_text(json.dumps(more))
+        events.replace(root / 'events.json')
+        expected = {'om_build', 'om_launch'} | {event['message'] for event in more}
         seen = set()
         deadline = time.monotonic() + 12
-        while not {'om_build', 'om_launch'}.issubset(seen) and time.monotonic() < deadline:
-            seen = traces(root / 'state/state.sqlite')
+        while seen != expected and time.monotonic() < deadline:
+            seen = traces(database)
             time.sleep(.2)
-        assert seen == {'om_build', 'om_launch'}, seen
+        assert seen == expected, seen
+        assert not traces(database, pending=True)
         assert not errors, errors
         page.screenshot(path=str(output / 'connectors-connected-light.png'))
-        print('PASS: SDK WebSocket delivery enters the selected groups only, no historical replay', flush=True)
+        print('PASS: SDK WebSocket delivers each selected group at five messages, with no historical replay', flush=True)
 
         conn.close()
         stop()

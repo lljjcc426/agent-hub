@@ -6,6 +6,7 @@ import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
+import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
@@ -760,6 +761,11 @@ export class Runtime {
   }
   private ingestFrom(source:string,trigger:Trigger){
     if(trigger.source!==source||trigger.actor.source!==source||trigger.threads.some(t=>t.source!==source)||trigger.channel&&trigger.channel.source!==source)throw Error('Adapter event is outside its configured source')
+    const adapter=this.sources.get(source)
+    if(adapter){
+      const buffered=collectFeishuGroupMessage(this,adapter,trigger,this.clock())
+      if(buffered)return buffered
+    }
     return this.ingest(trigger)
   }
   ingest(trigger: Trigger): unknown {
@@ -862,7 +868,10 @@ export class Runtime {
       await this.work.tick()
       if(!this.paused)void this.merger.tick().catch(error=>this.store.audit({type:'merge.error',message:String(error)}))
       this.pollSources()
-      if(!this.paused)this.proactive.tick()
+      if(!this.paused){
+        flushDueFeishuGroupMessages(this,this.clock())
+        this.proactive.tick()
+      }
       await this.watchdog.advance()
       if(!this.paused){this.webhooks.dispatch();this.webhooks.reconcile();this.github.enqueueReadbacks();await this.goals.advance();this.goals.tick();this.webhooks.flush()}
       this.engine.evaluateDue()

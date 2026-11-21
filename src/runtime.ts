@@ -59,6 +59,7 @@ import {loadManagedConfig} from './managed-config.ts'
 import {loadMarketConfig,recoverMarket} from './plugin-market-state.ts'
 import {workerProfiles} from './worker-pool.ts'
 import {schedulerStatus,schedulerRoutingKind,schedulerRoutingKey,schedulerInteractiveJob,schedulerFollowupSlot} from './scheduler-status.ts'
+import {Heartbeat} from './heartbeat.ts'
 import type {WorkerProfile} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
 import {agentOptionsSchema} from './backend-config.ts'
@@ -120,6 +121,7 @@ export class Runtime {
   interruptForWatchdog(id:string){this.controllers.get(id)?.abort(Error('Watchdog recovery requested'))}
   interruptForAutomation(id:string){this.controllers.get(id)?.abort(Error('Automation authorization or execution state stopped'));this.toolConnections.cancel(id);this.approvals.cancel(id)}
   readonly chat:ChatSessions
+  readonly heartbeat:Heartbeat
   readonly store: Store
   readonly engine: Engine
   readonly sources = new Map<string, Source>()
@@ -290,6 +292,7 @@ export class Runtime {
     this.manager=new WorkerManager(this)
     this.subscriptions=new SubscriptionAccounts(config.stateDir)
     this.chat=new ChatSessions(this)
+    this.heartbeat=new Heartbeat(this,this.clock)
     this.browser=new BrowserManager(this,options.browserDriver)
     this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
     this.routerIngress.delegatedAuthority=id=>this.delegation.authority(id)
@@ -873,6 +876,7 @@ export class Runtime {
       if(!this.paused)void this.merger.tick().catch(error=>this.store.audit({type:'merge.error',message:String(error)}))
       this.pollSources()
       if(!this.paused){
+        this.heartbeat.tick()
         flushDueFeishuGroupMessages(this,this.clock())
         this.proactive.tick()
       }

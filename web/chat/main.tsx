@@ -50,6 +50,8 @@ import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
 import {deliveryFile} from "./delivery-links.ts";
 import {TeamOverview,type TeamTab} from './team-view.tsx';
+import {HeartbeatCard} from './heartbeat-card.tsx';
+import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
@@ -158,6 +160,8 @@ async function api<T>(
   return result;
 }
 const loadContext=(id:string,signal:AbortSignal)=>api<ReturnType<ChatSessions["contextUsage"]>>("/conversations/"+id+"/context",undefined,"GET",signal);
+const readHeartbeat=(signal:AbortSignal)=>api<HeartbeatStatus>('/heartbeat',undefined,'GET',signal);
+const changeHeartbeat=(change:HeartbeatChange)=>api<HeartbeatStatus>('/heartbeat',change,'PATCH',AbortSignal.timeout(8_000));
 const Context = createContext({
   lang: "en" as Language,
   L: (en: string, zh: string) => en,
@@ -1705,6 +1709,7 @@ function Chat(p: ChatProps) {
                 {displayedSession.overview && <div className="task-drawer-stack">
                   <div className="task-drawer-layer task-overview-layer" data-inactive={!!shownTask||undefined} inert={!!shownTask} aria-hidden={!!shownTask||undefined}>
                   <TeamOverview active={!sessionPresence.closing} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
+                  heartbeat={<HeartbeatCard lang={lang} L={L} read={readHeartbeat} change={changeHeartbeat}/>}
                   tab={displayedSession.cards.revealing ? 'activity' : displayedSession.tab} focusOnOpen={!displayedSession.cards.revealing}
                   setTab={tab => {
                     if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');

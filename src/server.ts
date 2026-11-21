@@ -62,6 +62,7 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
+import {heartbeatChange} from './heartbeat.ts'
 import {changeChatPersonalization,chatPersonalizationChange} from './chat-personalization.ts'
 import {chatUploadLimits} from './chat-attachments.ts'
 import {BrowserError} from './browser-contract.ts'
@@ -329,6 +330,17 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       requireCurrentOperator(req)
       if(req.method!=='GET'){send(res,405,{code:'method_not_allowed'});return}
       try{send(res,200,runtime.schedulerStatus())}catch{send(res,503,{code:'scheduler_status_unavailable'})};return
+    }
+    if(path==='/api/chat/heartbeat'){
+      requireCurrentOperator(req)
+      if(req.method==='GET'){send(res,200,runtime.heartbeat.snapshot());return}
+      if(req.method==='PATCH'){
+        if(options.configurationPreview){send(res,403,{code:'preview_restricted'});return}
+        const result=runtime.heartbeat.change(heartbeatChange.parse(await operatorBody(req)))
+        if(!result){send(res,409,{code:'schedule_conflict'});return}
+        send(res,200,result);return
+      }
+      send(res,405,{code:'method_not_allowed'});return
     }
     if(path==='/api/worker-templates'||path.startsWith('/api/worker-templates/')){
       requireCurrentOperator(req)

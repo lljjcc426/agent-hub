@@ -762,6 +762,10 @@ export class Runtime {
   private ingestFrom(source:string,trigger:Trigger){
     if(trigger.source!==source||trigger.actor.source!==source||trigger.threads.some(t=>t.source!==source)||trigger.channel&&trigger.channel.source!==source)throw Error('Adapter event is outside its configured source')
     const adapter=this.sources.get(source)
+    if(adapter?.config.kind==='feishu'&&trigger.meta.chatType==='p2p'){
+      return this.store.atomic(()=>this.scopes.acceptFeishuDirect(trigger)
+        ?this.ingest(trigger):{disposition:'ignored',reason:'private_chat_unavailable',triggerId:trigger.id})
+    }
     if(adapter){
       const buffered=collectFeishuGroupMessage(this,adapter,trigger,this.clock())
       if(buffered)return buffered
@@ -1015,6 +1019,7 @@ export class Runtime {
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
     const scoped=reportMessage?.ticketId?this.scopes.contextForTask(trigger,discussion,reportMessage.ticketId):this.scopes.context(trigger,discussion),profile=scoped?this.scopes.scope(scoped.route.scopeId).router:undefined
     const chatBinding=this.chat.binding(triggerId)
+    const feishuDirect=source.kind==='feishu'&&trigger.meta.chatType==='p2p'&&trigger.human&&!messageId&&!this.proactive.runForTrigger(triggerId)
     const selectedSkill=!messageId&&chatBinding?this.chat.skillForTrigger(triggerId):undefined
     const fileTool=chatBinding||this.chat.scheduledFileTarget(triggerId)?[routerFileTool]:[]
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
@@ -1191,7 +1196,8 @@ export class Runtime {
       }
       const request:ModelRequest={role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick tool or approval check, use one bounded action and report the observed outcome in the conversation. Do not start a durable goal, require a report file or request additional approvals to document the test unless the user explicitly asks. If a Worker is needed, delegate that single check. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
-          + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
+          + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : "")
+          + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:auxiliaryDecision||permissionReceipt||fileReviewReceipt||replyPreferences?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt,replyPreferences}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(withPendingNotice),
         onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
@@ -1212,6 +1218,7 @@ export class Runtime {
       if(pendingMessages.some(m=>!authorizedMessage(m)))throw Error('Worker result authorization withdrawn')
       const output=JSON.parse(result.text);if(typeof output.reply!=='string')throw Error('Invalid Router reply')
       if(quiet)output.reply=''
+      else if(feishuDirect&&!output.reply.trim())output.reply=/\p{Script=Han}/u.test(trigger.text)?'收到。':'Got it.'
       this.store.atomic(()=>{
         candidates?.finish();followups?.finish()
         for(const [ticketId,at] of readReports)this.store.put('router-report-read',discussion+':'+ticketId,{at})

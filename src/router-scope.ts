@@ -7,6 +7,7 @@ import type {Trigger} from './vendor/dsh-core/index.ts'
 import {stableDigest} from './sources.ts'
 import {executionSchema} from './backend-config.ts'
 import {builtinSources,type SourceRegistry} from './source-plugins.ts'
+import {feishuDirectThread} from './connectors/feishu.ts'
 
 const id=z.string().min(1).max(300)
 const scopeInput=z.object({id,tenantId:id,name:id,managers:z.array(id).min(1),workerIds:z.array(id),teamTargetIds:z.array(id).optional(),sourceIds:z.array(id),backendIds:z.array(id),dataEntryIds:z.array(id).default([]),router:executionSchema.unwrap().shape.router.optional(),memoryEnabled:z.boolean().default(true),contextBytes:z.number().int().min(4096).max(scopeContextBytes.max).default(scopeContextBytes.default)}).strict()
@@ -27,6 +28,10 @@ export const scopeCommandSchema=z.discriminatedUnion('action',[
  z.object({action:z.literal('reply.resolve'),...common,messageId:id,decision:z.enum(['continue','withdraw'])}).strict(),
 ])
 export class RouterScopeAmbiguity extends Error {}
+const feishuDirectScopePrefix='@feishu-direct:'
+function isFeishuDirectEntry(entry:EntryBinding){
+ return entry.provider==='feishu'&&entry.scopeId.startsWith(feishuDirectScopePrefix)
+}
 /** Host control plane. No organization entities or mutable authority enter dsh-core. */
 export class RouterScopes {
  private readOnlyDepth=0
@@ -44,12 +49,52 @@ export class RouterScopes {
  actor(t:Trigger){return JSON.stringify([t.actor.source,t.actor.id])}
  nativeId(t:Trigger){return String(t.meta.chat??t.meta.scope??t.threads[0]?.id??'')}
  entry(t:Trigger){return this.bindings().find(b=>b.sourceId===t.source&&b.nativeId===this.nativeId(t))}
- sourceActive(b:EntryBinding){const s=this.config.sources.find(s=>s.id===b.sourceId);return !!(b.active&&this.store.get<any>('source-entry-state',b.id)?.available!==false&&s?.enabled&&this.registry.allowsScope(s,b.nativeId))}
+ sourceActive(b:EntryBinding){
+  const source=this.config.sources.find(s=>s.id===b.sourceId)
+  if(!b.active||!source?.enabled||this.store.get<any>('source-entry-state',b.id)?.available===false)return false
+  if(!isFeishuDirectEntry(b))return this.registry.allowsScope(source,b.nativeId)
+  const identity=this.store.get<{namespace:string}>('source-identity',source.id)
+  return !!(source.feishu?.liveEvents&&source.feishu.directMessages&&source.capabilities.events&&
+   (!source.listenScopes||source.listenScopes.includes(b.nativeId))&&identity?.namespace===b.accountNamespace&&
+   source.allowedActors.some(actor=>JSON.stringify([source.id,actor])===b.privateActor))
+ }
+ /** Bind the native one-to-one conversation to its own tenant and owner. */
+ acceptFeishuDirect(trigger:Trigger):boolean {
+  const source=this.config.sources.find(s=>s.id===trigger.source)
+  const {chat,chatType,feishuBotId}=trigger.meta
+  if(source?.kind!=='feishu'||!source.enabled||!source.capabilities.events||!source.feishu?.liveEvents||
+    !source.feishu.directMessages||chatType!=='p2p'||!trigger.human||trigger.addressed!=='direct'||
+    !source.allowedActors.includes(trigger.actor.id)||typeof chat!=='string'||trigger.meta.scope!==chat||
+    !/^oc_[A-Za-z0-9_-]+$/.test(chat)||typeof feishuBotId!=='string'||!/^ou_[A-Za-z0-9_-]+$/.test(feishuBotId)||
+    source.feishu.mentionId&&source.feishu.mentionId!==feishuBotId||
+    source.listenScopes&&!source.listenScopes.includes(chat))return false
+  const thread=feishuDirectThread(chat),proof=this.store.get<{hash:string}>('source-native-proof',trigger.id)
+  if(proof?.hash!==stableDigest(trigger)||trigger.threads[0]?.id!==thread||trigger.channel?.thread!==thread||
+    trigger.channel.address.chat!==chat|| trigger.channel.address.messageId!==trigger.meta.messageId)return false
+  const namespace='feishu:bot:'+feishuBotId,identity=this.store.get<{namespace:string}>('source-identity',source.id)
+  if(identity&&identity.namespace!==namespace)return false
+  const actor=this.actor(trigger),scopeId=feishuDirectScopePrefix+stableDigest([namespace,actor])
+  const previous=this.entry(trigger)
+  if(previous)return isFeishuDirectEntry(previous)&&previous.scopeId===scopeId&&previous.privateActor===actor&&this.sourceActive(previous)
+
+  if(!identity)this.store.put('source-identity',source.id,{sourceId:source.id,namespace,provider:'feishu',principal:feishuBotId,type:'bot',revision:1,verifiedAt:Date.now()})
+  if(!this.store.get('management-scope',scopeId)){
+   const backend=this.config.execution.router?.backend??this.config.execution.roles.router??this.config.execution.backend??'codex'
+   this.command({action:'scope.put',operationId:'feishu-direct-scope:'+stableDigest(scopeId),expectedRevision:0,
+    scope:{id:scopeId,tenantId:scopeId,name:'飞书私聊',managers:[actor],workerIds:[],backendIds:[backend],sourceIds:[source.id]}})
+  }
+  const id=stableDigest([scopeId,'feishu',namespace,chat])
+  this.store.put('entry-binding',id,{id,tenantId:scopeId,sourceId:source.id,provider:'feishu',
+   accountNamespace:namespace,nativeId:chat,scopeId,revision:1,active:true,history:'unknown',privateActor:actor} satisfies EntryBinding)
+  return true
+ }
  triggerRestriction(t:Trigger):'input_changed'|'entry_unavailable'|'member_unavailable'|undefined {
   if(this.store.get('source-invalid-trigger',t.id))return 'input_changed'
   if(!this.enabled())return
   const entry=this.entry(t)
   if(!entry||!this.sourceActive(entry))return 'entry_unavailable'
+  if(isFeishuDirectEntry(entry)&&(entry.privateActor!==this.actor(t)||t.meta.chatType!=='p2p'||
+    entry.accountNamespace!=='feishu:bot:'+t.meta.feishuBotId))return 'member_unavailable'
   if(this.store.get<any>('source-member-state',stableDigest([entry.id,t.actor.id]))?.available===false)return 'member_unavailable'
  }
  assertTrigger(t:Trigger){

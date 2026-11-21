@@ -180,6 +180,7 @@ with TemporaryDirectory(prefix='roppo-connectors-') as tmp, sync_playwright() as
         assert len(sources) == 1 and inventory['revision'] == 1
         assert sources[0]['feishu']['chats'] == ['oc_build', 'oc_launch']
         assert sources[0]['feishu']['liveEvents']
+        assert sources[0]['feishu']['directMessages'] and sources[0]['pollSeconds'] == 120
         assert sources[0]['allowedActors'] == ['ou_pairing_owner']
         assert 'fixture-do-not-expose' not in json.dumps(inventory)
         request = {'id': active['id'], 'groups': ['oc_build', 'oc_launch']}
@@ -223,6 +224,22 @@ with TemporaryDirectory(prefix='roppo-connectors-') as tmp, sync_playwright() as
         assert not errors, errors
         page.screenshot(path=str(output / 'connectors-connected-light.png'))
         print('PASS: SDK WebSocket delivers each selected group at five messages, with no historical replay', flush=True)
+
+        events.write_text(json.dumps([
+            {'chat': 'oc_private', 'message': 'om_private_1', 'type': 'p2p'},
+            {'chat': 'oc_private', 'message': 'om_private_2', 'type': 'p2p'},
+            {'chat': 'oc_intruder', 'message': 'om_private_denied', 'type': 'p2p', 'actor': 'ou_intruder'},
+        ]))
+        events.replace(root / 'events.json')
+        delivered = root / 'reply-receipts.jsonl'
+        deadline = time.monotonic() + 12
+        while (not delivered.exists() or len(delivered.read_text().splitlines()) < 2) and time.monotonic() < deadline:
+            time.sleep(.1)
+        assert [json.loads(row) for row in delivered.read_text().splitlines()] == [
+            {'anchor': 'om_private_1', 'private': True}, {'anchor': 'om_private_2', 'private': True}]
+        assert not traces(database, pending=True)
+        assert 'om_private_denied' not in traces(database)
+        print('PASS: SDK WebSocket sends one reply per approved private message, immediately', flush=True)
 
         conn.close()
         stop()

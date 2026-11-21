@@ -286,8 +286,8 @@ it('isolates a failing subscribed GitHub thread and keeps its own review cursor'
  expect(ctx.store.get('thread-cursor','github:owner/repo#8')).toBeDefined()
 })
 it('retains explicitly enabled direct-message resource access across source restart',async()=>{
- const {ctx,events}=context(),config=configSchema.parse({sources:[{id:'chat',kind:'feishu',cwd:'.',feishu:{cli:'fixture',chats:['oc_configured'],directMessages:true}}]}).sources[0]!
- const request=async()=>({items:[{message_id:'om_dm',chat_id:'oc_dm',body:{content:'{"text":"please read"}'},sender:{id:'ou_person',sender_type:'user'}}]})
+ const {ctx,events}=context(),config=configSchema.parse({sources:[{id:'chat',kind:'feishu',cwd:'.',allowedActors:['ou_person'],feishu:{cli:'fixture',chats:['oc_configured'],directMessages:true}}]}).sources[0]!
+ const request=async(_method:string,path:string)=>path==='bot/v3/info'?{bot:{open_id:'ou_bot'}}:{items:[{message_id:'om_dm',chat_id:'oc_dm',body:{content:'{"text":"please read"}'},sender:{id:'ou_person',sender_type:'user'}}]}
  const first=new FeishuSource(config,request)
  await first.receiveEvent({type:'im.message.receive_v1',message_id:'om_dm',chat_id:'oc_dm',chat_type:'p2p'},ctx)
  expect(events[0].addressed).toBe('direct');ctx.store.triggers.save(events[0])

@@ -5,6 +5,7 @@ import {afterEach,expect,it} from 'vitest'
 import {configSchema} from '../src/config.ts'
 import {FeishuSource} from '../src/connectors/feishu.ts'
 import {Runtime} from '../src/runtime.ts'
+import type {ModelRequest} from '../src/model.ts'
 import type {SourceContext} from '../src/sources.ts'
 import type {Trigger} from '../src/vendor/dsh-core/index.ts'
 
@@ -16,15 +17,22 @@ async function fixture(){
   const config=configSchema.parse({stateDir:join(root,'state'),acceptMode:'off',work:{sandboxDriver:'disabled',network:false},
     execution:{router:{mode:'host'}},sources:[
       {id:'feishu',kind:'feishu',cwd:root,allowedActors:['ou_alice'],
-        feishu:{cli:'fixture',chats:['oc_one','oc_two'],mentionId:'ou_bot',directMessages:true}},
+        feishu:{cli:'fixture',chats:['oc_one','oc_two'],mentionId:'ou_bot',directMessages:true,liveEvents:true}},
     ]})
-  const model={async run(){return {threadId:'local-test',turnId:'one',text:'{"reply":""}'}}}
+  const requests:ModelRequest[]=[],replies:{path:string;body:unknown}[]=[]
+  const model={async run(request:ModelRequest){
+    requests.push(request)
+    const threadId=request.threadId??'private-'+requests.length,turnId='turn-'+requests.length
+    request.onThread?.(threadId);request.onTurn?.(turnId)
+    return {threadId,turnId,text:JSON.stringify({reply:'Reply '+requests.length})}
+  }}
   let now=Date.now()
   const native=new Map<string,Record<string,unknown>>()
   let polled:string[]=[]
   let host:Runtime,source:FeishuSource,context:SourceContext
   async function connect(){
-    source=new FeishuSource(config.sources[0]!,async(_method,path)=>{
+    source=new FeishuSource(config.sources[0]!,async(method,path,body)=>{
+      if(method==='POST'){replies.push({path,body});return {message_id:'om_response'}}
       if(path==='bot/v3/info')return {bot:{open_id:'ou_bot'}}
       if(path.startsWith('im/v1/messages/'))return {items:[native.get(path.split('/').at(-1)!)]}
       const chat=new URLSearchParams(path.split('?')[1]).get('container_id')
@@ -44,7 +52,7 @@ async function fixture(){
     await source.receiveEvent({type:'im.message.receive_v1',chat_id:chat,message_id:id,
       chat_type:fields.chat_type??'group'},context)
   }
-  return {get host(){return host},live,advance:(ms:number)=>{now+=ms},
+  return {get host(){return host},requests,replies,live,advance:(ms:number)=>{now+=ms},
     async poll(...ids:string[]){polled=ids;try{await source.poll(context)}finally{polled=[]}},
     async restart(){await host.close();await connect()},
     received:()=>host.store.list<Trigger>('trigger').map(trigger=>trigger.meta.messageId),
@@ -66,6 +74,38 @@ it('submits five messages from one group immediately, sharing the live and polli
   expect(f.pending()).toHaveLength(1)
   expect(f.received()).toHaveLength(5)
   expect(f.host.store.deliveries()).toEqual([])
+})
+
+it('replies once per authorized private message in its own session across restart',async()=>{
+  const f=await fixture()
+  async function untilReplies(n:number){
+    for(let attempt=0;attempt<100&&f.replies.length<n;attempt++){
+      await f.host.tick()
+      await new Promise<void>(resolve=>setTimeout(resolve,4))
+    }
+    expect(f.replies).toHaveLength(n)
+  }
+  const dm={chat_type:'p2p'}
+  await f.live('om_first','oc_private',dm)
+  await f.live('om_first','oc_private',dm)
+  await f.live('om_forbidden','oc_intruder',{...dm,sender:{id:'ou_intruder',sender_type:'user'}})
+  expect(f.pending()).toEqual([])
+  expect(f.received()).toEqual(['om_first'])
+  await untilReplies(1)
+  await f.restart()
+  await f.live('om_second','oc_private',dm)
+  await untilReplies(2)
+  expect(f.requests).toHaveLength(2)
+  expect(f.requests.map(request=>request.threadId)).toEqual([undefined,'private-1'])
+  expect(f.replies).toMatchObject([
+    {path:'im/v1/messages/om_first/reply',body:{reply_in_thread:false}},
+    {path:'im/v1/messages/om_second/reply',body:{reply_in_thread:false}},
+  ])
+  expect(f.host.scopes.bindings()).toMatchObject([{nativeId:'oc_private',privateActor:'["feishu","ou_alice"]'}])
+  const trigger=f.host.store.list<Trigger>('trigger').find(t=>t.meta.messageId==='om_second')!
+  expect(f.host.routerIngress.authority(trigger.id).strength).toBe('explicit')
+  f.host.updateSettings(f.host.settings.current().revision,{sources:f.host.config.sources.map(s=>({...s,allowedActors:[]}))})
+  expect(()=>f.host.routerIngress.authority(trigger.id)).toThrow()
 })
 
 it('waits two minutes from the first message across a restart and leaves an empty inbox idle',async()=>{

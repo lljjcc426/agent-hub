@@ -45,7 +45,7 @@ export function feishuRegistrationOptions(signal: AbortSignal, onQRCodeReady: Pa
     appPreset: { name: 'Roppo' },
     addons: {
       preset: false,
-      scopes: { tenant: ['im:chat:readonly', 'im:message:readonly', 'im:message.group_msg',
+      scopes: { tenant: ['im:chat:readonly', 'im:message:readonly', 'im:message.group_msg', 'im:message.p2p_msg:readonly',
         'im:message:send_as_bot', 'im:resource'] },
       events: { items: { tenant: ['im.message.receive_v1', ...feishuLifecycleEvents] } },
     },
@@ -240,7 +240,7 @@ export class FeishuPairing {
     const host = this.host(), id = sourceId(saved.id)
     const env = 'AGENTHUB_SETUP_' + saved.id.replaceAll('-', '').toUpperCase()
     const config = configSchema.shape.sources.element.parse({
-      id, label: botName, kind: 'feishu', pollSeconds: 5,
+      id, label: botName, kind: 'feishu', pollSeconds: 120,
       cwd: setupWorkspace(host.config, join(host.config.stateDir, 'workspace', id)),
       sandbox: 'read-only', workspace: { mode: 'source' },
       allowedActors: saved.actor ? [saved.actor] : [],
@@ -248,7 +248,7 @@ export class FeishuPairing {
       // still load the source with their HTTP polling adapter.
       options: { feishuPairing: { brand: saved.brand, startsAt: Date.now() } },
       feishu: { appIdEnv: env + '_APP', appSecretEnv: env + '_SECRET',
-        chats: selection, mentionId: identity, liveEvents: true },
+        chats: selection, mentionId: identity, liveEvents: true, directMessages: true },
     })
     const plan = this.onboarding.sourcePlan(host.settings.current().revision, config, {
       [config.feishu!.appIdEnv!]: saved.appId, [config.feishu!.appSecretEnv!]: saved.secret,

@@ -245,7 +245,7 @@ export class RouterProactive {
   return {nextAt,quiet:until!==undefined}
  }
  private collect(a:RouterAdmission,t:Trigger){
-  if(this.host.chat.isReactionInput(t.id))return false
+  if(this.host.chat.isReactionInput(t.id)||t.meta.chatType==='p2p'&&this.host.sources.get(t.source)?.config.kind==='feishu')return false
   const c=this.host.scopes.context(t,a.discussion);if(!c)return false
   const settings=this.controls(c.route.scopeId);if(!settings.enabled)return false
   const now=this.now(),strength=a.mandate!.strength,key=stableDigest([c.route.scopeId,c.route.entryId,a.discussion,c.actor,strength,a.policyVersion,settings.revision])

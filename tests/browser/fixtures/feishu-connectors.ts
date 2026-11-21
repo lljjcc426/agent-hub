@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { defaultHttpInstance } from '@larksuiteoapi/node-sdk'
 import protobuf from 'protobufjs/minimal.js'
@@ -15,7 +15,7 @@ const settings = { PingInterval: 60, ReconnectCount: 5, ReconnectInterval: 1, Re
 const sockets = new WebSocketServer({ port: 0, host: '127.0.0.1' })
 await new Promise<void>(resolve => sockets.once('listening', resolve))
 const port = (sockets.address() as { port: number }).port
-const messages = new Map<string, { chat_id: string; message_id: string; create_time: string; chat_type: 'group'; sender: { id: string; id_type: string; sender_type: string }; body: { content: string } }>()
+const messages = new Map<string, { chat_id: string; message_id: string; create_time: string; chat_type: 'group'|'p2p'; sender: { id: string; id_type: string; sender_type: string }; body: { content: string } }>()
 function frame(method: number, headers: Record<string, string>, payload: unknown) {
   const writer = protobuf.Writer.create().uint32(8).uint64(1).uint32(16).uint64(1).uint32(24).int32(1).uint32(32).int32(method)
   for (const [key, value] of Object.entries(headers)) writer.uint32(42).fork().uint32(10).string(key).uint32(18).string(value).ldelim()
@@ -24,16 +24,16 @@ function frame(method: number, headers: Record<string, string>, payload: unknown
 sockets.on('connection', socket => socket.once('message', () => socket.send(frame(0, { type: 'pong' }, settings))))
 const emitter = setInterval(() => {
   if (!flag('events.json') || !sockets.clients.size) return
-  const events: { chat: string; message: string; ago?: number }[] = JSON.parse(readFileSync(join(root, 'events.json'), 'utf8'))
+  const events: { chat: string; message: string; ago?: number; type?: 'group'|'p2p'; actor?:string }[] = JSON.parse(readFileSync(join(root, 'events.json'), 'utf8'))
   unlinkSync(join(root, 'events.json'))
-  for (const { chat, message, ago = 0 } of events) {
+  for (const { chat, message, ago = 0, type = 'group', actor = 'ou_pairing_owner' } of events) {
     const create_time = String(Date.now() - ago)
-    messages.set(message, { chat_id: chat, message_id: message, create_time, chat_type: 'group',
-      sender: { id: 'ou_pairing_owner', id_type: 'open_id', sender_type: 'user' },
+    messages.set(message, { chat_id: chat, message_id: message, create_time, chat_type: type,
+      sender: { id: actor, id_type: 'open_id', sender_type: 'user' },
       body: { content: JSON.stringify({ text: 'Fixture group message' }) } })
     const packet = frame(1, { type: 'event', message_id: message, sum: '1', seq: '0', trace_id: message },
       { schema: '2.0', header: { event_id: message, event_type: 'im.message.receive_v1', create_time },
-        event: { message: { chat_id: chat, message_id: message, chat_type: 'group' } } })
+        event: { message: { chat_id: chat, message_id: message, chat_type: type } } })
     for (const socket of sockets.clients) socket.send(packet)
   }
 }, 80)
@@ -72,6 +72,12 @@ globalThis.fetch = async (input, init) => {
   if (path === 'bot/v3/info') return Response.json({ code: 0, bot: { open_id: 'ou_fixture_bot', app_name: 'Roppo' } })
   if (path === 'im/v1/chats') return Response.json({ code: 0, data: { items: flag('show-groups') ? groups : [] } })
   if (path === 'im/v1/messages') return Response.json(flag('deny-read') ? { code: 99991672 } : { code: 0, data: { items: [] } })
+  if (path.startsWith('im/v1/messages/') && path.endsWith('/reply') && init?.method === 'POST') {
+    const anchor = path.split('/')[3]!
+    const body = JSON.parse(String(init.body))
+    appendFileSync(join(root,'reply-receipts.jsonl'),JSON.stringify({anchor,private:body.reply_in_thread===false})+'\n')
+    return Response.json({code:0,data:{message_id:'om_replied_'+anchor}})
+  }
   if (path.startsWith('im/v1/messages/')) {
     const message = messages.get(path.split('/')[3]!)
     return Response.json(message ? { code: 0, data: { items: [message] } } : { code: 1 })
@@ -79,7 +85,7 @@ globalThis.fetch = async (input, init) => {
   throw Error('Unexpected API request')
 }
 
-const config = configSchema.parse({ stateDir: join(root, 'state'), port: 0, work: { sandboxDriver: 'disabled', network: false },
+const config = configSchema.parse({ stateDir: join(root, 'state'), port: 0, execution:{router:{mode:'host'}}, work: { sandboxDriver: 'disabled', network: false },
   sources: [{ id: 'local', kind: 'local', cwd: join(root, 'workspace'), allowedActors: ['operator'] }] })
 const model = { async run() { return { threadId: 'fixture', turnId: 'fixture', text: '{"reply":"Fixture response"}' } } }
 const makeRuntime = (next: Config, _activationId?: string, startupSourceIds?: readonly string[]) => {

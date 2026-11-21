@@ -18,10 +18,11 @@ export const feishuLifecycleEvents = ['im.chat.updated_v1', 'im.chat.disbanded_v
   'im.chat.member.bot.deleted_v1', 'im.chat.member.bot.added_v1',
   'im.chat.member.user.deleted_v1', 'im.chat.member.user.added_v1']
 export const feishuApi = (brand?: 'feishu' | 'lark') => brand === 'lark' ? 'https://open.larksuite.com/open-apis/' : 'https://open.feishu.cn/open-apis/'
+export const feishuDirectThread = (chat:string) => chat+':p2p'
 export class FeishuSource extends MessageSource {
   override get verificationCommand(){return this.config.feishu?.command??'/agent'}
   replay(scope:string|undefined,since:string){if(!this.config.feishu!.chats.includes(scope??''))throw Error('Chat not configured');return {key:this.config.id+':'+scope,since:String(Math.floor(Date.parse(since)/1000))}}
-  async check(){if((this.config.feishu!.otherChats==='mentions'||this.config.feishu!.directMessages)&&!this.config.feishu!.liveEvents)throw Error('Enable Feishu liveEvents for mentions from other chats')}
+  async check(){if((this.config.feishu!.otherChats==='mentions'||this.config.feishu!.directMessages)&&!this.config.feishu!.liveEvents)throw Error('Enable Feishu liveEvents for private messages and mentions from other chats')}
   private live=new Map<string,ChildProcessWithoutNullStreams>()
   private liveClient?:WSClient
   private liveStarting?:Promise<void>
@@ -30,6 +31,7 @@ export class FeishuSource extends MessageSource {
   private closing=false
   private pendingEvents=Promise.resolve()
   private discovered=new Set<string>()
+  private directChats=new Map<string,string>()
   private accessToken=''
   private expiresAt=0
   private tokenCredentialKey=''
@@ -87,8 +89,15 @@ export class FeishuSource extends MessageSource {
     return result.data
     })
   }
-  private permitted(chat:string){return this.config.feishu!.chats.includes(chat)||this.discovered.has(chat)}
-  validThread(thread:string){const i=thread.indexOf(':');return i>0&&this.permitted(thread.slice(0,i))&&/^om_[A-Za-z0-9_-]+$/.test(thread.slice(i+1))}
+  private directActor(chat:string){
+    const actor=this.directChats.get(chat)
+    return this.config.feishu!.directMessages&&actor&&this.config.allowedActors.includes(actor)?actor:undefined
+  }
+  private permitted(chat:string){return this.config.feishu!.chats.includes(chat)||this.discovered.has(chat)||!!this.directActor(chat)}
+  validThread(thread:string){
+    const i=thread.indexOf(':'),chat=thread.slice(0,i)
+    return i>0&&(thread===feishuDirectThread(chat)?!!this.directActor(chat):this.permitted(chat)&&/^om_[A-Za-z0-9_-]+$/.test(thread.slice(i+1)))
+  }
   async identity(){return this.resolveIdentity(true)}
   private async resolveIdentity(fresh=false){
     const key=this.credentialFingerprint?.() // Unversioned transports are always verified online.
@@ -134,12 +143,31 @@ export class FeishuSource extends MessageSource {
     this.sourceContext=ctx
     if(event.header?.event_type){await this.verifiedAccount(ctx,true);this.lifecycleEvent(event,ctx);return}
     if(event.type!=='im.message.receive_v1'||!/^oc_[A-Za-z0-9_-]+$/.test(event.chat_id??'')||!/^om_[A-Za-z0-9_-]+$/.test(event.message_id??''))return
+    const direct=event.chat_type==='p2p'
     const configured=this.config.feishu!.chats.includes(event.chat_id),mentioned=(event.mentions??[]).some((m:any)=>m.id===this.config.feishu!.mentionId)
-    if(!configured&&!(this.config.feishu!.otherChats==='mentions'&&mentioned)&&!(this.config.feishu!.directMessages&&event.chat_type==='p2p'))return
+    if(direct?!this.config.feishu!.directMessages:!configured&&!(this.config.feishu!.otherChats==='mentions'&&mentioned))return
     // Read the original for identical ids/content across live events and polling.
+    await this.verifiedAccount(ctx,true)
+    const item=await this.one(event.message_id,event.chat_id)
+    if(item.chat_id!==event.chat_id||item.chat_type&&event.chat_type&&item.chat_type!==event.chat_type)throw Error('Event chat mismatch')
+    if(direct||item.chat_type==='p2p'){
+      const trigger=this.fromMessage(item,event.chat_id)
+      if(!this.config.feishu!.directMessages||!trigger?.human||!this.config.allowedActors.includes(trigger.actor.id)||
+          this.directChats.has(event.chat_id)&&this.directChats.get(event.chat_id)!==trigger.actor.id)return
+      if(!await this.acceptItem(item,event.chat_id,ctx))return
+      const identity=await this.resolveIdentity(),thread=feishuDirectThread(event.chat_id)
+      trigger.meta.chatType='p2p'
+      trigger.meta.feishuBotId=identity.id
+      trigger.addressed='direct'
+      trigger.threads[0]!.id=thread
+      trigger.channel!.thread=thread
+      this.directChats.set(event.chat_id,trigger.actor.id)
+      ctx.receive(trigger)
+      return
+    }
     if(!configured)this.discovered.add(event.chat_id)
-    try{await this.verifiedAccount(ctx,true);const item=await this.one(event.message_id);if(item.chat_id!==event.chat_id)throw Error('Event chat mismatch');const trigger=await this.acceptItem(item,event.chat_id,ctx);if(trigger){trigger.meta.chatType=event.chat_type;if(event.chat_type==='p2p'&&this.config.feishu!.directMessages)trigger.addressed='direct';ctx.receive(trigger)}}
-    catch(error){if(!configured)this.discovered.delete(event.chat_id);throw error}
+    const trigger=await this.acceptItem(item,event.chat_id,ctx)
+    if(trigger){trigger.meta.chatType=event.chat_type??trigger.meta.chatType;ctx.receive(trigger)}
   }
   private lifecycleEvent(value:any,ctx:SourceContext){
     if(!ctx.change||this.config.feishu!.lifecycleEvents===false)return
@@ -161,7 +189,13 @@ export class FeishuSource extends MessageSource {
   }
   start(ctx:SourceContext){
     this.sourceContext=ctx
-    for(const trigger of ctx.store.list<Trigger>('trigger'))if(trigger.source===this.config.id&&typeof trigger.meta.chat==='string'&&(this.config.feishu!.otherChats==='mentions'&&trigger.addressed||this.config.feishu!.directMessages&&trigger.meta.chatType==='p2p'))this.discovered.add(trigger.meta.chat)
+    for(const trigger of ctx.store.list<Trigger>('trigger')){
+      const {chat,chatType}=trigger.meta
+      if(trigger.source!==this.config.id||typeof chat!=='string')continue
+      if(chatType==='p2p'){
+        if(trigger.human&&this.config.allowedActors.includes(trigger.actor.id)&&!this.directChats.has(chat))this.directChats.set(chat,trigger.actor.id)
+      }else if(this.config.feishu!.otherChats==='mentions'&&trigger.addressed)this.discovered.add(chat)
+    }
     const config=this.config.feishu!
     if(this.closing||!config.liveEvents)return
     const lifecycle=ctx.change&&config.lifecycleEvents!==false?feishuLifecycleEvents:[]
@@ -341,13 +375,13 @@ export class FeishuSource extends MessageSource {
     }
     await this.refreshKnown(ctx,activeRoots)
   }
-  private async one(messageId:string){
+  private async one(messageId:string,eventChat?:string){
     if(!/^om_[A-Za-z0-9_-]+$/.test(messageId))throw Error('Invalid Feishu message id')
     await this.verifiedAccount(this.sourceContext)
     const data=await this.api('GET','im/v1/messages/'+encodeURIComponent(messageId))
     const item=(data.items??data.messages??[]).find((x:any)=>x.message_id===messageId)
-    if(!item||!this.permitted(item.chat_id))throw Error('Message is outside configured chats or unavailable')
-    if(this.sourceContext){
+    if(!item||!this.permitted(item.chat_id)&&!(eventChat&&item.chat_id===eventChat))throw Error('Message is outside configured chats or unavailable')
+    if(this.sourceContext&&this.permitted(item.chat_id)){
       await this.observe(item,item.chat_id,this.sourceContext)
       const latest=await record<any>(this.sourceContext,'source-message-state',bodyDigest([this.config.id,item.chat_id,messageId]))
       if(latest&&(latest.deleted&&!item.deleted||latest.contentHash&&latest.contentHash!==bodyDigest(this.text(item)??'')))throw Error('Message readback is older than the verified source revision')
@@ -401,15 +435,26 @@ export class FeishuSource extends MessageSource {
     }
     throw Error('Unknown Feishu resource')
   }
-  async context(thread:string){const separator=thread.indexOf(':');const chat=thread.slice(0,separator);if(!this.permitted(chat))throw Error('Chat not configured');return this.config.feishu!.cli?this.api('GET','typed/threads/'+encodeURIComponent(thread.slice(separator+1))):this.api('GET','im/v1/messages/'+encodeURIComponent(thread.slice(separator+1)))}
+  async context(thread:string){
+    const separator=thread.indexOf(':'),chat=thread.slice(0,separator)
+    if(!this.validThread(thread))throw Error('Chat not configured')
+    if(thread===feishuDirectThread(chat)){
+      await this.verifiedAccount(this.sourceContext)
+      return this.api('GET','im/v1/messages?container_id_type=chat&container_id='+encodeURIComponent(chat)+'&page_size=20')
+    }
+    return this.config.feishu!.cli?this.api('GET','typed/threads/'+encodeURIComponent(thread.slice(separator+1))):this.api('GET','im/v1/messages/'+encodeURIComponent(thread.slice(separator+1)))
+  }
   async deliver(message:OutboundMessage):Promise<void>{
     const id=message.channel.address.messageId
     if(!id||!this.permitted(message.channel.address.chat!))throw Error('Feishu reply is outside configured chats')
     await this.verifiedAccount(this.sourceContext,true)
-    const original=await this.one(id),chat=message.channel.address.chat,root=original.root_id??original.message_id
-    if(original.chat_id!==chat||message.channel.source!==this.config.id||message.channel.thread!==chat+':'+root)throw Error('Feishu reply destination does not match its authorized thread')
+    const original=await this.one(id),chat=message.channel.address.chat!,root=original.root_id??original.message_id
+    const direct=message.channel.thread===feishuDirectThread(chat)
+    const actor=direct?this.directActor(chat):undefined
+    if(original.chat_id!==chat||message.channel.source!==this.config.id||
+        (direct?(!actor||this.fromMessage(original,chat)?.actor.id!==actor):message.channel.thread!==chat+':'+root))throw Error('Feishu reply destination does not match its authorized thread')
     const uuid=createHash('sha256').update(message.id).digest('hex').slice(0,32)
-    try{await this.api('POST','im/v1/messages/'+encodeURIComponent(id)+'/reply',{msg_type:'text',content:JSON.stringify({text:message.text}),reply_in_thread:true,uuid})}
+    try{await this.api('POST','im/v1/messages/'+encodeURIComponent(id)+'/reply',{msg_type:'text',content:JSON.stringify({text:message.text}),reply_in_thread:!direct,uuid})}
     catch{throw new UncertainDelivery('Feishu reply outcome unknown; reconcile message before replay')}
   }
 }

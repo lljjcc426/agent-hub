@@ -49,7 +49,9 @@ import {
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
 import {deliveryFile} from "./delivery-links.ts";
-import {TeamOverview,type TeamTab} from './team-view.tsx';
+import {TeamOverview} from './team-view.tsx';
+import {BrowserPanel,type BrowserOpenRequest} from './browser.tsx';
+import {initialTeamPanel,type TeamTab} from './chat-panel-state.ts';
 import {HeartbeatCard} from './heartbeat-card.tsx';
 import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
@@ -68,8 +70,6 @@ import '../ui/components.css';
 import '../ui/agent-components.css';
 import '../ui/transitions.css';
 import './workflow.css';
-import { ResourceWorkspace } from "./resource-workspace.tsx";
-import { initialResources, openResource, resourceKey, type ResourceKind } from "./resource-state.ts";
 import { ChatMemberPicker, StudioRail, General } from "./studio-navigation.tsx";
 import { SwitchView, switchView } from "../ui";
 import { SidebarSeparator } from "./sidebar-separator.tsx";
@@ -86,7 +86,6 @@ const ChatPersonalizationDialog=lazy(()=>import("./chat-personalization.tsx").th
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
 import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
-import { FilesPanel } from "./files.tsx";
 import { AgentAvatar, RoppoAppearanceContext } from "./agent-avatar.tsx";
 import type {ChatPersonalization,ChatPreferences} from '../../src/chat-personalization.ts';
 import type {ChatArrival} from './chat-arrival.ts';
@@ -562,7 +561,8 @@ function App() {
     const sync = () => {
       if (location.hash === "#prompts/memory") history.replaceState(null, "", location.pathname + location.search + "#advanced/memory");
       if (location.pathname === "/configure" && location.hash === "#integrations/library/app") history.replaceState(null, "", "/configure#connectors");
-      if (location.pathname === "/chat" && location.search) history.replaceState(null, "", "/chat" + location.hash);
+      if (location.pathname === "/chat" && location.search && new URLSearchParams(location.search).get('browser') !== 'open')
+        history.replaceState(null, "", "/chat" + location.hash);
       if (location.pathname === "/chat" && previousHash !== location.hash) void refreshList();
       const next = location.pathname + location.search + location.hash;
       // Filtering and opening library items update the same page, including its live search input.
@@ -598,7 +598,7 @@ function App() {
       )
         return;
       event.preventDefault();
-      if (url.pathname === "/chat") url.search = "";
+      if (url.pathname === "/chat" && url.searchParams.get('browser') !== 'open') url.search = "";
       history.pushState(null, "", url);
       sync();
     };
@@ -777,71 +777,61 @@ function Chat(p: ChatProps) {
     activityOpener.current=null;
     if(restoreFocus)(origin?.isConnected?origin:activityButton.current)?.focus({preventScroll:true});
   }
-  const [resources, setResources] = useState(() =>
-    initialResources(read(resourceKey(id)), read("roppo.chat.panel." + (id ?? "new"))),
-  );
-  const activeTool = resources.tabs.find(tab => tab.id === resources.active)!.kind;
-  const lastView = resources.view === 'team' ? 'activity' : activeTool;
-  const resource = resources.visible ? lastView : null;
+  const panelKey = 'roppo.chat.team-panel.' + (id ?? 'new');
+  const [initialPanel] = useState(() => initialTeamPanel(read(panelKey),
+    read('roppo.resources.' + (id ?? 'new')), read('roppo.chat.panel.' + (id ?? 'new'))));
+  const [teamPanelOpen, setTeamPanelOpen] = useState(initialPanel.open);
   const [sidebarCards, setSidebarCards] = useState(emptySidebarCards);
-  const panel = sidebarCards.revealing ? 'activity' : resource;
-  const overview = panel === 'activity';
+  const panel = sidebarCards.revealing || teamPanelOpen;
   useEffect(() => { if (configuring) setSidebarCards(emptySidebarCards); }, [configuring]);
-  const [pendingWebsite, setPendingWebsite] = useState(() => {
-    try { return sessionStorage.getItem("roppo.website." + id) || ""; } catch { return ""; }
-  });
-  const consumeWebsite = () => {
-    setPendingWebsite("");
-    try { sessionStorage.removeItem("roppo.website." + id); } catch {}
-  };
-  useEffect(() => write(resourceKey(id), JSON.stringify(resources)), [id, resources]);
-  const [teamTab,setTeamTab]=useState<TeamTab>('activity'),[file,setFile]=useState<ChatDelivery|null>(null);
+  const [teamTab,setTeamTab]=useState<TeamTab>(initialPanel.tab),[file,setFile]=useState<ChatDelivery|null>(null);
+  useEffect(() => write(panelKey, teamPanelOpen ? teamTab : 'closed'), [panelKey, teamPanelOpen, teamTab]);
   const [selectedTask,setSelectedTask]=useState<string|null>(null);
   const taskOpener=useRef<HTMLButtonElement>(null);
   const loadTask=useCallback((task:string,signal:AbortSignal) =>
     api<TaskExecutionDetail>('/conversations/'+id+'/task-detail?'+new URLSearchParams({task}),undefined,'GET',signal),[id]);
   useEffect(()=>{
-    if(route === '/chat#schedules'){setTeamTab('schedules');setResources(state=>openResource(state,'activity'))}
+    if(route === '/chat#schedules'){setTeamTab('schedules');setTeamPanelOpen(true)}
+    if(new URL(route, location.origin).searchParams.get('browser') === 'open'){
+      setTeamTab('agents');setTeamPanelOpen(true)
+    }
   },[route]);
-  const [browserRequest,setBrowserRequest]=useState<{id:string;takeover:boolean;key:number}>();
-  const [panelExpanded, setPanelExpanded] = useState(false);
-  const sessionView = useMemo(() => panel && !configuring ? { overview, expanded:panelExpanded, cards:sidebarCards, tab:teamTab, task:selectedTask } : null,
-    [panel, configuring, overview, panelExpanded, sidebarCards, teamTab, selectedTask]);
+  const [browserRequest,setBrowserRequest]=useState<BrowserOpenRequest | undefined>(() => initialPanel.launchBrowser ? {} : undefined);
+  const sessionView = useMemo(() => panel && !configuring ? { cards:sidebarCards, tab:teamTab, task:selectedTask } : null,
+    [panel, configuring, sidebarCards, teamTab, selectedTask]);
   const sessionPresence = usePanelPresence(sessionView);
   const displayedSession = sessionPresence.view;
-  const shownTask = displayedSession?.overview ? displayedSession.task : null;
+  const shownTask = displayedSession?.task ?? null;
   const taskPresence = usePanelPresence(shownTask);
   const [pickerRequest,setPickerRequest]=useState(0);
   const creating = useRef(false);
-  const choosePanel = async (next: ResourceKind | null, url?: string) => {
-    if(next&&panelOverlay&&trayOpen)changeTray(false);
-    if(next&&panelOverlay&&activityTrayOpen)closeActivityTray(false);
-    setSelectedTask(null);
-    if (next === "browser" && !id) {
-      if (creating.current) return;
-      creating.current = true;
-      try {
-        const conversation = (await spaceRequest({}, "POST")).conversation!;
-        write(resourceKey(conversation.id), JSON.stringify(openResource(resources, "browser")));
-        if (url) try { sessionStorage.setItem("roppo.website." + conversation.id, url); } catch {}
-        write(draftKey(conversation.id), runtime.thread.composer.getState().text);
-        write(draftKey(null), "");
-        write(skillDraftKey(conversation.id),read(skillDraftKey(null),'null'));
-        write(skillDraftKey(null),'null');
-        await refreshList();
-        if (alive.current && location.pathname === "/chat") navigate(conversation.id);
-      } catch (error) { fail(error); }
-      finally { creating.current = false; }
-      return;
+  const openFirstBrowser = async () => {
+    if (creating.current) return;
+    creating.current = true;
+    try {
+      const conversation = (await spaceRequest({}, "POST")).conversation!;
+      if (!alive.current || location.pathname !== "/chat") return;
+      write('roppo.chat.team-panel.' + conversation.id, 'launch-browser');
+      carryInitialDraft(conversation.id);
+      await refreshList();
+      if (alive.current && location.pathname === "/chat") navigate(conversation.id);
+    } catch (error) {
+      fail(error);
+    } finally {
+      creating.current = false;
     }
-    if (url) setPendingWebsite(url);
-    if(next&&!panel)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
+  };
+  const showPanel = (open: boolean) => {
+    if(open&&panelOverlay&&trayOpen)changeTray(false);
+    if(open&&panelOverlay&&activityTrayOpen)closeActivityTray(false);
+    setSelectedTask(null);
+    if(open&&!panel)panelOpener.current=document.activeElement instanceof HTMLElement?document.activeElement:null;
     setSidebarCards(state => {
-      if (!next) return emptySidebarCards;
+      if (!open) return emptySidebarCards;
       return state.revealing ? {...state, revealing:false} : state;
     });
-    setResources((state) => next ? openResource(state, next) : { ...state, visible: false });
-    if (!next || next === 'activity') setPanelExpanded(false);
+    if (!open) setBrowserRequest(undefined);
+    setTeamPanelOpen(open);
   };
   const hash = route.split("#")[1] || "general";
   const general = configuring && hash === "general";
@@ -1012,7 +1002,7 @@ function Chat(p: ChatProps) {
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
   const [usageRefresh, setUsageRefresh] = useState(0);
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
-    routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext, usageRefresh);
+    routerCall?.id, routerCall?.usageRevision, running || (panel && sidebarCards.items.includes('context')), loadContext, usageRefresh);
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
@@ -1342,11 +1332,11 @@ function Chat(p: ChatProps) {
       if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
         if (menu) {
           closeNavigation();
-        } else if (activityTrayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
+        } else if (activityTrayOpen && !configuring && !(panel && panelOverlay)) {
           closeActivityTray();
-        } else if (panel && overview && selectedTask && !configuring) {
+        } else if (panel && selectedTask && !configuring) {
           backToTasks();
-        } else if (trayOpen && !configuring && !(panel && (panelOverlay || panelExpanded))) {
+        } else if (trayOpen && !configuring && !(panel && panelOverlay)) {
           closeTray();
         } else if (sidebarCards.revealing) {
           dismissCard(sidebarCards.items[0]!);
@@ -1357,7 +1347,7 @@ function Chat(p: ChatProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, panel, resource, sidebarCards, panelOverlay, closeNavigation, trayOpen, activityTrayOpen, configuring, panelExpanded, overview, selectedTask]);
+  }, [menu, panel, sidebarCards, panelOverlay, closeNavigation, trayOpen, activityTrayOpen, configuring, selectedTask]);
   useEffect(() => {
     if (narrow && menu)
       document
@@ -1366,19 +1356,19 @@ function Chat(p: ChatProps) {
   }, [narrow, menu]);
   const current = snapshot?.conversation;
   const pendingCards=snapshot?.conversation.id===id?(snapshot?.pendingCards??[]):[];
-  const trayVisible=trayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
+  const trayVisible=trayOpen&&!configuring&&!(panelOverlay&&panel);
   const trayView = useMemo(() => trayVisible ? { linkedItem, linkVisit } : null, [trayVisible, linkedItem, linkVisit]);
   const trayPresence = usePanelPresence<NonNullable<typeof trayView>, HTMLDivElement>(trayView, '#pending-tray');
   const displayedTray = trayPresence.view;
   const displayedPendingItem = displayedTray?.linkedItem;
-  const activityTrayVisible=activityTrayOpen&&!configuring&&!((panelOverlay||panelExpanded)&&panel);
+  const activityTrayVisible=activityTrayOpen&&!configuring&&!(panelOverlay&&panel);
   const activityPresence=usePanelPresence<string,HTMLDivElement>(activityTrayVisible ? id??'new' : null,'#activity-tray');
   useEffect(()=>{
     if(activityTrayVisible)document.getElementById('activity-tray')?.focus({preventScroll:true});
   },[activityTrayVisible]);
   const openActivityTray=(origin:HTMLElement|null)=>{
     if(trayOpen)changeTray(false);
-    if((panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+    if(panelOverlay&&panel)showPanel(false);
     activityOpener.current=origin;
     setActivityTrayOpen(true);
   };
@@ -1386,7 +1376,7 @@ function Chat(p: ChatProps) {
     if(linkedItem){
       closeActivityTray(false);
       changeTray(true);
-      if((panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+      if(panelOverlay&&panel)showPanel(false);
     }else if(previousLinkedItem.current){
       setTrayOpen(false);
       write('roppo.chat.pendingTray','closed');
@@ -1396,7 +1386,7 @@ function Chat(p: ChatProps) {
   const toggleTray=()=>{
     linkOrigin.current=null;
     if(!trayVisible)closeActivityTray(false);
-    if(!trayVisible&&(panelOverlay||panelExpanded)&&panel)void choosePanel(null);
+    if(!trayVisible&&panelOverlay&&panel)showPanel(false);
     changeTray(!trayVisible);
     if(!trayVisible)requestAnimationFrame(()=>document.getElementById('pending-tray')?.focus({preventScroll:true}));
   };
@@ -1407,7 +1397,7 @@ function Chat(p: ChatProps) {
     if (!panel) {
       panelOpener.current = threadRef.current?.querySelector<HTMLElement>('.composer-input') ?? null;
       setTeamTab('activity');
-      setResources(state => openResource(state, 'activity'));
+      setTeamPanelOpen(true);
     }
     setSidebarCards(state => ({items:[card, ...state.items.filter(item => item !== card)], revealing:true}));
     requestAnimationFrame(() => bodyRef.current?.querySelector('.team-tab-content')?.scrollTo({top:0, behavior:'instant'}));
@@ -1428,14 +1418,14 @@ function Chat(p: ChatProps) {
     });
   }
   function closePanel() {
-    void choosePanel(null);
+    showPanel(false);
     restorePanelFocus(() => panelOpener.current?.isConnected ? panelOpener.current : teamButton.current);
   }
   function backToTasks() {
     setSelectedTask(null);
     restorePanelFocus(() => taskOpener.current?.isConnected ? taskOpener.current : document.getElementById('team-tab-activity'));
   }
-  const readAgent=(agentId:string)=>{selectAgent(agentId);void choosePanel(null);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
+  const readAgent=(agentId:string)=>{selectAgent(agentId);showPanel(false);requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLElement>('.worker-readonly button,.composer-input')?.focus({preventScroll:true}))};
   const quoteMessage=(value:DraftQuote)=>{
     saveQuote(value);selectAgent(currentRouter.id);
     requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus({preventScroll:true}));
@@ -1578,7 +1568,7 @@ function Chat(p: ChatProps) {
                 </div>
                 <ChatCompanion visible={!configuring} actor={companionActor} event={handoff.event} onFinish={handoff.finish}
                   status={companionStatus(snapshot,L,{participantId:companionWorker,connected,loading:loading&&!localMessages.length})} L={L}
-                  onOpen={()=>{setTeamTab("activity");void choosePanel("activity")}}/>
+                  onOpen={()=>{setTeamTab("activity");showPanel(true)}}/>
                 <div className="chat-float chat-float-end">
                   <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
                     aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
@@ -1594,7 +1584,7 @@ function Chat(p: ChatProps) {
                   <button
                     ref={teamButton}
                     className={"icon-button" + (panel ? " selected" : "")}
-                    onClick={() => void choosePanel(panel ? null : lastView)}
+                    onClick={() => showPanel(!panel)}
                     aria-label={L("Session panel", "会话面板")}
                     title={L("Session panel", "会话面板")}
                     aria-expanded={!!panel}
@@ -1629,7 +1619,7 @@ function Chat(p: ChatProps) {
                   ref={threadRef}
                   className="thread"
                   data-welcome={welcome || undefined}
-                  inert={(!overview && panelExpanded) || (panelOverlay && !!panel)}
+                  inert={panelOverlay && panel}
                 >
                   <ThreadPrimitive.Viewport className="transcript" autoScroll={false} scrollToBottomOnRunStart={false} scrollToBottomOnInitialize={false} scrollToBottomOnThreadSwitch={false}>
                     <div className="transcript-inner">
@@ -1662,7 +1652,11 @@ function Chat(p: ChatProps) {
                       <WorkflowCards anchor="pending"/>
                       {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
                         <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
-                        <button onClick={()=>{setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused',key:Date.now()});void choosePanel('browser')}}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
+                        <button onClick={()=>{
+                          setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused'});
+                          setTeamTab('agents');
+                          showPanel(true);
+                        }}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
                       </div>)}
                       {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
@@ -1714,18 +1708,21 @@ function Chat(p: ChatProps) {
               </div>
               {displayedSession && <aside ref={sessionPresence.ref} id="session-panel" aria-label={L('Session panel', '会话面板')}
                 data-closing={sessionPresence.closing||undefined} inert={sessionPresence.closing} aria-hidden={sessionPresence.closing||undefined}
-                className={'session-panel '+(displayedSession.overview ? 'chat-inspector team-drawer task-drawer' : 'resource-workspace'+(displayedSession.expanded?' expanded':''))}>
+                className="session-panel chat-inspector team-drawer task-drawer">
                 <SidebarSeparator pane="panel" controls="session-panel" label={L("Session panel","会话面板")}/>
-                {displayedSession.overview && <div className="task-drawer-stack">
+                <div className="task-drawer-stack">
                   <div className="task-drawer-layer task-overview-layer" data-inactive={!!shownTask||undefined} inert={!!shownTask} aria-hidden={!!shownTask||undefined}>
                   <TeamOverview active={!sessionPresence.closing} snapshot={snapshot} participants={participants} routerLabel={currentRouter.label} lang={lang} L={L}
                   heartbeat={<HeartbeatCard lang={lang} L={L} read={readHeartbeat} change={changeHeartbeat}/>}
                   tab={displayedSession.cards.revealing ? 'activity' : displayedSession.tab} focusOnOpen={!displayedSession.cards.revealing}
                   setTab={tab => {
-                    if (sidebarCards.revealing && tab !== 'activity') void choosePanel('activity');
+                    if (sidebarCards.revealing && tab !== 'activity') showPanel(true);
                     setTeamTab(tab);
                   }}
-                  close={closePanel} select={readAgent} openFile={setFile} resource={kind=>void choosePanel(kind)}
+                  close={closePanel} select={readAgent} openFile={setFile}
+                  browsers={<BrowserPanel L={L} conversationId={id ?? undefined} routerLabel={teamName(currentRouter.label)}
+                    requestedSession={browserRequest}
+                    onRequestHandled={()=>setBrowserRequest(undefined)} createConversation={openFirstBrowser} />}
                   openTask={id ? (activity,source)=>{
                     taskOpener.current=source;
                     setSidebarCards(state=>state.revealing?{...state,revealing:false}:state);
@@ -1736,7 +1733,7 @@ function Chat(p: ChatProps) {
                       current={usage} L={L} focusOnReveal={panelOverlay && displayedSession.cards.revealing}
                       onClose={()=>dismissCard(card)} />
                   )}
-                  locateMessage={messageId=>{if(panelOverlay)void choosePanel(null);requestAnimationFrame(()=>void locateMessage(messageId))}}
+                  locateMessage={messageId=>{if(panelOverlay)showPanel(false);requestAnimationFrame(()=>void locateMessage(messageId))}}
                   changeSchedule={async (planId,expectedRevision,patch)=>{
                     try{await api('/conversations/'+id+'/schedules',{id:planId,expectedRevision,operationId:crypto.randomUUID(),...patch},'PATCH')}finally{await refresh()}
                   }}
@@ -1748,26 +1745,7 @@ function Chat(p: ChatProps) {
                     layerRef={taskPresence.ref} back={backToTasks} close={closePanel} locale={lang} L={L} selectAgent={readAgent}
                     agentName={id=>id ? participants.find(agent=>agent.id===id)?.label??id : teamName(currentRouter.label)}/>
                   </Suspense>}
-                </div>}
-                <ResourceWorkspace
-                  hidden={displayedSession.overview}
-                  state={resources}
-                  browser={id && !configuring ? {conversationId:id, requestedSession:browserRequest,
-                    requestedUrl:pendingWebsite, onUrlConsumed:consumeWebsite} : undefined}
-                  onChange={setResources}
-                  onOpen={(kind, url) => {
-                    if (kind === 'activity') setTeamTab('activity');
-                    void choosePanel(kind, url);
-                  }}
-                  expanded={displayedSession.expanded}
-                  onExpand={() => setPanelExpanded(!panelExpanded)}
-                  onClose={closePanel}
-                  L={L}
-                >
-                  {activeTool === "files" ? (
-                    <FilesPanel conversationId={id} deliveries={snapshot?.deliveries ?? []} openFile={setFile} L={L} />
-                  ) : null}
-                </ResourceWorkspace>
+                </div>
               </aside>}
             </div>
             </div></SwitchView>

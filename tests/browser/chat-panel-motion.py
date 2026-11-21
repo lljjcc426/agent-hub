@@ -74,7 +74,7 @@ with sync_playwright() as pw:
         document.addEventListener('transitionrun', event => {
             const el = event.target;
             if (el.id === 'session-panel' && el.hasAttribute('data-closing') && ['transform', 'margin-right'].includes(event.propertyName))
-                exits.push([el.classList.contains('team-drawer') ? 'overview' : 'resources', el.inert]);
+                exits.push(['overview', el.inert]);
         });
         document.addEventListener('animationstart', event => {
             const el = event.target;
@@ -142,12 +142,12 @@ with sync_playwright() as pw:
     expect(mascot).not_to_have_attribute('data-greeting', 'true')
     expect(drawer_toggle).to_have_attribute('aria-expanded', 'true')
     expect(drawer).to_be_visible()
-    drawer.get_by_role('button', name='文件', exact=True).click()
-    expect(drawer).to_have_class('session-panel resource-workspace')
+    drawer.get_by_role('tab', name='Agents').click()
+    expect(drawer.get_by_role('heading', name='浏览器')).to_be_visible()
     assert_surfaces(page)
     close_drawer.click()
     expect(drawer).to_have_count(0)
-    assert ['resources', True] in page.evaluate('exits')
+    assert ['overview', True] in page.evaluate('exits')
 
     pending_toggle = page.locator('.pending-trigger')
     pending = page.locator('#pending-tray')

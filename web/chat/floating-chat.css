@@ -136,7 +136,7 @@
   transition-timing-function: ease-in;
 }
 /* Keep the sidebar at its full width while its outer edge slides out of the flex layout. */
-.floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+.floating-chat .conversation-body:not(.panel-overlay) > .session-panel {
   --docked-panel-width: clamp(var(--panel-min, 360px), var(--panel-size, var(--panel-default, min(43vw, 600px))), calc(100% - 394px));
   position: relative;
   inset: auto;
@@ -145,27 +145,26 @@
   width: var(--docked-panel-width);
   transition-property: margin-right, opacity;
 }
-.floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded)[data-closing] {
+.floating-chat .conversation-body:not(.panel-overlay) > .session-panel[data-closing] {
   margin-right: calc(-1 * var(--docked-panel-width));
   transform: none;
   transition-timing-function: ease-in-out, ease-in;
 }
 @starting-style {
   .floating-chat .conversation-body > .session-panel { opacity: 0; transform: translateX(20px); }
-  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel {
     margin-right: calc(-1 * var(--docked-panel-width));
     transform: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .floating-chat .conversation-body > .session-panel,
-  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel:not(.expanded) {
+  .floating-chat .conversation-body:not(.panel-overlay) > .session-panel {
     transition: none;
   }
 }
 .floating-chat .session-panel.team-drawer { --panel-min: 290px; --panel-default: 360px; }
 .floating-chat .session-panel > .sidebar-separator { left: 0; }
-.floating-chat .conversation-body > .session-panel.expanded,
 .floating-chat .conversation-body.panel-overlay > .session-panel {
   position: absolute;
   inset: var(--below-controls) var(--float-right) var(--float-bottom) var(--float-left);

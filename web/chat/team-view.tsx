@@ -2,8 +2,6 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClock,
   ChevronRight,
-  Folder,
-  Globe,
   List,
   Pencil,
   Users,
@@ -15,14 +13,14 @@ import type { ScheduleEdit } from '../../src/chat-schedules.ts'
 import { ScheduleCard } from '../ui/schedule-card.tsx'
 import { deliveryFile } from './delivery-links.ts'
 import { DeliveryFileCard } from '../ui/delivery-files.tsx'
-import { TaskActivityRow } from '../ui/task-activity.tsx'
+import { TaskActivityList } from './task-activity-list.tsx'
 import { AgentAvatar, teamName } from './agent-avatar.tsx'
 import { RoppoCharacter } from './roppo-character.tsx'
 import { taskActivities, type TaskActivity } from '../../src/chat-task-activity.ts'
+import type { TeamTab } from './chat-panel-state.ts'
 
 type View = ReturnType<ChatSessions['view']>
 type Localize = (en: string, zh: string) => string
-export type TeamTab = 'activity' | 'agents' | 'schedules'
 const tabs = [
   { id: 'activity', Icon: List },
   { id: 'agents', Icon: Users },
@@ -46,7 +44,7 @@ interface TeamOverviewProps {
   select: (id: string) => void
   openTask?: (activity: TaskActivity, source: HTMLButtonElement) => void
   openFile: (file: ChatDelivery) => void
-  resource: (kind: 'browser' | 'files') => void
+  browsers: ReactNode
   locateMessage: (id: string) => void
   changeSchedule: (id: string, revision: number, change: ScheduleEdit) => Promise<void>
 }
@@ -66,7 +64,7 @@ export function TeamOverview({
   select,
   openTask,
   openFile,
-  resource,
+  browsers,
   changeSchedule, locateMessage,
 }: TeamOverviewProps) {
   const [greeting, setGreeting] = useState(0)
@@ -152,11 +150,8 @@ export function TeamOverview({
             {cards && <div className="roppo-ui team-card-stack">{cards}</div>}
             <h3>{L('Tasks', '任务动态')}</h3>
             {activities.length ? (
-              activities.map(activity => (
-                <TaskActivityRow key={activity.id} activity={activity} L={L} onAgent={select}
-                  onOpen={openTask ? source => openTask(activity, source) : undefined}
-                  agentName={id => participants.find(p => p.id === id)?.label ?? id}/>
-              ))
+              <TaskActivityList activities={activities} lang={lang} L={L} onAgent={select}
+                openTask={openTask} agentName={id => participants.find(p => p.id === id)?.label ?? id}/>
             ) : (
               <p>{L('No tasks yet', '暂无任务')}</p>
             )}
@@ -169,6 +164,7 @@ export function TeamOverview({
           </>
         ) : tab === 'agents' ? (
           <>
+            {browsers}
             <h3>Agents</h3>
             {participants.map((a) => (
               <button className="team-row" key={a.id} onClick={() => select(a.id)}>
@@ -195,16 +191,6 @@ export function TeamOverview({
           </>
         )}
       </div>
-      <footer className="team-drawer-foot">
-        <button onClick={() => resource('files')}>
-          <Folder size={16} />
-          {L('Files', '文件')}
-        </button>
-        <button onClick={() => resource('browser')}>
-          <Globe size={16} />
-          {L('Browser', '浏览器')}
-        </button>
-      </footer>
     </>
   )
 }

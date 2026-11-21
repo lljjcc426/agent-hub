@@ -35,7 +35,7 @@ function fixture(kind='workspace'){
  }
  let group=makeGroup()
  const media={matches:false,addEventListener:(_type:string,cb:()=>void)=>preference=cb,removeEventListener(){}}
- const document={hidden:false,documentElement:new Node(),createElement:()=>new Node(),querySelectorAll:(selector:string)=>selector===(kind==='browser'?'.resource-tabs':'.workspace-tabs')?[group]:[],querySelector:()=>body,
+ const document={hidden:false,documentElement:new Node(),createElement:()=>new Node(),querySelectorAll:(selector:string)=>selector===(kind==='browser'?'.browser-page-tabs':'.workspace-tabs')?[group]:[],querySelector:()=>body,
   addEventListener:(type:string,cb:()=>void)=>events.set(type,cb),removeEventListener:(type:string)=>events.delete(type)}
  const context=createContext({document,window:{addEventListener(){},removeEventListener(){}},location:{pathname:'/configure',hash:'#tasks/history'},matchMedia:()=>media,
   getComputedStyle:()=>({opacity:'.8',transform:'matrix(1,0,0,1,3,0)'}),Symbol,Map,Set,

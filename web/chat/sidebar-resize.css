@@ -21,8 +21,7 @@
     touch-action: none;
   }
   .session-panel > .sidebar-separator { right: auto; left: -4px; }
-  .panel-overlay .session-panel > .sidebar-separator,
-  .session-panel.expanded > .sidebar-separator { display: none; }
+  .panel-overlay .session-panel > .sidebar-separator { display: none; }
   .sidebar-separator:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }
   .chat-shell[data-resizing], .chat-shell:has(.sidebar-separator:focus-visible) { transition: none; }
   .chat-shell[data-resizing] { cursor: col-resize; user-select: none; }

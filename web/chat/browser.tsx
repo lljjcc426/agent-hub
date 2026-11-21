@@ -1,6 +1,6 @@
 import { Dialog, DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { Button as FormButton, CheckField, InputControl, SelectField } from '../ui/controls.tsx'
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Globe,
@@ -21,8 +21,9 @@ import {
 import type { BrowserManager } from "../../src/browser-manager.ts";
 import type { BrowserAction } from "../../src/browser-contract.ts";
 import {BrowserViewport} from './browser-viewport.tsx';
+import {BrowserPreview} from './browser-preview.tsx';
 import {BrowserFiles} from './browser-files.tsx';
-import {resourceUrl} from './resource-state.ts';
+import {browserUrl} from './browser-url.ts';
 import type {BrowserInput} from '../../src/browser-input.ts';
 import "./browser.css";
 
@@ -120,32 +121,78 @@ const messages: Record<string, [string, string]> = {
     </button>
   );
 
-export type BrowserPages = {
-  sessionId: string;
-  tabs: Session['tabs'];
-  canEdit: boolean;
-  select: (id: string) => Promise<void>;
-  close: (id: string) => Promise<void>;
-  create: () => Promise<void>;
-};
+const activePage = (session: Session) => session.tabs.find(tab => tab.active) ?? session.tabs[0];
+const browserPageId = (viewportId: string, tab?: string) => tab === undefined ? undefined : viewportId + '-' + tab;
 
-export type BrowserPanelProps = {
+function BrowserPageTabs({session, viewportId, editable, operation, L}: {
+  session: Session;
+  viewportId: string;
+  editable: boolean;
+  operation: (operation: Partial<BrowserAction>) => Promise<void>;
+  L: L;
+}) {
+  const selected = activePage(session);
+  const selectedId = browserPageId(viewportId, selected?.id);
+  useEffect(() => {
+    if (selectedId) document.getElementById(selectedId)?.scrollIntoView({block:'nearest', inline:'nearest'});
+  }, [selectedId]);
+  return (
+    <div className="browser-page-bar">
+      <div className="browser-page-tabs" role="tablist" aria-label={L("Browser tabs", "网页标签页")}
+        onKeyDown={event => {
+          if (!editable || !selected || (event.target as HTMLElement).role !== 'tab') return;
+          const tabs = session.tabs;
+          const index = tabs.findIndex(tab => tab.id === selected.id);
+          const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+            : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+            : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+          if (next < 0) return;
+          event.preventDefault();
+          const target = tabs[next]!;
+          void operation({action:'select_tab',tab:target.id}).then(() => {
+            document.getElementById(browserPageId(viewportId, target.id)!)?.focus({preventScroll:true});
+          });
+        }}>
+        {session.tabs.map(tab => {
+          const label = tab.url === 'about:blank' ? L('Blank page','空白页') : tab.title || tab.url;
+          const current = tab.id === selected?.id;
+          return <div className="browser-page-tab" data-active={current || undefined} key={tab.id}>
+            <button type="button" role="tab" id={browserPageId(viewportId, tab.id)} aria-selected={current}
+              aria-controls={viewportId} tabIndex={current ? 0 : -1} title={label}
+              disabled={!current && !editable} onClick={() => {
+                if (!current) void operation({action:'select_tab',tab:tab.id});
+              }}>
+              <Globe size={15} aria-hidden="true" /><span>{label}</span>
+            </button>
+            {session.tabs.length > 1 && <Button label={L('Close tab ','关闭标签页 ')+label} disabled={!editable}
+              onClick={() => void operation({action:'close_tab',tab:tab.id})}><X size={14} /></Button>}
+          </div>;
+        })}
+      </div>
+      <Button label={L('New webpage','新建网页')} disabled={!editable}
+        onClick={() => void operation({action:'new_tab',url:'about:blank'})}><Plus size={18} /></Button>
+    </div>
+  );
+}
+
+export type BrowserOpenRequest = {id?: string; takeover?: boolean};
+type BrowserPanelProps = {
   L: L;
   conversationId?: string;
-  requestedUrl?: string;
-  onUrlConsumed?: () => void;
-  requestedSession?: {id: string; takeover: boolean; key: number};
+  routerLabel?: string;
+  requestedSession?: BrowserOpenRequest;
+  onRequestHandled?: () => void;
+  createConversation?: () => Promise<void>;
   settingsOnly?: boolean;
   profileDialogTarget?: HTMLElement | null;
-  visibility?: 'page' | 'tabs' | 'hidden';
-  renderWorkspace?: (pages: BrowserPages | undefined, content: ReactNode) => ReactNode;
 };
 
-export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsumed, requestedSession,
-  settingsOnly=false, profileDialogTarget, visibility='page', renderWorkspace}: BrowserPanelProps) {
-  const workspaceVisible = visibility !== 'hidden';
+export function BrowserPanel({L, conversationId='', routerLabel, requestedSession, onRequestHandled, createConversation,
+  settingsOnly=false, profileDialogTarget}: BrowserPanelProps) {
   const client = browserClient;
-  const [data, setData] = useState<State | null>(null),
+  const [popupOpen, setPopupOpen] = useState(false),
+    [popupContent, setPopupContent] = useState(false),
+    [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
     [connected, setConnected] = useState(false),
     [busy, setBusy] = useState(false),
@@ -176,13 +223,15 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     triggerRef = useRef<HTMLElement | null>(null);
   const session = data?.sessions.find((s) => s.id === selected),
     controlled = !!session?.controlledByYou && connected;
+  const popupOpenRef = useRef(false);
+  popupOpenRef.current = popupOpen;
   sessionRef.current = session;
   const fail = (e: unknown) => {
     if (active.current)
       setError(e instanceof Error ? e.message : "network_error");
   };
   const refresh = async () => {
-    if (loading.current) return;
+    if ((!conversationId && !settingsOnly) || loading.current) return;
     loading.current = true;
     try {
       const next = await request<State>("?client=" + client + (conversationId ? "&conversation=" + conversationId : ""));
@@ -224,13 +273,14 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   };
   useEffect(() => {
     active.current = true;
-    if (workspaceVisible) void refresh();
-    const timer = workspaceVisible ? setInterval(() => void refresh(), 2000) : undefined;
+    const canList = settingsOnly || !!conversationId;
+    if (canList) void refresh();
+    const timer = canList ? setInterval(() => void refresh(), 2000) : undefined;
     return () => {
       active.current = false;
       clearInterval(timer);
     };
-  }, [workspaceVisible]);
+  }, [conversationId, settingsOnly]);
   useEffect(() => {
     if (data && !data.sessions.some((s) => s.id === selected))
       setSelected(data.sessions[0]?.id ?? "");
@@ -240,7 +290,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   }, [session?.url, selected]);
   useEffect(() => {
     setConnected(false);
-    if (!workspaceVisible || !selected || settingsOnly) return;
+    if (!popupOpen || !selected || settingsOnly) return;
     let current=true;
     let inspecting = false;
     const inspect = async () => {
@@ -265,9 +315,9 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
       current = false;
       clearInterval(timer);
     };
-  }, [selected, settingsOnly, workspaceVisible]);
+  }, [selected, settingsOnly, popupOpen]);
   useEffect(() => {
-    if (visibility !== 'page' || !session?.controlledByYou) return;
+    if (!popupOpen || !session?.controlledByYou) return;
     const timer = setInterval(
       () =>
         void request<Session>("/sessions/" + session.id + "/renew", {
@@ -279,7 +329,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
       20000,
     );
     return () => clearInterval(timer);
-  }, [visibility, session?.id, session?.epoch, session?.controlledByYou]);
+  }, [popupOpen, session?.id, session?.epoch, session?.controlledByYou]);
   useEffect(() => {
     if (dialog !== "accounts") return;
     triggerRef.current = document.activeElement as HTMLElement;
@@ -306,19 +356,6 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
         }),
       );
     });
-  const handledUrl=useRef('');
-  useEffect(()=>{
-    if(!requestedUrl){handledUrl.current='';return;}
-    if(busy||!data||handledUrl.current===requestedUrl)return;
-    handledUrl.current=requestedUrl;
-    void act(async()=>{
-      await viewportDrain.current();
-      const value=session?.personal&&controlled?session:await request<Session>('/open',{client,conversationId});
-      update(value);setSelected(value.id);
-      update(await request<Session>('/sessions/'+value.id+'/action',{client,epoch:value.epoch,operation:{action:'new_tab',url:requestedUrl}}));
-      onUrlConsumed?.();
-    });
-  },[requestedUrl,data,busy]);
   const input = (event: BrowserInput) => {
     const captured=session;
     if(!captured?.controlledByYou)return Promise.resolve();
@@ -328,16 +365,37 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     await viewportDrain.current();
     const value=await request<Session>('/open',{client,conversationId});update(value);setSelected(value.id);
   });
-  const handledSession=useRef(0);
+  const showBrowser = () => {
+    setPopupContent(true);
+    setPopupOpen(true);
+  };
+  const openFromGallery = () => {
+    if (!conversationId) {
+      if (createConversation) void act(createConversation);
+      return;
+    }
+    showBrowser();
+    void openDefault();
+  };
+  const handledSession=useRef<BrowserOpenRequest>(undefined);
   useEffect(()=>{
-    if(busy||!requestedSession||!data?.sessions.some(s=>s.id===requestedSession.id)||handledSession.current===requestedSession.key)return;
-    handledSession.current=requestedSession.key;
+    if(busy||!requestedSession||!data||!conversationId||handledSession.current===requestedSession)return;
+    handledSession.current=requestedSession;
+    onRequestHandled?.();
+    if (!requestedSession.id) {
+      openFromGallery();
+      return;
+    }
+    const id = requestedSession.id;
     void act(async()=>{
       await viewportDrain.current();
-      setSelected(requestedSession.id);
-      if(requestedSession.takeover)update(await request<Session>('/sessions/'+requestedSession.id+'/takeover',{client}));
+      if (!data.sessions.some(s => s.id === id)) update(await request<Session>('/sessions/'+id+'?client='+client));
+      if (!active.current) return;
+      setSelected(id);
+      showBrowser();
+      if(requestedSession.takeover)update(await request<Session>('/sessions/'+id+'/takeover',{client}));
     });
-  },[requestedSession,data,busy]);
+  },[requestedSession,data,busy,conversationId]);
 
   const newProfile = () => {
     setProfileId("");
@@ -370,17 +428,15 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     s.workspace ? L('Workspace browser','工作区浏览器') : s.personal
       ? (data?.profiles.find((p) => p.id === s.profileId)?.name ??
         L("My browser", "我的浏览器"))
-      : (data?.workers.find((w) => w.id === s.workerId)?.label ?? "Worker") +
+      : (s.workerId ? data?.workers.find((w) => w.id === s.workerId)?.label ?? s.workerId
+        : routerLabel ?? L("Assistant", "助手")) +
         " · " +
         (s.title || L("Browser", "浏览器"));
-  const pages: BrowserPages | undefined = session && {
-    sessionId: session.id,
-    tabs: session.tabs,
-    canEdit: !!session.controlledByYou && !busy,
-    select: tab => operation({action: 'select_tab', tab}),
-    close: tab => operation({action: 'close_tab', tab}),
-    create: () => operation({action: 'new_tab', url: 'about:blank'}),
-  };
+  const viewportId = useId();
+  const errorNotice = error && !dialog && <div className="browser-error" role="alert">
+    <span>{messages[error] ? L(...messages[error]!) : L("Unable to complete this operation.", "未能完成此操作。")}</span>
+    <Button label={L("Dismiss error", "关闭提示")} onClick={() => setError("")}><X size={14} /></Button>
+  </div>;
   const profileEditor = (
     <Dialog
       open={dialog === "profile"}
@@ -465,23 +521,11 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
         <Button label={L('Saved accounts','已保存账号')} onClick={accounts} disabled={!data?.profiles.length}><KeyRound size={17}/></Button>
       </div>}
       {settingsOnly?<div className="browser-profile-list">{data?.profiles.length===0 && <div className="settings-empty"><Globe size={24}/><span>{L('No browsers yet','还没有浏览器')}</span></div>}{data?.profiles.map(p=><button key={p.id} onClick={()=>editProfile(p)}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
-      {error && !dialog && (
-        <div className="browser-error" role="alert">
-          <span>
-            {messages[error]
-              ? L(...messages[error]!)
-              : L("Unable to complete this operation.", "未能完成此操作。")}
-          </span>
-          <Button
-            label={L("Dismiss error", "关闭提示")}
-            onClick={() => setError("")}
-          >
-            <X size={14} />
-          </Button>
-        </div>
-      )}
+      {errorNotice}
       {!settingsOnly && (session ? (
         <>
+          <BrowserPageTabs session={session} viewportId={viewportId} L={L}
+            editable={!!session.controlledByYou && !busy && popupOpen} operation={operation}/>
           <form
             className="browser-address"
             onSubmit={(e) => {
@@ -489,7 +533,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
               if (address.trim())
                 void operation({
                   action: "navigate",
-                  url: resourceUrl(address) ?? "https://www.google.com/search?q=" + encodeURIComponent(address.trim()),
+                  url: browserUrl(address) ?? "https://www.google.com/search?q=" + encodeURIComponent(address.trim()),
                 });
             }}
           >
@@ -540,7 +584,8 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
               <Power size={15} />
             </Button>}
           </form>
-          <BrowserViewport key={session.id} id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={!busy} input={input} drainRef={viewportDrain}
+          <BrowserViewport key={session.id} panelId={viewportId} tabId={browserPageId(viewportId, activePage(session)?.id)}
+            id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
             onConnected={setConnected} onError={fail} L={L}/>
           <footer className="browser-control">
@@ -816,5 +861,31 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
       )}
     </aside>
   );
-  return renderWorkspace ? renderWorkspace(pages, content) : content;
+  if (settingsOnly) return content;
+  return (
+    <section className="team-browsers" aria-label={L("Browsers", "浏览器")}>
+      <div className="team-browser-heading">
+        <h3>{L("Browsers", "浏览器")}</h3>
+        <button type="button" className="team-browser-open" aria-haspopup="dialog"
+          disabled={busy || (!!conversationId && (!data || !data.enabled))}
+          onClick={openFromGallery}>
+          <Plus size={15} aria-hidden="true" />
+          {L("Open browser", "打开浏览器")}
+        </button>
+      </div>
+      {!popupContent && errorNotice}
+      {data?.sessions.map(s => <BrowserPreview key={s.id} id={s.id} title={labelFor(s)} revision={s.revision}
+        label={L('View browser', '查看浏览器') + ' · ' + labelFor(s)} enabled={!popupContent}
+        open={() => { setError(''); setSelected(s.id); showBrowser(); }}/>)}
+      <Dialog open={popupOpen} className="roppo-ui browser-fullscreen" title={L("Browser", "浏览器")}
+        closeLabel={L("Close browser view", "关闭浏览器视图")} onClose={() => setPopupOpen(false)}
+        onAfterClose={() => {
+          void viewportDrain.current().catch(fail).finally(() => {
+            if (active.current && !popupOpenRef.current) setPopupContent(false);
+          });
+        }}>
+        {popupContent && content}
+      </Dialog>
+    </section>
+  );
 }

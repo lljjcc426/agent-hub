@@ -22,7 +22,7 @@
     { selector: '.ui-seg__track', pill: true, panels: (_node, selected) => [document.getElementById(selected.getAttribute('aria-controls'))] },
     { selector: '.market-tabs', panels: node => [...following(node), ...(location.hash.endsWith('/tools') ? [document.querySelector('.configuration-outlet')] : [])] },
     { selector: '.automation-tabs', panels: node => following(node).filter(n => n.tagName === 'SECTION') },
-    { selector: '.resource-tabs', panels: node => [node.closest('.resource-workspace').querySelector('.session-panel-content')] },
+    { selector: '.browser-page-tabs', panels: node => [node.closest('.browser-panel').querySelector('.browser-viewport')] },
     { selector: '.operator-workspace .tabs[role=group]', panels: node => [node.parentElement.querySelector('.integration-grid')] }
   ]
   const selectedSelector = '[aria-selected=true],[aria-current=page],[aria-pressed=true]'

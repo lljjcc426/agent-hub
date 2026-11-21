@@ -24,9 +24,6 @@ def check_usage_alignment(panel):
 
 root = Path(sys.argv[1])
 info = json.loads((root / 'browser.json').read_text())
-notes_dir = root / 'workspace' / 'sidebar-review'
-notes_dir.mkdir(exist_ok=True)
-(notes_dir / 'grid-notes.md').write_text('Grid review\n' + 'Sidebar acceptance line\n' * 175)
 with sync_playwright() as pw:
     browser = pw.chromium.launch(channel='msedge')
     context = browser.new_context(viewport={'width': 1400, 'height': 940})
@@ -275,27 +272,19 @@ with sync_playwright() as pw:
     expect(page.get_by_role('tab', name='Schedules')).to_have_attribute('aria-selected', 'true')
     page.get_by_role('button', name='Close panel').click()
 
-    # An opened card belongs to the overview. Tools keep their own workspace tabs.
+    # A context card can reveal Overview temporarily while the Agents tab is selected.
     box.fill('/context');box.press('Enter')
     details.click()
-    sidebar.get_by_role('button', name='Files', exact=True).click()
+    agents = sidebar.get_by_role('tab', name='Agents')
+    agents.click()
     expect(panel).to_have_count(0)
-    expect(sidebar.get_by_role('tab', name='Files')).to_have_attribute('aria-selected', 'true')
-    sidebar.get_by_role('radio', name='Task folders').check()
-    sidebar.get_by_role('button', name='sidebar-review', exact=True).click()
-    sidebar.get_by_role('button', name='grid-notes.md', exact=True).click()
-    expect(sidebar.locator('.file-preview')).to_contain_text('Grid review')
-    file_scroll = sidebar.locator('.file-content')
-    file_scroll.evaluate('el => el.scrollTop = 180')
-    position = file_scroll.evaluate('el => el.scrollTop')
-    assert position > 0
+    expect(agents).to_have_attribute('aria-selected', 'true')
+    expect(sidebar.get_by_role('heading', name='Browsers')).to_be_visible()
     box.fill('/context');box.press('Enter')
     details.click()
     expect(panel).to_contain_text('137')
     panel.get_by_role('button', name='Close context usage').click()
-    expect(sidebar.locator('.file-path')).to_contain_text('sidebar-review/grid-notes.md')
-    assert file_scroll.evaluate('el => el.scrollTop') == position
-    sidebar.get_by_role('button', name='Back to conversation overview').click()
+    expect(agents).to_have_attribute('aria-selected', 'true')
     expect(panel).to_have_count(0)
     box.fill('/context');box.press('Enter')
     details.click()

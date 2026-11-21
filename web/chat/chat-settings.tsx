@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import type {ChatSessions} from '../../src/chat.ts';
 import './chat-settings.css';
 export type ChatSpace=ReturnType<ChatSessions['space']>;
-export function clearChatDrafts(){for(const key of Object.keys(localStorage))if(key.startsWith('roppo.chat.draft.')||key.startsWith('roppo.chat.pending.')||key.startsWith('roppo.resources.')||key.startsWith('roppo.chat.panel.')||key==='roppo.chat.context-usage')localStorage.removeItem(key);for(const key of Object.keys(sessionStorage))if(key.startsWith('roppo.website.'))sessionStorage.removeItem(key)}
+export function clearChatDrafts(){for(const key of Object.keys(localStorage))if(key.startsWith('roppo.chat.draft.')||key.startsWith('roppo.chat.pending.')||key.startsWith('roppo.resources.')||key.startsWith('roppo.chat.panel.')||key.startsWith('roppo.chat.team-panel.')||key==='roppo.chat.context-usage')localStorage.removeItem(key);for(const key of Object.keys(sessionStorage))if(key.startsWith('roppo.website.'))sessionStorage.removeItem(key)}
 export async function spaceRequest(body?:unknown,method='GET',path='space'):Promise<ChatSpace>{
  const response=await fetch('/api/chat/'+path,{method,headers:{'content-type':'application/json'},...(body!==undefined?{body:JSON.stringify(body)}:{})});
  const data=await response.json();if(!response.ok)throw Error(data.error??data.message??data.code??'Request failed');return data;

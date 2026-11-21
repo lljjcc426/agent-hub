@@ -10,6 +10,8 @@ import { browserPoint } from "./browser-geometry.ts";
 import { BrowserInputQueue } from "./browser-input-queue.ts";
 
 type Props = {
+  panelId: string;
+  tabId?: string;
   id: string;
   epoch: number;
   controlled: boolean;
@@ -22,6 +24,8 @@ type Props = {
   L: (en: string, zh: string) => string;
 };
 export function BrowserViewport({
+  panelId,
+  tabId,
   id,
   epoch,
   controlled,
@@ -207,6 +211,9 @@ export function BrowserViewport({
   return (
     <div
       ref={viewport}
+      id={panelId}
+      role={tabId ? "tabpanel" : undefined}
+      aria-labelledby={tabId}
       className={"browser-viewport" + (controlled ? " controlled" : "")}
       onPointerDown={(e) => mouse(e, "down")}
       onPointerMove={(e) => mouse(e, "move")}

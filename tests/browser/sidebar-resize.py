@@ -87,13 +87,10 @@ with sync_playwright() as p:
     team_size = width(panel) + 75
     drag(panel, -75)
     expect_width(panel, team_size)
-    page.locator(panel).get_by_role('button', name='Files', exact=True).click()
+    page.locator(panel).get_by_role('tab', name='Agents', exact=True).click()
     expect_width(panel, team_size)
     drag(panel, 40)
     expect_width(panel, team_size - 40)
-    page.get_by_role('button', name='Expand panel').click()
-    expect(page.locator(panel + ' > [role=separator]')).to_be_hidden()
-    page.get_by_role('button', name='Collapse panel').click()
     page.reload()
     expect_chat_fills_space()
     expect_width(panel, team_size - 40)
@@ -116,4 +113,4 @@ with sync_playwright() as p:
     expect_writing_line()
     assert not errors, errors
     browser.close()
-    print('Passed: floating member picker, settings and floating panel resize, keyboard, persistence, expanded and mobile layouts.')
+    print('Passed: floating member picker, settings and floating panel resize, keyboard, persistence and mobile layouts.')

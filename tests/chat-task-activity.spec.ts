@@ -29,6 +29,14 @@ describe('session task activity', () => {
     }
   })
 
+  it('surfaces a failed report unless the task is retrying or already complete', () => {
+    const failed = { ...ticket('one', 'waiting', checklist.id), failed: true }
+    expect(taskActivities({ ...empty, tasks: [failed] })[0]?.state).toBe('failed')
+    expect(taskActivities({ ...empty, tasks: [failed], publicPlans: [checklist] })[0]?.state).toBe('failed')
+    expect(taskActivities({ ...empty, tasks: [{ ...failed, state: 'running' }] })[0]?.state).toBe('running')
+    expect(taskActivities({ ...empty, tasks: [{ ...failed, state: 'completed' }] })[0]?.state).toBe('completed')
+  })
+
   it('collects related tickets and their checklists under the durable goal, including across turns', () => {
     const plans: Input['plans'] = [{
       id: 'g', runId: 'turn-2', createdAt: 1, title: 'Ship', objective: 'Publish the guide',

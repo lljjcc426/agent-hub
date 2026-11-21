@@ -1,4 +1,4 @@
-import {ArrowUpRight, ChevronRight, List, Play} from 'lucide-react'
+import {ArrowUpRight, ChevronRight, CircleCheck, CircleMinus, CircleX, List, LoaderCircle, Play} from 'lucide-react'
 import type {TaskActivity} from '../../src/chat-task-activity.ts'
 import type {Localize} from '../chat/composer-commands.tsx'
 import './task-activity.css'
@@ -34,8 +34,14 @@ export function TaskActivityRow({activity, agentName, onAgent, onOpen, replayTic
   onOpen?: (source: HTMLButtonElement) => void
   replayTicket?: (ticketId: string) => (() => void) | undefined
 }) {
+  const state = activity.state
+  const status = ['active', 'running', 'reviewing'].includes(state) ? 'working'
+    : ['completed', 'merged'].includes(state) ? 'success'
+    : ['failed', 'interrupted'].includes(state) ? 'failure'
+    : state === 'cancelled' ? 'cancelled' : 'other'
+  const Icon = {working: LoaderCircle, success: CircleCheck, failure: CircleX, cancelled: CircleMinus, other: List}[status]
   const heading = <>
-    <List size={19} aria-hidden="true"/>
+    <Icon className="task-activity-icon" data-status={status} size={18} aria-hidden="true"/>
     <span><strong>{activity.title}</strong><small>{taskStatus(activity.state,L)}</small></span>
     <ChevronRight size={15} aria-hidden="true"/>
   </>

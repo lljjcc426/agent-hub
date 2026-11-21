@@ -34,6 +34,11 @@ interface ActivityInput {
   tasks: ChatTask[]
 }
 
+function activityState(ticket: ChatTask) {
+  if (ticket.reviewing) return 'reviewing'
+  return ticket.failed && ticket.state === 'waiting' ? 'failed' : ticket.state
+}
+
 export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }: ActivityInput): TaskActivity[] {
   const activities: TaskActivity[] = []
   const tasksById = new Map(tasks.map(task => [task.id, task]))
@@ -78,15 +83,15 @@ export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }
     const plan = ticket.parentPlanId && routerPlans.get(ticket.parentPlanId)
     if (plan) plan.tickets.push(ticket)
     else activities.push({
-      id: 'ticket:' + ticket.id, title: ticket.title, state: ticket.reviewing ? 'reviewing' : ticket.state,
+      id: 'ticket:' + ticket.id, title: ticket.title, state: activityState(ticket),
       updatedAt: ticket.updatedAt, steps: [], tickets: [ticket],
     })
   }
   for (const plan of routerPlans.values()) {
     if (plan.state !== 'completed') continue
     // Finishing a checklist's delegation step does not finish the work it assigned.
-    const states = new Set(plan.tickets.map(ticket => ticket.reviewing ? 'reviewing' : ticket.state))
-    plan.state = ['waiting', 'running', 'reviewing', 'queued', 'cancelled'].find(state => states.has(state)) ?? plan.state
+    const states = new Set(plan.tickets.map(activityState))
+    plan.state = ['running', 'reviewing', 'waiting', 'queued', 'failed', 'cancelled'].find(state => states.has(state)) ?? plan.state
   }
   for (const activity of activities) {
     for (const ticket of activity.tickets) activity.updatedAt = Math.max(activity.updatedAt, ticket.updatedAt)

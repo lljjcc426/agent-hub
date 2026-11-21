@@ -3,6 +3,13 @@
 .task-activity > summary:hover { background: var(--team-fill, var(--rp-soft)); }
 .task-activity[open] > summary > svg:last-child { transform: rotate(90deg); }
 .task-activity[open] > summary strong { white-space: normal; overflow-wrap: anywhere; }
+.task-activity-icon { flex: none; color: var(--team-muted, var(--rp-muted)); }
+.task-activity-icon[data-status=success] { color: var(--rp-success, var(--team-ink, currentColor)); }
+.task-activity-icon[data-status=failure] { color: var(--c-error, #b64348); }
+@media (prefers-reduced-motion: no-preference) {
+  .task-activity-icon[data-status=working] { animation: task-activity-spin 900ms linear infinite; }
+}
+@keyframes task-activity-spin { to { transform: rotate(360deg); } }
 .task-activity-detail { padding: 0 8px 8px 36px; font-size: 13px; overflow-wrap: anywhere; }
 .task-activity-detail ol { margin: 3px 0 8px; padding-inline-start: 17px; }
 .task-activity-detail li { padding-block: 2px; }

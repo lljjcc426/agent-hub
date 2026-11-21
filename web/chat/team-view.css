@@ -48,7 +48,7 @@
 .addressed-message:has(> [data-message-body] > div:first-child > p:first-child) > [data-message-body],
 .addressed-message > [data-message-body] > div:first-child:has(> p:first-child) {display:contents}
 .addressed-message > [data-message-body] > div:first-child > p:first-child {display:inline}
-.team-row:is(button):hover,.team-drawer-foot button:hover {background:var(--team-fill)}
+.team-row:is(button):hover {background:var(--team-fill)}
 .team-row>span {display:grid;gap:4px;min-width:0;flex:1}
 .team-row strong {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600}
 .team-row small {color:var(--team-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -71,7 +71,6 @@
 .team-profile-edit:is(:hover,:focus-visible) {color:var(--team-ink);text-decoration:underline;text-underline-offset:3px}
 .team-portrait .roppo-character {width:82px;height:74px}
 .team-portrait .roppo-body {inset:0 4px;width:74px;height:74px}
-.team-drawer-foot {display:flex;align-items:center}
 .team-tab-content>p {font-size:13px;color:var(--team-muted)}
 .team-tabs {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));position:relative;border-bottom:1px solid var(--team-line)}
 .team-tabs button {display:flex;min-height:40px;gap:5px;align-items:center;justify-content:center;color:var(--team-muted);font-size:13px}
@@ -79,14 +78,22 @@
 .team-tabs::after {position:absolute;content:"";width:33.333%;height:2px;bottom:-1px;background:var(--team-action);transition:transform .22s var(--team-ease)}
 .team-tabs[data-tab=agents]::after {transform:translateX(100%)}
 .team-tabs[data-tab=schedules]::after {transform:translateX(200%)}
-.team-tab-content {min-height:0;overflow:auto;overscroll-behavior:contain;flex:1;padding-bottom:18px;animation:team-content-in .22s var(--team-ease)}
+.team-tab-content {min-height:0;overflow:auto;overscroll-behavior:contain;flex:1;padding-bottom:max(18px,env(safe-area-inset-bottom));animation:team-content-in .22s var(--team-ease)}
 .team-tab-content > h3 {font-size:14px;font-weight:650;margin:22px 0 10px}
 .team-tab-content>p {margin:10px 0 20px}
 .team-row {display:flex;align-items:center;gap:10px;text-align:start;width:100%;padding:9px 7px;border-radius:8px}
 .team-plan>svg:first-child {color:var(--team-action)}
-.team-drawer-foot {border-top:1px solid var(--team-line);gap:5px;min-height:54px;padding-bottom:env(safe-area-inset-bottom)}
-.team-drawer-foot button {display:inline-flex;align-items:center;gap:5px;border-radius:7px;min-height:34px;font-size:12px;color:var(--team-muted)}
-.team-drawer-foot>span {flex:1}
+.task-activity-day+.task-activity-day {margin-top:8px}
+.task-activity-day > summary,.team-show-older {
+  display:flex;align-items:center;gap:6px;padding:6px 7px;width:100%;
+  min-height:34px;text-align:start;border-radius:8px;color:var(--team-muted);cursor:pointer;
+}
+.task-activity-day > summary {font-size:13px;font-weight:600;list-style:none}
+.task-activity-day > summary::-webkit-details-marker {display:none}
+.task-activity-day > summary:hover,.team-show-older:hover {background:var(--team-fill);color:var(--team-ink)}
+.task-activity-day[open] > summary svg {transform:rotate(90deg)}
+.team-show-older {margin:7px 0;font-size:13px}
+.team-show-older[aria-expanded=true] svg {transform:rotate(180deg)}
 .panel-overlay .session-panel.chat-inspector {position:absolute;inset:0 0 0 auto;z-index:10;width:min(100%,390px);min-width:0}
 @container chat-main (max-width:680px) {
   .conversation-body .thread {--chat-gutter:16px}

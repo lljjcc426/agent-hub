@@ -11,6 +11,7 @@ import { WorkerQuestion } from './worker-question-preview.tsx'
 import type { DecisionAttempt } from './decision-state.ts'
 import { DeliveryReviewCard } from '../ui/delivery-review.tsx'
 import { PendingRequests } from '../ui/pending-requests.tsx'
+import type { ChatSpace } from './chat-settings.tsx'
 
 type Snapshot = ReturnType<ChatSessions['view']>
 type Request = Snapshot['approvals'][number]
@@ -42,6 +43,7 @@ const internalTools = new Set([
 export function groupWorkflow(
   snapshot: Snapshot | null,
   messages: Snapshot['messages'],
+  display: ChatSpace['display'],
   workerId?: string,
 ) {
   const blocks = new Map<string, Block>()
@@ -69,7 +71,8 @@ export function groupWorkflow(
     add(goal.runId,undefined,{kind:'plan',at:goal.createdAt,plan:{...goal,live:goal.state==='active'}},goal.state==='active')
   }
   for(const p of snapshot.publicPlans){
-    if(workerId&&workerId!==p.workerId||!p.workerId&&graphs.has(p.runId))continue
+    const visible = workerId ? p.workerId === workerId : display === 'group' || !p.workerId
+    if(!visible || (!p.workerId && graphs.has(p.runId)))continue
     add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
   }
   const activities=new Map<string,ChatCall[]>()

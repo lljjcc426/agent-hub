@@ -1187,7 +1187,7 @@ function Chat(p: ChatProps) {
       message.role === "user" || !message.speaker || message.speaker.id === selected.id || !!message.deliveries?.length
     );
   });
-  const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
+  const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];
     return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient;

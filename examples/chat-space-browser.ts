@@ -18,12 +18,20 @@ const h=new Runtime(config,{model:desktopChatFixture({async run(r){const threadI
        await new Promise(resolve=>setTimeout(resolve,50))
      }
    }
-   if(reviewer)writeFileSync(join(r.cwd,'review.md'),'# 复核记录\n检查完成。')
+   if(reviewer){
+     const plan=await r.onTool!('superagent_plan',{title:'复核文件执行计划',steps:[{id:'check',title:'检查文件内容',state:'completed'}]},crypto.randomUUID())
+     if(!plan.success)throw Error(JSON.stringify(plan))
+     writeFileSync(join(r.cwd,'review.md'),'# 复核记录\n检查完成。')
+   }
    result={...(reviewer?{files:['review.md']}:{}),state:'ready',summary:'已确认摘要按 Unicode 码点截断。',reply:'摘要截断已修改，A😀B 在限制三个字时保持完整。回归验证通过。',question:null,askedBy:null,handbacks:[]}}
  else if(JSON.parse(r.input).selectedSkill?.instructions==='报告必须分为结论、证据和待确认。')result={reply:'结论：已核对。\n\n证据：发布清单。\n\n待确认：复核时间。'}
  else if(JSON.parse(r.input).trigger?.text==='你好')result={reply:'你好！'}
  else if(JSON.parse(r.input).kind==='user_message'){
    const reviewer=JSON.parse(r.input).trigger?.text?.includes('复核文件')
+   if(reviewer){
+     const plan=await r.onTool!('superagent_plan',{title:'发布复核总计划',steps:[{id:'delegate',title:'安排复核',state:'completed'}]},crypto.randomUUID())
+     if(!plan.success)throw Error(JSON.stringify(plan))
+   }
    await r.onTool!('superagent_status',{phase:'reviewing',label:'检查摘要截断'},crypto.randomUUID())
    if(process.env.CHAT_BROWSER_WAIT_FOR_HANDOFF==='1'){
      const until=Date.now()+30000

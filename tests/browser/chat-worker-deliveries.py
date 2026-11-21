@@ -1,4 +1,4 @@
-"""Check Worker file visibility against a fresh examples/chat-space-browser.ts fixture."""
+"""Check plan and Worker delivery visibility in both Chat layouts."""
 import json
 import os
 from pathlib import Path
@@ -25,7 +25,11 @@ with sync_playwright() as playwright:
     page.get_by_role('button', name='发送消息', exact=True).click()
     transcript = page.locator('.transcript')
     delivery = transcript.get_by_role('button', name='打开文件 review.md', exact=True)
+    router_plan = transcript.get_by_text('发布复核总计划', exact=True)
+    worker_plan = transcript.get_by_text('复核文件执行计划', exact=True)
     expect(delivery).to_be_visible(timeout=20000)
+    expect(router_plan).to_be_visible()
+    expect(worker_plan).to_be_visible()
     delivery_message = transcript.locator('.assistant-message').filter(
         has=page.get_by_role('button', name='打开文件 review.md', exact=True))
     expect(delivery_message.get_by_role('button', name='@Roppo', exact=True)).to_be_visible()
@@ -39,18 +43,24 @@ with sync_playwright() as playwright:
     expect(picker).to_be_visible()
     expect(composer).to_be_visible()
     expect(transcript.get_by_text('复核工作已安排。', exact=True)).to_be_visible()
+    expect(router_plan).to_be_visible()
+    expect(worker_plan).to_have_count(0)
     expect(delivery).to_have_count(0)
 
     picker.click()
     page.get_by_role('button', name='开发 Worker', exact=True).click()
     expect(transcript.get_by_role('heading', name='暂无协作消息')).to_be_visible()
+    expect(router_plan).to_have_count(0)
+    expect(worker_plan).to_have_count(0)
     expect(delivery).to_have_count(0)
 
     picker.click()
     page.get_by_role('button', name='复核 Worker', exact=True).click()
     expect(delivery).to_be_visible()
+    expect(worker_plan).to_be_visible()
+    expect(router_plan).to_have_count(0)
     delivery.click()
     expect(page.get_by_role('dialog', name='review.md')).to_contain_text('检查完成。')
     assert not errors, errors
     browser.close()
-    print('PASS Worker files appear in the group and the delivering Worker view, with the Router transcript filtered')
+    print('PASS plans and deliveries are scoped to the selected Agent, and the group shows the full conversation')

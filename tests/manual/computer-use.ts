@@ -4,10 +4,12 @@
  */
 import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
+import {execFileSync} from 'node:child_process'
 import {mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join,resolve} from 'node:path'
 import {randomUUID} from 'node:crypto'
+import {fileURLToPath} from 'node:url'
 import {setTimeout as delay} from 'node:timers/promises'
 import {Runtime} from '../../src/runtime.ts'
 import {configSchema} from '../../src/config.ts'
@@ -16,31 +18,40 @@ import {bundledCLI} from '../../src/backends/bundled-opencode.ts'
 import {serve} from '../../src/server.ts'
 
 assert(bundledCLI,'Install the bundled OpenCode CLI before running this test')
+assert.equal(process.platform,'darwin','The native window fixture requires macOS')
 const root=realpathSync(mkdtempSync(join(tmpdir(),'roppo-computer-use-')))
 const outputDirectory=process.argv[2]?resolve(process.argv[2]):undefined
 const operator='local-operator'
 const values=new Map<string,any>()
 const called:string[]=[]
 const failures:string[]=[]
+const nativeApp=join(root,'Roppo Desktop Test.app')
+const nativeId='dev.roppo.test.desktop-capture'
 const browser=(action:string, extra:Record<string,unknown>={})=>({name:'roppo_superagent_browser',arguments:{action,requestId:action,...extra}})
 const desktop=(action:string, args:Record<string,unknown>={})=>({name:'roppo_superagent_desktop',arguments:{action,requestId:action,arguments:args}})
 const previous=(action:string)=>{assert(values.has(action),'Missing tool output for '+action);return values.get(action)}
 const session=()=>previous('open').id
+const ref=(action:string,element:string)=>{
+  const line=String(previous(action).snapshot).split('\n').find(line=>line.includes(element))
+  const match=line?.match(/\[ref=((?:f\d+)?e\d+)\]/)
+  assert(match,'Missing element reference for '+element+' in '+previous(action).snapshot)
+  return '@'+match[1]
+}
 let step=0
 let origin=''
 const plan=[
   ()=>browser('open',{url:origin+'/page'}),
   ()=>browser('record_start',{sessionId:session(),durationMs:20_000}),
-  ()=>browser('fill',{sessionId:session(),ref:'@e1',text:'Roppo checked this result',revision:previous('open').revision}),
-  ()=>browser('click',{sessionId:session(),ref:'@e2',revision:previous('fill').revision}),
+  ()=>browser('fill',{sessionId:session(),ref:ref('open','textbox'),text:'Roppo checked this result',revision:previous('open').revision}),
+  ()=>browser('click',{sessionId:session(),ref:ref('fill','button "Set result"'),revision:previous('fill').revision}),
   ()=>browser('screenshot',{sessionId:session(),inlineImage:false}),
   ()=>browser('record_stop',{sessionId:session()}),
   ()=>desktop('check_permissions'),
-  ()=>desktop('launch_app',{bundle_id:'com.apple.calculator'}),
-  ()=>desktop('list_windows',{app:'com.apple.calculator'}),
+  ()=>desktop('launch_app',{name:nativeApp,creates_new_application_instance:true}),
+  ()=>desktop('list_windows',{app:nativeId}),
   ()=>desktop('start_recording'),
   ()=>desktop('run_script',{
-    script:'const app=await cua.getApp("Calculator"); for (const labels of [["全部清除","清除","All Clear","Clear"],["7"],["乘","multiply"],["6"],["等于","equals","="]]) { let hit; for (const name of labels) { [hit]=await app.query({role:"button",name}); if(hit)break; } if(!hit)throw Error("Missing calculator button "+labels); await app.click(hit.element_token); } return (await app.getState()).tree_markdown;',
+    script:'const app=await cua.getApp("Roppo Desktop Test"); const [button]=await app.query({role:"button",name:"Set native result"}); if(!button)throw Error("Native fixture button unavailable: "+(await app.getState()).tree_markdown); await app.click(button.element_token); return (await app.getState()).tree_markdown;',
     timeout_ms:20_000,
   }),
   ()=>{
@@ -116,6 +127,9 @@ const host=new Runtime(config,{model:{
           const item=result.contentItems.find(item=>item.type==='inputText')
           assert(item?.text,action+' returned no structured result')
           values.set(action,JSON.parse(item.text))
+          // The driver launches background apps. Display the isolated fixture
+          // in the current Space before testing its click and recording.
+          if(action==='launch_app')execFileSync('/usr/bin/open',['-a',nativeApp],{timeout:10_000})
           called.push(name+':'+action)
           console.log('Completed', name+':'+action)
           return result
@@ -138,10 +152,17 @@ const host=new Runtime(config,{model:{
 registry=new BackendRegistry(config,host.store)
 const started=performance.now()
 try {
+  mkdirSync(join(nativeApp,'Contents','MacOS'),{recursive:true})
+  writeFileSync(join(nativeApp,'Contents','Info.plist'),`<?xml version="1.0"?><plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>fixture</string><key>CFBundleIdentifier</key><string>${nativeId}</string>
+    <key>CFBundleName</key><string>Roppo Desktop Test</string><key>CFBundlePackageType</key><string>APPL</string>
+  </dict></plist>`)
+  execFileSync('xcrun',['swiftc','-parse-as-library',fileURLToPath(new URL('./native-capture-fixture.swift',import.meta.url)),
+    '-o',join(nativeApp,'Contents','MacOS','fixture')],{timeout:45_000})
   host.chat.setApprovalMode(operator,'full')
   const conversation=host.chat.create(operator)
   host.chat.send(conversation.id,operator,{clientMessageId:randomUUID(),text:'Verify the local browser and desktop capture.'})
-  const deadline=Date.now()+140_000
+  const deadline=Date.now()+330_000
   while(!failures.length&&Date.now()<deadline&&(!values.has('stop_recording')||
     !host.store.tickets.list().some(ticket=>ticket.assignments.at(-1)?.report?.state==='ready'))){
     await host.tick()
@@ -154,7 +175,7 @@ try {
   assert.equal(called.length,plan.length,JSON.stringify(called))
   assert(host.store.tickets.list().some(ticket=>ticket.assignments.at(-1)?.report?.state==='ready'),
     JSON.stringify(host.status().tickets).slice(-1200))
-  assert.equal(previous('open').provider,'ego-lite')
+  assert.equal(previous('open').provider,'roppo')
   assert(previous('click').snapshot.includes('Roppo checked this result'))
   const windowState=previous('get_window_state')
   assert(JSON.stringify(windowState.result).includes('42'),JSON.stringify(windowState.result).slice(0,500))
@@ -183,9 +204,11 @@ try {
     await new Promise<void>(done=>http.server.close(()=>done()))
   }
   console.log(JSON.stringify({openCode:bundledCLI.cliVersion,elapsedMs:Math.round(performance.now()-started),called,
-    captures:captures.map(asset=>({type:asset.mime,bytes:asset.bytes})),pageRecordedFrames:previous('record_stop').frameCount}))
+    captures:captures.map(asset=>({type:asset.mime,bytes:asset.bytes})),pageRecordedMs:previous('record_stop').durationMs}))
 }finally{
   await host.close()
+  const nativePID=values.get('list_windows')?.result?.windows?.[0]?.pid ?? values.get('launch_app')?.result?.pid
+  if(Number.isInteger(nativePID))try{process.kill(nativePID,'SIGTERM')}catch{}
   api.closeAllConnections()
   await new Promise<void>(done=>api.close(()=>done()))
   rmSync(root,{recursive:true,force:true})

@@ -17,6 +17,7 @@ import {
   Trash2,
   Save,
   Power,
+  Monitor,
 } from "lucide-react";
 import type { BrowserManager } from "../../src/browser-manager.ts";
 import type { BrowserAction } from "../../src/browser-contract.ts";
@@ -25,6 +26,7 @@ import {BrowserPreview} from './browser-preview.tsx';
 import {BrowserFiles} from './browser-files.tsx';
 import {browserUrl} from './browser-url.ts';
 import type {BrowserInput} from '../../src/browser-input.ts';
+import type {DesktopAccess} from '../../src/desktop-runtime.ts';
 import "./browser.css";
 
 type State = ReturnType<BrowserManager["list"]>;
@@ -78,6 +80,10 @@ const messages: Record<string, [string, string]> = {
     "Browser engine unavailable. Check the host installation.",
     "浏览器引擎不可用，请检查宿主安装。",
   ],
+  browser_install_failed: ["Roppo could not prepare Chromium. Check the connection and try again.", "Roppo 未能准备浏览器引擎。请检查网络后重试。"],
+  desktop_install_failed: ["Roppo could not prepare desktop control. Check the connection and try again.", "Roppo 未能准备桌面操作组件。请检查网络后重试。"],
+  desktop_install_unavailable: ["Roppo cannot install desktop control on this host.", "Roppo 无法在当前宿主安装桌面操作组件。"],
+  desktop_permission_guide: ["Could not open the macOS permission guide.", "未能打开 macOS 权限引导。"],
   browser_login_form: [
     "Could not identify the sign-in form. You can sign in manually.",
     "未能识别登录表单，可以手动登录。",
@@ -123,6 +129,56 @@ const messages: Record<string, [string, string]> = {
 
 const activePage = (session: Session) => session.tabs.find(tab => tab.active) ?? session.tabs[0];
 const browserPageId = (viewportId: string, tab?: string) => tab === undefined ? undefined : viewportId + '-' + tab;
+
+function DesktopControlSettings({L}:{L:L}) {
+  const [access,setAccess]=useState<DesktopAccess>()
+  const [busy,setBusy]=useState(false)
+  const [watch,setWatch]=useState(false)
+  const [error,setError]=useState('')
+  useEffect(()=>{
+    let active=true, timer:ReturnType<typeof setTimeout>|undefined
+    const deadline=Date.now()+120_000
+    const refresh=async()=>{
+      try{
+        const current=await request<DesktopAccess>('/desktop-access')
+        if(!active)return
+        setAccess(current)
+        if(current.state==='ready'||current.state==='unavailable')return
+      }catch(e){if(active&&!watch)setError((e as Error).message)}
+      if(active&&watch&&Date.now()<deadline)timer=setTimeout(refresh,2000)
+    }
+    void refresh()
+    return ()=>{active=false;clearTimeout(timer)}
+  },[watch])
+
+  const enable=async()=>{
+    setBusy(true)
+    setError('')
+    try{
+      const current=await request<DesktopAccess>('/desktop-access',{})
+      setAccess(current)
+      setWatch(current.state==='permission_required'||current.state==='preparing')
+    }catch(e){setError((e as Error).message)}
+    finally{setBusy(false)}
+  }
+  const state=access?.state
+  const status=busy||state==='preparing'?L('Preparing desktop control…','正在准备桌面操作…')
+    :state==='ready'?L('Desktop control is ready.','桌面操作已就绪。')
+    :state==='permission_required'?L('In macOS System Settings, allow Accessibility and Screen Recording.','请在 macOS 系统设置中允许辅助功能和屏幕录制。')
+    :state==='unavailable'?L('Available on a host with a signed-in desktop session.','需要在有登录桌面会话的宿主上使用。')
+    :state==='missing'?L('Use native apps and capture the desktop.','可操作桌面应用，并截取或录制桌面。'):L('Checking desktop access…','正在检查桌面权限…')
+  return <section className="browser-desktop-setting">
+    <Monitor size={18} aria-hidden="true" />
+    <div className="browser-desktop-details">
+      <h2>{L('Desktop control','桌面操作')}</h2>
+      <p role="status">{status}</p>
+      {error&&<p role="alert">{messages[error]?L(...messages[error]):L('Could not check desktop access.','未能检查桌面权限。')}</p>}
+    </div>
+    {(state==='missing'||state==='permission_required'||state==='preparing')&&<FormButton tone="quiet" disabled={busy} onClick={()=>void enable()}>
+      {state==='permission_required'?L('Grant access','授权'):L('Enable','开启')}
+    </FormButton>}
+  </section>
+}
 
 function BrowserPageTabs({session, viewportId, editable, operation, L}: {
   session: Session;
@@ -521,6 +577,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
         <Button label={L('Saved accounts','已保存账号')} onClick={accounts} disabled={!data?.profiles.length}><KeyRound size={17}/></Button>
       </div>}
       {settingsOnly?<div className="browser-profile-list">{data?.profiles.length===0 && <div className="settings-empty"><Globe size={24}/><span>{L('No browsers yet','还没有浏览器')}</span></div>}{data?.profiles.map(p=><button key={p.id} onClick={()=>editProfile(p)}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
+      {settingsOnly && <DesktopControlSettings L={L}/>}
       {errorNotice}
       {!settingsOnly && (session ? (
         <>
@@ -604,7 +661,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
             </SelectField>
             <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
             <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
-            {!session.workspace && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
+            {(!session.workspace || session.profileId) && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
             {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<DisclosureRoot className="browser-logins"><DisclosureSummary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></DisclosureSummary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></DisclosureRoot>:null}
             <span>
               {busy ? (

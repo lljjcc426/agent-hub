@@ -92,7 +92,7 @@ export const browserAction = z
     url: browserUrl.optional(),
     ref: z
       .string()
-      .regex(/^@?e\d+$/)
+      .regex(/^@?(?:f\d+)?e\d+$/)
       .optional(),
     text: z.string().max(browserCapacity.textCharacters).optional(),
     key: z.string().min(1).max(80).optional(),
@@ -154,7 +154,7 @@ export const browserToolSchema = z
     url: browserUrl.optional(),
     ref: z
       .string()
-      .regex(/^@?e\d+$/)
+      .regex(/^@?(?:f\d+)?e\d+$/)
       .optional(),
     text: z.string().max(browserCapacity.textCharacters).optional(),
     key: z.string().max(80).optional(),
@@ -175,7 +175,7 @@ export type BrowserToolInput = z.infer<typeof browserToolSchema>;
 export const browserToolDefinition = {
   name: "superagent_browser",
   description:
-    "Operate an isolated Ego Lite Task Space when a task needs interaction, authenticated access, or a rendered page. Use search and fetch for public text. Reuse tabs. Profiles lists granted logins; open creates a session and can load authorized login state for the URL. Snapshot returns page refs and revision. Click, fill and press need the latest revision. Login fills a saved sign-in form; inspect before submitting. The action screenshot exports a PNG attachment. Set fullPage for the full page and inlineImage:false for text-only models. Record_start captures video from the selected tab for up to durationMs (default 60 seconds). Record_stop finalizes the MP4 with its attachment and workspace path. For login or verification requiring human help, request_takeover with a short reason in the user's language and return waiting. Chat can return control and continue the same assignment. Refresh the snapshot after takeover. Leave the final page open for inspection. Reuse requestId only for identical input and inspect uncertain results before repeating a write.",
+    "Operate a Roppo browser session isolated to this assignment when a task needs interaction, authenticated access, or rendering. Use search and fetch for public text. Reuse tabs. Profiles lists granted logins; open loads an authorized profile's state for the requested origin directly. Snapshot returns page refs and revision. Click, fill and press need the latest revision. Login fills a saved sign-in form; inspect before submitting. The action screenshot exports a PNG attachment. Set fullPage for the full page and inlineImage:false for text-only models. Record_start captures the selected tab for up to durationMs (default 60 seconds); record_stop finalizes the MP4 attachment. For login or verification requiring human help, request_takeover with a short reason in the user's language and return waiting. Chat returns control to the same assignment. Refresh the snapshot after takeover. Leave the final page open for inspection. Reuse requestId only for identical input and inspect uncertain results before repeating a write.",
   validator: browserToolSchema,
   schema: {
     type: "object",

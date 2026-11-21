@@ -3,6 +3,8 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /opt/roppo
 COPY package.json package-lock.json ./
 RUN npm ci
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/roppo/browser-runtime
+RUN node node_modules/playwright-core/cli.js install --no-progress ffmpeg
 COPY tsconfig.json ./
 COPY src ./src
 COPY web ./web
@@ -25,14 +27,16 @@ COPY --from=build /opt/roppo/node_modules ./node_modules
 COPY --from=build /opt/roppo/src ./src
 COPY --from=build /opt/roppo/plugins ./plugins
 COPY --from=build /opt/roppo/dist ./dist
-RUN chmod -R a+rX /opt/roppo/dist/engines
+COPY --from=build /opt/roppo/browser-runtime ./browser-runtime
+RUN chmod -R a+rX /opt/roppo/dist/engines \
+    && chown -R node:node /opt/roppo/browser-runtime
 COPY deployment/container-entrypoint.py deployment/MOBY-PROFILES-LICENSE ./deployment/
 COPY LICENSE NOTICE THIRD_PARTY.md ./
 COPY docs/THIRD_PARTY_CHAT.md docs/THIRD_PARTY_BROWSER.md ./docs/
 COPY docs/licenses ./docs/licenses
 RUN mkdir -p /data && chown node:node /data
 USER node:node
-ENV NODE_ENV=production HOME=/data/state/home
+ENV NODE_ENV=production HOME=/data/state/home PLAYWRIGHT_BROWSERS_PATH=/opt/roppo/browser-runtime ROPPO_BUNDLED_CHROMIUM=/usr/bin/chromium
 EXPOSE 4337
 HEALTHCHECK --interval=10s --timeout=4s --start-period=45s --retries=3 CMD ["node", "--import", "tsx", "src/container-cli.ts", "health"]
 ENTRYPOINT ["python3", "/opt/roppo/deployment/container-entrypoint.py"]

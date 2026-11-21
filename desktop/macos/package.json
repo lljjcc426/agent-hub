@@ -1,7 +1,7 @@
 {
   "name": "roppo-desktop",
   "productName": "Roppo",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "The local Roppo workspace in a Mac window",
   "author": "Roppo",

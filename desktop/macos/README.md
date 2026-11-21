@@ -16,6 +16,8 @@ Roppo 运行期间，Sparkle 每 6 小时自动检查一次。也可以随时打
 
 在本目录运行以下命令。需要 Apple 芯片 Mac、Command Line Tools、Node.js 24 以及包含同版本 Node 头文件的安装。首次安装构建依赖可运行 `npm ci`。
 
+构建从仓库根目录读取运行时依赖。先在仓库根目录运行 `npm ci`。桌面包会加入并校验官方 Cua Driver 发行存档。离线构建可通过 `ROPPO_DESKTOP_RUNTIME_ARCHIVE` 指定缓存的同版本官方存档。
+
 1. 将官方 Sparkle 2.10.1 SDK 解包到仓库的 `.local/sparkle-2.10.1/`，或用环境变量 `ROPPO_SPARKLE_SDK` 指定已解包的绝对路径。其目录内应有 `bin/sign_update` 和 `Sparkle.framework`。可从 [Sparkle 2.10.1 发布页](https://github.com/sparkle-project/Sparkle/releases/tag/2.10.1) 获取 `Sparkle-2.10.1.tar.xz`，SHA-256 为 `1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27`。
 2. 用 `npm version 0.2.1 --no-git-tag-version` 将包和依赖锁的版本提高到目标版本号。发布时换成实际的新版本。
 3. 运行下列命令构建、签名并发布。已有构建也可单独运行 `python3 update/publish.py /path/to/Roppo.app`。

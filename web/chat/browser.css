@@ -70,6 +70,33 @@
   border-radius: 6px;
   font-size: 11px;
 }
+.browser-desktop-setting {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--c-line);
+  border-radius: 9px;
+}
+.browser-desktop-setting > svg {
+  flex: none;
+  margin-top: 1px;
+}
+.browser-desktop-details {
+  flex: 1;
+  min-width: 0;
+}
+.browser-desktop-details h2 {
+  margin: 0;
+  font-size: 14px;
+}
+.browser-desktop-details p {
+  margin: 4px 0 0;
+  color: var(--c-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .browser-address {
   display: flex;
   align-items: center;

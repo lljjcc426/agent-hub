@@ -9,6 +9,7 @@ import {atomicPrivateFile,managedFiles} from './managed-config.ts'
 import {publicOriginSchema} from './http-deployment.ts'
 import {probeSandbox} from './sandbox.ts'
 import {AgentBrowserDriver} from './browser-driver.ts'
+import {ManagedBrowserDriver} from './managed-browser-driver.ts'
 import {mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 
@@ -86,12 +87,17 @@ export async function containerCommand(action:string){
  }
  if(action==='doctor'){
   const config=loadConfig(layout.config),sandbox=await probeSandbox(config.work.sandboxDriver,config.codex)
-  const root=mkdtempSync(join(tmpdir(),'roppo-browser-check-')),session={id:randomUUID(),directory:join(root,'profile')},driver=new AgentBrowserDriver(root,config.browser)
+  const root=mkdtempSync(join(tmpdir(),'roppo-browser-check-')),session={id:randomUUID(),directory:join(root,'profile')}
+  const driver=config.browser.command?new AgentBrowserDriver(root,config.browser):new ManagedBrowserDriver(config.browser)
   try{
    const version=await driver.version();await driver.run(session,['open','about:blank'])
    const state=await driver.state(session)
    return {...inspectContainer(),sandbox,browser:{verified:true,version,stateAvailable:!!state}}
-  }finally{await driver.close(session).catch(()=>{});rmSync(root,{recursive:true,force:true})}
+  }finally{
+   await driver.close(session).catch(()=>{})
+   if(driver instanceof ManagedBrowserDriver)await driver.shutdown().catch(()=>{})
+   rmSync(root,{recursive:true,force:true})
+  }
  }
  throw Error('Use init, inspect, health, open, doctor, prepare-upgrade, finish-upgrade or abort-upgrade')
 }

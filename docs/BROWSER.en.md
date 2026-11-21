@@ -15,15 +15,13 @@ The browser lives on the right side of the session and shares the tab panel with
 
 Input includes pointer movement, down/up, drag selection, right-button events, scrolling, text/paste/IME and common keys. Copy/cut writes the remote selection to the local clipboard and requires browser clipboard permission. F6 focuses the address bar, which accepts URLs or search terms. During manual control the remote viewport follows the panel size; watching preserves the Worker's viewport.
 
-**Browser files** uploads one file up to 100 MiB into a standard file input on the current page. For Ego Lite, Workers can set `download:true` on the click that triggers a download to retain the result in Browser files. For manually initiated Ego Lite downloads, use the app's downloads panel. Selected uploads and retained task downloads remain until their browser closes.
+**Browser files** uploads one file up to 100 MiB into a standard file input on the current page and shows downloads from that browser. A Worker can set `download:true` on the click that triggers a download to wait for the file and get its name. Task files remain available until the browser closes.
 
 ## Persistence and isolation
 
-Browser profiles and saved accounts remain selectable inside their own session, but a personal profile that is currently in use can be bound to only one session; to use it in another session, create a separate profile or close the original instance first. Worker login copying still follows the authorization you granted.
+The workspace browser uses an existing Roppo profile or creates one on first use. Personal profiles keep cookies, site storage, tabs and grants. Each Worker task runs in a separate Chromium context, with its own tabs, cookies and site storage.
 
-A personal browser uses its own Chrome profile and keeps website cookies, site storage and tabs across sessions. Worker browsers use Ego Lite. Each task browser has a Task Space, with its own tabs and working directory. Spaces using the same Ego Lite profile share website sign-in state. Use a dedicated profile for each Roppo login grant.
-
-When opening a browser with a saved Roppo profile, Roppo checks the Worker grant and loads only the target origin's authorized cookies and storage into the bound Ego Lite profile. Changes stay in Ego Lite. A profile can be shared with current and future Workers through the existing Roppo profile switch.
+When a Worker opens a saved profile, Roppo checks the sharing switch or existing Worker grants. It copies cookies scoped to the destination host and site storage scoped to the destination origin. Changes stay inside that task browser. Enabling sharing applies to current and future Workers.
 
 Commands inside one session run serially. A manual takeover first blocks subsequent Worker commands and then waits for commands that already started to finish; stale control generations, stale snapshots, and stale tab references are rejected. After a manual-control lease expires the browser stays paused, and Worker write operations do not resume automatically. Finished pages are retained for human inspection and operation. Idle instances are reclaimed according to configuration; at capacity an unwatched, uncontrolled finished browser is reclaimed first. Only browsers that are actively being watched open a screen stream.
 
@@ -31,21 +29,15 @@ Commands inside one session run serially. A manual takeover first blocks subsequ
 
 ## Passwords and installation
 
-Saved accounts are provided by Roppo's local credential vault and do not depend on Chrome's password-save popup. Passwords are encrypted with AES-256-GCM, and the key file is readable and writable only by the host user; a key environment variable can be specified instead. Tools only receive a `credentialId`, and the password is passed to the browser through standard input, so it never appears in command-line arguments, ordinary log tables, or tool receipts; known saved passwords are filtered out of page snapshots returned to the model. Passwords are not imported from your everyday Chrome password library, and no cloud sync is offered.
+Saved accounts are provided by Roppo's local credential vault and do not depend on Chrome's password-save popup. Passwords are encrypted with AES-256-GCM, and the key file is readable and writable only by the host user; a key environment variable can be specified instead. Tools only receive a `credentialId`, and the host fills the password through the browser connection, keeping it out of command-line arguments, ordinary log tables and tool receipts; known saved passwords are filtered out of page snapshots returned to the model. Passwords are not imported from your everyday Chrome password library, and no cloud sync is offered.
 
 Deleting a saved account removes only the password record; it does not sign the website session out. To end a website session, use the website's own logout inside the corresponding browser.
 
-Install [Ego Lite](https://lite.ego.app/download) on the same host as Roppo and finish onboarding. Create a dedicated profile named Roppo for general Worker browsing. Set `browser.egoProfile` to use a different profile name or ID. For each saved Roppo login profile, create a separate Ego Lite profile and put its name or ID under `browser.egoProfiles[roppoProfileId]`. This binding applies to the whole profile. The public profile and separate login grants must resolve to different Ego Lite profiles.
+On first use, Roppo prepares the pinned Chromium and recording encoder automatically. The official container includes the browser and encoder at build time. Existing Roppo browser profiles retain their original directory and logins where supported by the host. Workspaces with a configured external Chromium keep their connection and persistent storage.
 
-Install [Cua Driver](https://cua.ai/docs/cua-driver/quickstart) in the logged-in desktop session and enable Accessibility and Screen Recording. Chat Workers call its native MCP through `superagent_desktop`. The managed OpenCode backend receives both Worker tools through its existing Roppo MCP connection. When installed outside the standard application directories or PATH, use `browser.egoCommand` and `browser.cuaCommand` to specify the local executables.
+On macOS, open **Settings → Workspace settings → Browser → Desktop control** and select **Enable**. Roppo prepares the signed Cua Driver component and opens the system permission guide. Turn on Accessibility and Screen Recording in macOS and accept its direct capture confirmation if shown. The desktop package includes the component. A source installation downloads and verifies it automatically when needed. Native controls need a signed-in graphical session. Headless hosts can use the embedded browser.
 
-The Router and personal browser use the pinned `agent-browser 0.27.0`. On macOS the installed Google Chrome is used by default. Set `browser.executablePath` to use a compatible executable, or install the Chrome the tool uses:
-
-```sh
-npm ci
-npx agent-browser install
-npm run build:chat
-```
+The managed OpenCode backend receives both `superagent_browser` and `superagent_desktop` through the existing Roppo MCP connection.
 
 Top-level configuration example (the rest of the configuration keeps its original values):
 
@@ -60,21 +52,21 @@ Top-level configuration example (the rest of the configuration keeps its origina
 }
 ```
 
-`maxSessions` counts both personal and task browsers. `browser.command` can select a compatible engine executable, and `browser.keyEnv` can name an environment variable that holds the 64-hex-digit key. Do not replace or drop the key directly on an existing vault.
+`maxSessions` counts both personal and task browsers. `browser.executablePath` can select a host-provided Chromium. `browser.keyEnv` can name an environment variable that holds the 64-hex-digit key. Do not replace or drop the key directly on an existing vault.
 
 The tools page in a Worker's configuration can turn off browser access and set a tab limit; this maps to `browser: {enabled, maxTabs}` for each `execution.workers[]` entry. These settings follow the existing task-configuration rules, and authorization of a personal profile is rechecked on every call.
 
 Browser data lives under `<stateDir>/browser`. The existing database backup command does not include the whole Chrome profile: when migrating or backing up, stop the host and save the database, this directory, and the external key together. Restoring only the database does not restore logins, and a lost key cannot be used to recover saved passwords. Website session lifetime, cross-site SSO, device binding, and two-factor authentication remain decided by each website; permanent logins or unconditional migration across machines are not promised.
 
-Current acceptance covers macOS with local Chrome. Linux/Windows, arbitrary external websites, Chrome extensions, system Passkeys, and complex cross-site login flows are not counted as passing items. See the [acceptance record](BROWSER_ACCEPTANCE_2026-11-07.md) and the [open-source licenses](THIRD_PARTY_BROWSER.md).
+See the [historical acceptance record](BROWSER_ACCEPTANCE_2026-11-07.md) and the [runtime licenses](THIRD_PARTY_BROWSER.md).
 
 ### Screenshots and recordings
 
-- Ego Lite `screenshot` exports PNG with optional `fullPage`. `record_start` and `record_stop` save a silent MP4 of the selected tab. Tab recording uses FFmpeg from PATH or `browser.ffmpegCommand`.
+- `screenshot` exports PNG with optional `fullPage`. `record_start` and `record_stop` save a silent MP4 of the selected tab. Roppo prepares the encoder automatically.
 - Cua Driver `get_window_state` with `include_screenshot:true` or `get_desktop_state` supplies PNG. Its recording tools save a silent MP4 of the primary display. Only one display recording can run at a time.
 - Both tools return task-owned attachments. Chat can download the captures and writable tasks also receive a workspace path. Use `inlineImage:false` for image capture with a text-only model. Recordings stop on assignment end or their configured duration.
 
-The watched page is rendered beside Chat. A Worker page uses Ego Lite page frames and page input. The personal browser uses [agent-browser streaming](https://agent-browser.dev/streaming).
+The watched page is rendered beside Chat. The existing takeover, return control and full-screen controls apply to the live page.
 
 ### Persistent workspace browser
 

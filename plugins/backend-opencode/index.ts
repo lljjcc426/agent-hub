@@ -70,7 +70,8 @@ export const opencodeDriver:CliDriver={
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
   const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
    agent:{...(request.managed?{title:{disable:true}}:{}),roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
-   mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true}},
+   // The first browser call may include provisioning Chromium on a fresh host.
+   mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true,timeout:300_000}},
    ...(config.baseUrl?{provider:{[provider]:providerOptions}}:{})}
   privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))
   const env={...isolatedEnvironment(root),OPENCODE_DISABLE_DEFAULT_PLUGINS:'1',...(config.apiProtocol?{npm_config_offline:'true',npm_config_fetch_retries:'0',npm_config_registry:'http://127.0.0.1:1/',OPENCODE_DISABLE_MODELS_FETCH:'1',OPENCODE_DISABLE_LSP_DOWNLOAD:'1'}:{}),...(config.apiProtocol?{}:{OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings)}),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}

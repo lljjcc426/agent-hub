@@ -25,6 +25,7 @@
   "dependencies": {
     "@assistant-ui/react": "0.15.32",
     "@assistant-ui/react-markdown": "0.14.24",
+    "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@larksuiteoapi/node-sdk": "1.76.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@wecom/aibot-node-sdk": "1.0.7",
@@ -35,6 +36,7 @@
     "jsonc-parser": "3.3.1",
     "katex": "0.19.1",
     "lucide-react": "1.70.0",
+    "playwright-core": "1.65.1",
     "quickjs-emscripten": "0.32.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",

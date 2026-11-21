@@ -1,11 +1,10 @@
 import {randomUUID} from 'node:crypto'
 import {mkdirSync, realpathSync, rmSync} from 'node:fs'
-import {homedir} from 'node:os'
 import {join} from 'node:path'
 import {z} from 'zod'
 import {BrowserError} from './browser-contract.ts'
 import {captureLimit} from './browser-recording.ts'
-import {computerCommand} from './computer-command.ts'
+import {DesktopRuntime} from './desktop-runtime.ts'
 import type {ToolConnection} from './connector-config.ts'
 import {evidenceBytes} from './goal-artifacts.ts'
 import {maxInlineImageBytes} from './execution-limits.ts'
@@ -33,7 +32,7 @@ type DesktopInput = z.infer<typeof desktopInput>
 export const desktopNeedsApproval = (action: unknown) => interactions.some(value => value === action) || action === 'start_recording'
 export const desktopToolDefinition = {
   name:'superagent_desktop',
-  description:'Control native desktop apps through Cua Driver. Use Ego Lite (superagent_browser) for websites. Use schema with arguments.tool to read the exact Cua Driver schema first. Discover apps and windows, then prefer get_window_state with include_screenshot:false for structured observation. For a window PNG set include_screenshot:true; get_desktop_state captures the primary display. Both return a task attachment; set inlineImage only if the model accepts images. Start_recording records the primary display and stops at durationMs (default 60 seconds) or when stopped. Stop_recording returns the finalized MP4 attachment. Verify the visible result after actions. Reuse requestId for identical inputs. Inspect uncertain actions before issuing a new write.',
+  description:'Control native desktop apps using the Roppo desktop runtime. Use superagent_browser for websites. Use schema with arguments.tool to read the exact desktop tool schema first. Discover apps and windows, then prefer get_window_state with include_screenshot:false for structured observation. For a window PNG set include_screenshot:true; get_desktop_state captures the primary display. Both return a task attachment; set inlineImage only if the model accepts images. Start_recording records the primary display and stops at durationMs (default 60 seconds) or when stopped. Stop_recording returns the finalized MP4 attachment. Verify the visible result after actions. If desktop permissions are missing, direct the user to Settings > Browser > Desktop control. Reuse requestId for identical inputs. Inspect uncertain actions before issuing a new write.',
   validator:desktopInput,
   schema:{type:'object',additionalProperties:false,required:['action','requestId'],properties:{
     action:{type:'string',enum:actions},
@@ -61,19 +60,23 @@ function hasHostArgument(value: unknown): boolean {
 export class CuaDesktop {
   private recording?: Recording
   private readonly calls = new Map<string, {fingerprint:string; result:Promise<ToolResult>}>()
-  constructor(private host: Runtime) {}
+  readonly runtime: DesktopRuntime
+  constructor(private host: Runtime) {
+    this.runtime=new DesktopRuntime(host.config.stateDir,host.config.browser.cuaCommand)
+  }
 
-  private config(): ToolConnection {
-    const app = 'CuaDriver.app/Contents/MacOS/cua-driver'
-    const command = computerCommand(this.host.config.browser.cuaCommand, process.platform === 'win32' ? 'cua-driver.exe' : 'cua-driver', process.platform === 'darwin'
-      ? [join('/Applications',app),join(homedir(),'Applications',app)] : [])
-    if(!command)throw new BrowserError('cua_driver_missing','Install Cua Driver on the Roppo host and enable the OS permissions it requires.',503)
-    return {enabled:true,transport:{kind:'stdio',command,args:['mcp'],env:{}},allowedTools:[...nativeTools],timeoutMs:elapsed}
+  private async config(): Promise<ToolConnection> {
+    const command = await this.runtime.prepare()
+    const env=Object.fromEntries((process.platform==='linux'?[
+      'DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY',
+    ]:[]).filter(key=>process.env[key]).map(key=>[key,key]))
+    return {enabled:true,transport:{kind:'stdio',command,args:['mcp'],env},allowedTools:[...nativeTools],timeoutMs:elapsed}
   }
 
   private async native(name: NativeAction, args: Record<string,unknown>, check:()=>void, signal?:AbortSignal) {
     check()
-    const config = this.config()
+    const config = await this.config()
+    check()
     const tools = await this.host.toolConnections.inspectManaged(connectionId,config,{},signal)
     const tool = tools.find(tool => tool.name === name)
     if(!tool)throw new BrowserError('cua_driver_tool_missing','The installed Cua Driver does not advertise '+name+'.',503)
@@ -94,7 +97,9 @@ export class CuaDesktop {
     if(JSON.stringify(args).length>100_000 || hasHostArgument(args))
       throw new BrowserError('cua_driver_arguments','Use Cua Driver operation arguments. Roppo supplies sessions, output paths and permission settings.',400)
     if(action==='schema'){
-      const tools=await this.host.toolConnections.inspectManaged(connectionId,this.config(),{},signal)
+      const config=await this.config()
+      check()
+      const tools=await this.host.toolConnections.inspectManaged(connectionId,config,{},signal)
       return output({provider:'cua-driver',tools:args.tool ? tools.filter(t=>t.name===args.tool) : tools.map(t=>t.name)})
     }
     if(!desktopNeedsApproval(action))return this.perform(owner,input,check,signal)

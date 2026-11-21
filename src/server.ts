@@ -157,9 +157,9 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     try{requestOrigin=requestHostOrigin(req.headers.host,endpoint,runtime.config.http?.publicOrigin)}catch{send(res,403,{error:'Use this host’s local origin',code:'host_origin_required'});return}
     if(['POST','PATCH','DELETE'].includes(req.method??'')&&req.headers.origin&&req.headers.origin!==requestOrigin){send(res,403,{error:'Use this page’s own origin',code:'same_origin_required'});return}
     const browserOperator=account.configured?account.authorized(req):sessions.authorized(req)
+    const local=['::1','127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'') &&
+      ['localhost','127.0.0.1','[::1]'].includes(new URL(requestOrigin).hostname)
     if(path==='/terminal/pair' || path.startsWith('/api/terminal/pair/')){
-      const local=['::1','127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'') &&
-        ['localhost','127.0.0.1','[::1]'].includes(new URL(requestOrigin).hostname)
       if(!local||options.configurationPreview){send(res,403,{code:'local_host_required'});return}
       if(path==='/terminal/pair'&&req.method==='GET'){
         res.writeHead(200,{'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"})
@@ -570,6 +570,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(runtime.scopes.binding(context.route.entryId).privateActor)throw Error('Private context requires the actual member identity; operator access cannot impersonate a saved message author')
       const target=path==='/router-knowledge'?runtime.knowledge:path==='/router-journal'?runtime.continuity:runtime.goals
       send(res,200,target.command(input.command,context));return
+    }
+    if(path==='/api/browser/desktop-access'){
+      requireCurrentOperator(req)
+      if(req.method==='GET'){
+        send(res,200,local&&!options.configurationPreview?await runtime.desktop.runtime.access():{state:'unavailable'});return
+      }
+      if(req.method==='POST'){
+        if(!local||options.configurationPreview){send(res,403,{code:'local_host_required'});return}
+        z.object({}).strict().parse(await operatorBody(req))
+        send(res,200,await runtime.desktop.runtime.requestAccess(()=>requireCurrentOperator(req)));return
+      }
+      send(res,405,{code:'method_not_allowed'});return
     }
     if(path==='/api/browser'||path.startsWith('/api/browser/')){
       await browserRequest(runtime,account.status(req).user?.id??'local-operator',req,res,()=>body(req),()=>!changing&&!unavailable&&!stopping&&(authorized(req)||(account.configured?account.authorized(req):sessions.authorized(req))));return

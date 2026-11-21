@@ -22,11 +22,12 @@ export interface DriverSession {
   id: string;
   directory: string;
   cdpPort?: number;
-  provider?: 'ego-lite';
+  provider?: 'roppo';
   profileId?: string;
+  persistent?: boolean;
 }
 export interface BrowserDriver {
-  readonly provider?: 'ego-lite';
+  readonly provider?: 'roppo';
   version(): Promise<string>;
   run(
     session: DriverSession,
@@ -47,6 +48,8 @@ export interface BrowserDriver {
     status?: (connected: boolean) => void,
   ): Promise<() => void>;
   close(session: DriverSession): Promise<void>;
+  shutdown?(): Promise<void>;
+  record?(session: DriverSession, tab: string, path: string, signal: AbortSignal): Promise<() => Promise<void>>;
   input(session: DriverSession, event: BrowserInput): Promise<void>;
 }
 

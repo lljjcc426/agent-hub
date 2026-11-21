@@ -17,4 +17,9 @@ module.exports = async function pack({ appOutDir }) {
     '-undefined', 'dynamic_lookup', '-I', nodeInclude, '-F', sdk, '-framework', 'Sparkle', '-framework', 'AppKit',
     '-Wl,-rpath,@loader_path/../Frameworks', path.join(__dirname, 'bridge.m'),
     '-o', path.join(contents, 'Resources/roppo-sparkle.node')], { stdio: 'inherit' })
+  execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+    "import {packageDesktopRuntime} from './src/desktop-runtime.ts'; await packageDesktopRuntime(process.argv[1], process.env.ROPPO_DESKTOP_RUNTIME_ARCHIVE);",
+    path.join(contents, 'Resources/desktop-runtime')], {
+    cwd:path.resolve(__dirname, '../../..'), stdio:'inherit',
+  })
 }

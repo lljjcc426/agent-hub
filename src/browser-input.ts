@@ -38,17 +38,25 @@ export const browserInput = z.discriminatedUnion("type", [
 ]);
 export type BrowserInput = z.infer<typeof browserInput>;
 
-/** agent-browser's pinned stream protocol; explicit strings avoid null CDP fields in 0.27. */
-export function inputMessages(event: BrowserInput): Record<string, unknown>[] {
+type InputMessage =
+  | {type:'input_mouse';eventType:'mouseMoved'|'mousePressed'|'mouseReleased'|'mouseWheel';x:number;y:number;
+      button?:'none'|'left'|'middle'|'right';clickCount?:number;modifiers?:number;deltaX?:number;deltaY?:number}
+  | {type:'input_keyboard';eventType:'char'|'keyDown'|'keyUp';text:string;key:string;code:string;
+      windowsVirtualKeyCode?:number;modifiers?:number};
+
+/** Translate the viewport's input into the Chromium event fields used by both drivers. */
+export function inputMessages(event: Extract<BrowserInput,{type:'key'|'text'}>): Extract<InputMessage,{type:'input_keyboard'}>[];
+export function inputMessages(event: BrowserInput): InputMessage[];
+export function inputMessages(event: BrowserInput): InputMessage[] {
   if (event.type === "pointer")
     return [
       {
         type: "input_mouse",
-        eventType: {
+        eventType: ({
           move: "mouseMoved",
           down: "mousePressed",
           up: "mouseReleased",
-        }[event.phase],
+        } as const)[event.phase],
         x: event.x,
         y: event.y,
         button: event.button,
@@ -57,7 +65,7 @@ export function inputMessages(event: BrowserInput): Record<string, unknown>[] {
       },
     ];
   if (event.type === "click")
-    return ["mousePressed", "mouseReleased"].map((eventType) => ({
+    return (["mousePressed", "mouseReleased"] as const).map((eventType) => ({
       type: "input_mouse",
       eventType,
       x: event.x,
@@ -112,7 +120,7 @@ export function inputMessages(event: BrowserInput): Record<string, unknown>[] {
   };
   const windowsVirtualKeyCode =
     codes[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
-  return ["keyDown", "keyUp"].map((eventType) => ({
+  return (["keyDown", "keyUp"] as const).map((eventType) => ({
     type: "input_keyboard",
     eventType,
     key,

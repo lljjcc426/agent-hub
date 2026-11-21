@@ -4,7 +4,7 @@
 
 ## 定位与现状
 
-让用户在 Roppo 内发现、安装、配置、更新和停用插件，无须使用终端。市场是宿主内置的管理页面；Agent 看板等功能继续作为独立插件。
+让用户在 Roppo 内发现、安装、配置、更新和停用插件，无须使用终端。市场是宿主内置的管理页面，工作区视图由独立插件提供。
 
 本地已有 source v2、workspace-view v1 两种包，已有 pack、inspect、stage、摘要校验及不可变对象目录。当前 CLI 的 stage 只安装文件并生成新配置，不会自动激活。现有设置覆盖层也不持久化市场安装记录，需要新增管理生命周期。
 
@@ -57,14 +57,12 @@
 ```text
 pythc/agent-hub
   plugins/catalog.json          可发现条目及兼容发行版本
-  plugins/agent-board/          源码、manifest、README、预览图
-  plugins/slack/
-  plugins/linear/
-  plugins/feishu/
+  plugins/agenthub-slack/       源码、manifest、README
+  plugins/agenthub-linear/
 
 GitHub Releases
-  plugin-agent-board-v0.1.0
-    agent-board-0.1.0.tgz       预先构建的安装包与许可证
+  plugin-agenthub-slack-v1.0.0
+    agenthub-slack-1.0.0.tgz    预先构建的安装包与许可证
 ```
 
 目录负责发现、介绍和版本清单；Release 资产负责分发可运行包。客户端不需要构建工具链，也不会在安装时执行仓库里的 npm/install 脚本。高级入口接受 GitHub 仓库或子目录链接，解析为明确的目录项或已经打包的目录；只提供源码时显示“尚未发布安装包”。

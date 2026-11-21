@@ -6,12 +6,15 @@ import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {marketFixture} from '../tests/fixtures/plugin-market.ts'
-import {boardRuntime} from '../tests/fixtures/agent-board-runtime.ts'
+import {viewRuntime} from '../tests/fixtures/workspace-view-runtime.ts'
 const root=resolve(process.argv[2]??'.local/plugin-market-acceptance-'+Date.now());mkdirSync(root,{recursive:true,mode:0o700})
-const fixture=await marketFixture(root,true);await fixture.add('workspace-view','1.1.0');fixture.changed()
-const runtime=boardRuntime(root),host=await serve(runtime,{pluginGitHub:fixture.github,createRuntime:(config,id)=>Runtime.create(config,{pluginActivation:id,model:{async run(){throw Error('Acceptance must not call a model')}}})})
+const fixture=await marketFixture(root);await fixture.add('workspace-view','1.1.0');fixture.changed()
+const runtime=viewRuntime(root),host=await serve(runtime,{pluginGitHub:fixture.github,createRuntime:(config,id)=>Runtime.create(config,{pluginActivation:id,model:{async run(){throw Error('Acceptance must not call a model')}}})})
 const token=readFileSync(host.tokenPath,'utf8').trim(),headers={authorization:'Bearer '+token,origin:host.url,'content-type':'application/json'}
-await fetch(host.url+'/api/plugin-market/catalogs',{method:'POST',headers,body:JSON.stringify({url:'https://github.com/acme/plugins'})})
+for(const url of ['https://github.com/acme/plugins','https://github.com/acme/alternate']){
+  const result=await fetch(host.url+'/api/plugin-market/catalogs',{method:'POST',headers,body:JSON.stringify({url})})
+  if(!result.ok)throw Error('Could not add the acceptance catalog: '+result.status)
+}
 const response=await fetch(host.url+'/account/setup',{method:'POST',headers,body:JSON.stringify({username:'market-preview',displayName:'Alex',password:randomUUID()+'A!',remember:true})})
 if(!response.ok)throw Error('Use a new acceptance directory: '+response.status)
 const cookie=response.headers.get('set-cookie')!.split(';')[0]!

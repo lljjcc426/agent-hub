@@ -11,7 +11,7 @@
     "start": "tsx src/cli.ts",
     "verify-recovery-package": "node --import tsx/esm src/recovery-package-cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && npm run typecheck:chat && npm run typecheck:views && npm run typecheck:ui",
+    "typecheck": "tsc --noEmit && npm run typecheck:chat && npm run typecheck:ui",
     "check": "npm run typecheck && npm test",
     "demo": "tsx examples/native-smoke.ts",
     "build:chat": "vite build --config web/chat/vite.config.ts",
@@ -19,8 +19,6 @@
     "build:ui": "vite build --config web/component-preview/vite.config.ts",
     "typecheck:ui": "tsc -p web/component-preview/tsconfig.json",
     "typecheck:chat": "tsc -p web/chat/tsconfig.json",
-    "typecheck:views": "tsc -p plugins/agent-board/tsconfig.json",
-    "pack:agent-board": "tsx src/cli.ts plugins pack plugins/agent-board/index.tsx plugins/agent-board/manifest.json",
     "prestart": "npm run build:chat",
     "pretest": "npm run build:chat"
   },

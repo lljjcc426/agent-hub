@@ -7,7 +7,7 @@ import {configSchema,loadConfig} from '../src/config.ts'
 import {workspaceViewData} from '../src/workspace-view-data.ts'
 import {pluginCommand} from '../src/plugin-cli.ts'
 import {serve} from '../src/server.ts'
-import {boardRuntime,seedBoard} from './fixtures/agent-board-runtime.ts'
+import {viewRuntime,seedViewRuntime} from './fixtures/workspace-view-runtime.ts'
 import {Settings} from '../src/settings.ts'
 import type {Runtime} from '../src/runtime.ts'
 import {parseViewCommand,viewDestination,viewDocument} from '../web/chat/workspace-view-bridge.ts'
@@ -20,7 +20,7 @@ async function pack(root:string,version='1.0.0',capabilities=['workspace.runtime
   const entry=join(root,'entry-'+version+'.ts');writeFileSync(entry,'document.body.textContent="View";')
   return buildViewPackage(entry,{...manifest,version,capabilities},join(root,'package-'+version))
 }
-function fixture(root=directory()){const host=boardRuntime(root);hosts.push(host);return host}
+function fixture(root=directory()){const host=viewRuntime(root);hosts.push(host);return host}
 it('packs a browser-only view, independently installs immutable bytes, and dispatches inspect',async()=>{
   const root=directory(),pkg=await pack(root),installed=installViewPackage(pkg.directory,join(root,'state'),pkg.digest)
   expect(installed.directory).toContain('/plugins/objects/'+pkg.digest)
@@ -61,7 +61,7 @@ it('stages upgrade and rollback against latest config while preserving settings,
   await expect(pluginCommand(['stage',up,v1.directory,v1.digest,back])).rejects.toThrow('new file')
 })
 it('provides bounded sanitized projection with true source filtering and pagination',()=>{
-  const host=fixture();seedBoard(host,130)
+  const host=fixture();seedViewRuntime(host,130)
   const snapshot=workspaceViewData(host,{})
   expect(snapshot.tasks).toMatchObject({total:130,offset:0,limit:25,more:true});expect(snapshot.tasks.items).toHaveLength(25)
   expect(snapshot.listening.admissions).toHaveLength(100);expect(snapshot.listening.batches.length).toBeLessThanOrEqual(50)
@@ -73,18 +73,18 @@ it('provides bounded sanitized projection with true source filtering and paginat
   expect(()=>workspaceViewData(host,{source:'unknown'})).toThrow('Unknown')
 })
 it('keeps failure evidence after recovery and separates real active execution, task state and paused host',()=>{
-  const host=fixture();seedBoard(host)
+  const host=fixture();seedViewRuntime(host)
   const snapshot=workspaceViewData(host,{})
   expect(snapshot.calls.items.filter(c=>c.name==='read_document').map(c=>c.state).sort()).toEqual(['completed','failed'])
   expect(snapshot.counts).toMatchObject({running:2,attention:2,queued:2,closed:26})
   expect(snapshot.team.router.active).toBe(1);expect(snapshot.team.workers[0]!.active).toBe(1)
   host.pause(true);expect(workspaceViewData(host,{}).paused).toBe(true)
-  const task=host.store.tickets.get('board-task-0')!;host.store.put('run',task.id,{phase:'interrupted',workerId:'retired-worker',ticketId:task.id})
+  const task=host.store.tickets.get('view-task-0')!;host.store.put('run',task.id,{phase:'interrupted',workerId:'retired-worker',ticketId:task.id})
   expect(workspaceViewData(host,{}).tasks.items.find(t=>t.id===task.id)!.workerId).toBe('retired-worker')
   expect(workspaceViewData(host,{}).team.workers[0]!.active).toBe(0)
 })
 it('reports partial auxiliary usage, excludes probes and never attributes global usage to one source',()=>{
-  const host=fixture();seedBoard(host)
+  const host=fixture();seedViewRuntime(host)
   expect(workspaceViewData(host,{source:'personal'}).decision).toMatchObject({scope:'workspace',retained:2,probesExcluded:1,inputTokens:360,outputTokens:18,inputReported:1,outputReported:1})
   host.store.db.prepare("DELETE FROM records WHERE kind='decision-call'").run()
   expect(workspaceViewData(host,{}).decision).toMatchObject({retained:0,inputTokens:null,outputTokens:null,inputReported:0})
@@ -119,7 +119,7 @@ it('only accepts closed bridge commands and protects iframe bootstrap from marku
 })
 
 it('exposes numeric team usage with source filtering and explicit unknown coverage',()=>{
- const h=fixture();seedBoard(h)
+ const h=fixture();seedViewRuntime(h)
  const all=workspaceViewData(h,{}),selected=workspaceViewData(h,{source:'personal'})
  expect(all.usage).toMatchObject({calls:8,reportedCalls:7,unknownCalls:1,tokens:{inputTokens:75100,outputTokens:1220,totalTokens:76320,cachedInputTokens:48080}})
  expect(selected.usage).toMatchObject({calls:3,reportedCalls:3,unknownCalls:0,tokens:{inputTokens:39000}})

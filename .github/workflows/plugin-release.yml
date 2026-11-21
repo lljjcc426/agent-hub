@@ -6,7 +6,7 @@ on:
         description: Plugin to package and release
         required: true
         type: choice
-        options: [agent-board, agenthub-slack, agenthub-linear]
+        options: [agenthub-slack, agenthub-linear]
 
 permissions:
   contents: write

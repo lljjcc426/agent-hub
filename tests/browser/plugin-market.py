@@ -1,4 +1,4 @@
-"""Real host UI acceptance. GitHub transport and connector are explicitly isolated fixtures."""
+"""Real host UI acceptance. GitHub transport and packages are isolated fixtures."""
 import json, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
@@ -13,7 +13,8 @@ with sync_playwright() as p:
     page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
     def preference(label):
         route=page.url
-        page.goto(info['base']+'/configure#general')
+        section='general' if label in ('简体中文','English') else 'appearance'
+        page.goto(info['base']+'/configure#'+section)
         page.get_by_role('radio',name=label,exact=True).check()
         page.goto(route)
     try:
@@ -28,11 +29,11 @@ with sync_playwright() as p:
         types.select_option('plugin')
         expect(page.locator('.market-card')).to_have_count(2)
         types.select_option('app')
-        expect(page.get_by_role('heading',name='Agent board',exact=True)).to_have_count(0)
+        expect(page.get_by_role('heading',name='Example view',exact=True)).to_have_count(0)
         expect(page.get_by_role('heading',name='Test connector',exact=True)).to_be_visible()
-        search.fill('Agent board');expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible()
+        search.fill('Example view');expect(page.get_by_role('heading',name='No matching plugins')).to_be_visible()
         types.select_option('all')
-        expect(page.locator('.market-card')).to_have_count(2);expect(search).to_have_value('Agent board');search.fill('')
+        expect(page.locator('.market-card')).to_have_count(2);expect(search).to_have_value('Example view');search.fill('')
         types.select_option('skill')
         expect(page.get_by_role('heading',name='No skill catalog entries',exact=True)).to_be_visible()
         expect(page.get_by_role('link',name='Manage team skills',exact=True)).to_have_attribute('href','/configure#prompts/templates')
@@ -42,8 +43,8 @@ with sync_playwright() as p:
         types.select_option('all')
         checks.append('shared shell, themes, combined search/category filters, and skill/MCP empty states with management links')
 
-        card=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Agent board',exact=True)).filter(has=page.get_by_role('button',name='Install',exact=True))
-        button=card.get_by_role('button',name='Agent board',exact=True);button.click()
+        card=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Example view',exact=True)).filter(has=page.get_by_role('button',name='Install',exact=True))
+        button=card.get_by_role('button',name='Example view',exact=True);button.click()
         drawer=page.get_by_role('dialog');expect(drawer).to_be_visible()
         drawer.get_by_role('combobox',name='Version',exact=True).select_option('1.0.0')
         drawer.get_by_role('button',name='Install plugin',exact=True).click()
@@ -57,21 +58,21 @@ with sync_playwright() as p:
         drawer.get_by_role('button',name='Confirm install',exact=True).click()
         expect(drawer.get_by_role('link',name='Open',exact=True)).to_be_visible(timeout=15000)
         drawer.get_by_role('link',name='Open',exact=True).click()
-        frame=page.frame_locator('iframe[title="Agent board"]');expect(frame.get_by_role('heading',name='Agent board',exact=True)).to_be_visible()
-        assert page.url.endswith('#plugin/agent-board')
-        page.locator('iframe[title="Agent board"]').screenshot(path=str(out/'board-preview.png'))
+        frame=page.frame_locator('iframe[title="Example view"]');expect(frame.get_by_role('heading',name='Example view',exact=True)).to_be_visible()
+        assert page.url.endswith('#plugin/example-view')
+        page.locator('iframe[title="Example view"]').screenshot(path=str(out/'view-preview.png'))
         page.goto(info['url']);page.wait_for_load_state('networkidle')
-        unpublished=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Agent board',exact=True)).filter(has=page.get_by_role('button',name='View details',exact=True))
-        unpublished.get_by_role('button',name='Agent board',exact=True).click();drawer=page.get_by_role('dialog')
+        unpublished=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Example view',exact=True)).filter(has=page.get_by_role('button',name='View details',exact=True))
+        unpublished.get_by_role('button',name='Example view',exact=True).click();drawer=page.get_by_role('dialog')
         expect(drawer).to_contain_text('No installation package has been published yet.')
         expect(drawer.get_by_role('link',name='Open',exact=True)).to_have_count(0)
         expect(drawer.get_by_role('button',name='Uninstall',exact=True)).to_have_count(0)
         page.screenshot(path=str(out/'other-source-details-dark.png'))
         drawer.get_by_role('button',name='Close / 关闭').click()
-        checks.append('review permissions, real archive install, live sandboxed board, and source-bound installed details')
+        checks.append('review permissions, real archive install, live sandboxed view, and source-bound installed details')
 
         page.goto(info['base']+'/configure#integrations/updates');page.wait_for_load_state('networkidle')
-        row=page.locator('.market-installed article').filter(has_text='Agent board');expect(row).to_contain_text('1.0.0 → 1.1.0')
+        row=page.locator('.market-installed article').filter(has_text='Example view');expect(row).to_contain_text('1.0.0 → 1.1.0')
         row.get_by_role('button',name='Review update',exact=True).click()
         drawer=page.get_by_role('dialog');drawer.get_by_role('button',name='Update',exact=True).click();drawer.get_by_role('button',name='Confirm install',exact=True).click()
         expect(drawer.locator('.market-current')).to_contain_text('1.1.0')
@@ -85,6 +86,16 @@ with sync_playwright() as p:
         drawer.get_by_role('button',name='Close / 关闭').press('Escape');expect(drawer).not_to_be_visible()
         expect(row.get_by_role('button',name='Review update',exact=True)).to_be_focused()
         checks.append('compatible update, rollback, disable/enable, Escape dismissal and focus restoration')
+
+        page.goto(info['base']+'/configure#integrations/installed')
+        row=page.locator('.market-installed article').filter(has_text='Example view')
+        row.get_by_role('button',name='Manage',exact=True).click()
+        drawer=page.get_by_role('dialog')
+        drawer.get_by_role('button',name='Uninstall',exact=True).click()
+        drawer.get_by_role('button',name='Confirm uninstall',exact=True).click()
+        expect(row).to_have_count(0)
+        expect(page.get_by_role('link',name='Example view',exact=True)).to_have_count(0)
+        checks.append('uninstall removes the workspace view and its navigation link')
 
         page.goto(info['url']);page.wait_for_load_state('networkidle')
         card=page.locator('.market-card').filter(has=page.get_by_role('heading',name='Test connector',exact=True))
@@ -123,21 +134,23 @@ with sync_playwright() as p:
 
         page.get_by_role('link',name='Tool connections',exact=True).click()
         expect(page.locator('.management-content')).to_be_visible();expect(page.get_by_role('navigation',name='Plugin sections')).to_be_visible()
-        expect(page.get_by_role('heading',name='WeCom',exact=True)).to_be_visible()
-        expect(page.get_by_role('heading',name='Lark',exact=True)).to_be_visible()
-        for language in ('en','zh'):
-            page.wait_for_function("""() => {
-                const heading = document.querySelector('.market-heading')?.getBoundingClientRect();
-                const content = document.querySelector('.integrations-page')?.getBoundingClientRect();
-                return heading && content && heading.width > 0 &&
-                    Math.abs(heading.x - content.x) < 1 && Math.abs(heading.width - content.width) < 1;
-            }""", timeout=5000)
-            preference('简体中文' if language=='en' else 'English')
-            if language=='en':
-                expect(page.get_by_role('heading',name='企业微信',exact=True)).to_be_visible()
-                expect(page.get_by_role('heading',name='Feishu/飞书',exact=True)).to_be_visible()
-        checks.append('Tool connections share marketplace content bounds and localize built-in adapter names')
-        page.get_by_role('link',name='Marketplace',exact=True).click()
+        expect(page.get_by_role('heading',name='Worker tool connections',exact=True)).to_be_visible()
+        page.wait_for_function("""() => {
+            const heading = document.querySelector('.market-heading')?.getBoundingClientRect();
+            const content = document.querySelector('.integrations-page')?.getBoundingClientRect();
+            return heading && content && heading.width > 0 &&
+                Math.abs(heading.x - content.x) < 1 && Math.abs(heading.width - content.width) < 1;
+        }""", timeout=5000)
+        page.goto(info['base']+'/configure#connectors')
+        connector=page.locator('.connector-identity')
+        for label in ('WeCom','Feishu'):
+            expect(connector.get_by_text(label,exact=True)).to_be_visible()
+        preference('简体中文')
+        for label in ('企业微信','飞书'):
+            expect(connector.get_by_text(label,exact=True)).to_be_visible()
+        preference('English')
+        checks.append('tool connections share marketplace content bounds and built-in connectors localize their names')
+        page.goto(info['url'])
         page.get_by_role('button',name='Manage sources',exact=True).click();drawer=page.get_by_role('dialog')
         drawer.get_by_label('GitHub repository or directory',exact=True).fill('https://github.com/acme/missing')
         drawer.get_by_role('button',name='Add source',exact=True).click()
@@ -145,7 +158,7 @@ with sync_playwright() as p:
         expect(drawer.locator('.market-source').filter(has_text='acme/missing').get_by_role('button',name='Refresh',exact=True)).to_be_enabled()
         page.screenshot(path=str(out/'source-error-dark.png'))
         drawer.get_by_role('button',name='Close / 关闭').click()
-        checks.append('tool inventory and market headings aligned, source management and recoverable GitHub failure')
+        checks.append('source management and recoverable GitHub failure')
 
         preference('简体中文')
         page.emulate_media(reduced_motion='reduce');page.set_viewport_size({'width':390,'height':844})

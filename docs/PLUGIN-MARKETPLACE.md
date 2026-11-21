@@ -28,7 +28,7 @@ Installing a connector does not authorize every group or grant every Worker its 
 
 ## Publish a plugin
 
-The default source is `pythc/agent-hub/plugins/catalog.json`. It indexes published Agent board, Slack and Linear packages. Agent board lists current and earlier releases for compatible update paths; Slack and Linear start at 1.0.0. See [GitHub releases](https://github.com/pythc/agent-hub/releases). Bundled descriptions are discovery hints, **not proof of availability**: a fresh host resolves the remote catalog before offering installation. Source-only directories have no install action.
+The default source is `pythc/agent-hub/plugins/catalog.json`. It indexes published Slack and Linear packages. See [GitHub releases](https://github.com/pythc/agent-hub/releases). Bundled descriptions are discovery hints, **not proof of availability**: a fresh host resolves the remote catalog before offering installation. Source-only directories have no install action.
 
 The [first release acceptance](PLUGIN-MARKETPLACE-RELEASE-2026-11-09.md) records real GitHub downloads and Agent board install, update, rollback and restart verification on an existing host.
 
@@ -41,7 +41,7 @@ The schema is in `src/plugin-market-contract.ts`. Each published version include
 Local package preparation (does not publish):
 
 ```sh
-npx tsx examples/release-plugin.ts prepare agent-board .local/agent-board-release
+npx tsx examples/release-plugin.ts prepare agenthub-slack .local/agenthub-slack-release
 ```
 
 After the code is pushed, use the **Publish a plugin** workflow. It validates the code, builds the package, creates a draft release, uploads the asset, publishes it, verifies GitHub's asset digest and opens a PR updating the catalog. The PR must be merged before the default market discovers that release. The repository must permit Actions to open pull requests. Enable GitHub immutable releases for asset/tag immutability; local checksum checks still apply either way. A failed release is not silently overwritten; inspect the draft/release before retrying.
@@ -59,7 +59,7 @@ npx tsx examples/plugin-market-acceptance.ts .local/market-acceptance
 python tests/browser/plugin-market.py .local/market-acceptance
 ```
 
-The browser fixture uses the real host, sessions, database, package installer, sandboxed view and controlled connector restart. Only GitHub transport and the sample connector are synthetic; it does not call a model or send messages to a real application. The Agent board preview is captured from this isolated environment.
+The browser fixture uses the real host, sessions, database, package installer, sandboxed view and controlled connector restart. GitHub transport and both sample packages are synthetic. The fixture does not call a model or send messages to a real application.
 
 ## 中文使用说明
 
@@ -67,4 +67,4 @@ The browser fixture uses the real host, sessions, database, package installer, s
 
 更新检查是自动的，安装更新需手动确认。有未完成任务或未确认的外部操作时，连接器更新会等待宿主空闲；不会替你停止任务。回退只切换插件代码，不回滚消息、任务或投递记录。
 
-Agent 看板可选择当前版本及已发布的历史版本；首批连接器为 Slack 1.0.0 和 Linear 1.0.0。刷新默认来源后即可查看与安装。未发布的插件仍显示“尚未发布安装包”。安装连接器不会自动授权账号或群聊，需单独完成配置。
+刷新默认来源后可以查看和安装 Slack、Linear 连接器。未发布的插件显示“尚未发布安装包”。账号和群聊授权在连接配置中单独完成。

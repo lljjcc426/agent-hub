@@ -3,13 +3,13 @@ import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {afterEach,it,expect} from 'vitest'
 import {buildViewPackage,installViewPackage,viewArtifactReference,viewVersion} from '../src/workspace-view-package.ts'
-import {boardRuntime} from './fixtures/agent-board-runtime.ts'
+import {viewRuntime} from './fixtures/workspace-view-runtime.ts'
 import {serve} from '../src/server.ts'
 import type {Runtime} from '../src/runtime.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[],closers:(()=>Promise<void>)[]=[]
 afterEach(async()=>{for(const close of closers.splice(0))await close();for(const host of hosts.splice(0))await host.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true})})
-function fixture(){const root=mkdtempSync(join(tmpdir(),'view-version-'));roots.push(root);const host=boardRuntime(root);hosts.push(host);return {root,host}}
+function fixture(){const root=mkdtempSync(join(tmpdir(),'view-version-'));roots.push(root);const host=viewRuntime(root);hosts.push(host);return {root,host}}
 async function pack(root:string,version:string,id='example-view'){
  const entry=join(root,id+'-'+version+'.ts');writeFileSync(entry,'document.body.textContent="'+version+'";')
  return buildViewPackage(entry,{category:'workspace-view',id,version,label:{en:version,'zh-CN':version},capabilities:['workspace.runtime.read']},join(root,id+'-'+version))

@@ -1,7 +1,6 @@
 import {useEffect,useRef,useState} from 'react'
 import type {HostViewMessage,ViewCatalogItem,ViewQuery,ViewSnapshot} from '../../src/workspace-view-contract.ts'
 import {parseViewCommand,viewDestination,viewDocument} from './workspace-view-bridge.ts'
-import interactionStyles from '../../src/ui/interaction.css?inline'
 import './workspace-view.css'
 
 export function useWorkspaceViews(){
@@ -78,7 +77,7 @@ export function WorkspaceView({id,view,dark,language}:{id:string;view?:ViewCatal
       frame.current.contentWindow.postMessage({type:'roppo:view:init',version:1},'*',[channel.port2])
       post({type:'environment',...environment.current});post({type:'connection',state:view.capabilities.includes('workspace.runtime.read')?'loading':'live'});void poll()
     }
-    if(view?.available)void request('/bundle?digest='+view.digest).then(bundle=>{if(alive)setDocumentText(viewDocument(bundle.code,crypto.randomUUID(),view.id==='agent-board'?interactionStyles:''))}).catch(()=>{if(alive)setError(true)})
+    if(view?.available)void request('/bundle?digest='+view.digest).then(bundle=>{if(alive)setDocumentText(viewDocument(bundle.code,crypto.randomUUID()))}).catch(()=>{if(alive)setError(true)})
     else if(view)setError(true)
     const visibility=()=>{if(document.hidden){pending?.abort();clearTimeout(timer);post({type:'connection',state:'hidden'})}else void poll()}
     document.addEventListener('visibilitychange',visibility)

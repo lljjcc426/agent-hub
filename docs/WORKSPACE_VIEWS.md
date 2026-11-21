@@ -1,6 +1,6 @@
 # Workspace view plugins
 
-Workspace views extend the operator UI. They are a separate category from [source plugins](PLUGINS.md), which transport application messages and resources. The first reference view is [Agent board](../plugins/agent-board/README.md).
+Workspace views extend the operator UI. They are a separate category from [source plugins](PLUGINS.md), which transport application messages and resources.
 
 Views use the existing collapsible navigation, account, theme and language controls. The generic route is `/configure#plugin/<id>`; no view-specific route or component is compiled into the host. Installing a view does not grant it a source connection or Worker tool.
 

@@ -198,7 +198,7 @@ The sun/moon button in each page header switches between white and dark. The cho
 
 Chat Markdown, formulas, code, diagram annotations, status badges and brand lettering retain their content-specific hierarchy. Input sizes follow the shared breakpoint independently of each page's layout breakpoint. Buttons retain their touch height when their labels become smaller.
 
-The packaged Agent board declares the same role values in its sandboxed document. The host sends the window's compact typography state with its existing environment message, so expanding navigation does not shrink the board heading earlier than the other pages. Older hosts retain the board's local responsive fallback.
+The host sends the window's compact typography state to workspace views in the environment message.
 
 ## Layout
 

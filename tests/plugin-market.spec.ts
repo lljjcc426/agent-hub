@@ -25,7 +25,7 @@ async function fixture(){
   await market.catalogs({url:'https://github.com/acme/plugins'})
   const catalog=()=>marketState(host.store).catalogs.find(c=>c.origin?.repositoryId===42)!
   const rebuild=async(next:any,id?:string)=>{if(host.store.db.isOpen)await host.close();host=await Runtime.create(next,{model,pluginActivation:id});hosts.push(host)}
-  const execute=async(action:any,id='agent-board',version?:string)=>{const plan=market.plan({action,pluginId:id,catalogId:catalog().id,version,revision:market.snapshot().revision});return market.execute(plan.id,randomUUID(),rebuild)}
+  const execute=async(action:any,id='example-view',version?:string)=>{const plan=market.plan({action,pluginId:id,catalogId:catalog().id,version,revision:market.snapshot().revision});return market.execute(plan.id,randomUUID(),rebuild)}
   return {root,config,host:()=>host,market,github,catalog,rebuild,execute}
 }
 it('installs, upgrades and rolls back a view, survives restart, and never changes task state',async()=>{
@@ -42,11 +42,11 @@ it('installs, upgrades and rolls back a view, survives restart, and never change
   await f.execute('uninstall');await f.rebuild(configSchema.parse(f.config));expect(f.host().config.viewPlugins).toEqual([])
 })
 it('locks plans to settings and catalog revisions, and replays a completed request without downloading twice',async()=>{
-  const f=await fixture(),plan=f.market.plan({action:'install',pluginId:'agent-board',catalogId:f.catalog().id,revision:f.market.snapshot().revision}),id=randomUUID()
+  const f=await fixture(),plan=f.market.plan({action:'install',pluginId:'example-view',catalogId:f.catalog().id,revision:f.market.snapshot().revision}),id=randomUUID()
   const result=await f.market.execute(plan.id,id,f.rebuild),count=f.github.requests.length
   expect(await f.market.execute(plan.id,id,f.rebuild)).toEqual(result);expect(f.github.requests).toHaveLength(count)
   await expect(f.market.execute(randomUUID(),id,f.rebuild)).rejects.toThrow('another operation')
-  const stale=f.market.plan({action:'disable',pluginId:'agent-board',revision:f.market.snapshot().revision})
+  const stale=f.market.plan({action:'disable',pluginId:'example-view',revision:f.market.snapshot().revision})
   f.host().settings.save(f.host().settings.current().revision,{effort:'medium'})
   await expect(f.market.execute(stale.id,randomUUID(),f.rebuild)).rejects.toThrow('Configuration changed')
 })
@@ -106,7 +106,7 @@ it('protects marketplace routes with operator authentication and origin checks, 
   expect((await fetch(server.url+'/api/plugin-market/catalogs',{method:'POST',headers:{...headers,origin:'https://other.test'},body:'{}'})).status).toBe(403)
   const snapshot=await (await fetch(server.url+'/api/plugin-market',{headers})).json();expect(snapshot.platform).toBe(process.platform)
   await f.execute('install')
-  const bundle=await fetch(server.url+'/api/workspace-views/agent-board/bundle?digest='+f.github.one.pkg.digest,{headers});expect(bundle.status).toBe(200);expect((await bundle.json()).code).toContain('Installed view')
+  const bundle=await fetch(server.url+'/api/workspace-views/example-view/bundle?digest='+f.github.one.pkg.digest,{headers});expect(bundle.status).toBe(200);expect((await bundle.json()).code).toContain('Installed view')
 })
 it('includes retained plugin versions in verified backups and restores to a different state directory',async()=>{
   const f=await fixture();await f.execute('install');const backup=join(f.root,'backup')
@@ -136,18 +136,18 @@ it('updates and rolls back a connector shared by two sources without rewinding c
 it('does not allow a second repository to take over an installed ID or a manual configuration',async()=>{
   const f=await fixture();await f.execute('install');const state=marketState(f.host().store),other={...f.catalog(),id:'other',origin:{...f.catalog().origin!,repositoryId:99}}
   state.catalogs.push(other);f.host().store.put('plugin-market','current',state)
-  expect(()=>f.market.plan({action:'install',pluginId:'agent-board',catalogId:'other',revision:state.revision})).toThrow('different repository')
-  await f.execute('uninstall');f.host().config.viewPlugins.push({id:'agent-board',directory:f.github.one.pkg.directory,digest:f.github.one.pkg.digest,enabled:true})
-  expect(()=>f.market.plan({action:'install',pluginId:'agent-board',catalogId:f.catalog().id,revision:f.market.snapshot().revision})).toThrow('startup configuration')
+  expect(()=>f.market.plan({action:'install',pluginId:'example-view',catalogId:'other',revision:state.revision})).toThrow('different repository')
+  await f.execute('uninstall');f.host().config.viewPlugins.push({id:'example-view',directory:f.github.one.pkg.directory,digest:f.github.one.pkg.digest,enabled:true})
+  expect(()=>f.market.plan({action:'install',pluginId:'example-view',catalogId:f.catalog().id,revision:f.market.snapshot().revision})).toThrow('startup configuration')
 })
 it('serializes downloads and rejects configuration changes made while network I/O was pending',async()=>{
   const f=await fixture(),download=f.github.github.download.bind(f.github.github)
   let release!:()=>void,started!:()=>void
   const began=new Promise<void>(r=>{started=r}),gate=new Promise<void>(r=>{release=r})
   f.github.github.download=async(...args)=>{started();await gate;return download(...args)}
-  const plan=f.market.plan({action:'install',pluginId:'agent-board',catalogId:f.catalog().id,revision:f.market.snapshot().revision})
+  const plan=f.market.plan({action:'install',pluginId:'example-view',catalogId:f.catalog().id,revision:f.market.snapshot().revision})
   const request=f.market.execute(plan.id,randomUUID(),f.rebuild);await began
-  expect(()=>f.market.plan({action:'install',pluginId:'agent-board',catalogId:f.catalog().id,revision:f.market.snapshot().revision})).toThrow('operation is running')
+  expect(()=>f.market.plan({action:'install',pluginId:'example-view',catalogId:f.catalog().id,revision:f.market.snapshot().revision})).toThrow('operation is running')
   f.host().settings.save(f.host().settings.current().revision,{effort:'low'});release()
   await expect(request).rejects.toThrow('Configuration changed');expect(f.market.snapshot().installed).toHaveLength(0)
 })

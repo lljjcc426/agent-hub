@@ -282,21 +282,84 @@
   color: var(--c-text);
   font-size: var(--roppo-font-input);
 }
-.browser-sharing {
+.rp-dialog.browser-profile-dialog[data-placement="side"] {
+  inset-block-end: auto;
+  width: min(418px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
+  height: auto;
+  max-height: calc(100dvh - 24px);
+}
+.browser-profile-dialog > section {
+  padding: 22px 24px;
+}
+.browser-profile-dialog > section > header h2 {
+  font-size: var(--roppo-font-dialog);
+  font-weight: 650;
+}
+.browser-profile-dialog .rp-dialog-body {
+  margin-block: 20px 22px;
+}
+.browser-profile-dialog > section > footer {
+  border-top: 1px solid var(--rp-line);
+  padding-top: 15px;
+}
+.browser-profile-form {
   display: grid;
-  gap: 8px;
+  gap: 20px;
 }
-.browser-dialog .browser-sharing .rp-check {
-  flex-direction: row;
+.browser-profile-field {
+  display: grid;
+  gap: 7px;
+  font-weight: 570;
+}
+.browser-profile-field input {
+  min-width: 0;
+  width: 100%;
+  height: 42px;
+  padding-inline: 11px;
+  border: 1px solid var(--rp-line);
+  border-radius: var(--rp-corner-field);
+  background: var(--rp-panel);
+  color: var(--rp-ink);
+  font-size: var(--roppo-font-input);
+}
+.browser-profile-sharing {
+  padding-top: 15px;
+  border-top: 1px solid var(--rp-line);
+}
+.browser-profile-sharing .rp-check {
+  display: flex;
+  justify-content: space-between;
+  flex-direction: row-reverse;
+  gap: 12px;
+  min-height: 32px;
+  font-size: var(--roppo-font-body);
+  font-weight: 570;
+}
+.browser-profile-help {
+  margin: 3px 0 0;
+  color: var(--rp-muted);
+  font-size: var(--roppo-font-body);
+  line-height: 1.5;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.browser-profile-legacy {
+  display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 10px;
 }
-.browser-sharing small {
-  color: var(--c-muted);
+.browser-profile-dialog .browser-error {
+  border: 1px solid var(--rp-line);
+  border-radius: var(--rp-corner-control);
+  font-size: var(--roppo-font-body);
+  overflow-wrap: anywhere;
 }
-.browser-legacy-grants button {
-  font-size: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+@media (max-width: 520px) {
+  .browser-profile-dialog > section { padding: 18px; }
+  .browser-profile-dialog footer .rp-button { min-height: 40px; }
 }
 .browser-dialog-actions {
   display: flex;

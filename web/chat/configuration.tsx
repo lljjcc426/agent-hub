@@ -134,7 +134,7 @@ export function Configuration({
         {visible && route.split("#")[1] === "advanced/memory" && memoryTarget ? createPortal(<MemorySettings L={(en, zh) => language === "en" ? en : zh}/>, memoryTarget) : null}
         {visible && route.split("#")[1] === "advanced/chat" && chatTarget ? createPortal(<ChatSettings L={(en, zh) => language === "en" ? en : zh}/>, chatTarget) : null}
         {visible && hash === "advanced/browser" && browserTarget ? createPortal(<>
-          <BrowserPanel settingsOnly L={L}/>
+          <BrowserPanel settingsOnly profileDialogTarget={viewport.current} L={L}/>
           {settings && <Suspense fallback={null}><BrowserAgentAccess settings={settings} blocked={!!editor.blocked} L={L} /></Suspense>}
         </>, browserTarget) : null}
         {error ? (

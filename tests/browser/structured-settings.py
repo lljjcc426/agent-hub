@@ -41,6 +41,26 @@ with sync_playwright() as p:
         page.locator('#savebar .primary').click()
         expect(page.locator('#savebar')).to_be_hidden()
 
+    def check_browser_profile(screenshot):
+        opener = page.get_by_role('button', name='本地验收资料', exact=True)
+        opener.click()
+        profile = page.get_by_role('dialog', name='浏览器资料')
+        expect(profile.get_by_role('heading')).to_have_css('font-size', '18px')
+        expect(profile.get_by_role('switch', name='允许工作区 Worker 使用')).to_be_checked()
+        primary = profile.get_by_role('button', name='保存')
+        expect(primary).to_have_attribute('data-tone', 'primary')
+        expect(primary).not_to_have_css('background-color', 'rgba(0, 0, 0, 0)')
+        assert profile.evaluate("""el => {
+          const panel = el.getBoundingClientRect();
+          const title = el.querySelector('h2').getBoundingClientRect();
+          return title.left - panel.left >= 18 && el.offsetLeft >= 12 && el.offsetLeft + el.offsetWidth <= innerWidth - 12
+            && panel.height < innerHeight && el.scrollWidth <= el.clientWidth;
+        }""")
+        page.screenshot(path=str(output / screenshot), animations='disabled')
+        page.keyboard.press('Escape')
+        expect(profile).to_be_hidden()
+        expect(opener).to_be_focused()
+
     seed = settings()['config']['execution']
     seed['router'].update(effort='medium', timeoutMs=1234, prompt='原有协调规则',
                           persona={'identity': '原有身份', 'soul': '原有表达'}, maxSteps=13)
@@ -104,6 +124,11 @@ with sync_playwright() as p:
     permissions.get_by_role('combobox', name='文档助手').select_option('inherit')
     save()
     assert settings()['config']['execution']['workers'][0]['browser'] == {'maxTabs': 4}
+    created = context.request.post(base + '/api/browser/profiles', headers={'origin': base},
+                                   data={'name': '本地验收资料', 'shareWithWorkers': True})
+    assert created.ok, created.status
+    page.reload(wait_until='domcontentloaded')
+    check_browser_profile('browser-profile.png')
 
     navigate('integrations/tools')
     expect(page.get_by_role('heading', name='成员工具权限')).to_be_visible()
@@ -177,6 +202,8 @@ with sync_playwright() as p:
     page.screenshot(path=str(output / 'team-dark-mobile.png'), animations='disabled')
     sheet.get_by_role('button', name='关闭', exact=True).click()
     expect(sheet).to_be_hidden()
+    navigate('advanced/browser')
+    check_browser_profile('browser-profile-dark-mobile.png')
     browser.close()
 
 print(json.dumps({'settings': 'saved and reread through the real API', 'conflicts': 'retained drafts',

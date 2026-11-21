@@ -1,6 +1,7 @@
-import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
-import { CheckField, InputControl, SelectField } from '../ui/controls.tsx'
+import { Dialog, DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
+import { Button as FormButton, CheckField, InputControl, SelectField } from '../ui/controls.tsx'
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Globe,
   Plus,
@@ -135,12 +136,13 @@ export type BrowserPanelProps = {
   onUrlConsumed?: () => void;
   requestedSession?: {id: string; takeover: boolean; key: number};
   settingsOnly?: boolean;
+  profileDialogTarget?: HTMLElement | null;
   visibility?: 'page' | 'tabs' | 'hidden';
   renderWorkspace?: (pages: BrowserPages | undefined, content: ReactNode) => ReactNode;
 };
 
 export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsumed, requestedSession,
-  settingsOnly=false, visibility='page', renderWorkspace}: BrowserPanelProps) {
+  settingsOnly=false, profileDialogTarget, visibility='page', renderWorkspace}: BrowserPanelProps) {
   const workspaceVisible = visibility !== 'hidden';
   const client = browserClient;
   const [data, setData] = useState<State | null>(null),
@@ -153,6 +155,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   const [profileId, setProfileId] = useState(""),
     [profileName, setProfileName] = useState(""),
     [shareWithWorkers, setShareWithWorkers] = useState<boolean>();
+  const profileFormId = useId();
   const sharingHelpId = useId();
   const editedProfile = data?.profiles.find(p => p.id === profileId);
   const sharing = shareWithWorkers ?? editedProfile?.shareWithWorkers;
@@ -278,7 +281,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     return () => clearInterval(timer);
   }, [visibility, session?.id, session?.epoch, session?.controlledByYou]);
   useEffect(() => {
-    if (!dialog) return;
+    if (dialog !== "accounts") return;
     triggerRef.current = document.activeElement as HTMLElement;
     dialogRef.current?.showModal();
     return () => triggerRef.current?.focus();
@@ -340,12 +343,14 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     setProfileId("");
     setProfileName(L("Personal browser", "个人浏览器"));
     setShareWithWorkers(undefined);
+    setError("");
     setDialog("profile");
   };
   const editProfile = (profile: State["profiles"][number]) => {
     setProfileId(profile.id);
     setProfileName(profile.name);
     setShareWithWorkers(undefined);
+    setError("");
     setDialog("profile");
   };
   const accounts = () => {
@@ -376,6 +381,81 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     close: tab => operation({action: 'close_tab', tab}),
     create: () => operation({action: 'new_tab', url: 'about:blank'}),
   };
+  const profileEditor = (
+    <Dialog
+      open={dialog === "profile"}
+      placement="side"
+      className="roppo-ui browser-profile-dialog"
+      title={L("Browser profile", "浏览器资料")}
+      closeLabel={L("Close", "关闭")}
+      onClose={closeDialog}
+      footer={<>
+        <FormButton onClick={closeDialog}>{L("Cancel", "取消")}</FormButton>
+        <FormButton tone="primary" type="submit" form={profileFormId} busy={busy}>
+          {L("Save", "保存")}
+        </FormButton>
+      </>}
+    >
+      <form
+        id={profileFormId}
+        className="browser-profile-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void act(async () => {
+            const p = await request<State["profiles"][number]>(
+              "/profiles" + (profileId ? "/" + profileId : ""),
+              { name: profileName, shareWithWorkers },
+            );
+            closeDialog();
+            if (settingsOnly) {
+              await refresh();
+              return;
+            }
+            const s = await request<Session>(
+              "/profiles/" + p.id + "/open",
+              { client, conversationId },
+            );
+            update(s);
+            setSelected(s.id);
+          });
+        }}
+      >
+        {error && (
+          <div className="browser-error" role="alert">
+            {messages[error] ? L(...messages[error]!) : L("Unable to complete this operation.", "未能完成此操作。")}
+          </div>
+        )}
+        <label className="browser-profile-field">
+          {L("Name", "名称")}
+          <InputControl
+            required
+            maxLength={80}
+            value={profileName}
+            onChange={(e) => setProfileName(e.target.value)}
+          />
+        </label>
+        <div className="browser-profile-sharing">
+          <CheckField
+            appearance="switch"
+            label={L("Share with workspace Workers", "允许工作区 Worker 使用")}
+            aria-describedby={sharingHelpId}
+            checked={sharing === true}
+            disabled={busy}
+            onChange={e => setShareWithWorkers(e.target.checked)}
+          />
+          <p id={sharingHelpId} className="browser-profile-help">
+          {L("When enabled, current and future Workers can use these saved sign-ins.", "开启后，现有和新建 Worker 均可使用登录资料。")}
+          </p>
+          {hasLegacyGrants && <div className="browser-profile-legacy">
+            <p className="browser-profile-help">{L("Previously selected Workers still have access.", "以前选中的 Worker 仍有使用权限。")}</p>
+            <FormButton tone="quiet" disabled={busy} onClick={() => setShareWithWorkers(false)}>
+              {L("Remove previous access", "移除旧授权")}
+            </FormButton>
+          </div>}
+        </div>
+      </form>
+    </Dialog>
+  );
   const content = (
     <aside
       className={'browser-panel'+(settingsOnly?' browser-settings':'')} aria-label={L("Browser", "浏览器")} id="browser-panel">
@@ -560,7 +640,8 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
           {!data && <LoaderCircle size={18} className="spin" />}
         </div>
       ))}
-      {dialog && (
+      {profileDialogTarget ? createPortal(profileEditor, profileDialogTarget) : profileEditor}
+      {dialog === "accounts" && (
         <dialog
           ref={dialogRef}
           className="browser-dialog"
@@ -570,9 +651,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
         >
           <header>
             <h2 id="browser-dialog-title">
-              {dialog === "profile"
-                ? L("Browser profile", "浏览器资料")
-                : L("Saved accounts", "已保存账号")}
+              {L("Saved accounts", "已保存账号")}
             </h2>
             <Button label={L("Close", "关闭")} onClick={closeDialog}>
               <X size={18} />
@@ -585,67 +664,6 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 : L("Unable to complete this operation.", "未能完成此操作。")}
             </div>
           )}
-          {dialog === "profile" ? (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void act(async () => {
-                  const p = await request<State["profiles"][number]>(
-                    "/profiles" + (profileId ? "/" + profileId : ""),
-                    { name: profileName, shareWithWorkers },
-                  );
-                  closeDialog();
-                  if(settingsOnly){await refresh();return;}
-                  const s = await request<Session>(
-                    "/profiles/" + p.id + "/open",
-                    { client,conversationId },
-                  );
-                  update(s);
-                  setSelected(s.id);
-                });
-              }}
-            >
-              <label>
-                {L("Name", "名称")}
-                <InputControl
-                  autoFocus
-                  required
-                  maxLength={80}
-                  value={profileName}
-                  onChange={(e) => setProfileName(e.target.value)}
-                />
-              </label>
-              <div className="browser-sharing">
-                <CheckField
-                  appearance="switch"
-                  label={L("Share with workspace Workers", "允许工作区 Worker 使用")}
-                  aria-describedby={sharingHelpId}
-                  checked={sharing === true}
-                  disabled={busy}
-                  onChange={e => setShareWithWorkers(e.target.checked)}
-                />
-                <small id={sharingHelpId}>
-                  {L("Current and future Workers can use this profile's saved sign-ins when sharing is on.", "开启后，当前和新建的 Worker 都可以使用此资料的已保存登录。")}
-                </small>
-                {hasLegacyGrants && <div className="browser-legacy-grants">
-                  <small>{L("Previously selected Workers still have access.", "以前选中的 Worker 仍有使用权限。")}</small>
-                  <button type="button" disabled={busy} onClick={() => setShareWithWorkers(false)}>
-                    {L("Remove previous access", "移除旧授权")}
-                  </button>
-                </div>}
-              </div>
-              <div className="browser-dialog-actions">
-                <button type="button" onClick={closeDialog}>
-                  {L("Cancel", "取消")}
-                </button>
-                <button className="browser-primary" disabled={busy}>
-                  <Save size={14} />
-                  {L("Save", "保存")}
-                </button>
-              </div>
-            </form>
-          ) : (
-            <>
               <div className="browser-account-list">
                 {data?.credentials.map((a) => (
                   <div key={a.id}>
@@ -794,8 +812,6 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                   </button>
                 </div>
               </form>
-            </>
-          )}
         </dialog>
       )}
     </aside>

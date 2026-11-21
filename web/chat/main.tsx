@@ -919,12 +919,12 @@ function Chat(p: ChatProps) {
     return savedDraftSkill(id)??(saved&&!p.sends.has(saved.id)&&(!draft||draft.trim()===saved.text)?saved.skill??null:null);
   });
   const skillCurrent=useRef(skill);
-  const locateAfterLoad=useRef<{messageId:string;workflowId?:string}|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
+  const locateAfterLoad=useRef<string|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
   const queuedEnter=useRef<string|null>(null);
   const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
   const saveQuote=useCallback((value:DraftQuote|null)=>{quoteCurrent.current=value;setQuote(value);write(quoteKey(id),JSON.stringify(value))},[id]);
   const motion=useChatMotion(threadRef,(id??'new')+':'+selectedAgent+':'+(around??'latest'),!!around,snapshot?.messages.at(-1)?.id);
-  useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target.messageId,target.workflowId))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
+  useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
   useEffect(() => {
     const thread=threadRef.current, transcript=thread?.querySelector<HTMLElement>('.transcript');
     if(!thread||!transcript)return;
@@ -1427,17 +1427,17 @@ function Chat(p: ChatProps) {
     saveQuote(value);selectAgent(currentRouter.id);
     requestAnimationFrame(()=>threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus({preventScroll:true}));
   };
-  const locateMessage=async(messageId:string,workflowId?:string)=>{
+  const locateMessage=async(messageId:string)=>{
     const version=++locateRequest.current;
     locateAfterLoad.current=null;
-    if((!workflowId||snapshot?.messages.some(m=>m.id===messageId))&&motion.locate(messageId,workflowId))return;
+    if(motion.locate(messageId))return;
     try{
       const data=await api<Snapshot>('/conversations/'+id+'?around='+encodeURIComponent(messageId));
       if(!alive.current||version!==locateRequest.current)return;
       const message=data.messages.find(m=>m.id===messageId);
       if(!message)throw new ApiError("message_missing");
       const participant=message.speaker?.kind==='worker'?message.speaker.id:message.recipient?.kind==='worker'?message.recipient.id:currentRouter.id;
-      locateAfterLoad.current={messageId,workflowId};
+      locateAfterLoad.current=messageId;
       if(display==='agents'||readonly)setSelectedAgent(participant);
       setAround(messageId);
     }catch(e){if(version===locateRequest.current)fail(e)}
@@ -1595,12 +1595,7 @@ function Chat(p: ChatProps) {
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close pending panel','关闭待处理面板')} onClick={closeTray}/>
                   <PendingTray key={(id??'')+':'+displayedTray.linkVisit} read={readHistory} clearSelection={clearSelection}
                   linkedAnswer={!!displayedPendingItem && (displayedPendingItem.startsWith('decision:') || !!snapshot?.decisions.some(q=>q.id===displayedPendingItem) || !!snapshot?.approvals.some(a=>a.id===displayedPendingItem && a.method==='item/tool/requestUserInput'))}
-                  cards={pendingCards} selectedId={displayedPendingItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray} locate={card=>{
-                  changeTray(false);
-                  if(panel && (panelOverlay || panelExpanded))void choosePanel(null);
-                  if('messageId' in card)void locateMessage(card.messageId,card.id);
-                  else void locateMessage(card.id);
-                }}/></div>}
+                  cards={pendingCards} selectedId={displayedPendingItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray}/></div>}
                 {activityPresence.view!==null&&<div ref={activityPresence.ref} className="tray-presence"
                   data-closing={activityPresence.closing||undefined} inert={activityPresence.closing} aria-hidden={activityPresence.closing||undefined}>
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close work activity','关闭工作动态')} onClick={()=>closeActivityTray()}/>

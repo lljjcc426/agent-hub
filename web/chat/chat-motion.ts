@@ -47,13 +47,12 @@ export function useChatMotion(root:RefObject<HTMLDivElement|null>,key:string,his
     highlight.current=null
   },[])
   useEffect(()=>clearHighlight,[key,clearHighlight])
-  const locate=useCallback((messageId:string,workflowId?:string)=>{
-    const selector=workflowId?'[data-workflow-id="'+CSS.escape(workflowId)+'"]':'.message[data-message-id="'+CSS.escape(messageId)+'"]'
-    const message=root.current?.querySelector<HTMLElement>('.transcript '+selector)
+  const locate=useCallback((messageId:string)=>{
+    const message=root.current?.querySelector<HTMLElement>('.transcript .message[data-message-id="'+CSS.escape(messageId)+'"]')
     if(!message)return false
     stop();clearHighlight();setAtBottom(false)
     // Land first so the whole pulse is visible even after fetching a distant page.
-    const card=workflowId!==undefined||!!message.querySelector('.workflow-card')
+    const card=!!message.querySelector('.workflow-card')
     message.scrollIntoView({behavior:reduced.current||card?'instant':'smooth',block:'center'})
     message.tabIndex=-1;message.focus({preventScroll:true})
     void message.offsetWidth

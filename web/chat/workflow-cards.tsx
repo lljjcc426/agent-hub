@@ -437,8 +437,8 @@ function HistoryList({read,select}:{read:ReadHistory;select:(id:string)=>void}){
 }
 
 // Owner actions remain available in the tray even when viewing a read-only Worker transcript.
-export function PendingTray({cards,loading,selectedId,close,locate,read,clearSelection,linkedAnswer}:{
-  selectedId?:string;cards:Snapshot['pendingCards'];loading:boolean;close:()=>void;locate:(card:Snapshot['pendingCards'][number])=>void
+export function PendingTray({cards,loading,selectedId,close,read,clearSelection,linkedAnswer}:{
+  selectedId?:string;cards:Snapshot['pendingCards'];loading:boolean;close:()=>void
   read:ReadHistory;clearSelection:()=>void;linkedAnswer:boolean
 }){
   const flow=useContext(Flow)!,{L}=flow
@@ -462,7 +462,7 @@ export function PendingTray({cards,loading,selectedId,close,locate,read,clearSel
   return <Flow.Provider value={{...flow,readonly:false}}>
     <PendingRequests L={L} loading={loading} selectedId={linkedAnswer&&!found?undefined:selectedId} close={close}
       heading={historyVisible?L('Approval history','审批记录'):undefined} navigation={archiveButton}
-      items={(single?[selected]:cards).map(card=>({id:card.id,locate:()=>locate(card),content:
+      items={(single?[selected]:cards).map(card=>({id:card.id,content:
         card.kind==='choice'?<RouterDecision id={card.id} decision={card.decision}/>:
         card.kind==='file'?<FileReviewCard id={card.id} name={card.name} review={card.review}/>:
         card.kind==='approval'?<NativeCard request={card.request}/>:

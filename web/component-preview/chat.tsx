@@ -66,7 +66,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
   const [tray, setTray] = useState(false), [details, setDetails] = useState(false)
   const [answer, setAnswer] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null), upload = useRef<HTMLInputElement>(null), trayButton = useRef<HTMLButtonElement>(null)
-  const end = useRef<HTMLDivElement>(null), question = useRef<HTMLDivElement>(null)
+  const end = useRef<HTMLDivElement>(null)
   const canSend = !!text.trim() || !!attachment
   const sampleMessages = [
     ...(hasSample ? [{id: 'request', text: requestText, role: 'user' as const},
@@ -107,9 +107,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
         <Inbox size={17}/>{hasSample && !answer && <span className="pending-badge">1</span>}
       </button></div>
       {tray && <PendingRequests id="preview-pending" close={closeTray} L={zh} loading={false}
-        items={!hasSample || answer ? [] : [{id: 'format', content: decision, locate: () => {
-          setTray(false); question.current?.focus({preventScroll: true}); question.current?.scrollIntoView({block: 'nearest'})
-        }}]}/>}
+        items={!hasSample || answer ? [] : [{id: 'format', content: decision}]}/>}
       <div className="sample-transcript" role="region" aria-label="示例对话记录" tabIndex={0}>
         {hasSample && <>
           <Message author="user" messageId="request" time={showTime ? '09:41' : ''}
@@ -122,7 +120,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
             reactions={<Reactions id="reply"/>} actions={<StatusMark state="done">已完成</StatusMark>}>
             <p>{reply}</p><SampleFile open={openFile}/>
           </Message>
-          <div ref={question} className="sample-question" tabIndex={-1}>{decision}</div>
+          <div className="sample-question">{decision}</div>
         </>}
         {messages.map(m => <Message key={m.id} author="user" messageId={m.id} time={showTime ? m.time : ''}
           sideActions={<MessageActions id={m.id}/>} reactions={<Reactions id={m.id}/>}>

@@ -13,17 +13,23 @@
 .pending-heading { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 10px 16px; }
 .pending-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; margin: 0; }
 .pending-heading .icon-button { width: 30px; height: 30px; }
-.pending-list { list-style: none; display: grid; gap: 8px; overflow: auto; min-height: 0; margin: 0; padding: 0 10px 10px; overscroll-behavior: contain; }
-.pending-list > li { min-width: 0; overflow-wrap: anywhere; }
-.pending-list :is(.rp-approval,.rp-decision,.review-question) { width: 100%; max-width: 100%; }
+.pending-list {
+  list-style: none; display: grid; gap: 10px; overflow: auto; min-height: 0; margin: 0; padding: 10px;
+  overscroll-behavior: contain; background: var(--rp-rail);
+}
+.pending-list > li {
+  min-width: 0; padding: 12px; overflow-wrap: anywhere;
+  border: 1px solid var(--rp-line); border-radius: var(--rp-corner-field); background: var(--rp-panel);
+}
+.pending-list > li :is(.rp-approval,.rp-decision) { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
+.pending-list > li .permission-review { padding: 0; }
+.pending-list .review-target { margin: 0 0 8px; color: var(--rp-muted); }
+.pending-list .review-target strong { color: var(--rp-ink); font-weight: 600; }
+.pending-list > li:focus-visible { outline: 2px solid var(--rp-focus); outline-offset: -2px; }
 .pending-list .rp-fact-list dd { white-space: pre-wrap; overflow-wrap: anywhere; }
 .pending-empty { margin: 0; padding: 4px 16px 18px; font-size: 14px; color: var(--c-muted); }
 @keyframes pending-tray-in { from { opacity: 0; transform: translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) { .pending-tray.roppo-ui { animation: none; } }
-.pending-list > li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px; align-items: start; cursor: pointer; }
-.pending-card-content { min-width: 0; }
-.pending-list .pending-locate { width: 26px; height: 30px; color: var(--c-muted); }
-.pending-list li:hover .pending-locate, .pending-locate:focus-visible { color: var(--c-text); }
 .transcript [data-located] { border-radius: 10px; position: relative; }
 .transcript [data-located]::after {
   content: ''; position: absolute; inset: -3px; pointer-events: none; border-radius: inherit;
@@ -37,7 +43,6 @@
 .pending-notice.resolved { color: var(--c-muted); }
 .pending-notice a.pending-action-link { color: #155dc1; text-decoration: underline; text-underline-offset: .17em; }
 [data-theme="dark"] .pending-notice a.pending-action-link { color: #89baff; }
-.pending-list > li:focus { outline: none; }
 .pending-fact pre { max-height: 13rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .pending-notice .approval-link.pending-action-link,
@@ -50,7 +55,6 @@
 .pending-heading { border-bottom: 1px solid var(--c-line); }
 .pending-heading h2 { margin-right:auto; }
 .pending-heading .history-access { margin-left:auto; }
-.pending-list { padding-top: 8px; }
 .permission-review,.history-detail { min-width:0; overflow-wrap:anywhere; }
 .permission-review { padding:12px 9px; cursor:auto; }
 .permission-review h3 { margin:0; font-size:17px; line-height:1.45; }
@@ -81,9 +85,9 @@
   .pending-notice .approval-link {transition:none;}
 }
 .pending-heading .history-access { width:auto; display:inline-flex; gap:5px; padding:0 7px; align-items:center; font:inherit; font-size:13px; }
-.pending-list > li[data-targeted] { animation:pending-item-arrive .32s ease-out; border-radius:10px; }
+.pending-list > li[data-targeted] { border-color:var(--rp-line-strong); animation:pending-item-arrive .32s ease-out; }
 .pending-notice .approval-link:focus-visible { outline:none; text-decoration-thickness:2px; }
-@keyframes pending-item-arrive { from {background-color:var(--c-hover)} to {background-color:transparent} }
+@keyframes pending-item-arrive { from {background-color:var(--rp-hover)} }
 @media(prefers-reduced-motion:reduce) { .pending-list > li[data-targeted] { animation:none; } }
 .pending-backdrop { display:none; }
 @media(max-width:600px) {
@@ -93,5 +97,3 @@
 @keyframes pending-scrim-in { from { opacity:0; } }
 @keyframes pending-scrim-out { to { opacity:0; } }
 @media(prefers-reduced-motion:reduce) { .pending-backdrop,.tray-presence[data-closing] .pending-backdrop { animation:none; transition:none; } }
-
-.pending-list:has(>li:only-child[data-targeted]) .rp-approval { box-shadow:none; border-color:transparent; }

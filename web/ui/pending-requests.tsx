@@ -1,5 +1,5 @@
 import {useEffect, useId, useRef, type ReactNode, type KeyboardEventHandler} from 'react'
-import {Inbox, LocateFixed, X} from 'lucide-react'
+import {Inbox, X} from 'lucide-react'
 import type {Localize} from '../chat/composer-commands.tsx'
 import '../chat/pending-tray.css'
 import {getMotionPreference} from './motion.ts'
@@ -21,7 +21,7 @@ export function ChatTray({id, heading, icon, navigation, closeLabel, close, chil
 
 export function PendingRequests({items, loading, close, L, selectedId, heading, navigation, children, id = 'pending-tray'}: {
   heading?: string; navigation?:ReactNode; children?:ReactNode
-  items: {id: string; content: ReactNode; locate: () => void}[]; loading: boolean
+  items: {id: string; content: ReactNode}[]; loading: boolean
   close: () => void; L: Localize; id?: string; selectedId?: string
 }) {
   const focused = useRef<HTMLLIElement>(null)
@@ -40,12 +40,8 @@ export function PendingRequests({items, loading, close, L, selectedId, heading, 
     }}>
     {children ?? <>
     {selectedId && !loading && !found && <p role="status" className="pending-empty">{L('This item is no longer pending.', '这个事项已处理或已失效。')}</p>}
-    {items.length ? <ol className="pending-list">{items.map(({id, content, locate}) => <li key={id} ref={id===selectedId?focused:undefined} tabIndex={-1} data-targeted={id===selectedId||undefined} data-pending-id={id} onClick={event => {
-      if (event.target instanceof Element && !event.target.closest('button, a, input, textarea, select, label, details, summary, [contenteditable=true]') && window.getSelection()?.isCollapsed !== false) locate()
-    }}>
-      <div className="pending-card-content">{content}</div>
-      <button type="button" className="pending-locate icon-button" aria-label={L('Go to original message','定位到原消息')}
-        title={L('Go to original message','定位到原消息')} onClick={locate}><LocateFixed size={15}/></button>
+    {items.length ? <ol className="pending-list">{items.map(({id, content}) => <li key={id} ref={id===selectedId?focused:undefined} tabIndex={-1} data-targeted={id===selectedId||undefined} data-pending-id={id}>
+      {content}
     </li>)}</ol> : selectedId && !loading ? null : <p className="pending-empty" role="status">{loading ? L('Loading…','加载中…') : L('You’re all caught up.','暂无待处理事项')}</p>}
     </>}
   </ChatTray>

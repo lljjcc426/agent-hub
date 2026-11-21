@@ -3,25 +3,10 @@
   min-width: 0;
 }
 .task-run-sequence-toggle.task-run-record {
-  grid-template-columns: auto minmax(0, 1fr) auto;
   background: var(--rp-soft);
   text-align: start;
 }
-.task-run-sequence .rv-sequence {
-  margin-top: 6px;
-  --rv-gutter: 40px;
-  --rv-lane-size: 63px;
-}
-.task-run-sequence .rv-sequence-scroll {
-  max-height: min(48dvh, 460px);
-}
-.task-run-sequence .rv-participants {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  background: var(--rp-panel);
-}
-.task-run-sequence .task-run-note { padding: 9px 4px 0; }
+.task-run-sequence-toggle.task-run-record > svg { transform: none; }
 .commit-tray-content {
   padding: 10px 11px 12px;
   min-height: 0;
@@ -57,7 +42,7 @@
 .task-sequence-dialog > section { height: 100%; display: flex; flex-direction: column; }
 .task-sequence-dialog > section > header { flex: none; }
 .task-sequence-dialog .rp-dialog-body { flex: 1; min-height: 0; margin: 12px 0 0; }
-.task-run-sequence .task-sequence-dialog .rv-sequence {
+.task-sequence-dialog .rv-sequence {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -70,9 +55,15 @@
 }
 .task-sequence-dialog :is(.rv-sequence-head,.rv-sequence-key) { flex: none; }
 .task-sequence-dialog .rv-sequence-scroll { flex: 1; min-height: 0; max-height: none; }
+.task-sequence-dialog .rv-participants {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--rp-panel);
+}
 @media(max-width:600px) {
   .rp-dialog.task-sequence-dialog > section { padding: 13px; }
-  .task-run-sequence .task-sequence-dialog .rv-sequence {
+  .task-sequence-dialog .rv-sequence {
     --rv-gutter: 40px;
     --rv-lane-size: 82px;
     --rv-avatar-size: 32px;

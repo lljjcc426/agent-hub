@@ -13,10 +13,14 @@ writeFileSync(cli,'#!'+process.execPath+'\nconsole.log("fixture tool ready")\n',
 const provider=createServer(async(req,res)=>{
  const chunks:Buffer[]=[];for await(const c of req)chunks.push(Buffer.from(c))
  if(req.headers.authorization!=='Bearer demo-connection-key'){res.writeHead(401,{'content-type':'application/json'});res.end(JSON.stringify({error:{code:'invalid_api_key'}}));return}
+ if(req.url==='/v1/manual/models'){res.writeHead(404,{'content-type':'application/json'});res.end('{}');return}
  res.writeHead(200,{'content-type':'application/json'})
- if(req.url==='/v1/models'){res.end(JSON.stringify({data:[{id:'fixture-model'},{id:'fixture-reasoner'}]}));return}
+ if(req.url?.endsWith('/models')){
+  const text=req.url==='/v1/single/models'?[{id:'fixture-single'}]:[{id:'fixture-model'},{id:'fixture-reasoner'}]
+  res.end(JSON.stringify({data:[...text,{id:'fixture-image',output_modalities:['image']}]}));return
+ }
  const body=JSON.parse(Buffer.concat(chunks).toString()),text=JSON.stringify({ok:true})
- res.end(JSON.stringify(req.url==='/v1/responses'?{status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}]}:{choices:[{message:{content:text}}]}))
+ res.end(JSON.stringify(req.url?.endsWith('/responses')?{status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}]}:{choices:[{message:{content:text}}]}))
 })
 await new Promise<void>(r=>provider.listen(0,'127.0.0.1',r))
 const baseUrl='http://127.0.0.1:'+(provider.address() as any).port+'/v1'

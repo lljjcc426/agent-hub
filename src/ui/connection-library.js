@@ -5,7 +5,7 @@ function connectionProvider(service) {
   if (definition.kind === 'codex') return 'codex'
   if (definition.kind === 'plugin') return ({ 'claude-code': 'anthropic', 'gemini-cli': 'gemini', 'opencode-cli': 'opencode' })[definition.plugin] || definition.plugin
   let host = ''; try { host = new URL(definition.baseUrl).hostname } catch {}
-  return host === 'api.deepseek.com' ? 'deepseek' : host === 'api.openai.com' ? 'openai' : host === 'api.anthropic.com' ? 'anthropic' : 'custom'
+  return Object.keys(providerDefaults).find(id => new URL(providerDefaults[id].endpoint).hostname === host) || 'custom'
 }
 function connectionBrand(provider) {
   const mark = opMark(provider, 'small'); mark.classList.add('connection-brand'); return mark

@@ -65,13 +65,22 @@ with sync_playwright() as p:
     page.get_by_role('button', name='自定义', exact=True).click()
     page.locator('#entry-model-endpoint').fill(info['provider'])
     page.locator('#entry-model-credential').fill('bad-key')
-    page.locator('#entry-model-model').fill('fixture-model')
-    page.get_by_role('button', name='测试并保存', exact=True).click()
-    expect(page.locator('.connection-check-result')).to_contain_text('密钥', timeout=15000)
-    expect(page.locator('.connection-studio')).to_be_visible()
+    expect(page.locator('#entry-model-model')).to_have_count(0)
+    screen('connect-api-initial.png')
+    page.get_by_role('button', name='连接', exact=True).click()
+    expect(page.get_by_text('未能读取模型，可以重试或手动填写。')).to_be_visible()
+    expect(page.locator('input#entry-model-model')).to_be_visible()
     page.locator('#entry-model-credential').fill('demo-connection-key')
-    page.get_by_role('button', name='读取模型', exact=True).click()
-    expect(page.locator('#connection-model-catalog option')).to_have_count(2)
+    expect(page.locator('#entry-model-model')).to_have_count(0)
+    with page.expect_response(lambda r: r.url.endswith('/model-connections/models')) as catalog:
+        page.get_by_role('button', name='连接', exact=True).click()
+    assert catalog.value.ok and 'model' not in catalog.value.request.post_data_json
+    expect(page.locator('select#entry-model-model option')).to_have_count(3)
+    expect(page.locator('select#entry-model-model')).to_have_value('')
+    expect(page.get_by_role('button', name='测试并保存', exact=True)).to_be_disabled()
+    expect(page.locator('option[value="fixture-image"]')).to_have_count(0)
+    screen('choose-api-model.png')
+    page.locator('select#entry-model-model').select_option('fixture-reasoner')
     page.get_by_text('高级设置', exact=True).click()
     page.locator('#entry-model-name').fill('Browser test API')
     page.get_by_text('高级设置', exact=True).click()
@@ -81,6 +90,7 @@ with sync_playwright() as p:
     expect(page.locator('.model-service-row').filter(has_text='Browser test API')).to_contain_text('模型已回复')
     config = page.request.get(info['base'] + '/configuration').json()['current']['config']
     assert config['execution']['router']['backend'] == 'codex'
+    assert next(b for b in config['backends'].values() if b.get('label') == 'Browser test API')['model'] == 'fixture-reasoner'
     checks.append('API failure recovery, model catalog, test and save without changing Router')
 
     page.get_by_role('button', name='新建连接', exact=True).click()
@@ -135,13 +145,36 @@ with sync_playwright() as p:
     expect(page.locator('.model-service-row')).to_have_count(4)
     checks.append('unused connection deletion persists and removes it from inventory')
 
-    goto('general')
-    page.get_by_text('深色', exact=True).click()
+    for suffix, label, model in [('single', 'Single catalog model', 'fixture-single'),
+                                 ('manual', 'Manual catalog fallback', 'fixture-private')]:
+        page.get_by_role('button', name='新建连接', exact=True).click()
+        page.get_by_role('group', name='接入方式').get_by_role('button', name='API', exact=True).click()
+        page.get_by_role('button', name='自定义', exact=True).click()
+        page.locator('#entry-model-endpoint').fill(info['provider'] + '/' + suffix)
+        page.locator('#entry-model-credential').fill('demo-connection-key')
+        page.get_by_text('高级设置', exact=True).click()
+        page.locator('#entry-model-name').fill(label)
+        page.get_by_text('高级设置', exact=True).click()
+        page.get_by_role('button', name='连接', exact=True).click()
+        if suffix == 'manual':
+            page.get_by_role('button', name='重试读取', exact=True).click()
+            expect(page.get_by_role('button', name='重试读取', exact=True)).to_be_enabled()
+            page.locator('input#entry-model-model').fill(model)
+            page.get_by_role('button', name='测试并保存', exact=True).click()
+        expect(page.locator('.model-service-row').filter(has_text=label)).to_contain_text('模型已回复', timeout=20000)
+        config = page.request.get(info['base'] + '/configuration').json()['current']['config']
+        assert next(b for b in config['backends'].values() if b.get('label') == label)['model'] == model
+    checks.append('single supported candidate connects automatically; unavailable catalog can retry and save a manual model')
+
+    goto('appearance')
+    page.get_by_role('radio', name='深色', exact=True).check()
     goto('models')
+    expect(page.locator('html')).to_have_attribute('data-theme', 'dark')
     screen('library-dark.png')
-    goto('general')
-    page.get_by_text('浅色', exact=True).click()
+    goto('appearance')
+    page.get_by_role('radio', name='浅色', exact=True).check()
     goto('models')
+    expect(page.locator('html')).to_have_attribute('data-theme', 'light')
     page.set_viewport_size({'width': 390, 'height': 844})
     screen('library-mobile.png')
     page.get_by_role('button', name='新建连接', exact=True).click()

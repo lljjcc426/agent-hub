@@ -56,17 +56,20 @@ with sync_playwright() as pw:
 
     def composer_anchor():
         popover = page.locator('.composer-palette')
-        popover.evaluate('el => Promise.allSettled(el.getAnimations().map(a => a.finished))')
-        palette = popover.bounding_box()
-        composer = page.locator('form.composer').bounding_box()
-        assert palette and composer and abs(palette['x'] - composer['x']) <= 1, (palette, composer)
-        return palette
+        position = popover.evaluate('''async el => {
+            await Promise.allSettled(el.getAnimations().map(animation => animation.finished));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const palette = el.getBoundingClientRect();
+            const composer = document.querySelector('form.composer').getBoundingClientRect();
+            const gap = el.dataset.side === 'above' ? composer.top - palette.bottom : palette.top - composer.bottom;
+            return {x: palette.left - composer.left, width: palette.width, gap};
+        }''')
+        assert abs(position['x']) <= 1 and abs(position['gap'] - 8) <= 1, position
+        return position
 
     def same_anchor(before):
         after = composer_anchor()
-        assert after and abs(before['x'] - after['x']) <= 1 and abs(before['width'] - after['width']) <= 1
-        assert min(abs(before['y'] - after['y']),
-                   abs(before['y'] + before['height'] - after['y'] - after['height'])) <= 1
+        assert abs(before['x'] - after['x']) <= 1 and abs(before['width'] - after['width']) <= 1, (before, after)
 
     actions = page.get_by_role('button', name='Chat actions', exact=True)
     actions.click()
@@ -83,6 +86,11 @@ with sync_playwright() as pw:
     select_connection.click()
     expect(model_dialog.get_by_role('menuitemradio', checked=True)).to_be_focused()
     same_anchor(anchor)
+    # Welcome content can finish laying out while the model chooser is open.
+    starter = page.locator('.thread[data-welcome] .starter-actions')
+    starter.evaluate("el => { el.style.minHeight = (el.offsetHeight + 72) + 'px'; }")
+    same_anchor(anchor)
+    starter.evaluate("el => { el.style.minHeight = ''; }")
     page.keyboard.press('Escape')
     expect(select_connection).to_be_focused()
     model_dialog.get_by_role('button', name='Back to chat actions').click()

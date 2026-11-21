@@ -389,6 +389,8 @@ function resetNewModel() {
     endpoint: '', protocol: 'openai-responses', model: '', credential: '', open: true,
     touched: false, plan: null, check: null, saved: false
   })
+  connectionStudio.generation++
+  connectionStudio.apiModelMode = ''; connectionStudio.modelError = ''; connectionStudio.models = []
 }
 function controlNewModel() {
   if (!connectionStudio.touched && !entryModel.touched) {

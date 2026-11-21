@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
-import { ArrowLeft, Check, ChevronRight, LoaderCircle, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, LoaderCircle, RotateCcw, Search } from 'lucide-react'
 import type { Config } from '../../src/config.ts'
 import type { AgentOptions, BackendDefinition } from '../../src/backend-config.ts'
 import { configuredReasoningEffort, reasoningOverride } from '../../src/agent-options.ts'
 import type { ReasoningEffort } from '../../src/reasoning-effort.ts'
+import { SelectField, TextField } from '../ui/controls.tsx'
 import type { Localize } from './composer-commands.tsx'
 import { effortLabel, useModelCapabilities, type LoadModelCapabilities } from './model-capabilities.ts'
 import './router-model.css'
@@ -131,11 +132,11 @@ const hostSettings: ModelConnectionStore = {
 
 export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, store = hostSettings }: Props) {
   const [data, setData] = useState<Configuration | null>(null)
-  const [list, setList] = useState<'connections' | 'models' | null>(null)
+  const [picker, setPicker] = useState<{backend: string; query: string} | null>(null)
   const [saving, setSaving] = useState(false), [error, setError] = useState('')
   const [draft, setDraft] = useState<Effort>()
   const version = useRef<Version | null>(null), pending = useRef<Choice | null>(null), writing = useRef(false)
-  const modelButton = useRef<HTMLButtonElement>(null), choices = useRef<HTMLDivElement>(null), wasList = useRef(false)
+  const modelButton = useRef<HTMLButtonElement>(null), pickerPanel = useRef<HTMLDivElement>(null), wasPicking = useRef(false)
 
   async function load(signal?: AbortSignal) {
     setError('')
@@ -151,15 +152,15 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
     void load(controller.signal)
     return () => controller.abort()
   }, [store])
+  const picking = picker !== null
   useLayoutEffect(() => {
-    if (list) {
-      const selected = choices.current?.querySelector<HTMLButtonElement>('[aria-checked=true]')
-      selected?.focus({ preventScroll: true })
-      if (list === 'models') selected?.scrollIntoView({block: 'nearest'})
-    }
-    else if (wasList.current) modelButton.current?.focus({ preventScroll: true })
-    wasList.current = !!list
-  }, [list])
+    if (picking) {
+      const selected = pickerPanel.current?.querySelector<HTMLButtonElement>('[aria-checked=true]')
+      const target = selected ?? pickerPanel.current?.querySelector('select')
+      target?.focus({ preventScroll: true })
+    } else if (wasPicking.current) modelButton.current?.focus({ preventScroll: true })
+    wasPicking.current = picking
+  }, [picking])
 
   async function save(choice: Choice) {
     if (busy || !version.current) return
@@ -182,7 +183,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
         version.current = await store.save(current.revision, modelPatch(current.config, next))
         const saved = version.current
         setData(previous => previous && { ...previous, current: saved })
-        if (switching) setList(null)
+        if (switching) setPicker(null)
         updated = true
       }
       setDraft(value => value === lastChoice.effort ? undefined : value)
@@ -208,6 +209,15 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
   const capabilities = useModelCapabilities(backend, configuredModel, store.capabilities)
   const activeModel = configuredModel ?? capabilities.model
   const modelName = activeModel ?? model ?? connectionLabel(backend)
+  const browsing = picker && Object.hasOwn(definitions, picker.backend) ? picker.backend : backend
+  const otherCatalog = useModelCapabilities(browsing === backend ? '' : browsing, definitions[browsing]?.model, store.capabilities)
+  const catalog = browsing === backend ? capabilities : otherCatalog
+  const fallback = browsing === backend ? activeModel ?? model : definitions[browsing]?.model
+  const available = catalog.models.length ? catalog.models : fallback ? [fallback] : []
+  const query = picker?.query.trim().toLowerCase() ?? ''
+  const results = available.filter(id => id.toLowerCase().includes(query))
+  const currentIndex = browsing === backend && fallback ? results.indexOf(fallback) : -1
+  if (currentIndex > 0) results.unshift(results.splice(currentIndex, 1)[0]!)
   const stops: Effort[] = [null, ...capabilities.efforts]
   const configured = config ? configuredEffort(config) : undefined
   const displayed = stops.find(level => level === (draft === undefined ? configured : draft)) ?? null
@@ -215,48 +225,48 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
   const canReset = !busy && !saving && configured != null
   const backButton = (back: () => void, label: string) => <button type="button" className="model-icon" aria-label={label}
     onClick={back}><ArrowLeft size={16}/></button>
+  function chooseModel(selected?: string) {
+    if (busy || saving || catalog.pending) return
+    if (browsing === backend && selected === fallback) setPicker(null)
+    else void save({backend: browsing, model: selected, effort: null})
+  }
   return <div className="router-model-options" onKeyDown={event => {
-    if (list && event.key === 'Escape') {
+    if (picking && event.key === 'Escape') {
       event.preventDefault(); event.stopPropagation()
-      setList(list === 'models' ? 'connections' : null)
+      setPicker(null)
     }
   }}>
     {!config && onBack && <div className="palette-heading">
       {backButton(onBack, L('Back to chat actions', '返回对话操作'))}<strong>{L('Model connection', '模型连接')}</strong>
     </div>}
     {!config && !error && <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…', '正在读取连接…')}</div>}
-    {config && (list === 'models' ? <div className="model-connection-list">
-      <div className="palette-heading">{backButton(() => setList('connections'), L('Back to connections', '返回连接'))}
+    {config && (picker ? <div className="model-connection-list" ref={pickerPanel}>
+      <div className="palette-heading">{backButton(() => setPicker(null), L('Back to model', '返回模型'))}
         <strong>{L('Choose a model', '选择模型')}</strong></div>
-      <div ref={choices} role="menu" className="model-picker-results" aria-label={L('Models', '模型')} aria-busy={saving}>
-        {capabilities.models.map(id => <button key={id} type="button" role="menuitemradio" aria-checked={id === activeModel}
-          className="palette-row model-option" aria-disabled={busy || saving} onClick={() => {
-            if (busy || saving) return
-            if (id === activeModel) setList(null)
-            else void save({backend, model: id, effort: null})
-          }}><strong>{id}</strong>{id === activeModel && <Check size={15}/>}</button>)}
+      <div className="model-picker-controls">
+        <SelectField label={L('Model connection', '模型连接')} value={browsing} disabled={saving}
+          onChange={event => setPicker({backend: event.target.value, query: ''})}>
+          {Object.keys(definitions).map(id => <option key={id} value={id}>{connectionLabel(id)}</option>)}
+        </SelectField>
+        {(available.length > 6 || picker.query) && <TextField type="search" label={L('Search models', '搜索模型')}
+          placeholder={L('Search models', '搜索模型')} icon={<Search size={14}/>} value={picker.query}
+          onChange={event => setPicker({...picker, query: event.target.value})}/>}
       </div>
-    </div> : list === 'connections' ? <div className="model-connection-list">
-      <div className="palette-heading">{backButton(() => setList(null), L('Back to model', '返回模型'))}
-        <strong>{L('Model connections', '模型连接')}</strong></div>
-      <div ref={choices} role="menu" aria-label={L('Model connections', '模型连接')} aria-busy={saving}>
-        {Object.entries(definitions).map(([id, d]) => {
-          const name = connectionLabel(id), detail = id === backend ? modelName : d.model
-          return <button key={id} type="button" role="menuitemradio" aria-checked={id === backend}
-            className="palette-row model-option" aria-disabled={busy || saving}
-            onClick={() => {
-              if (busy || saving) return
-              if (id === backend) setList(null)
-              else void save({ backend: id, effort: null })
-            }}>
-            <span><strong>{name}</strong>{detail && detail !== name && <small>{detail}</small>}</span>
-            {id === backend && <Check size={15}/>}
-          </button>
-        })}
-      </div>
-      {capabilities.models.length > 1 && <button type="button" className="palette-row model-manage"
-        aria-haspopup="menu" onClick={() => setList('models')}>
-        <span>{L('Choose a model', '选择模型')}</span><ChevronRight size={14}/></button>}
+      {catalog.pending ? <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={15}/>{L('Loading models…', '正在读取模型…')}</div>
+        : query && !results.length ? <p className="model-picker-empty" role="status">{L('No matching models', '没有匹配的模型')}</p>
+        : <div role="menu" className="model-picker-results" aria-label={L('Models', '模型')} aria-busy={saving}>
+          {results.map(id => {
+            const selected = browsing === backend && id === fallback
+            return <button key={id} type="button" role="menuitemradio" aria-checked={selected}
+              className="palette-row model-option" aria-disabled={busy || saving} onClick={() => chooseModel(id)}>
+              <strong>{id}</strong>{selected && <Check size={15}/>}
+            </button>
+          })}
+          {!available.length && <button type="button" role="menuitemradio" aria-checked={browsing === backend}
+            className="palette-row model-option" aria-disabled={busy || saving} onClick={() => chooseModel()}>
+            <strong>{L('Use connection default', '使用连接默认模型')}</strong>{browsing === backend && <Check size={15}/>}
+          </button>}
+        </div>}
       {store.connectionsUrl && <a className="palette-row model-manage" href={store.connectionsUrl} onClick={onClose}>
         <span>{L('Manage connections', '管理连接')}</span><ChevronRight size={14}/></a>}
     </div> : <div className="model-dial" aria-busy={capabilities.pending}>
@@ -265,7 +275,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
         <div className="model-dial-title">
           <strong key={valueText}>{valueText}</strong>
           <button ref={modelButton} type="button" className="model-name-button" aria-haspopup="menu"
-            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setList('connections')}>
+            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setPicker({backend, query: ''})}>
             <span>{modelName}</span><ChevronRight size={13}/></button>
         </div>
         {(stops.length > 1 || !capabilities.pending && configured != null) && <button type="button" className="model-icon model-reset" aria-disabled={!canReset}

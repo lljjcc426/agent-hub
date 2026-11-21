@@ -1,6 +1,6 @@
 import type {ApiDefinition} from '../backend-config.ts'
 
-export function apiHeaders(d:ApiDefinition,token?:string){
+export function apiHeaders(d:Pick<ApiDefinition,'kind'|'apiKeyEnv'|'headers'|'headerEnv'>,token?:string){
  const credential=token??(d.apiKeyEnv?process.env[d.apiKeyEnv]:undefined)
  if(d.apiKeyEnv&&!credential?.trim())throw Error('API credential unavailable')
  const headers:Record<string,string>={...d.headers}

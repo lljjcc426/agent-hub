@@ -6,22 +6,27 @@ import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
 import {z} from 'zod'
 import {configSchema,type Config} from './config.ts'
-import {backendDefinition,type BackendDefinition} from './backend-config.ts'
+import {apiBackendDefinition,backendDefinition,type BackendDefinition} from './backend-config.ts'
 import type {Runtime} from './runtime.ts'
 import {ApiModel} from './backends/api.ts'
 import {apiCheckFailure} from './backends/api-errors.ts'
+import {apiModelCatalog,selectableModelIds} from './backends/model-catalog.ts'
 import {managedConnections,managedSecrets,managedFiles,prepareManagedConfig} from './managed-config.ts'
 import {Store} from './store.ts'
 import {cliEnvironment} from './codex.ts'
 import {recordConnectionCheck,subscriptionOwners} from './connection-library.ts'
 
 const exec=promisify(execFile)
+const apiKey=z.string().trim().min(1).max(16000).regex(/^[^\x00-\x1f\x7f]+$/).optional()
+const apiConnectionSchema=z.object({kind:z.literal('api'),protocol:apiBackendDefinition.shape.kind,
+ baseUrl:apiBackendDefinition.shape.baseUrl,model:z.string().trim().min(1).max(300),apiKey}).strict()
 export const onboardingPlanSchema=z.object({revision:z.number().int().min(0),connection:z.discriminatedUnion('kind',[
- z.object({kind:z.literal('existing'),id:z.string().min(1).max(64),apiKey:z.string().trim().min(1).max(16000).regex(/^[^\x00-\x1f\x7f]+$/).optional()}).strict(),
+ z.object({kind:z.literal('existing'),id:z.string().min(1).max(64),apiKey}).strict(),
  z.object({kind:z.literal('codex'),command:z.string().trim().min(1).optional(),args:z.array(z.string()).max(100).optional(),model:z.string().trim().min(1).max(300).optional()}).strict(),
  z.object({kind:z.literal('subscription'),account:z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),model:z.string().trim().min(1).max(300),owner:z.object({source:z.string(),actor:z.string()}).strict().optional(),backgroundAuthorized:z.literal(true)}).strict(),
- z.object({kind:z.literal('api'),protocol:z.enum(['openai-responses','openai-chat','anthropic']),baseUrl:z.string().url(),model:z.string().trim().min(1).max(300),apiKey:z.string().trim().min(1).max(16000).regex(/^[^\x00-\x1f\x7f]+$/).optional()}).strict(),
+ apiConnectionSchema,
 ]),name:z.string().trim().min(1).max(100).optional(),workspace:z.string().min(1).max(4000).optional(),channel:z.enum(['browser','feishu','wecom']).default('browser')}).strict()
+const apiCatalogSchema=apiConnectionSchema.partial({model:true})
 type Check={id:string;status:'ok'|'required'|'pending';code:string;detail?:string}
 interface Plan {replaceSource?:boolean;revalidate?:()=>void;id:string;revision:number;expiresAt:number;connection:{id:string;kind:string;label:string;model?:string};workspace:string;sourceId:string;channel:string;next:Config;keyName?:string;key?:string;credentials?:Record<string,string>;entry?:boolean;backend?:BackendDefinition;lastCheck?:{ok:boolean;checks:Check[];remoteVerified:boolean;preview:boolean}}
 export class OnboardingError extends Error {constructor(readonly code:string,message:string,readonly status=400){super(message)}}
@@ -145,19 +150,12 @@ export class Onboarding {
   try{return await this.check(plan.id)}finally{this.plans.delete(plan.id)}
  }
  async models(value:unknown){
-  const input=onboardingPlanSchema.shape.connection.parse(value)
-  if(input.kind!=='api')throw new OnboardingError('model_catalog_unsupported','Use the account model catalog for subscriptions.')
-  backendDefinition.parse({kind:input.protocol,baseUrl:input.baseUrl,model:input.model})
-  const headers:Record<string,string>=input.protocol==='anthropic'?{'anthropic-version':'2023-06-01',...(input.apiKey?{'x-api-key':input.apiKey}:{})}:input.apiKey?{authorization:'Bearer '+input.apiKey}:{}
+  const input=apiCatalogSchema.parse(value)
+  const endpoint={kind:input.protocol,baseUrl:input.baseUrl}
   if(this.preview)return {models:[],preview:true}
   try{
-   const response=await fetch(input.baseUrl.replace(/\/+$/,'')+'/models',{headers,redirect:'error',signal:AbortSignal.timeout(15000)})
-   if(!response.ok)throw new OnboardingError('model_catalog_unavailable','Model list could not be read (HTTP '+response.status+'). Enter a model ID manually.')
-   const text=await response.text();if(text.length>2000000)throw Error('Catalog too large')
-   const body=JSON.parse(text),models=body.data??body.models
-   if(!Array.isArray(models))throw Error('Invalid model catalog')
-   return {models:[...new Set(models.map(m=>typeof m==='string'?m:m?.id).filter((id):id is string=>typeof id==='string'&&id.length>0&&id.length<=300))].slice(0,1000)}
-  }catch(error){if(error instanceof OnboardingError)throw error;throw new OnboardingError('model_catalog_unavailable','Model list could not be read. Enter a model ID manually.')}
+   return {models:selectableModelIds(await apiModelCatalog(endpoint,input.apiKey,15_000),endpoint)}
+  }catch{throw new OnboardingError('model_catalog_unavailable','Model list could not be read. Enter a model ID manually.')}
  }
  async apply(id:string,rebuild:(config:Config)=>Promise<void>,authorize?:()=>void){
   authorize?.()

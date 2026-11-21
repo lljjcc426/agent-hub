@@ -34,8 +34,10 @@ function previewConnections(): ModelConnectionStore {
   return {
     load: async () => ({current}),
     capabilities: async (backend, model) => ({
-      models: [model ?? 'gpt-6.1-terra'],
-      reasoning: {source: 'catalog', efforts: backend === 'deepseek' ? ['low', 'high'] : ['low', 'medium', 'high', 'xhigh']},
+      models: backend === 'deepseek' ? ['deepseek-flash', 'deepseek-v4-pro'] : ['gpt-6.1-terra', 'gpt-6.1-sol'],
+      reasoning: {source: 'catalog', efforts: backend === 'deepseek'
+        ? model === 'deepseek-v4-pro' ? ['low', 'high', 'max'] : ['low', 'high']
+        : ['low', 'medium', 'high', 'xhigh']},
     }),
     save: async (revision, patch) => {
       if (revision !== current.revision) throw Error('settings_conflict')

@@ -34,53 +34,104 @@ async function connectionApplyPlan(plan) {
   connectionLibraryState.selected = ''; entryState.page = 'models'; updateWorkspaceLocation(true)
   announce(L('Connection saved.', '连接已保存。'))
 }
-async function connectionPlanAndCheck(connection, name, apply = false) {
+async function connectionPlanAndCheck(connection, name, apply = false, current = () => true) {
   const plan = await api('/entry-setup/model/plan', { revision: S.base.revision, connection, select: false, ...(name?.trim() ? { name: name.trim() } : {}) })
+  if (!current()) return
   const check = await api('/entry-setup/model/check', { id: plan.id })
+  if (!current()) return
   if (!Array.isArray(check.checks) || typeof check.ok !== 'boolean') throw Error('Invalid connection check')
   connectionStudio.plan = plan; connectionStudio.check = check
   if (apply && (check.ok || S.snap?.preview && check.preview)) await connectionApplyPlan(plan)
+}
+async function connectionReadApiModels(connection, current) {
+  try {
+    const result = await api('/model-connections/models', connection)
+    if (!current()) return false
+    if (!Array.isArray(result.models) || !result.models.every(model => typeof model === 'string')) throw Error('Invalid model list')
+    connectionStudio.models = result.models
+    if (result.models.length) {
+      connectionStudio.apiModelMode = 'pick'
+      if (!result.models.includes(entryModel.model)) entryModel.model = result.models.length === 1 ? result.models[0] : ''
+      return true
+    }
+    connectionStudio.modelError = L('No models returned. Enter a model manually.', '未返回模型，可手动填写。')
+  } catch {
+    if (!current()) return false
+    connectionStudio.modelError = L('Could not read models. Retry or enter a model manually.', '未能读取模型，可以重试或手动填写。')
+  }
+  connectionStudio.apiModelMode = 'manual'
+  return false
 }
 function connectionApiForm() {
   entryModel.mode = 'api'; entryModel.creating = true
   const form = el('form', 'connection-form connection-simple-form')
   form.append(connectionProviderChoices([
-    { id: 'openai', label: 'OpenAI' }, { id: 'deepseek', label: 'DeepSeek' }, { id: 'anthropic', label: 'Anthropic' }, { id: 'custom', label: L('Custom', '自定义') }
-  ], entryModel.provider, value => { entryModelEdit('provider', value); connectionStudio.models = []; connectionStudio.modelError = ''; connectionStudio.check = null; entryModel.endpoint = ''; entryModel.credential = ''; entryModel.model = ''; render() }))
+    ...Object.entries(providerDefaults).map(([id, { label }]) => ({ id, label })),
+    { id: 'custom', label: L('Custom', '自定义') }
+  ], entryModel.provider, value => { entryModelEdit('provider', value); entryModel.endpoint = ''; entryModel.credential = ''; entryModel.model = ''; render() }))
   if (entryModel.provider === 'custom') form.append(entryModelField('endpoint', L('API address', 'API 地址'), null, 'url', true))
   form.append(entryModelField('credential', 'API Key', null, 'password'))
-  const model = entryModelField('model', L('Default model', '默认模型'), null, 'text', true)
-  const load = opButton(L('Load models', '读取模型'), () => entryRun('connection-models', async () => {
-    connectionStudio.modelError = ''
-    try {
-      const input = { ...entryModelConnection(), model: entryModel.model.trim() || '_catalog' }
-      const result = await api('/model-connections/models', input)
-      if (!Array.isArray(result.models)) throw Error('Invalid model list')
-      connectionStudio.models = result.models
-      if (!entryModel.model && result.models.length) entryModelEdit('model', result.models[0])
-      if (!result.models.length) connectionStudio.modelError = L('No models returned. Enter a model ID manually.', '未返回模型列表，可手动填写模型 ID。')
-    } catch { connectionStudio.modelError = L('Could not load models. Check the key or enter a model ID manually.', '无法读取模型列表，请检查密钥，或手动填写模型 ID。') }
-  }), 'button')
-  model.append(load, el('small', 'team-help', L('Components can select a different model.', '组件中可以选择其他模型。')))
-  if (connectionStudio.modelError) model.append(el('p', 'team-help', connectionStudio.modelError))
-  if (connectionStudio.models.length) {
-    const list = el('datalist'); list.id = 'connection-model-catalog'
-    for (const id of connectionStudio.models) { const option = el('option'); option.value = id; list.append(option) }
-    model.querySelector('input').setAttribute('list', list.id); model.append(list)
+  const modelMode = connectionStudio.apiModelMode
+  let modelField
+  if (modelMode) {
+    const choices = modelMode === 'pick' ? [['', L('Choose a model', '选择模型')], ...connectionStudio.models.map(id => [id, id])] : null
+    modelField = entryModelField('model', L('Model', '模型'), choices, 'text', true)
+    if (connectionStudio.modelError) {
+      const status = el('p', 'team-help', connectionStudio.modelError)
+      status.setAttribute('role', 'status')
+      const retry = opButton(L('Retry', '重试读取'), () => void connect(true), 'text-button')
+      retry.disabled = !!(entryState.busy || S.busy)
+      modelField.append(status, retry)
+    }
+    form.append(modelField)
   }
-  form.append(model)
-  const advanced = connectionAdvanced(entryModelField('name', L('Connection name (optional)', '连接名称（选填）')))
-  advanced.querySelector('input').placeholder = providerDefaults[entryModel.provider]?.label || L('Custom API', '自定义 API')
-  if (entryModel.provider !== 'custom') advanced.append(entryModelField('endpoint', L('Custom API address (optional)', '自定义 API 地址（选填）'), null, 'url'))
-  if (entryModel.provider !== 'anthropic') advanced.append(entryModelField('protocol', L('API format', 'API 协议'), Object.entries(guideApiFormats).filter(([id]) => entryModel.provider === 'custom' || id !== 'anthropic')))
-  form.append(advanced)
+  const name = entryModelField('name', L('Connection name (optional)', '连接名称（选填）'))
+  name.querySelector('input').placeholder = providerDefaults[entryModel.provider]?.label || L('Custom API', '自定义 API')
+  const advanced = [name]
+  if (entryModel.provider !== 'custom') advanced.push(entryModelField('endpoint', L('Custom API address (optional)', '自定义 API 地址（选填）'), null, 'url'))
+  if (entryModel.provider !== 'anthropic') advanced.push(entryModelField('protocol', L('API format', 'API 协议'), Object.entries(guideApiFormats).filter(([id]) => entryModel.provider === 'custom' || id !== 'anthropic')))
+  if (modelMode !== 'manual') {
+    const manual = opButton(L('Enter a model manually', '手动填写模型'), () => {
+      connectionStudio.apiModelMode = 'manual'; connectionStudio.modelError = ''
+      render()
+      document.getElementById('entry-model-model')?.focus()
+    }, 'text-button')
+    manual.disabled = !!(entryState.busy || S.busy)
+    advanced.push(manual)
+  }
+  form.append(connectionAdvanced(...advanced))
   if (connectionStudio.check) form.append(connectionCheckView(connectionStudio.check))
-  const submit = opButton(entryState.busy ? L('Testing…', '正在测试…') : L('Test and save', '测试并保存'), null, 'button primary'); submit.type = 'submit'
+  const connectLabel = L('Connect', '连接')
+  const submit = opButton(entryState.busy === 'connection-discover' ? L('Connecting…', '正在连接…')
+    : entryState.busy ? L('Testing…', '正在测试…') : modelMode ? L('Test and save', '测试并保存') : connectLabel, null, 'button primary')
+  submit.type = 'submit'
+  submit.disabled = !!(entryState.busy || S.busy || modelMode === 'pick' && !entryModel.model)
   form.append(connectionFormFooter(submit))
-  form.onsubmit = e => { e.preventDefault(); void entryRun('connection-save', async () => {
-    connectionStudio.check = null
-    await connectionPlanAndCheck(entryModelConnection(), entryModel.name || providerDefaults[entryModel.provider]?.label || 'API', true)
-  }) }
+  form.addEventListener('input', event => {
+    if (!connectionStudio.apiModelMode && ['entry-model-endpoint', 'entry-model-credential'].includes(event.target.id)) {
+      modelField?.remove()
+      submit.disabled = false
+      submit.textContent = connectLabel
+    }
+  })
+  form.onsubmit = event => {
+    event.preventDefault()
+    void connect(!connectionStudio.apiModelMode)
+  }
+  async function connect(discovering) {
+    const epoch = workspaceContext.epoch, generation = connectionStudio.generation
+    const current = () => epoch === workspaceContext.epoch && generation === connectionStudio.generation &&
+      entryState.page === 'model-new' && connectionStudio.kind === 'api'
+    await entryRun(discovering ? 'connection-discover' : 'connection-save', async () => {
+      connectionStudio.check = null
+      const connection = entryApiConnection()
+      if (discovering && !await connectionReadApiModels(connection, current)) return
+      const selected = entryModel.model.trim()
+      if (!selected) return
+      await connectionPlanAndCheck({ ...connection, model: selected }, entryModel.name || providerDefaults[entryModel.provider]?.label || 'API', true, current)
+    })
+    if (discovering && current() && !connectionStudio.check) document.getElementById('entry-model-model')?.focus({ preventScroll: true })
+  }
   return form
 }
 function connectionCliDefinition() {

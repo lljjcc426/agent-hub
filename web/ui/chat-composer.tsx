@@ -177,8 +177,10 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     const panel = palette.current, body = paletteBody.current, form = input.current?.form
     if (!panel || !body || !form || !open) return
     panel.showPopover()
+    let anchor: DOMRect
     const place = () => {
       const rect = form.getBoundingClientRect(), viewport = window.visualViewport
+      anchor = rect
       const height = viewport?.height ?? innerHeight
       const top = viewport?.offsetTop ?? 0, bottom = top + height
       const left = viewport?.offsetLeft ?? 0, right = left + (viewport?.width ?? innerWidth)
@@ -202,14 +204,15 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     }
     place()
     panel.style.setProperty('--palette-height', body.offsetHeight + 'px')
-    const observer = new ResizeObserver(entries => {
-      if (entries.some(entry => entry.target === body)) panel.style.setProperty('--palette-height', body.offsetHeight + 'px')
-      if (entries.some(entry => entry.target !== body)) place()
-    })
+    const observer = new ResizeObserver(() => panel.style.setProperty('--palette-height', body.offsetHeight + 'px'))
     observer.observe(body)
-    observer.observe(form)
-    const area = form.closest('.composer-area')
-    if (area) observer.observe(area)
+    // The welcome layout can move the composer while its dimensions stay the same.
+    const follow = () => {
+      const rect = form.getBoundingClientRect()
+      if (rect.x !== anchor.x || rect.y !== anchor.y || rect.width !== anchor.width || rect.height !== anchor.height) place()
+      frame = requestAnimationFrame(follow)
+    }
+    let frame = requestAnimationFrame(follow)
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
     window.visualViewport?.addEventListener('resize', place)
@@ -218,6 +221,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     document.addEventListener('focusin', dismiss)
     return () => {
       panel.hidePopover()
+      cancelAnimationFrame(frame)
       observer.disconnect()
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)

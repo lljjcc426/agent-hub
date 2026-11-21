@@ -1,4 +1,5 @@
 import {apiHeaders} from './backends/api-request.ts'
+import {apiModelCatalog,catalogIds as ids,catalogJson,catalogRecord as record,catalogRows,selectableModelIds} from './backends/model-catalog.ts'
 import {isApiBackend,type ApiDefinition,type BackendDefinition} from './backend-config.ts'
 import {connectionFingerprint} from './connection-library.ts'
 import {isReasoningEffort,reasoningEfforts,type ModelCapabilities,type ReasoningCapability} from './reasoning-effort.ts'
@@ -8,9 +9,6 @@ const unknown:ReasoningCapability={efforts:[],source:'unknown'}
 const listLifetime=120_000
 const retryDelay=10_000
 
-function record(value:unknown):Record<string,unknown>|undefined {
-  return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined
-}
 function capability(levels:unknown[],preferred:unknown,source:ReasoningCapability['source']):ReasoningCapability {
   const efforts=[...new Set(levels.filter(isReasoningEffort))]
   return {efforts,source,...(isReasoningEffort(preferred)&&efforts.includes(preferred)?{defaultEffort:preferred}:{})}
@@ -25,30 +23,16 @@ export function catalogReasoning(row:unknown):ReasoningCapability|undefined {
   const deepseek=record(model?.effort)
   if(Array.isArray(deepseek?.supported_levels))
     return capability(deepseek.supported_levels,deepseek.default_level,'catalog')
-  const anthropic=record(record(model?.capabilities)?.effort)
+  const published=record(model?.capabilities)
+  if(Array.isArray(published?.reasoning_effort))
+    return capability(published.reasoning_effort,published.default_reasoning_effort,'catalog')
+  const anthropic=record(published?.effort)
   if(anthropic?.supported===false)return capability([],undefined,'catalog')
   if(anthropic&&reasoningEfforts.some(level=>typeof record(anthropic[level])?.supported==='boolean')){
     return capability(reasoningEfforts.filter(level=>record(anthropic[level])?.supported===true),undefined,'catalog')
   }
 }
 
-function models(body:unknown):unknown[]{
-  const catalog=record(body)
-  const rows=catalog?.data??catalog?.models
-  return Array.isArray(rows)?rows:[]
-}
-function ids(row:unknown):string[]{
-  const item=record(row)
-  return (typeof row==='string'?[row]:[item?.model,item?.id,item?.slug])
-    .filter((id):id is string=>typeof id==='string'&&id.trim().length>0&&id.length<=300)
-}
-async function catalogJson(url:string,headers:Record<string,string>){
-  const response=await fetch(url,{headers,signal:AbortSignal.timeout(5000),redirect:'error'})
-  if(!response.ok)throw Error('Model catalog unavailable (HTTP '+response.status+')')
-  const text=await response.text()
-  if(text.length>2_000_000)throw Error('Model catalog is too large')
-  return JSON.parse(text) as unknown
-}
 const apiBase=(definition:ApiDefinition)=>definition.baseUrl.replace(/\/+$/,'')
 function officialProvider(definition:ApiDefinition){
   const base=new URL(definition.baseUrl)
@@ -131,10 +115,10 @@ export class ModelCapabilityCatalog {
   }
   private async load(host:Runtime,id:string,definition:BackendDefinition){
     if(isApiBackend(definition)){
-      if(definition.subscription)return models(await host.subscriptions.models(definition.subscription.account))
-      return models(await catalogJson(apiBase(definition)+'/models',apiHeaders(definition)))
+      if(definition.subscription)return catalogRows(await host.subscriptions.models(definition.subscription.account))??[]
+      return apiModelCatalog(definition)
     }
-    return models(await host.model.catalog?.(id))
+    return catalogRows(await host.model.catalog?.(id))??[]
   }
   private official(definition:ApiDefinition,model:string,preview:boolean){
     const provider=officialProvider(definition)
@@ -165,7 +149,7 @@ export class ModelCapabilityCatalog {
     const rows=preview?[]:await this.catalog(host,backend,definition)
     const defaultModel=ids(rows.find(row=>record(row)?.isDefault===true))[0]
     const selected=model??definition.model??(definition.kind==='codex'?host.config.model:undefined)??defaultModel
-    const offered=[...new Set(rows.filter(row=>record(row)?.hidden!==true).map(row=>ids(row)[0]).filter((id):id is string=>!!id))].slice(0,1000)
+    const offered=selectableModelIds(rows,isApiBackend(definition)?definition:undefined)
     const available=[...new Set([...offered,...[definition.model,selected].filter((id):id is string=>!!id)])]
     if(!selected)return {models:available,reasoning:unknown}
     const row=rows.find(row=>ids(row).includes(selected))

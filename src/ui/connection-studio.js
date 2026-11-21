@@ -1,7 +1,7 @@
-const connectionStudio = { kind: 'api', capabilities: null, error: '', loaded: false, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, requestId: '', touched: false, native: false, accounts: [], editing: '', account: '', ownerSource: '', ownerActor: '', background: false, models: [], drafts: {}, generation: 0, modelError: '' }
+const connectionStudio = { kind: 'api', capabilities: null, error: '', loaded: false, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, requestId: '', touched: false, native: false, accounts: [], editing: '', account: '', ownerSource: '', ownerActor: '', background: false, models: [], drafts: {}, generation: 0, modelError: '', apiModelMode: '' }
 function connectionStudioReset() {
   const generation = connectionStudio.generation + 1
-  Object.assign(connectionStudio, { kind: 'api', capabilities: null, error: '', loaded: false, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, requestId: '', touched: false, native: false, accounts: [], editing: '', account: '', ownerSource: '', ownerActor: '', background: false, models: [], drafts: {}, generation, modelError: '' })
+  Object.assign(connectionStudio, { kind: 'api', capabilities: null, error: '', loaded: false, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, requestId: '', touched: false, native: false, accounts: [], editing: '', account: '', ownerSource: '', ownerActor: '', background: false, models: [], drafts: {}, generation, modelError: '', apiModelMode: '' })
   connectionStudio.definitionId = ''
   if (typeof connectionLibraryState !== 'undefined') Object.assign(connectionLibraryState, { search: '', filter: 'all', selected: '' })
 }
@@ -33,10 +33,10 @@ function connectionEdit(key, value) {
 }
 function connectionSelect(kind) {
   if (connectionStudio.kind === kind || entryState.busy || S.busy) return
-  const keys = ['provider','name','command','args','model','check','plan','auth','touched','account','ownerSource','ownerActor','background','models','modelError']
+  const keys = ['provider','name','command','args','model','check','plan','auth','touched','account','ownerSource','ownerActor','background','models','modelError','apiModelMode']
   connectionStudio.drafts[connectionStudio.kind] = Object.fromEntries(keys.map(key => [key, connectionStudio[key]]))
   if (connectionStudio.kind === 'api') connectionStudio.drafts.api.entryModel = { ...entryModel }
-  Object.assign(connectionStudio, { kind, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, touched: false, account: '', ownerSource: '', ownerActor: '', background: false, models: [], modelError: '' }, connectionStudio.drafts[kind] || {})
+  Object.assign(connectionStudio, { kind, provider: '', name: '', command: '', args: '', model: '', check: null, plan: null, auth: null, touched: false, account: '', ownerSource: '', ownerActor: '', background: false, models: [], modelError: '', apiModelMode: '' }, connectionStudio.drafts[kind] || {})
   connectionStudio.kind = kind; connectionStudio.generation++
   if (kind === 'api' && connectionStudio.drafts.api?.entryModel) Object.assign(entryModel, connectionStudio.drafts.api.entryModel)
   render(); animateModelConfiguration('.connection-editor')

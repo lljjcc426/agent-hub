@@ -133,8 +133,10 @@ it('automatically binds only an unambiguous local subscription identity and stil
 it('reads API model catalogs with the chosen credentials and keeps errors safe',async()=>{
  const requests:any[]=[],provider=createServer((req,res)=>{requests.push(req.headers);res.writeHead(req.headers.authorization==='Bearer catalog-key'?200:401,{'content-type':'application/json'});res.end(req.headers.authorization==='Bearer catalog-key'?JSON.stringify({data:[{id:'one'},{id:'two'},{id:'one'}]}):JSON.stringify({error:'echo-secret'}))})
  await new Promise<void>(r=>provider.listen(0,'127.0.0.1',r));cleanup.push(async()=>{provider.closeAllConnections();await new Promise<void>(r=>provider.close(()=>r()))})
- const f=await fixture(),connection={kind:'api',protocol:'openai-chat',baseUrl:'http://127.0.0.1:'+(provider.address() as any).port+'/v1',model:'_catalog',apiKey:'catalog-key'}
+ const f=await fixture(),connection={kind:'api',protocol:'openai-chat',baseUrl:'http://127.0.0.1:'+(provider.address() as any).port+'/v1',apiKey:'catalog-key'}
  expect((await f.post('/model-connections/models',connection)).body.models).toEqual(['one','two']);expect(requests[0].authorization).toBe('Bearer catalog-key')
+ expect((await f.post('/model-connections/models',{...connection,model:'_catalog'})).body.models).toEqual(['one','two'])
+ expect((await f.get('/configuration')).body.current.revision).toBe(0)
  const failed=await f.post('/model-connections/models',{...connection,apiKey:'bad-key'});expect(failed.body.code).toBe('model_catalog_unavailable');expect(JSON.stringify(failed.body)).not.toContain('echo-secret')
  expect((await f.post('/model-connections/models',{...connection,baseUrl:'https://user:password@example.org'})).status).toBe(400)
 })

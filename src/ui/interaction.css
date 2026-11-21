@@ -11,6 +11,10 @@
   :is(.rp-choice,.rp-check,.decision-mode-options) input:focus-visible + span {
     box-shadow: inset 0 -2px currentColor !important;
   }
+  :where(select):focus-visible {
+    box-shadow: none !important;
+    background-color: var(--rp-field-hover, color-mix(in srgb, currentColor 8%, transparent)) !important;
+  }
   :where(input,textarea):focus-visible {
     caret-color: currentColor;
     border-color: color-mix(in srgb, currentColor 38%, transparent);

@@ -22,7 +22,16 @@ function entryModelEdit(key, value, redraw = false) {
   entryModel.plan = null
   entryModel.check = null
   entryModel.saved = false
-  if (typeof connectionStudio !== 'undefined') { connectionStudio.check = null; connectionStudio.plan = null; if (['provider', 'endpoint', 'protocol', 'credential'].includes(key)) connectionStudio.models = [] }
+  if (typeof connectionStudio !== 'undefined') {
+    connectionStudio.check = null
+    connectionStudio.plan = null
+    if (['provider', 'endpoint', 'protocol', 'credential'].includes(key)) {
+      connectionStudio.generation++
+      connectionStudio.models = []
+      connectionStudio.apiModelMode = ''
+      connectionStudio.modelError = ''
+    }
+  }
   document.getElementById('entry-model-result')?.remove()
   document.getElementById('connection-status')?.remove()
   const checkButton = document.querySelector('.model-connection-form button[type="submit"]')
@@ -155,6 +164,9 @@ function entryModelSettings() {
 function entryModelConnection() {
   if (entryModel.mode === 'codex') return { kind: 'codex' }
   if (entryModel.mode === 'existing') return { kind: 'existing', id: entryModel.existingId }
+  return { ...entryApiConnection(), model: entryModel.model.trim() }
+}
+function entryApiConnection() {
   const preset = providerDefaults[entryModel.provider]
   const baseUrl = entryModel.endpoint.trim() || preset?.endpoint
   let valid = false
@@ -173,7 +185,6 @@ function entryModelConnection() {
     kind: 'api',
     protocol: entryModel.provider === 'anthropic' ? 'anthropic' : entryModel.protocol,
     baseUrl,
-    model: entryModel.model.trim(),
     ...(entryModel.credential.trim() ? { apiKey: entryModel.credential.trim() } : {})
   }
 }

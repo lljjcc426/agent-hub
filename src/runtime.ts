@@ -5,6 +5,8 @@ import {workspaceBrowserSpec} from './browser-contract.ts'
 import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
+import {chatReplyPreferences} from './chat-personalization.ts'
+import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
@@ -759,6 +761,11 @@ export class Runtime {
   }
   private ingestFrom(source:string,trigger:Trigger){
     if(trigger.source!==source||trigger.actor.source!==source||trigger.threads.some(t=>t.source!==source)||trigger.channel&&trigger.channel.source!==source)throw Error('Adapter event is outside its configured source')
+    const adapter=this.sources.get(source)
+    if(adapter){
+      const buffered=collectFeishuGroupMessage(this,adapter,trigger,this.clock())
+      if(buffered)return buffered
+    }
     return this.ingest(trigger)
   }
   ingest(trigger: Trigger): unknown {
@@ -861,7 +868,10 @@ export class Runtime {
       await this.work.tick()
       if(!this.paused)void this.merger.tick().catch(error=>this.store.audit({type:'merge.error',message:String(error)}))
       this.pollSources()
-      if(!this.paused)this.proactive.tick()
+      if(!this.paused){
+        flushDueFeishuGroupMessages(this,this.clock())
+        this.proactive.tick()
+      }
       await this.watchdog.advance()
       if(!this.paused){this.webhooks.dispatch();this.webhooks.reconcile();this.github.enqueueReadbacks();await this.goals.advance();this.goals.tick();this.webhooks.flush()}
       this.engine.evaluateDue()
@@ -1010,6 +1020,7 @@ export class Runtime {
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
       ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
+    const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
     const githubTools=browserRun&&this.config.work.network?[githubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
     const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(chatBinding?[decisionTool,publicPlanTool]:[])])
@@ -1181,7 +1192,7 @@ export class Runtime {
       const request:ModelRequest={role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick tool or approval check, use one bounded action and report the observed outcome in the conversation. Do not start a durable goal, require a report file or request additional approvals to document the test unless the user explicitly asks. If a Worker is needed, delegate that single check. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
           + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : ""),
-        input:auxiliaryDecision||permissionReceipt||fileReviewReceipt?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(withPendingNotice),
+        input:auxiliaryDecision||permissionReceipt||fileReviewReceipt||replyPreferences?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt,replyPreferences}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(withPendingNotice),
         onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted)return

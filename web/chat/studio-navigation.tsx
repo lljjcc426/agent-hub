@@ -247,9 +247,11 @@ export function General({
   L,
   onDisplayChange,
   openWorkspaces,
+  onPersonalize,
 }: {
   onDisplayChange: (value: 'group' | 'agents') => void;
   openWorkspaces: () => void;
+  onPersonalize?: () => void;
   lang: string;
   setLang: (lang: 'en' | 'zh-CN') => void;
   display: 'group' | 'agents';
@@ -277,6 +279,12 @@ export function General({
     <div className="general-scroll roppo-ui">
       <article className="general">
         <h1>{L('General', '通用')}</h1>
+        {onPersonalize && <section className="language-row">
+          <h2>{L('Personalization','个性化')}</h2>
+          <button type="button" className="workspace-choose" onClick={onPersonalize}>
+            {L('Personalize Roppo','个性化 Roppo')}<ChevronRight size={16} aria-hidden="true"/>
+          </button>
+        </section>}
         <section className="language-row">
           <h2>{L('Language', '语言')}</h2>
           <ChoiceGroup

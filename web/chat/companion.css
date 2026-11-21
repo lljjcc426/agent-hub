@@ -26,6 +26,16 @@
 .roppo-spiral:nth-child(2){animation-direction:reverse}
 .roppo-arm{position:absolute;top:61%;width:20%;height:18%;border-radius:50%;background:radial-gradient(ellipse at 35% 20%,#505154,#2a2b2d 75%);box-shadow:inset 0 1px 1px #ffffff14,0 1px 1px #0002;opacity:0;transform-origin:50% 30%;transition:opacity 180ms,transform 200ms}
 .roppo-arm-left{left:20%}.roppo-arm-right{left:69%}
+.roppo-greeting-hand{
+  position:absolute;left:82%;top:54%;width:14%;aspect-ratio:1;border-radius:50%;transform-origin:-75% 57%;
+  background:var(--skin-arm,radial-gradient(ellipse at 56% 24%,#505154,#2a2b2d 72%));
+  box-shadow:0 1px 1px #0002;transform:rotate(32deg);opacity:0;
+}
+:root[data-theme=dark] .roppo-greeting-hand {
+  background:var(--skin-arm,radial-gradient(ellipse at 40% 24%,#dedee0,#aeb0b4 75%));
+}
+.roppo-character[data-greeting] .roppo-eyes-open {opacity:0;transform:scale(.85)}
+.roppo-character[data-greeting] .roppo-eyes-happy {opacity:1;transform:none}
 .roppo-laptop{position:absolute;right:0;bottom:3px;width:39px;height:26px;opacity:0;transform:translateY(4px);transition:opacity 180ms,transform 220ms}
 .roppo-laptop-screen{position:absolute;inset:0 0 3px 7px;border-radius:3px;background:linear-gradient(135deg,#eeeeef,#b8babf 70%,#989ba2);border:1px solid #999ca2;transform:skewX(-9deg);box-shadow:inset 1px 1px 1px #ffffffb3}
 .roppo-laptop-screen i{position:absolute;left:47%;top:40%;width:4px;height:4px;border-radius:50%;background:#f7f7f7}

@@ -71,14 +71,6 @@
 .team-profile-edit:is(:hover,:focus-visible) {color:var(--team-ink);text-decoration:underline;text-underline-offset:3px}
 .team-portrait .roppo-character {width:82px;height:74px}
 .team-portrait .roppo-body {inset:0 4px;width:74px;height:74px}
-.team-portrait .roppo-greeting-hand {
-  position:absolute;left:82%;top:54%;width:14%;aspect-ratio:1;border-radius:50%;transform-origin:-75% 57%;
-  background:radial-gradient(ellipse at 56% 24%,#505154,#2a2b2d 72%);
-  box-shadow:0 1px 1px #0002;transform:rotate(32deg);opacity:0;
-}
-:root[data-theme=dark] .team-portrait .roppo-greeting-hand {background:radial-gradient(ellipse at 40% 24%,#dedee0,#aeb0b4 75%)}
-.team-portrait [data-greeting] .roppo-eyes-open {opacity:0;transform:scale(.85)}
-.team-portrait [data-greeting] .roppo-eyes-happy {opacity:1;transform:none}
 .team-drawer-foot {display:flex;align-items:center}
 .team-tab-content>p {font-size:13px;color:var(--team-muted)}
 .team-tabs {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));position:relative;border-bottom:1px solid var(--team-line)}

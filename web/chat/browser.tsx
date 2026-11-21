@@ -1,6 +1,6 @@
 import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
-import { InputControl, SelectField } from '../ui/controls.tsx'
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CheckField, InputControl, SelectField } from '../ui/controls.tsx'
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   Globe,
   Plus,
@@ -48,6 +48,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 const messages: Record<string, [string, string]> = {
   browser_tab_limit: ["This browser has reached its tab limit.", "浏览器标签页数量已达上限。"],
   browser_tab_missing: ["This page has already closed.", "此网页已经关闭。"],
+  browser_worker_missing: ["A Worker is no longer available. Refresh browser settings and try again.", "有 Worker 已被移除。请刷新浏览器设置后重试。"],
   browser_workspace_offline: ["Connecting to workspace Chromium…","正在连接工作区 Chromium…"],
   browser_profile_in_use: ["This browser is open in another conversation. Create another browser, or close it there first.","此浏览器正在另一会话中使用。请创建另一个浏览器，或先在原会话中关闭。"],
   browser_control_busy: [
@@ -151,7 +152,12 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
     [dialog, setDialog] = useState<"profile" | "accounts" | null>(null);
   const [profileId, setProfileId] = useState(""),
     [profileName, setProfileName] = useState(""),
-    [grants, setGrants] = useState<string[]>([]);
+    [shareWithWorkers, setShareWithWorkers] = useState<boolean>();
+  const sharingHelpId = useId();
+  const editedProfile = data?.profiles.find(p => p.id === profileId);
+  const sharing = shareWithWorkers ?? editedProfile?.shareWithWorkers;
+  const hasLegacyGrants = sharing === undefined &&
+    editedProfile?.allowedWorkers.some(id => data?.workers.some(w => w.id === id));
   const [accountId, setAccountId] = useState(""),
     [accountProfile, setAccountProfile] = useState(""),
     [label, setLabel] = useState(""),
@@ -333,7 +339,13 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
   const newProfile = () => {
     setProfileId("");
     setProfileName(L("Personal browser", "个人浏览器"));
-    setGrants([]);
+    setShareWithWorkers(undefined);
+    setDialog("profile");
+  };
+  const editProfile = (profile: State["profiles"][number]) => {
+    setProfileId(profile.id);
+    setProfileName(profile.name);
+    setShareWithWorkers(undefined);
     setDialog("profile");
   };
   const accounts = () => {
@@ -372,7 +384,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
         <Button label={L('New browser','新建浏览器')} onClick={newProfile} disabled={busy}><Plus size={17}/></Button>
         <Button label={L('Saved accounts','已保存账号')} onClick={accounts} disabled={!data?.profiles.length}><KeyRound size={17}/></Button>
       </div>}
-      {settingsOnly?<div className="browser-profile-list">{data?.profiles.length===0 && <div className="settings-empty"><Globe size={24}/><span>{L('No browsers yet','还没有浏览器')}</span></div>}{data?.profiles.map(p=><button key={p.id} onClick={()=>{setProfileId(p.id);setProfileName(p.name);setGrants(p.allowedWorkers);setDialog('profile')}}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
+      {settingsOnly?<div className="browser-profile-list">{data?.profiles.length===0 && <div className="settings-empty"><Globe size={24}/><span>{L('No browsers yet','还没有浏览器')}</span></div>}{data?.profiles.map(p=><button key={p.id} onClick={()=>editProfile(p)}><Globe size={18}/><span>{p.name}</span><Settings2 size={16}/></button>)}</div>:null}
       {error && !dialog && (
         <div className="browser-error" role="alert">
           <span>
@@ -580,7 +592,7 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                 void act(async () => {
                   const p = await request<State["profiles"][number]>(
                     "/profiles" + (profileId ? "/" + profileId : ""),
-                    { name: profileName, allowedWorkers: grants },
+                    { name: profileName, shareWithWorkers },
                   );
                   closeDialog();
                   if(settingsOnly){await refresh();return;}
@@ -603,30 +615,25 @@ export function BrowserPanel({L, conversationId='', requestedUrl='', onUrlConsum
                   onChange={(e) => setProfileName(e.target.value)}
                 />
               </label>
-              <fieldset>
-                <legend>
-                  {L(
-                    "Workers allowed to use these sign-ins",
-                    "可使用此浏览器登录信息的 Worker",
-                  )}
-                </legend>
-                {data?.workers.map((w) => (
-                  <label className="browser-grant" key={w.id}>
-                    <InputControl
-                      type="checkbox"
-                      checked={grants.includes(w.id)}
-                      onChange={(e) =>
-                        setGrants(
-                          e.target.checked
-                            ? [...grants, w.id]
-                            : grants.filter((id) => id !== w.id),
-                        )
-                      }
-                    />
-                    {w.label}
-                  </label>
-                ))}
-              </fieldset>
+              <div className="browser-sharing">
+                <CheckField
+                  appearance="switch"
+                  label={L("Share with workspace Workers", "允许工作区 Worker 使用")}
+                  aria-describedby={sharingHelpId}
+                  checked={sharing === true}
+                  disabled={busy}
+                  onChange={e => setShareWithWorkers(e.target.checked)}
+                />
+                <small id={sharingHelpId}>
+                  {L("Current and future Workers can use this profile's saved sign-ins when sharing is on.", "开启后，当前和新建的 Worker 都可以使用此资料的已保存登录。")}
+                </small>
+                {hasLegacyGrants && <div className="browser-legacy-grants">
+                  <small>{L("Previously selected Workers still have access.", "以前选中的 Worker 仍有使用权限。")}</small>
+                  <button type="button" disabled={busy} onClick={() => setShareWithWorkers(false)}>
+                    {L("Remove previous access", "移除旧授权")}
+                  </button>
+                </div>}
+              </div>
               <div className="browser-dialog-actions">
                 <button type="button" onClick={closeDialog}>
                   {L("Cancel", "取消")}

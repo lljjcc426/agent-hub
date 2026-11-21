@@ -354,6 +354,54 @@ it("copies only authorized origin state and rechecks revoked profile grants", as
     origins: [{ origin: "https://example.com" }],
   });
 });
+it("saves legacy browser profiles after a Worker in the allowlist is removed", async () => {
+  const { host } = await fixture();
+  const profile = host.browser.saveProfile("alice", { name: "Work", allowedWorkers: ["one"] });
+  const old = {
+    ...profile, allowedWorkers: ["one", "retired-worker"], tabs: ["https://example.com"], activeTab: 0,
+  };
+  host.store.put("browser-profile", profile.id, old);
+
+  expect(() => host.browser.saveProfile("alice", { name: "Work", allowedWorkers: ["unknown"] }, profile.id))
+    .toThrow("Worker is no longer available");
+  const saved = host.browser.saveProfile("alice", { name: "Renamed", allowedWorkers: old.allowedWorkers }, profile.id);
+  expect(saved).toMatchObject({
+    id: profile.id, owner: "alice", name: "Renamed", allowedWorkers: ["one"], tabs: old.tabs, activeTab: 0,
+  });
+  expect(saved.shareWithWorkers).toBeUndefined();
+  expect(host.browser.saveProfile("alice", { name: "Renamed again" }, profile.id).allowedWorkers).toEqual(["one"]);
+});
+
+it("shares a browser profile with a new Worker and rechecks ownership and revocation", async () => {
+  const { host, owner, driver } = await fixture();
+  const legacy = host.browser.saveProfile("alice", { name: "Selected Worker", allowedWorkers: ["one"] });
+  const profile = host.browser.saveProfile("alice", { name: "Shared", shareWithWorkers: true });
+  const otherOwner = host.browser.saveProfile("bob", { name: "Other workspace", shareWithWorkers: true });
+  const renamed = host.browser.saveProfile("alice", { name: "Shared profile", allowedWorkers: [] }, profile.id);
+  expect(renamed.shareWithWorkers).toBe(true);
+  host.updateSettings(host.settings.current().revision, {
+    execution: {
+      ...host.config.execution,
+      workers: [...host.config.execution.workers!, { id: "replacement", backend: "codex" }],
+    },
+  });
+  const run = host.store.get<Record<string, unknown>>("run", owner.ticketId);
+  host.store.put("run", owner.ticketId, { ...run, workerId: "replacement" });
+
+  const profiles = () => host.browser.tool(owner, { action: "profiles", requestId: randomUUID() });
+  expect(await profiles()).toEqual({ profiles: [{ id: profile.id, name: "Shared profile", accounts: [] }] });
+  await expect(open(host, owner, legacy.id)).rejects.toThrow("cannot use");
+  await expect(open(host, owner, otherOwner.id)).rejects.toThrow("profile not found");
+  const session = await open(host, owner, profile.id);
+  expect(driver.loaded[0].cookies[0].value).toBe("known-login");
+
+  host.browser.saveProfile("alice", { name: "Shared profile", shareWithWorkers: false }, profile.id);
+  expect(await profiles()).toEqual({ profiles: [] });
+  await expect(host.browser.tool(owner, {
+    action: "snapshot", sessionId: session.id, requestId: "sharing-revoked",
+  })).rejects.toThrow("cannot use");
+});
+
 it("drains an executing command, rejects queued stale commands, and gives one human exclusive control", async () => {
   const { host, owner, driver } = await fixture(),
     s = await open(host, owner),

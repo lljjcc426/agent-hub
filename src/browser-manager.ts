@@ -22,6 +22,7 @@ import {
   workspaceAction,
   browserUrl,
   type BrowserProfile,
+  type BrowserProfileInput,
   type BrowserAction,
   type BrowserToolInput,
   type BrowserFrame,
@@ -219,13 +220,16 @@ export class BrowserManager {
   }
   private authorizeProfile(id: string, user: string, worker?: string) {
     const p = this.profile(id, user);
-    if (worker !== undefined && !p.allowedWorkers.includes(worker))
+    if (worker !== undefined && !this.canUseProfile(p, worker))
       throw new BrowserError(
         "browser_profile_denied",
         "This Worker cannot use this browser profile.",
         403,
       );
     return p;
+  }
+  private canUseProfile(profile: BrowserProfile, worker: string) {
+    return !!worker && (profile.shareWithWorkers ?? profile.allowedWorkers.includes(worker));
   }
   private visible(s: Session, user: string) {
     if (s.user !== user && s.user !== "host")
@@ -340,14 +344,17 @@ export class BrowserManager {
   }
   saveProfile(
     user: string,
-    input: { name: string; allowedWorkers: string[] },
+    input: BrowserProfileInput,
     id: string = randomUUID(),
   ) {
     this.enabled();
     const old = this.host.store.get<BrowserProfile>("browser-profile", id);
     if (old) this.profile(id, user);
+    // An absent sharing setting preserves the access policy of an older profile.
+    const shareWithWorkers = input.shareWithWorkers ?? old?.shareWithWorkers;
+    const grants = shareWithWorkers === undefined ? input.allowedWorkers ?? old?.allowedWorkers ?? [] : [];
     const ids = new Set(workerProfiles(this.host.config).map((w) => w.id));
-    if (input.allowedWorkers.some((id) => !ids.has(id)))
+    if (grants.some((id) => !ids.has(id) && !old?.allowedWorkers.includes(id)))
       throw new BrowserError(
         "browser_worker_missing",
         "Worker is no longer available.",
@@ -355,7 +362,9 @@ export class BrowserManager {
     const p: BrowserProfile = {
       id,
       owner: user,
-      ...input,
+      name: input.name,
+      shareWithWorkers,
+      allowedWorkers: grants.filter((id) => ids.has(id)),
       tabs: old?.tabs ?? ["about:blank"],
       activeTab: old?.activeTab ?? 0,
       updatedAt: Date.now(),
@@ -1051,7 +1060,7 @@ export class BrowserManager {
             .list<BrowserProfile>("browser-profile")
             .filter(
               (v) =>
-                v.owner === p.user && v.allowedWorkers.includes(p.workerId),
+                v.owner === p.user && this.canUseProfile(v, p.workerId),
             )
             .map((v) => ({
               id: v.id,

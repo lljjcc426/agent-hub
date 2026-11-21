@@ -49,12 +49,14 @@ export const browserOptionsSchema = z
 export const profileInput = z
   .object({
     name: z.string().trim().min(1).max(80),
+    shareWithWorkers: z.boolean().optional(),
     allowedWorkers: z
       .array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/))
       .max(10)
-      .default([]),
+      .optional(),
   })
   .strict();
+export type BrowserProfileInput = z.infer<typeof profileInput>;
 export const credentialInput = z
   .object({
     profileId: z.string().uuid(),
@@ -217,6 +219,7 @@ export interface BrowserProfile {
   id: string;
   owner: string;
   name: string;
+  shareWithWorkers?: boolean;
   allowedWorkers: string[];
   tabs: string[];
   activeTab?: number;

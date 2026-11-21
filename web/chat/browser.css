@@ -282,23 +282,21 @@
   color: var(--c-text);
   font-size: var(--roppo-font-input);
 }
-.browser-dialog fieldset {
-  border: 0;
-  padding: 0;
-  margin: 5px 0;
+.browser-sharing {
+  display: grid;
+  gap: 8px;
 }
-.browser-dialog legend {
-  font-size: var(--roppo-font-body);
-  margin-bottom: 12px;
-}
-.browser-dialog .browser-grant {
+.browser-dialog .browser-sharing .rp-check {
   flex-direction: row;
   align-items: center;
-  gap: 10px;
-  margin: 12px 0;
 }
-.browser-grant input {
-  accent-color: var(--c-text);
+.browser-sharing small {
+  color: var(--c-muted);
+}
+.browser-legacy-grants button {
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .browser-dialog-actions {
   display: flex;

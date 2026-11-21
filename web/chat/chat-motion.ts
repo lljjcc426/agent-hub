@@ -1,10 +1,11 @@
 import {useCallback,useEffect,useLayoutEffect,useRef,useState,type RefObject} from 'react'
+import {getMotionPreference} from '../ui/motion.ts'
 
 /** Follow new output only while the reader is at the end. No competing smooth-scroll queues. */
 export function useChatMotion(root:RefObject<HTMLDivElement|null>,key:string,history:boolean,lastId?:string){
   const [atBottom,setAtBottom]=useState(true),[unread,setUnread]=useState(false)
   const follow=useRef(!history),frame=useRef(0),moving=useRef(false),initialized=useRef(false),previous=useRef(lastId)
-  const reduced=useRef(matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const reduced=useRef(getMotionPreference().matches)
   const stop=useCallback(()=>{cancelAnimationFrame(frame.current);frame.current=0;moving.current=false;follow.current=false},[])
   const latest=useCallback((instant=false)=>{
     const viewport=root.current?.querySelector<HTMLElement>('.transcript');if(!viewport)return
@@ -30,7 +31,7 @@ export function useChatMotion(root:RefObject<HTMLDivElement|null>,key:string,his
     const observer=new ResizeObserver(()=>{if(!follow.current)return;const first=!initialized.current&&!!content.querySelector('.message');if(first)initialized.current=true;latest(first)})
     observer.observe(viewport);observer.observe(content)
     viewport.addEventListener('scroll',scroll,{passive:true});viewport.addEventListener('wheel',wheel,{passive:true});viewport.addEventListener('pointerdown',pointer);viewport.addEventListener('keydown',keys)
-    const media=matchMedia('(prefers-reduced-motion: reduce)'),change=()=>{reduced.current=media.matches}
+    const media=getMotionPreference(),change=()=>{reduced.current=media.matches}
     media.addEventListener('change',change)
     return()=>{stop();observer.disconnect();media.removeEventListener('change',change);viewport.removeEventListener('scroll',scroll);viewport.removeEventListener('wheel',wheel);viewport.removeEventListener('pointerdown',pointer);viewport.removeEventListener('keydown',keys)}
   },[key,root,history,latest,stop])

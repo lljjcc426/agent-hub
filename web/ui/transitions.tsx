@@ -6,12 +6,13 @@ import {
   useRef,
   type ReactElement,
 } from 'react'
+import { getMotionPreference } from './motion.ts'
 
 export type SwitchScope = 'page' | 'panel' | 'filter'
 
 /** Keep the outgoing pixels during the swap without keeping a second set of live controls. */
 export function switchView(scope: SwitchScope, update: () => void) {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (getMotionPreference().matches) {
     update()
     return
   }
@@ -67,7 +68,7 @@ export function useOrderedListMotion(order: readonly unknown[]) {
   useLayoutEffect(() => {
     const list = ref.current!
     const next = new Map<string, number>()
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduce = getMotionPreference().matches
     for (const [row, a] of animations.current) {
       if (row.parentElement !== list) {
         a.cancel()

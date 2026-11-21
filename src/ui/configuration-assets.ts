@@ -2,7 +2,6 @@
 export const configurationScripts = [
   "form-menus.js",
   "controls.js",
-  "theme.js",
   "sections.js",
   "getting-started.js",
   "setup-session.js",

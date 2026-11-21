@@ -130,16 +130,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--action); }
 }
 :root .ui-button[data-variant="primary"], :root .management-content .ui-button[data-variant="primary"] { background: var(--action); color: var(--on-action); border-color: var(--action); box-shadow: none; }
 :root .ui-button[data-variant="primary"]:hover:not(:disabled), :root .management-content .ui-button[data-variant="primary"]:hover:not(:disabled) { background: var(--action-hover); border-color: var(--action-hover); }
-.theme-toggle, .operator-workspace .theme-toggle {
-  display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 36px; height: 36px; padding: 8px; border: 1px solid var(--border-subtle);
-  border-radius: 7px; background: var(--surface); color: var(--text-primary); cursor: pointer;
-}
-.theme-toggle:hover { background: var(--surface-hover); }
-.theme-toggle .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
-.theme-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 @media (max-width: 700px) {
-  .theme-toggle, .operator-workspace .theme-toggle { width: 40px; height: 40px; }
   .operator-workspace .topbar-tools { gap: 6px; }
 }
 

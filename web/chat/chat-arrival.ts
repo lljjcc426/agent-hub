@@ -1,3 +1,5 @@
+import {getMotionPreference} from '../ui/motion.ts'
+
 type Point = readonly [number, number]
 
 // Crown and shoulder samples of the 50% alpha edge of roppo-body.webp, at 512px.
@@ -106,7 +108,7 @@ function setStrokeSegment(path:SVGPathElement, head:number, tail:number, total:n
 export async function animateChatArrival(form:HTMLFormElement, renderChat:()=>void, close:Parameters<ChatArrival>[1]) {
   const dialog=form.closest('dialog'), actor=form.querySelector<HTMLElement>('.roppo-setup-stage .first-chat-actor')
   const image=actor?.querySelector<HTMLImageElement>('.roppo-body img')
-  const motion=matchMedia('(prefers-reduced-motion: reduce)')
+  const motion=getMotionPreference()
   if (!dialog?.open || !actor || !image || !image.offsetWidth || motion.matches || document.hidden ||
       typeof HTMLElement.prototype.showPopover!=='function' || typeof DOMMatrix!=='function') {
     renderChat();close();return
@@ -181,7 +183,8 @@ export async function animateChatArrival(form:HTMLFormElement, renderChat:()=>vo
       window.addEventListener('pagehide',interrupt,options)
       window.addEventListener('popstate',interrupt,options)
       document.addEventListener('visibilitychange',interrupt,options)
-      motion.addEventListener('change',interrupt,options)
+      motion.addEventListener('change',interrupt)
+      signal.addEventListener('abort',()=>motion.removeEventListener('change',interrupt),{once:true})
       window.addEventListener('keydown',event=>{
         if(event.key==='Escape'){event.preventDefault();event.stopPropagation();interrupt()}
       },{capture:true,signal})

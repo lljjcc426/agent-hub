@@ -122,7 +122,7 @@ async def main():
 
             # Both themes, a narrow viewport and reduced motion retain the same loading contract.
             for theme in ['dark','light']:
-                await page.evaluate('(theme) => localStorage.setItem("agenthub.configuration.theme",theme)',theme)
+                await page.evaluate('(theme) => window.roppoAppearance.setAppearance(previous => ({...previous, mode:theme}))',theme)
                 await page.goto('about:blank')
                 await page.goto(base+'/configure#tasks/history');await expect(page.locator('#task-search')).to_be_visible()
                 await expect(page.locator('html')).to_have_attribute('data-theme',theme)

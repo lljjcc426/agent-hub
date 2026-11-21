@@ -5,6 +5,7 @@ import {createPortal} from 'react-dom'
 import {FileCode2,Reply,Search,Smile,X} from 'lucide-react'
 import type {ChatQuote,ChatQuoteView,AgentReaction} from '../../src/chat-interactions.ts'
 import {CopyButton} from './copy-button.tsx'
+import {getMotionPreference} from '../ui/motion.ts'
 
 type L=(en:string,zh:string)=>string
 export type DraftQuote=ChatQuoteView&ChatQuote
@@ -111,7 +112,7 @@ export function Reactions({id}:{id:string}){
   const reactions=[...new Set([...own,...agents.map(r=>r.emoji)])]
   const [rendered,setRendered]=useState(reactions)
   useLayoutEffect(()=>{
-    if(matchMedia('(prefers-reduced-motion: reduce)').matches){setRendered(reactions);return}
+    if(getMotionPreference().matches){setRendered(reactions);return}
     setRendered(old=>[...new Set([...old,...reactions])]);const timer=setTimeout(()=>setRendered(reactions),280);return()=>clearTimeout(timer)
   },[reactions.join('')])
   return <div className="reaction-reveal" data-open={!!reactions.length}><div><div className="message-reactions" aria-label={L('Reactions','表情回应')}>{rendered.map(emoji=>{

@@ -43,7 +43,7 @@ function workflowStory() {
   queueMicrotask(() => {
     if (!section.isConnected) return
     workflowStoryUnmount()
-    const media = matchMedia('(prefers-reduced-motion: reduce)')
+    const media = window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')
     const nodes = new Map([...scene.querySelectorAll('[data-story-node]')].map(item => [item.dataset.storyNode, item]))
     let timer = 0, frame = 0, playing = false, destroyed = false
     const animations = new Set()

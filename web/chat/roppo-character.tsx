@@ -3,6 +3,7 @@ import body from '../../src/ui/assets/agents/roppo-body.webp';
 import type {CompanionPhase} from './companion-state.ts';
 import {RoppoAppearanceContext,roppoSkin,workerColorIndex} from './agent-avatar.tsx';
 import './companion.css';
+import {getMotionPreference} from '../ui/motion.ts';
 
 const spiralEye=Array.from({length:65},(_,i)=>{
  const angle=i/64*Math.PI*3.5,radius=.4+i/64*9;
@@ -26,7 +27,7 @@ export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:Com
  },[]);
  useLayoutEffect(()=>{
   const character=characterRef.current,pose=poseRef.current,hand=waveHand.current;
-  if(!greeting||!character||!pose||!hand||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  if(!greeting||!character||!pose||!hand||getMotionPreference().matches)return;
   const liftFrom=getComputedStyle(pose).transform;
   const handStyle=getComputedStyle(hand);
   const handFrom={transform:handStyle.transform,opacity:Number(handStyle.opacity)};
@@ -58,7 +59,7 @@ export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:Com
  // unfinished transition. Rapid status changes then continue from this pose.
  useLayoutEffect(()=>{
   if(phase===visualPhase)return;
-  previousPose.current=bodyRef.current&&!paused&&!matchMedia('(prefers-reduced-motion: reduce)').matches
+  previousPose.current=bodyRef.current&&!paused&&!getMotionPreference().matches
    ?getComputedStyle(bodyRef.current).transform:null;
   bridge.current?.cancel();bridge.current=null;
   setVisualPhase(phase);
@@ -81,7 +82,7 @@ export function RoppoCharacter({phase,paused=false,workerId,greeting}:{phase:Com
   else if(bridge.current?.playState==='paused')bridge.current.play();
  },[paused]);
  useEffect(()=>{
-  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  const reduced=getMotionPreference();
   const stop=()=>{if(reduced.matches){bridge.current?.cancel();bridge.current=null;stopGreeting()}};
   reduced.addEventListener('change',stop);
   return ()=>{reduced.removeEventListener('change',stop);bridge.current?.cancel();stopGreeting()};

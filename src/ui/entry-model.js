@@ -30,7 +30,7 @@ function entryModelEdit(key, value, redraw = false) {
   if (redraw) { render(); animateModelConfiguration('.connection-editor') }
 }
 function animateModelConfiguration(selector) {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  if ((window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')).matches) return
   const node = document.querySelector(selector)
   if (!node) return
   for (const animation of node.getAnimations()) animation.cancel()

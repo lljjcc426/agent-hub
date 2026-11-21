@@ -3,6 +3,7 @@ import type {CompanionPhase} from './companion-state.ts'
 import {RoppoCharacter} from './roppo-character.tsx'
 import type {Handoff, Speaker} from './use-handoff.ts'
 import './companion-scene.css'
+import {getMotionPreference} from '../ui/motion.ts'
 
 const duration = 6000
 const mix = (a: number, b: number, t: number) => a + (b-a)*t
@@ -23,7 +24,7 @@ export function CompanionScene({actor, phase, event, paused, onFinish}: {
   useLayoutEffect(() => {
     if (!eventId) return
     const node = scene.current!
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)')
+    const reduced = getMotionPreference()
     let frame = 0, elapsed = 0, last: number | undefined, released = false
     const draw = () => {
       const t = Math.min(1, elapsed / (reduced.matches ? 450 : duration))

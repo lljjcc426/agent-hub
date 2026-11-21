@@ -30,7 +30,7 @@ function roundedConnector(start, end, { axis = 'x', radius = 9 } = {}) {
  */
 function createFlowMotion({ root, svg, nodes = new Map(), pathForEdge }) {
   if (!root || !svg || !root.contains(svg)) throw new TypeError('root must contain the SVG overlay.');
-  const media = root.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)');
+  const media = root.ownerDocument.defaultView.roppoAppearance?.motionPreference ?? root.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)');
   const entries = new Map();
   const animations = new Map();
   const layers = ['base', 'path', 'flow'].map(() => {

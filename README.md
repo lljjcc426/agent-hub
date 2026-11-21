@@ -69,6 +69,13 @@ Start with a task, then express preferences naturally as you go. Roppo can retai
 
 Give your Router and Workers their own names, models and tools. Use **Behavior rules** for shared preferences and role instructions, and preview the assembled instructions before saving. Chat display and clearing built-in Chat memory and context also live in Settings.
 
+Use **Settings → Appearance** for light, dark or system mode, theme presets, custom colors and contrast, interface/content/code sizes, reduced motion, smart punctuation, full-width conversations and diff indicators. Copy or import a theme to share its colors. Preferences stay in this browser and apply across its Roppo pages; existing light/dark choices are retained when upgrading.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/appearance-settings-dark.jpg">
+  <img src="docs/images/appearance-settings-light.jpg" alt="Appearance settings and theme presets in an isolated fixture, light shown in Chinese and dark in English">
+</picture>
+
 ### Work where the task starts
 
 Connect **Feishu, Slack, Linear and GitHub** through the available source adapters and plugins. Extend the toolset with **MCP** and app integrations. Keep each task connected to its source conversation or issue.

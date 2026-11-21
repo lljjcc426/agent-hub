@@ -66,7 +66,7 @@ select.rp-select-field:disabled {cursor:default; opacity:.55}
 `
   document.head.append(style)
 
-  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
+  const reducedMotion = window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')
   let current = null
   let leavingMenu = null
   let sequence = 0

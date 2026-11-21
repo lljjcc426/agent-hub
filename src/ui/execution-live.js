@@ -25,7 +25,7 @@ function executionSelectTools(navigate=false){
  const root=executionView.root;if(!root?.isConnected)return
  const tools=root.querySelector('.execution-tools'),selected=executionView.selected,label=selected.kind==='router'?'Router':'Worker '+(executionDraft().workers.findIndex(w=>w.id===selected.id)+1)
  const names=selected.kind==='router'?executionRouterTools():(operator.work?.architecture?.tools||[])
- const owner=el('button','execution-tools-owner',label);owner.type='button';owner.setAttribute('aria-label',L('Back to '+label,'返回 '+label));owner.onclick=()=>{const node=[...root.querySelectorAll('[data-select-kind]')].find(n=>n.dataset.selectKind===selected.kind&&(selected.kind==='router'||n.dataset.selectKey===selected.id));node?.focus({preventScroll:true});node?.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'})}
+ const owner=el('button','execution-tools-owner',label);owner.type='button';owner.setAttribute('aria-label',L('Back to '+label,'返回 '+label));owner.onclick=()=>{const node=[...root.querySelectorAll('[data-select-kind]')].find(n=>n.dataset.selectKind===selected.kind&&(selected.kind==='router'||n.dataset.selectKey===selected.id));node?.focus({preventScroll:true});node?.scrollIntoView({block:'center',behavior:(window.roppoAppearance?.motionPreference??matchMedia('(prefers-reduced-motion:reduce)')).matches?'auto':'smooth'})}
  tools.replaceChildren(add(el('div','execution-tools-heading'),el('h2','',L('Tools','工具')),owner))
  for(const name of names){
   const button=el('button','execution-tool tam-node');button.type='button';button.dataset.tool=name;button.id='execution-tool-'+name
@@ -34,7 +34,7 @@ function executionSelectTools(navigate=false){
  if(!names.length)tools.append(el('p','control-hint',L('No tool catalogue available.','尚未取得工具目录。')))
  for(const node of root.querySelectorAll('[data-select-kind]'))node.setAttribute('aria-pressed',String(node.dataset.selectKind===selected.kind&&(selected.kind==='router'||node.dataset.selectKey===selected.id)))
  executionPaint();executionView.motion?.reveal(tools)
- if(navigate&&tools.getBoundingClientRect().top>=root.querySelector('.execution-workers').getBoundingClientRect().bottom){owner.focus({preventScroll:true});tools.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth'})}
+ if(navigate&&tools.getBoundingClientRect().top>=root.querySelector('.execution-workers').getBoundingClientRect().bottom){owner.focus({preventScroll:true});tools.scrollIntoView({block:'start',behavior:(window.roppoAppearance?.motionPreference??matchMedia('(prefers-reduced-motion:reduce)')).matches?'auto':'smooth'})}
 }
 function executionSummary(calls){return calls.some(c=>c.state==='running')?'running':calls.reduce((latest,call)=>!latest||(call.endedAt??call.startedAt)>(latest.endedAt??latest.startedAt)?call:latest,null)?.state||'idle'}
 function executionMotionState(calls){const state=executionSummary(calls);return executionView.stale&&state==='running'?'unknown':({completed:'done',interrupted:'cancelled'})[state]||state}
@@ -109,7 +109,7 @@ function executionOpenCalls(kind,id,focus){executionView.inspect={kind,id,focus}
 function executionCloseCalls(){
  const version=++executionView.dialogVersion,dialog=document.getElementById('execution-call-dialog'),focus=executionView.inspect?.focus
  const close=()=>{if(version!==executionView.dialogVersion)return;executionView.inspect=null;dialog?.close();render();queueMicrotask(()=>document.getElementById(focus)?.focus({preventScroll:true}))}
- const animation=dialog&&executionView.motion?.details(dialog,{enter:false});if(animation)void animation.finished.then(close,()=>{if(matchMedia('(prefers-reduced-motion:reduce)').matches)close()});else close()
+ const animation=dialog&&executionView.motion?.details(dialog,{enter:false});if(animation)void animation.finished.then(close,()=>{if((window.roppoAppearance?.motionPreference??matchMedia('(prefers-reduced-motion:reduce)')).matches)close()});else close()
 }
 function executionCallDialog(){
  if(!executionView.inspect)return null

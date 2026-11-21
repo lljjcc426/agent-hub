@@ -584,7 +584,6 @@ function renderEntrySurface() {
     logo,
     add(
       el('div', 'tools'),
-      themeToggle(),
       languagePicker(),
       entryState.role
         ? action(

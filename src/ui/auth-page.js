@@ -71,30 +71,9 @@ function store(key, value) {
     localStorage.setItem(key, value)
   } catch {}
 }
-function themeControl() {
-  const dark = document.documentElement.dataset.theme === 'dark',
-    label = T(
-      dark ? 'Switch to light mode' : 'Switch to dark mode',
-      dark ? '切换白色模式' : '切换黑暗模式'
-    )
-  const b = button(
-    '',
-    () => {
-      document.documentElement.dataset.theme = dark ? 'light' : 'dark'
-      store('agenthub.configuration.theme', dark ? 'light' : 'dark')
-      b.replaceWith(themeControl())
-    },
-    'icon-button',
-    dark ? 'sun' : 'moon'
-  )
-  b.setAttribute('aria-label', label)
-  b.title = label
-  return b
-}
 function tools() {
   const t = node('div', 'auth-tools')
   t.append(
-    themeControl(),
     button(
       T('中文', 'EN'),
       () => {
@@ -107,12 +86,6 @@ function tools() {
   )
   return t
 }
-window.addEventListener('storage', (event) => {
-  if (event.key === 'agenthub.configuration.theme') {
-    document.documentElement.dataset.theme = event.newValue === 'dark' ? 'dark' : 'light'
-    document.querySelector('.auth-tools .icon-button')?.replaceWith(themeControl())
-  }
-})
 const errors = () => ({
   account_credentials_invalid: T(
     'The username or password is incorrect. Try again.',
@@ -667,7 +640,7 @@ function renderAuth(content) {
       button(T('Back to sign in', '返回登录'), () => go('login'), 'text-button back-button')
     )
 }
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
+const reducedMotion = window.roppoAppearance?.motionPreference ?? matchMedia('(prefers-reduced-motion: reduce)')
 let renderedView = '',
   enteredAuth = false
 function animateForm(target) {

@@ -53,6 +53,8 @@ import {TeamOverview,type TeamTab} from './team-view.tsx';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
+import {useAppearanceMode} from './appearance-store.ts';
+import './appearance-theme.css';
 import {ComposerControls} from './composer-actions.tsx';
 import {ChatTray} from '../ui/pending-requests.tsx';
 import {ThinkingActivity} from './run-thinking.tsx';
@@ -98,6 +100,7 @@ import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
 import type {ChatSkillCatalog,ChatSkillRef} from '../../src/chat-skills.ts';
 import {carryInitialDraft,draftKey,forgetPending,read,savedDraftSkill,savedPending,skillDraftKey,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
+const AppearanceSettings = lazy(() => import('./appearance-settings.tsx').then(module => ({default: module.AppearanceSettings})));
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
 import "../../src/ui/typography.css";
@@ -473,8 +476,8 @@ function App() {
   useEffect(() => write("roppo.navigation.expanded", String(navExpanded)), [navExpanded]);
   const [lang, setLang] = useState<Language>(
       read("agenthub.configuration.language") === "en" ? "en" : "zh-CN",
-    ),
-    [dark, setDark] = useState(read("agenthub.configuration.theme") === "dark");
+    );
+  const dark = useAppearanceMode() === "dark";
   const L = useCallback(
     (en: string, zh: string) => (lang === "zh-CN" ? zh : en),
     [lang],
@@ -627,17 +630,11 @@ function App() {
     };
   }, [refreshList, refreshReady]);
   useEffect(() => {
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
-    write("agenthub.configuration.theme", dark ? "dark" : "light");
-  }, [dark]);
-  useEffect(() => {
     document.documentElement.lang = lang;
     write("agenthub.configuration.language", lang);
   }, [lang, L]);
   useEffect(() => {
     const storage = (e: StorageEvent) => {
-      if (e.key === "agenthub.configuration.theme")
-        setDark(e.newValue === "dark");
       if (e.key === "agenthub.configuration.language")
         setLang(e.newValue === "zh-CN" ? "zh-CN" : "en");
     };
@@ -668,7 +665,6 @@ function App() {
           lang,
           L,
           dark,
-          setDark,
           navigate,
           refreshList,
           setLang,
@@ -712,7 +708,6 @@ type ChatProps = {
   lang: Language;
   L: (en: string, zh: string) => string;
   dark: boolean;
-  setDark: (v: boolean) => void;
   navigate: (id: string | null) => void;
   refreshList: () => Promise<void>;
   refreshReady: () => Promise<void>;
@@ -727,7 +722,6 @@ function Chat(p: ChatProps) {
     lang,
     L,
     dark,
-    setDark,
     navigate,
     refreshList,
     setLang,
@@ -848,6 +842,7 @@ function Chat(p: ChatProps) {
   };
   const hash = route.split("#")[1] || "general";
   const general = configuring && hash === "general";
+  const appearance = configuring && hash === "appearance";
   const workspaceIndex = configuring && hash === "workspace";
   const workspacePage = workspaceGroups(L).flatMap(group => group.items).find(item => hash === item.hash);
   const automationRoute=configuring&&hash==='automations';
@@ -860,6 +855,7 @@ function Chat(p: ChatProps) {
   const currentView=views.find(view=>view.id===pluginId);
   const pageNames: Record<string, string> = {
     general: L("General", "通用"),
+    appearance: L("Appearance", "外观"),
     team: L("Agent team","Agent 团队"),
     tasks: L("Activity", "运行记录"),
     "tasks/active": L("Activity", "运行记录"),
@@ -1539,8 +1535,9 @@ function Chat(p: ChatProps) {
             </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
-            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} dark={dark} setDark={setDark} lang={lang} setLang={setLang} display={display} L={L}
+            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} lang={lang} setLang={setLang} display={display} L={L}
               onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
+            {appearance && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading appearance…", "正在读取外观设置…")}</div>}><AppearanceSettings L={L}/></Suspense>}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
             {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace language={lang}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
@@ -1548,7 +1545,7 @@ function Chat(p: ChatProps) {
               <UsageStatisticsPage language={lang}/>
             </Suspense>}
             <Configuration
-              visible={configuring&&!general&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!usageStatisticsRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!general&&!appearance&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!usageStatisticsRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}

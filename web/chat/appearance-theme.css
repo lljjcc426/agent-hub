@@ -1,0 +1,36 @@
+/* These selectors only activate after a user changes the corresponding size.
+   The head runtime owns palette tokens for both the React and standalone pages. */
+:root[data-appearance-ui-size] :is(.studio-brandbar .rp-brand, .brand) { font-size: calc(24px + var(--appearance-ui-delta)); }
+:root[data-appearance-ui-size] .rail-title { font-size: calc(21px + var(--appearance-ui-delta)); }
+:root[data-appearance-ui-size] :is(.studio-rail h3, .footer-settings, .return-chat, .account-link, .settings-find input, .studio-settings-links .rp-nav-link) { font-size: var(--roppo-font-body); }
+:root[data-appearance-ui-size] :is(.chat-destination strong, .member span, .studio-breadcrumb) { font-size: calc(15px + var(--appearance-ui-delta)); }
+:root[data-appearance-ui-size] :is(.chat-destination > span > span, .account-initial, .thread-trigger, .workspace-switch, .sidebar-footer) { font-size: calc(13px + var(--appearance-ui-delta)); }
+:root[data-appearance-ui-size] :is(.history-heading, .language-button, .model-link, .team-chip, .connection-state) { font-size: var(--roppo-font-meta); }
+:root[data-appearance-ui-size] .chat-main[data-settings-view] :is(.general, .settings-directory, .market-heading, .automation-heading, .memory-heading, .management-content .operator-workspace .page-heading) h1 { font-size: calc(clamp(27px, 2.6vw, 34px) + var(--appearance-ui-delta)); }
+
+:root[data-appearance-content-size] :is(.message, .assistant-identity strong, .composer-input) { font-size: calc(15px + var(--appearance-content-delta)); }
+:root[data-appearance-content-size] .assistant-body h1 { font-size: calc(25px + var(--appearance-content-delta)); }
+:root[data-appearance-content-size] .assistant-body h2 { font-size: calc(21px + var(--appearance-content-delta)); }
+:root[data-appearance-content-size] .assistant-body h3 { font-size: calc(17px + var(--appearance-content-delta)); }
+:root[data-appearance-content-size] :is(.delivery-markdown, .markdown-body) { font-size: var(--roppo-font-reading); }
+
+:root[data-appearance-code-size] :is(.assistant-body pre, .assistant-body pre code) { font-size: var(--appearance-code-size); }
+:root[data-appearance-code-size] :is(.file-preview, .delivery-markdown pre, .delivery-markdown code, .rp-message-content pre, .rp-message-content code) { font-size: var(--appearance-code-size); }
+:root[data-appearance-code-size] .assistant-body :not(pre) > code { font-size: var(--appearance-code-size); }
+
+:root[data-appearance-full-width="true"] .thread { --chat-measure: 100%; }
+:root[data-appearance-full-width="true"] :is(.conversation-body .assistant-body, .conversation-body .message-tool-activity) { max-width: none; }
+
+.appearance-diff-line { display: block; min-height: 1lh; }
+:root[data-appearance-diff="color"] .appearance-diff-add { background: #22863a1f; }
+:root[data-appearance-diff="color"] .appearance-diff-remove { background: #d73a491c; }
+:root[data-theme="dark"][data-appearance-diff="color"] .appearance-diff-add { background: #3fb95026; }
+:root[data-theme="dark"][data-appearance-diff="color"] .appearance-diff-remove { background: #f8514926; }
+.appearance-diff-marker { display: inline-block; width: 1ch; }
+:root[data-appearance-diff="color"] .appearance-diff-marker { visibility: hidden; }
+:root[data-appearance-diff="sign"] .appearance-diff-marker { visibility: visible; }
+
+@media (max-width: 700px) {
+  :root[data-appearance-content-size] .message { font-size: calc(14px + var(--appearance-content-delta)); }
+  :root[data-appearance-content-size] .composer-input { font-size: calc(16px + var(--appearance-content-delta)); }
+}

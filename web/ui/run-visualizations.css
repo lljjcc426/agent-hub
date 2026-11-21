@@ -483,8 +483,9 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
 .rv-participant:is(:hover,:focus-visible) { color: var(--rp-ink); }
 .rv-participant:focus-visible { outline: none; }
 .rv-participant:focus-visible .rv-participant-name { text-decoration: underline; text-underline-offset: .25em; }
-.rv-participant > .agent-portrait { width: var(--rv-avatar-size, 28px); height: var(--rv-avatar-size, 28px); }
-.rv-participant[data-working] > .agent-portrait { animation: rv-participant-pulse 1.8s ease-in-out infinite; }
+.rv-participant > :is(.agent-portrait, .rv-participant-tool) { width: var(--rv-avatar-size, 28px); height: var(--rv-avatar-size, 28px); }
+.rv-participant-tool { padding: 3px; box-sizing: border-box; }
+.rv-participant[data-working] > :is(.agent-portrait, .rv-participant-tool) { animation: rv-participant-pulse 1.8s ease-in-out infinite; }
 .rv-sequence-plot { position: relative; min-height: 66px; }
 .rv-lifeline, .rv-activation { position: absolute; inset-block: 0; transform: translateX(-50%); pointer-events: none; }
 .rv-lifeline { width: 1px; border-inline-start: 1px dashed var(--rp-line-strong); opacity: .66; }

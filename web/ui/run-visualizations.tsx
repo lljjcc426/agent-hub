@@ -23,6 +23,7 @@ import {
   Maximize2,
   Search,
   UserRound,
+  Wrench,
   X,
 } from 'lucide-react'
 import { AgentAvatar } from '../chat/agent-avatar.tsx'
@@ -772,8 +773,10 @@ export function AgentSequence({
                   className="rv-participant" data-kind={participant.kind} data-working={working||undefined}
                   {...tipEvents('participant:'+participant.id,participant.name,
                     [role,participant.model,working?L('Working','工作中'):undefined,participant.description])}>
-                  <AgentAvatar id={participant.avatarId??participant.id}
-                    kind={participant.avatarKind??(participant.id==='router'||participant.id==='lead'?'router':'worker')} size={28}/>
+                  {participant.kind==='tool'
+                    ? <Wrench className="rv-participant-tool" size={28} strokeWidth={1.65} aria-hidden="true"/>
+                    : <AgentAvatar id={participant.avatarId??participant.id}
+                      kind={participant.avatarKind??(participant.id==='router'||participant.id==='lead'?'router':'worker')} size={28}/>}
                   <span className="rv-participant-name">{participant.name}</span>
                   {working&&<span className="rp-sr-only">{L('Working','工作中')}</span>}
                 </div>

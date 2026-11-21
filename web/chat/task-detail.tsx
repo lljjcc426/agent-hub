@@ -84,12 +84,13 @@ function recordedDuration(call: TaskExecutionCall) {
   return call.reported || call.state === 'interrupted' || call.endedAt === undefined ? undefined : call.endedAt-call.startedAt
 }
 
-function RecordRow({label, meta, tone, open, toggle, children}: {
-  label: string; meta: string; tone: Tone; open: boolean; toggle: () => void; children: ReactNode
+function RecordRow({label, description, meta, tone, open, toggle, children}: {
+  label: ReactNode; description?: string; meta: string; tone: Tone; open: boolean; toggle: () => void; children: ReactNode
 }) {
   return <>
     <button type="button" className="task-run-record" data-tone={tone} aria-expanded={open} onClick={toggle}>
-      <span>{label}</span><small>{meta}</small><ChevronDown size={14} aria-hidden="true"/>
+      <span>{label}{description && <span className="task-run-record-description">{description}</span>}</span>
+      <small>{meta}</small><ChevronDown size={14} aria-hidden="true"/>
     </button>
     <div className="task-run-fold" data-open={open} inert={!open} aria-hidden={!open}><div>{children}</div></div>
   </>
@@ -106,24 +107,24 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   const progressListId = useId()
   const toolListId = useId()
   const revealedList = useRef<HTMLElement | null>(null)
-  const toolsTab = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const { activity, span } = record
   const tools = record.calls.filter(call => call.kind === 'tool' && call.name !== 'chat_opening')
   const ticketById = new Map(activity.tickets.map(ticket => [ticket.id,ticket]))
-  const executors = new Map<string,TaskExecutionCall>()
+  const executors = new Map<string,{call:TaskExecutionCall;workerId?:string;models:Set<string>}>()
   for (const call of record.calls) {
     if (call.kind === 'tool') continue
-    const key = JSON.stringify([call.kind,call.workerId ?? call.agentId,call.backend,call.model])
-    if (!executors.has(key)) executors.set(key,call)
+    const workerId = call.kind === 'router' ? undefined : call.workerId ?? ticketById.get(call.ticketId ?? '')?.workerId
+    const key = workerId ? 'worker:'+workerId : call.kind === 'subagent' && call.agentId ? 'subagent:'+call.agentId : call.kind
+    const executor = executors.get(key) ?? {call,workerId,models:new Set<string>()}
+    const model = [call.backend,call.model].filter(Boolean).join(' · ')
+    if (model) executor.models.add(model)
+    executors.set(key,executor)
   }
   const entries = useMemo(() => {
-    const milestones = new Set(record.events.map(event => event.kind))
-    const visibleCalls = record.calls.filter(call => call.name !== 'chat_opening' &&
-      !(call.kind === 'tool' && call.state === 'completed' && call.name === 'superagent_plan' && milestones.has('plan')))
     const all: Entry[] = [
       ...record.events.map(event => ({id:'event:'+event.id,at:event.at,event})),
-      ...visibleCalls.map(call => ({id:'call:'+call.id,at:call.startedAt,call})),
+      ...record.calls.filter(call => call.kind !== 'tool').map(call => ({id:'call:'+call.id,at:call.startedAt,call})),
     ]
     return all.sort((a,b) => a.at-b.at)
   }, [record])
@@ -161,14 +162,6 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
       }}>{L('Show all','展开全部')} <ChevronDown size={13} aria-hidden="true"/></button>
   }
 
-  function jump(id: string) {
-    if (!showAll.tools && tools.findIndex(call => call.id === id) >= taskListPreviewLimit)
-      setShowAll(current => ({...current,tools:true}))
-    setTool(id)
-    setTab('tools')
-    toolsTab.current?.focus({preventScroll:true})
-  }
-
   function keys(event: KeyboardEvent<HTMLDivElement>) {
     if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return
     event.preventDefault()
@@ -187,10 +180,10 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
     {(activity.objective || activity.nextAction) && <p className="task-run-note">{activity.objective || activity.nextAction}</p>}
 
     {!!executors.size && <div className="task-run-executors" aria-label={L('Agents and recorded models','处理 Agent 和记录的模型')}>
-      {[...executors.entries()].map(([key,call]) => <AgentIdentity key={key} size={32}
-        id={call.workerId ?? call.agentId} kind={call.kind === 'router' ? 'router' : 'worker'}
-        name={call.kind === 'subagent' && !call.workerId ? L('Subagent','子 Agent') : agentName(call.workerId)}
-        detail={[call.backend,call.model].filter(Boolean).join(' · ') || L('No model recorded','暂无模型记录')}/>)}
+      {[...executors.entries()].map(([key,{call,workerId,models}]) => <AgentIdentity key={key} size={32}
+        id={workerId ?? call.agentId} kind={call.kind === 'router' ? 'router' : 'worker'}
+        name={workerId ? agentName(workerId) : call.kind === 'subagent' ? L('Subagent','子 Agent') : agentName()}
+        detail={[...models].join(' / ') || L('No model recorded','暂无模型记录')}/>)}
     </div>}
 
     <div className="task-run-elapsed">
@@ -203,7 +196,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
     <div className="team-tabs task-run-tabs" role="tablist" aria-label={L('Task record tabs','执行详情分组')} data-tab={tab} onKeyDown={keys}>
       <button id="task-run-tab-progress" role="tab" type="button" aria-controls="task-run-progress" aria-selected={tab==='progress'}
         tabIndex={tab==='progress'?0:-1} onClick={() => setTab('progress')}><Clock3 size={16} aria-hidden="true"/>{L('Progress','进度')}</button>
-      <button ref={toolsTab} id="task-run-tab-tools" role="tab" type="button" aria-controls="task-run-tools" aria-selected={tab==='tools'}
+      <button id="task-run-tab-tools" role="tab" type="button" aria-controls="task-run-tools" aria-selected={tab==='tools'}
         tabIndex={tab==='tools'?0:-1} onClick={() => setTab('tools')}><Wrench size={16} aria-hidden="true"/>{L('Tools','工具')}</button>
     </div>
     {record.callsTruncated && <p className="task-run-note">{L('Showing the latest '+taskCallLimit+' calls for this task.','显示此任务最近 '+taskCallLimit+' 条调用。')}</p>}
@@ -214,7 +207,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
           const tone = callStatus?.tone ?? (event?.state && problems.has(event.state) ? 'problem' : 'done')
           const wait = event?.waitMs
           const took = call ? recordedDuration(call) : undefined
-          const name = event ? eventLabel(event,L) : call!.kind === 'tool' ? toolLabel(call!,L) : L('Model run','模型处理')
+          const name = event ? eventLabel(event,L) : call?.kind === 'subagent' ? L('Subagent run','子 Agent 处理') : L('Model run','模型处理')
           const meta = tone === 'working' || tone === 'problem' ? callStatus?.label ?? clock.format(time)
             : took === undefined ? clock.format(time) : duration(took)
           const related = ticketById.get(event?.ticketId ?? call?.ticketId ?? '')
@@ -224,10 +217,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
               <RecordRow label={name} meta={meta} tone={tone} open={expanded===id} toggle={() => setExpanded(expanded===id?undefined:id)}>
                 <p><time dateTime={new Date(time).toISOString()}>{dateTime.format(time)}</time>{related ? ' · '+related.title : ''}</p>
                 {wait !== undefined && <p>{L('Waited ','等待开始 ')+duration(wait)}</p>}
-                {call && call.kind !== 'tool' && <p>{agentName(call.workerId)}{call.model ? ' · '+call.model : ''}</p>}
-                {call?.kind === 'tool' && <button type="button" className="task-run-link" onClick={() => jump(call.id)}>
-                  {L('View tool record','查看工具记录')} <ArrowRight size={13} aria-hidden="true"/>
-                </button>}
+                {call && <p>{agentName(call.workerId ?? related?.workerId)}{call.model ? ' · '+call.model : ''}</p>}
               </RecordRow>
             </div>
           </li>
@@ -252,10 +242,12 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
     <div ref={list} id="task-run-tools" role="tabpanel" aria-labelledby="task-run-tab-tools" hidden={tab!=='tools'} className="task-run-arrive">
       {tools.length ? <ul id={toolListId} className="task-run-tools">{(showAll.tools ? tools : tools.slice(0,taskListPreviewLimit)).map(call => {
         const status = callState(call,L), took = recordedDuration(call)
+        const action = toolLabel(call,L)
         return <li className="task-run-tool" data-selected={tool===call.id || undefined} key={call.id}>
-          <RecordRow label={toolLabel(call,L)} meta={status.label} tone={status.tone} open={tool===call.id}
+          <RecordRow label={call.name ? <code className="task-run-tool-name">{call.name}</code> : action}
+            description={call.name && action!==call.name ? action : undefined} meta={status.label} tone={status.tone} open={tool===call.id}
             toggle={() => setTool(tool===call.id ? undefined : call.id)}>
-            <p>{call.name && <code>{call.name} · </code>}{agentName(call.workerId)} · {dateTime.format(call.startedAt)}</p>
+            <p>{agentName(call.workerId)} · {dateTime.format(call.startedAt)}</p>
             <p>{status.label}{status.tone!=='working' && (took===undefined ? ' · '+L('Duration unavailable','未记录耗时') : ' · '+duration(took))}</p>
             {call.webBatch?.items.map((item,index)=><p key={item.target}>
               {L('Page','网页')} {index+1} · {item.reused?L('Reused','复用'):item.status==='completed'?L('Succeeded','成功'):item.status==='skipped'?L('Skipped','跳过'):L('Failed','失败')}

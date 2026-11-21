@@ -138,6 +138,8 @@
 .task-run-record:hover { background: var(--rp-soft); }
 .task-run-record > span { flex: 1; min-width: 0; font-weight: 600; }
 .task-run-record[data-tone="problem"] > span { color: var(--task-run-alert); }
+.task-run-tool-name { font-size: 12px; overflow-wrap: anywhere; }
+.task-run-record-description { display: block; margin-top: 2px; color: var(--team-muted); font-size: 11px; font-weight: 400; }
 .task-run-record > small { color: var(--team-muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .task-run-record > svg { flex: none; color: var(--team-muted); transform: rotate(-90deg); transition: transform 180ms var(--team-ease); }
 .task-run-record[aria-expanded="true"] > svg { transform: none; }

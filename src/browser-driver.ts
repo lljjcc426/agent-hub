@@ -22,8 +22,11 @@ export interface DriverSession {
   id: string;
   directory: string;
   cdpPort?: number;
+  provider?: 'ego-lite';
+  profileId?: string;
 }
 export interface BrowserDriver {
+  readonly provider?: 'ego-lite';
   version(): Promise<string>;
   run(
     session: DriverSession,

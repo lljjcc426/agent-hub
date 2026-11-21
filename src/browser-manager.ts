@@ -16,6 +16,8 @@ import {
   type DriverSession,
 } from "./browser-driver.ts";
 import { BrowserVault } from "./browser-vault.ts";
+import { EgoBrowserDriver } from "./ego-browser-driver.ts";
+import { PageRecording, captureLimit } from "./browser-recording.ts";
 import {
   BrowserError,
   browserAction,
@@ -61,6 +63,7 @@ interface Session extends DriverSession {
   streaming?: boolean;
   closePromise?: Promise<void>;
   secrets: Set<string>;
+  recording?: {recorder:PageRecording; done:Promise<unknown>};
 }
 interface WorkspaceBinding { id: string; paused: boolean; resume?: {conversation: string; message: string; turn: string} }
 interface Receipt {
@@ -68,10 +71,32 @@ interface Receipt {
   state: "running" | "complete" | "uncertain";
   result?: unknown;
 }
-interface BrowserScreenshot {
-  id:string;kind:'browser-screenshot';conversationId?:string;runId?:string;
-  ticketId:string;assignmentId:string;path:string;name:string;bytes:number;mime:'image/png';
-  resource:string;sha256:string;url:string;title:string;
+interface BrowserCapture {
+  id:string;kind:'browser-screenshot'|'browser-recording';conversationId?:string;runId?:string;
+  ticketId:string;assignmentId:string;path:string;name:string;bytes:number;mime:'image/png'|'video/mp4';
+  resource:string;sha256:string;url?:string;title?:string;workspacePath?:string;
+}
+const isCapture = (item: BrowserCapture | undefined): item is BrowserCapture =>
+  item?.kind === 'browser-screenshot' || item?.kind === 'browser-recording';
+const pngSignature = Buffer.from([137,80,78,71,13,10,26,10]);
+
+function finalizedMp4(bytes: Buffer) {
+  let fileType = false, media = false, index = false;
+  for (let offset = 0; offset + 8 <= bytes.length;) {
+    let size = bytes.readUInt32BE(offset), header = 8;
+    if (size === 1) {
+      header = 16;
+      if(offset + header > bytes.length)return false;
+      size = Number(bytes.readBigUInt64BE(offset + 8));
+    } else if (size === 0) size = bytes.length - offset;
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (size < header || offset + size > bytes.length) return false;
+    fileType ||= type === 'ftyp' && offset === 0;
+    media ||= type === 'mdat' && size > header;
+    index ||= type === 'moov' && size > header;
+    offset += size;
+  }
+  return fileType && media && index;
 }
 const hash = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
@@ -120,6 +145,7 @@ export class BrowserManager {
   private recovery: Promise<unknown>;
   private timer: ReturnType<typeof setInterval>;
   readonly driver: BrowserDriver;
+  private readonly workerDriver: BrowserDriver;
   constructor(
     private host: Runtime,
     driver?: BrowserDriver,
@@ -127,12 +153,13 @@ export class BrowserManager {
     this.root = join(host.config.stateDir, "browser");
     this.driver =
       driver ?? new AgentBrowserDriver(this.root, host.config.browser);
+    this.workerDriver = driver ?? new EgoBrowserDriver(this.root, host.config.browser);
     const abandoned = host.store
       .list<any>("browser-session")
       .filter((row) => row.active);
     this.recovery = Promise.allSettled(
       abandoned.map(async (row) => {
-        await this.driver.close(row);
+        await this.driverFor(row).close(row);
         if (!row.personal && !row.cdpPort)
           rmSync(row.directory, { recursive: true, force: true });
         host.store.put("browser-session", row.id, {
@@ -167,6 +194,9 @@ export class BrowserManager {
       }
     }, 10000);
     this.timer.unref();
+  }
+  private driverFor(session: DriverSession) {
+    return session.provider === 'ego-lite' ? this.workerDriver : this.driver;
   }
   private getVault() {
     return (this.vault ??= new BrowserVault(
@@ -278,6 +308,7 @@ export class BrowserManager {
       id: s.id,
       profileId: s.profileId,
       personal: s.personal,
+      ...(s.provider ? { provider: s.provider } : {}),
       workspace: !!s.cdpPort,
       workerId: s.workerId,
       conversationId: s.conversationId,
@@ -332,15 +363,44 @@ export class BrowserManager {
     return [...this.sessions.values()].find(s => !s.ended && !s.closing && s.owner?.ticketId === ticketId && s.owner.assignmentId === assignmentId && s.control !== 'worker');
   }
   screenshots(conversationId:string): (ChatAttachment & {runId?:string;ticketId:string})[] {
-    return this.host.store.list<BrowserScreenshot>('asset')
-      .filter(a=>a.kind==='browser-screenshot'&&a.conversationId===conversationId&&!this.host.memory.cleanup.blocked('asset',a.id,a))
+    return this.host.store.list<BrowserCapture>('asset')
+      .filter(a=>isCapture(a)&&a.conversationId===conversationId&&!this.host.memory.cleanup.blocked('asset',a.id,a))
       .map(a=>({id:a.id,name:a.name,mimeType:a.mime,bytes:a.bytes,runId:a.runId,ticketId:a.ticketId,url:'/api/browser/screenshots/'+a.id,previewUrl:'/api/browser/screenshots/'+a.id+'?preview=1'}));
   }
   screenshot(user:string,id:string) {
-    const asset=this.host.store.get<BrowserScreenshot>('asset',id);
-    if(asset?.kind!=='browser-screenshot'||!asset.conversationId||this.host.memory.cleanup.blocked('asset',id,asset))throw new BrowserError('browser_missing','Screenshot is unavailable.');
+    const asset=this.host.store.get<BrowserCapture>('asset',id);
+    if(!isCapture(asset)||!asset.conversationId||this.host.memory.cleanup.blocked('asset',id,asset))throw new BrowserError('browser_missing','Capture is unavailable.');
     this.host.chat.view(asset.conversationId,user);
     return asset;
+  }
+  saveCapture(owner: WorkOwner, mime: BrowserCapture['mime'], bytes: Buffer, page?: {url:string;title:string}) {
+    const image = mime === 'image/png';
+    if (bytes.length > captureLimit || !(image ? bytes.subarray(0,8).equals(pngSignature) : finalizedMp4(bytes)))
+      throw new BrowserError('capture_invalid', 'The capture is invalid, unfinished, or exceeds the file limit.');
+    const id = randomUUID(), name = image ? 'screenshot.png' : 'recording.mp4';
+    const directory = join(this.host.config.stateDir, 'assets', id), path = join(directory, name);
+    const assignment = this.host.store.get<{parentTrigger?:string}>('worker-assignment',owner.ticketId);
+    const runId = this.host.taskAuthority(owner.ticketId)?.parentTrigger ?? assignment?.parentTrigger;
+    const chat = runId ? this.host.store.get<{conversationId:string}>('chat-run',runId) : undefined;
+    mkdirSync(directory,{recursive:true,mode:0o700});
+    let workspacePath: string | undefined;
+    try {
+      writeFileSync(path,bytes,{flag:'wx',mode:0o400});
+      if(owner.sandbox==='workspace-write'&&this.host.validWork(owner)) {
+        const target=join(realpathSync(owner.cwd),'roppo-'+id+'-'+name);
+        writeFileSync(target,bytes,{flag:'wx',mode:0o600});
+        workspacePath=target;
+      }
+      const asset:BrowserCapture={id,kind:image?'browser-screenshot':'browser-recording',conversationId:chat?.conversationId,
+        runId,path,name,bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,
+        resource:'asset/'+id,mime,sha256:createHash('sha256').update(bytes).digest('hex'),workspacePath,...page};
+      this.host.store.put('asset',id,asset);
+      return asset;
+    } catch(error) {
+      rmSync(directory,{recursive:true,force:true});
+      if(workspacePath)rmSync(workspacePath,{force:true});
+      throw error;
+    }
   }
   saveProfile(
     user: string,
@@ -394,7 +454,8 @@ export class BrowserManager {
     this.getVault().remove(user, id);
   }
   private async capture(s: Session, signal?: AbortSignal) {
-    const data = await this.driver.run(s, ["tab", "list"], signal);
+    const driver = this.driverFor(s);
+    const data = await driver.run(s, ["tab", "list"], signal);
     const tabs: Session["tabs"] = (data.tabs ?? []).map((t: any, i: number) => {
       const url = cleanUrl(t.url ?? "about:blank");
       let title = String(t.title ?? "").slice(0, 200);
@@ -407,7 +468,7 @@ export class BrowserManager {
     });
     const active = tabs.find(tab => tab.active) ?? tabs[0];
     if (s.cdpPort && active) {
-      const page = await this.driver.run(s, ["get", "title"], signal);
+      const page = await driver.run(s, ["get", "title"], signal);
       if (typeof page.title === "string") active.title = page.title.slice(0, 200);
     }
     s.tabs = tabs;
@@ -464,6 +525,7 @@ export class BrowserManager {
     const s: Session = {
       id,
       directory,
+      provider: owner ? this.workerDriver.provider : undefined,
       user,
       personal,
       profileId,
@@ -493,12 +555,14 @@ export class BrowserManager {
       id,
       directory,
       cdpPort: s.cdpPort,
+      provider: s.provider,
       personal,
       profileId,
       user,
       active: true,
     });
     s.initialization = (async () => {
+      const driver = this.driverFor(s);
       if (workspace) {
         await this.capture(s, s.controller.signal);
         s.conversationId = workspace.resume?.conversation;
@@ -523,14 +587,15 @@ export class BrowserManager {
             active: false,
           });
         }
-      await this.driver.run(s, ["open", "about:blank"], s.controller.signal);
+      if (s.provider !== 'ego-lite' || p && url !== 'about:blank')
+        await driver.run(s, ["open", "about:blank"], s.controller.signal);
       if (!personal && p && url !== "about:blank") {
         const source = await this.openPersonalSession(user, p.id);
         const state = await this.enqueue(source, () => {
           this.authorizeProfile(p.id, user, principal!.workerId);
           return this.driver.state(source, source.controller.signal);
         });
-        await this.driver.load(
+        await driver.load(
           s,
           stateForOrigin(state, url),
           s.controller.signal,
@@ -538,15 +603,15 @@ export class BrowserManager {
       }
       const urls = personal && p ? p.tabs.slice(0, 8) : [url];
       for (let i = 0; i < urls.length; i++)
-        await this.driver.run(
+        await driver.run(
           s,
           i ? ["tab", "new", cleanUrl(urls[i]!)] : ["open", cleanUrl(urls[i]!)],
           s.controller.signal,
         );
       if (personal && p && p.activeTab !== undefined && p.activeTab >= 0) {
-        const restored=await this.driver.run(s,["tab","list"],s.controller.signal);
+        const restored=await driver.run(s,["tab","list"],s.controller.signal);
         const tabId=restored.tabs?.[p.activeTab]?.tabId;
-        if(tabId)await this.driver.run(s,["tab",tabId],s.controller.signal);
+        if(tabId)await driver.run(s,["tab",tabId],s.controller.signal);
       }
       if (owner) {
         this.principal(owner);
@@ -712,6 +777,8 @@ export class BrowserManager {
           "browser_control_changed",
           "Browser control changed.",
         );
+      if(s.recording)await this.stopRecording(s).catch(()=>{});
+      if(s.closing||s.epoch!==epoch)throw new BrowserError("browser_control_changed","Browser control changed.");
       s.control = "human";
       s.client = client;
       s.leaseUntil = Date.now() + 90000;
@@ -804,7 +871,7 @@ export class BrowserManager {
   private async ensureFrames(s: Session) {
     if (s.closing || !s.watchers.size || s.streaming) return;
     s.stopFrames?.();
-    s.stopFrames = await this.driver.frames(
+    s.stopFrames = await this.driverFor(s).frames(
       s,
       (frame) => this.receiveFrame(s, frame),
       (connected) => {
@@ -860,8 +927,8 @@ export class BrowserManager {
       // The stream forwards key events, but Chromium on macOS needs an editing
       // command for select-all. Keep it in the same guarded input queue.
       if(event.type==='key'&&((event.key.toLowerCase()==='a'&&[2,4].includes(event.modifiers??0))||/^(Control|Meta)\+a$/i.test(event.key)))
-        await this.driver.evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;if(e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&typeof e.select==='function')e.select();else d.execCommand('selectAll')})()`,s.controller.signal);
-      else await this.driver.input(s,event);
+        await this.driverFor(s).evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;if(e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&typeof e.select==='function')e.select();else d.execCommand('selectAll')})()`,s.controller.signal);
+      else await this.driverFor(s).input(s,event);
       s.revision++;
       return this.view(s,client);
     });
@@ -870,7 +937,7 @@ export class BrowserManager {
     const s=this.session(id,user);this.human(s,client,epoch);
     return this.enqueue(s,async()=>{
       this.human(s,client,epoch);
-      await this.driver.run(s,['set','viewport',String(width),String(height)],s.controller.signal);
+      await this.driverFor(s).run(s,['set','viewport',String(width),String(height)],s.controller.signal);
       s.revision++;
       return this.view(s,client);
     });
@@ -879,7 +946,7 @@ export class BrowserManager {
     const s=this.session(id,user);this.human(s,client,epoch);
     return this.enqueue(s,async()=>{
       this.human(s,client,epoch);
-      const text=await this.driver.evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;const text=e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&e.selectionStart!==null?e.value.slice(e.selectionStart,e.selectionEnd):d.getSelection()?.toString()||'';return text})()`,s.controller.signal);
+      const text=await this.driverFor(s).evaluate(s,`(()=>{let d=document;while(d.activeElement?.tagName==='IFRAME'&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;const e=d.activeElement;const text=e&&(e.tagName==='INPUT'||e.tagName==='TEXTAREA')&&e.selectionStart!==null?e.value.slice(e.selectionStart,e.selectionEnd):d.getSelection()?.toString()||'';return text})()`,s.controller.signal);
       return {text};
     });
   }
@@ -889,7 +956,7 @@ export class BrowserManager {
     const s=this.session(id,user);this.human(s,client,epoch);
     return this.enqueue(s,async()=>{
       this.human(s,client,epoch);
-      return this.driver.evaluate(s,`Array.from(document.querySelectorAll('input[type="file"]')).filter(e=>!e.disabled).map((e,i)=>{e.dataset.roppoUpload = ${JSON.stringify(randomUUID())}+'-'+i;return {id:e.dataset.roppoUpload,label:e.labels?.[0]?.innerText||e.getAttribute('aria-label')||e.name||('File '+(i+1)),accept:e.accept}})`,s.controller.signal);
+      return this.driverFor(s).evaluate(s,`Array.from(document.querySelectorAll('input[type="file"]')).filter(e=>!e.disabled).map((e,i)=>{e.dataset.roppoUpload = ${JSON.stringify(randomUUID())}+'-'+i;return {id:e.dataset.roppoUpload,label:e.labels?.[0]?.innerText||e.getAttribute('aria-label')||e.name||('File '+(i+1)),accept:e.accept}})`,s.controller.signal);
     });
   }
   async upload(user:string,id:string,client:string,epoch:number,target:string,name:string,body:AsyncIterable<Uint8Array>,authorized:()=>boolean){
@@ -899,7 +966,7 @@ export class BrowserManager {
       await browserUpload(s.directory,name,body,async path=>{
         if(!authorized())throw new BrowserError('browser_control_required','Sign in again before uploading.',401);
         this.human(s,client,epoch);
-        await this.driver.run(s,['upload',`input[type="file"][data-roppo-upload="${target}"]`,path],s.controller.signal);
+        await this.driverFor(s).run(s,['upload',`input[type="file"][data-roppo-upload="${target}"]`,path],s.controller.signal);
         this.human(s,client,epoch);
         s.revision++;
       });
@@ -907,9 +974,10 @@ export class BrowserManager {
     });
   }
 
-  private async perform(s: Session, input: BrowserAction, guard: () => void) {
+  private async perform(s: Session, input: BrowserAction, guard: () => void, download = false) {
     guard();
     const signal = s.controller.signal;
+    let downloaded: {name:string} | undefined;
     if (
       ["click", "fill", "press"].includes(input.action) &&
       input.revision !== s.revision
@@ -928,6 +996,8 @@ export class BrowserManager {
     if (["select_tab","close_tab"].includes(input.action) && !s.tabs.some(tab=>tab.id===input.tab))
       throw new BrowserError("browser_tab_missing","This tab has closed. Refresh the page state.");
     if (input.action === "request_takeover") {
+      if(s.recording)await this.stopRecording(s).catch(()=>{});
+      guard();
       s.control = "paused";
       s.epoch++;
       s.handoffReason = input.reason;
@@ -944,7 +1014,7 @@ export class BrowserManager {
         );
       const origin = new URL(credential.url).origin;
       if (new URL(s.url).origin !== origin)
-        await this.driver.run(s, ["open", credential.url], signal);
+        await this.driverFor(s).run(s, ["open", credential.url], signal);
       guard();
       s.secrets.add(credential.password);
       // Sent over stdin, never process argv. No password or form values in the result.
@@ -962,7 +1032,7 @@ export class BrowserManager {
       const actions: Record<string, string[]> = {
         navigate: ["open", input.url!],
         snapshot: ["snapshot", "-i"],
-        click: ["click", input.ref!],
+        click: ["click", input.ref!, ...(download?["--download"]:[])],
         fill: ["fill", input.ref!, input.text!],
         press: ["press", input.key!],
         scroll: ["scroll", input.direction!, String(input.amount ?? 500)],
@@ -974,18 +1044,19 @@ export class BrowserManager {
         reload: ["reload"],
       };
       if (s.cdpPort && input.action === "click") {
-        await this.driver.run(s, ["scrollintoview", input.ref!], signal);
+        await this.driverFor(s).run(s, ["scrollintoview", input.ref!], signal);
         guard();
       }
       if (input.action !== "snapshot")
-        await this.driver.run(s, actions[input.action]!, signal);
+        downloaded = (await this.driverFor(s).run(s, actions[input.action]!, signal))?.download;
     }
     if (input.action !== "snapshot") s.revision++;
     s.updatedAt = Date.now();
     await this.capture(s, signal);
+    return downloaded;
   }
   private async snapshot(s: Session) {
-    const result = await this.driver.run(
+    const result = await this.driverFor(s).run(
       s,
       ["snapshot"],
       s.controller.signal,
@@ -1112,17 +1183,31 @@ export class BrowserManager {
             );
         };
         guard();
+        if (input.action === 'record_start' || input.action === 'record_stop') {
+          if (!(this.driverFor(s) instanceof EgoBrowserDriver))
+            throw new BrowserError('browser_recording_unavailable', 'Tab recording requires Ego Lite.');
+          record('running');
+          try {
+            const result = input.action === 'record_start' ? await this.startRecording(s, owner, input.durationMs) :
+              await this.stopRecording(s);
+            record('complete', result);
+            return result;
+          } catch (error) {
+            record('uncertain');
+            throw error;
+          }
+        }
         if (input.action === "screenshot") {
           const id=randomUUID(),directory=join(this.host.config.stateDir,"assets",id),path=join(directory,"screenshot.png");
           mkdirSync(directory,{recursive:true,mode:0o700});
           record("running");
           try {
-            await this.driver.run(s,["screenshot",path,...(input.fullPage?["--full"]:[])],s.controller.signal);
+            await this.driverFor(s).run(s,["screenshot",path,...(input.fullPage?["--full"]:[])],s.controller.signal);
             guard();
             const bytes=evidenceBytes(directory,"screenshot.png",32*1024*1024);
-            if(!bytes||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))throw new BrowserError("browser_screenshot","Browser did not return a PNG screenshot.");
+            if(!bytes||!bytes.subarray(0,8).equals(pngSignature))throw new BrowserError("browser_screenshot","Browser did not return a PNG screenshot.");
             chmodSync(path,0o400);
-            const screenshot:BrowserScreenshot={id,kind:'browser-screenshot',conversationId:s.conversationId,runId:this.host.taskAuthority(owner.ticketId)?.parentTrigger,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex"),url:s.url,title:s.title};
+            const screenshot:BrowserCapture={id,kind:'browser-screenshot',conversationId:s.conversationId,runId:this.host.taskAuthority(owner.ticketId)?.parentTrigger,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex"),url:s.url,title:s.title};
             const page=await this.snapshot(s);
             guard();
             // The native model's filesystem policy excludes host state. Deliver
@@ -1146,8 +1231,10 @@ export class BrowserManager {
           record("complete", result);
           return result;
         }
-        const { sessionId, profileId, requestId, fullPage, ...args } = input,
+        const { sessionId, profileId, requestId, fullPage, durationMs, inlineImage, download, ...args } = input,
           action = browserAction.parse(args);
+        if(download&&(action.action!=='click'||s.provider!=='ego-lite'))
+          throw new BrowserError('browser_download_action','Use download:true with an Ego Lite click.',400);
         // Validation and ownership failures are retryable with the same requestId; only execution is receipted.
         if (
           ["click", "fill", "press"].includes(action.action) &&
@@ -1159,11 +1246,11 @@ export class BrowserManager {
           );
         record("running");
         try {
-          await this.perform(s, action, guard);
+          const downloaded = await this.perform(s, action, guard, download);
           const result =
             action.action === "request_takeover"
               ? {...this.view(s), instruction: 'Return waiting without a question. The user can take over from Chat; returning control wakes this same assignment automatically. Do not report ready or create another task.'}
-              : await this.snapshot(s);
+              : {...await this.snapshot(s),...(downloaded?{download:downloaded}:{})};
           record("complete", result);
           return result;
         } catch (error) {
@@ -1174,6 +1261,26 @@ export class BrowserManager {
     })().finally(() => this.calls.delete(key));
     this.calls.set(key, { fingerprint, promise });
     return promise;
+  }
+  private async startRecording(s: Session, owner: WorkOwner, milliseconds = 60_000) {
+    if (s.recording) throw new BrowserError('browser_recording_active', 'Finish the previous tab recording before starting another.');
+    const tab = s.tabs.find(item => item.active) ?? s.tabs[0];
+    if (!tab) throw new BrowserError('browser_recording_tab', 'Open a tab before starting a recording.');
+    const id = randomUUID(), driver = this.driverFor(s) as EgoBrowserDriver;
+    const recorder = await PageRecording.start(this.host.config.browser.ffmpegCommand, join(s.directory,'recordings',id),
+      signal => driver.readFrame(s,signal,tab.id), milliseconds, s.controller.signal);
+    const done = recorder.done.then(({bytes, ...details}) => ({id, ...details, recording:
+      this.saveCapture(owner,'video/mp4',bytes,{url:tab.url,title:tab.title})}));
+    void done.catch(() => {});
+    s.recording = {recorder, done};
+    return {id, state:'recording', tab:tab.id, durationMs:milliseconds};
+  }
+  private async stopRecording(s: Session) {
+    const recording = s.recording;
+    if (!recording) throw new BrowserError('browser_recording_inactive', 'This browser has no tab recording to stop.');
+    void recording.recorder.stop().catch(() => {});
+    try { return await recording.done; }
+    finally { if(s.recording===recording)s.recording=undefined; }
   }
   async closeOwned(user: string, id: string, client: string, epoch: number) {
     const s = this.session(id, user);
@@ -1198,7 +1305,8 @@ export class BrowserManager {
       s.stopFrames?.();
       if (drain) await s.queue.catch(() => {});
       try {
-        await this.driver.close(s);
+        if(s.recording)await this.stopRecording(s).catch(() => {});
+        await this.driverFor(s).close(s);
         rmSync(join(s.directory,'uploads'),{recursive:true,force:true});
         if (!s.personal) rmSync(s.directory, { recursive: true, force: true });
         const row = this.host.store.get<any>("browser-session", s.id);
@@ -1220,6 +1328,7 @@ export class BrowserManager {
         s.client = undefined;
         s.handoffReason = undefined;
         s.updatedAt = Date.now();
+        if(s.recording)void this.stopRecording(s).catch(() => {});
       }
   }
   async close() {

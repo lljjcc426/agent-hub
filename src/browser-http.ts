@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {readFileSync} from 'node:fs';
+import {createReadStream} from 'node:fs';
 import {pipeline} from 'node:stream/promises';
 import {browserFilename} from './browser-files.ts';
 import { z } from "zod";
@@ -34,8 +34,9 @@ export async function browserRequest(
   const screenshot=path.match(/^\/api\/browser\/screenshots\/([a-f0-9-]{36})$/);
   if(screenshot&&(req.method==='GET'||req.method==='HEAD')){
     const file=manager.screenshot(user,z.string().uuid().parse(screenshot[1]));
-    res.writeHead(200,{'content-type':'image/png','content-length':file.bytes,'cache-control':'private, no-store','content-disposition':(url.searchParams.get('preview')==='1'?'inline':'attachment')+'; filename="screenshot.png"','content-security-policy':"default-src 'none'; sandbox"});
-    res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return;
+    res.writeHead(200,{'content-type':file.mime,'content-length':file.bytes,'cache-control':'private, no-store','content-disposition':(url.searchParams.get('preview')==='1'?'inline':'attachment')+'; filename="'+file.name+'"','content-security-policy':"default-src 'none'; sandbox"});
+    if(req.method==='HEAD')res.end();else await pipeline(createReadStream(file.path),res);
+    return;
   }
   if (path === "/api/browser" && req.method === "GET") {
     const conversationId=url.searchParams.has('conversation')?z.string().uuid().parse(url.searchParams.get('conversation')):undefined

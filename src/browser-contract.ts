@@ -28,6 +28,11 @@ export const browserConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
     command: z.string().min(1).optional(),
+    egoCommand: z.string().min(1).optional(),
+    egoProfile: z.string().trim().min(1).max(200).optional(),
+    egoProfiles: z.record(z.string().uuid(),z.string().trim().min(1).max(200)).optional(),
+    cuaCommand: z.string().min(1).optional(),
+    ffmpegCommand: z.string().min(1).optional(),
     workspace: z.object({owner: z.string().uuid(), cdpPort: z.number().int().min(1).max(65535)}).strict().optional(),
     executablePath: z.string().min(1).optional(),
     maxSessions: z.number().int().min(1).max(64).default(16),
@@ -126,6 +131,8 @@ export const browserToolSchema = z
       "profiles",
       "open",
       "screenshot",
+      "record_start",
+      "record_stop",
       "navigate",
       "snapshot",
       "click",
@@ -159,13 +166,16 @@ export const browserToolSchema = z
     revision: z.number().int().min(0).optional(),
     requestId: z.string().min(1).max(200),
     fullPage: z.boolean().optional(),
+    download: z.boolean().optional(),
+    durationMs: z.number().int().min(1000).max(180_000).optional(),
+    inlineImage: z.boolean().optional(),
   })
   .strict();
 export type BrowserToolInput = z.infer<typeof browserToolSchema>;
 export const browserToolDefinition = {
   name: "superagent_browser",
   description:
-    "Use the search and fetch tools, when available, to read public text. Use this isolated browser when the task needs interaction, authenticated access, or a rendered page. Reuse a tab for successive page reads when practical. Work autonomously; profiles and saved accounts are optional, not prerequisites to opening public pages. profiles lists granted login profiles and saved account IDs; open creates a session (optional profileId copies authorized login state for the URL). snapshot returns current refs and revision. screenshot exports a PNG with its hash and, for writable tasks, workspacePath inside your workspace. Read image/<relative-path> to inspect it. fullPage optionally captures beyond the viewport. click/fill/press MUST use the latest revision. login fills a saved sign-in form without revealing its password; inspect then submit if appropriate. If a required login or verification needs the user, call request_takeover with a short reason in their language, then return waiting without a question. Chat provides takeover and continue controls; returning control automatically resumes this same task. Read a fresh snapshot and continue, without asking the user to repeat the task or creating a replacement Worker. A blocked page is not a completed requested outcome; report its actual limit if the user only asked for a diagnostic. Leave the final page open for inspection; close only discarded browsers. Reuse requestId only for identical input; inspect uncertain actions before repeating a write.",
+    "Operate an isolated Ego Lite Task Space when a task needs interaction, authenticated access, or a rendered page. Use search and fetch for public text. Reuse tabs. Profiles lists granted logins; open creates a session and can load authorized login state for the URL. Snapshot returns page refs and revision. Click, fill and press need the latest revision. Login fills a saved sign-in form; inspect before submitting. The action screenshot exports a PNG attachment. Set fullPage for the full page and inlineImage:false for text-only models. Record_start captures video from the selected tab for up to durationMs (default 60 seconds). Record_stop finalizes the MP4 with its attachment and workspace path. For login or verification requiring human help, request_takeover with a short reason in the user's language and return waiting. Chat can return control and continue the same assignment. Refresh the snapshot after takeover. Leave the final page open for inspection. Reuse requestId only for identical input and inspect uncertain results before repeating a write.",
   validator: browserToolSchema,
   schema: {
     type: "object",
@@ -192,6 +202,9 @@ export const browserToolDefinition = {
       },
       requestId: { type: "string" },
       fullPage: { type: "boolean" },
+      download: { type: "boolean", description: "Set true with click to retain the resulting download in this browser's files." },
+      durationMs: { type: "integer", minimum: 1000, maximum: 180_000 },
+      inlineImage: { type: "boolean" },
     },
     required: ["action", "requestId"],
   },

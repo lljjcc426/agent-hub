@@ -15,15 +15,15 @@
 
 输入支持鼠标移动、按下/抬起、拖选、右键事件、滚轮、文字/粘贴/输入法和常用按键。复制/剪切将远端选中文字写入本地剪贴板，需要浏览器允许剪贴板写入。F6 返回地址栏；地址栏接受网址或搜索词。接管时网页视口随面板尺寸调整，观看模式保持 Worker 的视口。
 
-“浏览器文件”里可以选择网页上的文件上传位置，单次上传一个不超过 100 MiB 的文件，并取回当前浏览器已完成的下载。上传文件保留到浏览器关闭，供网页稍后提交表单；任务浏览器关闭后下载随实例回收，需及时保存。当前文件选择覆盖主文档中的标准文件输入，不代表所有跨域 iframe、自定义文件管理器或系统文件对话框都可用。
+“浏览器文件”支持向主文档的标准文件输入框上传单个不超过 100 MiB 的文件。Worker 可在触发下载的 Ego Lite 点击中传入 `download:true`，将结果保留在浏览器文件中。手动触发的 Ego Lite 下载可在客户端的下载面板查看。选中的上传文件和任务下载保留到浏览器关闭。
 
 ## 持久化与隔离
 
 浏览器资料与已保存账号仍可在自己的会话中选择，但一个正在使用的个人 profile 只能绑定一个会话；要在另一会话使用，请另建资料，或先关闭原实例。Worker 登录复制仍按授权执行。
 
-个人浏览器使用独立 Chrome profile，保留网站持久 Cookie、站点存储和标签页网址/当前标签页。普通关闭与宿主重启后可重新打开。Worker 每个 assignment / 子代理获得不同的浏览器进程会话和可写目录，不共享个人 profile，也不能操作其他 assignment 的页签。
+个人浏览器使用独立 Chrome Profile，保留网站 Cookie、站点存储和标签页。Worker 浏览器使用 Ego Lite，每个任务浏览器有自己的 Space、标签页和工作目录。使用同一份 Ego Lite 资料的 Space 会共享网站登录状态。
 
-复用个人登录时，先导出授权资料，再仅复制目标网址对应的 Cookie 和 origin 存储到任务浏览器。Worker 的后续修改不回写个人资料。多个浏览器使用同一网站账号时，网站服务器上的业务数据仍属于同一账号；本地浏览器隔离不能消除网站业务层面的写入冲突。涉及这类任务应由 Router 串行安排，或使用不同网站账号。
+复用已授权登录时，Roppo 检查 Worker 权限，把目标站点的 Cookie 和站点存储复制到该资料绑定的 Ego Lite 资料。Worker 的后续修改留在 Ego Lite。可用 Roppo 现有的资料共享开关授权当前和以后的 Worker。
 
 同一会话内的命令串行执行。人工接管先阻止后续 Worker 命令，再等待已开始命令结束；旧控制权代次、旧快照和旧标签页引用会被拒绝。人工控制租约失效后保持暂停，不自动恢复 Worker 写操作。任务结束后保留最终页面，供人工检查和操作。闲置实例按配置回收；达到数量上限时优先回收无人观看、无人控制的已结束实例。只有正在观看的浏览器开启画面流。
 
@@ -35,7 +35,11 @@
 
 删除保存账号只删除密码记录，不会让网站现有登录失效；需要退出网站时，应在对应浏览器里执行网站的退出登录。
 
-运行依赖固定 `agent-browser 0.27.0`。macOS 默认使用已安装的 Google Chrome；其他宿主可指定 `browser.executablePath`，或安装工具使用的 Chrome：
+在 Roppo 宿主安装 [Ego Lite](https://lite.ego.app/download)，完成初始化，并创建或命名一份专用的 Roppo 资料。可用 `browser.egoProfile` 指定其他资料名称或 ID。已有 Roppo 登录资料可以在 `browser.egoProfiles` 中按 Roppo 资料 ID 绑定到不同的 Ego Lite 资料。通用资料和各组登录授权使用各自的 Ego Lite 资料。
+
+在登录的桌面会话中安装 [Cua Driver](https://cua.ai/docs/cua-driver/quickstart)，开启辅助功能和屏幕录制权限。Chat Worker 通过 `superagent_desktop` 使用它的原生 MCP。受管 OpenCode 通过现有 Roppo MCP 连接接收这两项工具。安装位置不在系统应用目录或 PATH 时，可以配置 `browser.egoCommand` 和 `browser.cuaCommand`。
+
+Router 和个人浏览器使用 `agent-browser 0.27.0`。macOS 默认使用已安装的 Google Chrome，可配置 `browser.executablePath` 指定兼容浏览器：
 
 ```sh
 npm ci
@@ -62,10 +66,14 @@ npm run build:chat
 
 浏览器数据位于 `<stateDir>/browser`。现有数据库备份命令不包含整个 Chrome profile：迁移或备份时应停止宿主，同时保存数据库、该目录及外置密钥。只恢复数据库不能恢复登录信息，丢失密钥无法还原保存密码。网站会话有效期、跨站 SSO、设备绑定及二次认证仍由网站决定；不会承诺永久登录或跨机器无条件迁移。
 
-Worker 可用 `superagent_browser` 的 `screenshot` 动作导出 PNG，默认当前视口，`fullPage: true` 捕获整页。截图由现有隔离浏览器生成，存为本任务的只读附件；返回完整路径、字节数和 SHA-256；允许工作区写入的任务还会获得宿主直接写入的 `workspacePath`，Worker 可通过工作区工具重命名为请求的文件名；不超过 8 MB 的截图直接作为图像返回模型，亦可用 `superagent_read asset/<id>` 查看。截图缩略图显示在所属对话的答复下，可直接下载。关闭浏览器不会删除交付附件，清理任务历史时统一删除。截图沿用会话归属、人类接管和请求去重规则，不需要放宽普通 shell 的浏览器进程权限。实现调用 [agent-browser 的截图命令](https://agent-browser.dev/commands#core)。验收保留原始 PNG 及宿主捕获回执；哈希和页面标题不能替代视觉质量检查。
+### 截屏和录屏
+
+- Ego Lite 的 `screenshot` 输出 PNG，支持 `fullPage`。`record_start` 和 `record_stop` 录制选中的标签页，输出无声 MP4。宿主需安装 FFmpeg，或通过 `browser.ffmpegCommand` 指定路径。
+- Cua Driver 的 `get_window_state` 可截指定窗口，`get_desktop_state` 可截主屏。录制工具输出主屏的无声 MP4，同一时间只能进行一条桌面录像。
+- 文件作为任务附件返回，可在 Chat 下载。可写任务也会收到工作区路径。文本模型截图时使用 `inlineImage:false`。录制在达到设定时长或任务结束时停止。
 
 当前验收覆盖 macOS + 本机 Chrome。Linux/Windows、任意外部网站、Chrome 扩展、系统 Passkey 和复杂跨站登录流程未计入通过项。见[验收记录](BROWSER_ACCEPTANCE_2026-11-07.md)及[开源许可](THIRD_PARTY_BROWSER.md)。
 
-人工输入复用 agent-browser 的实时 WebSocket 输入协议，不再为每个点击或滚轮启动 CLI 和查询标签页；移动及滚轮事件在前端合并。新画面到达时立即推送。客户端跟不上时，恢复发送最新帧。侧栏按原比例缩小预览，最多显示到图像原尺寸。接管和展开侧栏都会保留远端网页原有的视口。见[上游 Streaming 文档](https://agent-browser.dev/streaming)。
+Chat 侧栏显示当前观看的网页。Worker 页面由 Ego Lite 提供页面画面和输入，个人浏览器使用 [agent-browser Streaming](https://agent-browser.dev/streaming)。
 
 本地 Colima 部署使用 LinuxServer Chromium。创建容器时设置 `PIXELFLUX_WAYLAND=false` 可启用 X11/Xvfb。在 Selkies 查看器断开时的本地对照中，这一设置缩短了从点击到侧栏显示变化的时间。切换前让 Chromium 正常退出，新容器继续挂载原来的 `/config` 持久卷。

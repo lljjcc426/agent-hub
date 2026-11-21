@@ -2,6 +2,7 @@ import { stableDigest } from './sources.ts'
 import type { Store } from './store.ts'
 import type { ToolContent } from './model.ts'
 import type { ApprovalOrigin } from './approvals.ts'
+import { desktopNeedsApproval } from './cua-desktop.ts'
 
 export type ApprovalMode = 'ask' | 'full'
 export type PermissionActor = ApprovalOrigin & {
@@ -234,6 +235,11 @@ export function actionFacts(tool: string, args: Record<string, unknown>): Record
   if (tool === 'workspace_browser' || tool === 'superagent_browser') {
     for (const field of ['sessionId', 'tabId', 'ref', 'revision', 'key'])
       if (args[field] != null) facts[field] = String(args[field])
+  } else if (tool === 'superagent_desktop') {
+    const target = args.arguments as Record<string,unknown> | undefined
+    for (const field of ['app','pid','window_id'])
+      if (typeof target?.[field] === 'string' || typeof target?.[field] === 'number') facts[field] = String(target[field])
+    if(args.action==='start_recording')facts.target='Primary display'
   } else {
     facts.change = JSON.stringify(argsToShow, (key, value) =>
       /^(password|token|api[_-]?key|authorization|secret|cookie|headers)$/i.test(key) ? '•••' : value
@@ -244,6 +250,7 @@ export function actionFacts(tool: string, args: Record<string, unknown>): Record
 export function workerRisk(tool: string, args: Record<string, unknown>) {
   if (
     ['superagent_publish', 'superagent_review'].includes(tool) ||
+    (tool === 'superagent_desktop' && desktopNeedsApproval(args.action)) ||
     (tool === 'superagent_browser' && interactiveBrowser.has(String(args.action)))
   )
     return actionFacts(tool, args)

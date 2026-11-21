@@ -51,6 +51,7 @@ import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAl
 import {WorkManager,type WorkOwner,type WorkItem} from './work.ts'
 import {Resources,routerReadSpec} from './resources.ts'
 import {WorkerTools,workerSpecs} from './worker-tools.ts'
+import {CuaDesktop} from './cua-desktop.ts'
 import {Setup} from './setup.ts'
 import {Reviews} from './review.ts'
 import {Merger} from './merge.ts'
@@ -133,6 +134,7 @@ export class Runtime {
   readonly work:WorkManager
   readonly resources:Resources
   readonly workerTools:WorkerTools
+  readonly desktop:CuaDesktop
   readonly merger:Merger
   readonly setup:Setup
   readonly reviews:Reviews
@@ -278,13 +280,14 @@ export class Runtime {
         deliver: (ticket, assignment) => this.queueInputs(ticket, assignment),
         stop: (ticket, assignment) => {
           this.browser?.endAssignment(ticket.id,assignment.id)
+          this.desktop?.endAssignment(ticket.id,assignment.id)
           this.store.enqueue('cancel:' + assignment.id, 'cancel', { ticketId: ticket.id, assignmentId: assignment.id })
         },
       },
       emit: event => {
         this.store.audit(event)
         if(event.type==='trigger.followup')this.store.enqueue('followup:'+event.data.triggerId,'followup',{triggerId:event.data.triggerId})
-        if(event.type==='assignment.ended'){this.toolConnections.cancel(event.data.ticketId);this.browser?.endAssignment(event.data.ticketId,event.data.assignmentId);this.store.enqueue('cleanup:'+event.data.assignmentId,'cleanup',{ticketId:event.data.ticketId,assignmentId:event.data.assignmentId})}
+        if(event.type==='assignment.ended'){this.toolConnections.cancel(event.data.ticketId);this.browser?.endAssignment(event.data.ticketId,event.data.assignmentId);this.desktop?.endAssignment(event.data.ticketId,event.data.assignmentId);this.store.enqueue('cleanup:'+event.data.assignmentId,'cleanup',{ticketId:event.data.ticketId,assignmentId:event.data.assignmentId})}
       },
     })
     this.resources=new Resources(this)
@@ -294,6 +297,7 @@ export class Runtime {
     this.chat=new ChatSessions(this)
     this.heartbeat=new Heartbeat(this,this.clock)
     this.browser=new BrowserManager(this,options.browserDriver)
+    this.desktop=new CuaDesktop(this)
     this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
     this.routerIngress.delegatedAuthority=id=>this.delegation.authority(id)
     this.routerIngress.delegatedRevalidate=m=>this.delegation.validates(m)
@@ -1449,6 +1453,7 @@ export class Runtime {
       const schema=builtInChat?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const specs=this.availableWorkerSpecs().filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
+        && (s.name!=='superagent_desktop'||builtInChat)
         && (!s.name.startsWith('github_')||owner.network!==false&&!delegatedTask)
         && (!['github_write','github_git'].includes(s.name)||this.github.connected())),toolsDigest=digest(JSON.stringify(specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
@@ -1880,6 +1885,7 @@ export class Runtime {
     for(const controller of this.pollControllers.values())controller.abort()
     for (const controller of this.controllers.values()) controller.abort()
     await this.delegation.close()
+    await this.desktop.close()
     await this.toolConnections.close()
     await this.browser.close()
     await this.projectCode.close()

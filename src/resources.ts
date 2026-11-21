@@ -227,6 +227,7 @@ export class Resources {
    const asset=store.get<any>('asset',id!)
    if(asset?.kind==='chat-upload')return this.host.chat.uploads.read(id!,p)
    if(!asset||p.chatTriggerId||p.ticketId&&asset.ticketId!==p.ticketId)throw Error('Attachment is outside this reader')
+   if(asset.kind==='browser-recording')return asset
    if(statSync(asset.path).size>maxResourceBytes)throw Error('Attachment is too large')
    const data=readFileSync(asset.path);if(asset.kind==='browser-screenshot')return imageResource(data)
    if(data.includes(0))return asset

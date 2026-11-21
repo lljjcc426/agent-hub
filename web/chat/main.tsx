@@ -1180,7 +1180,13 @@ function Chat(p: ChatProps) {
       document.removeEventListener("visibilitychange", visible);
     };
   }, [id, refresh, resetSends]);
-  const visibleMessages=(snapshot?.messages ?? []).filter(m=>readonly?m.speaker?.id===selected.id||m.recipient?.id===selected.id:display==='group'||!!m.deliveries?.length||!m.recipient&&(m.role==='user'||!m.speaker||m.speaker.id===selected.id));
+  const visibleMessages = (snapshot?.messages ?? []).filter(message => {
+    if (readonly) return message.speaker?.id === selected.id || message.recipient?.id === selected.id;
+    if (display === "group") return true;
+    return !message.recipient && (
+      message.role === "user" || !message.speaker || message.speaker.id === selected.id || !!message.deliveries?.length
+    );
+  });
   const blocks=groupWorkflow(snapshot,visibleMessages,participantFilter);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];

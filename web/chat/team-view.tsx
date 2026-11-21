@@ -33,6 +33,7 @@ const tabs = [
 interface TeamOverviewProps {
   active: boolean
   cards?: ReactNode
+  heartbeat: ReactNode
   focusOnOpen: boolean
   snapshot: View | null
   participants: View['participants']
@@ -52,6 +53,7 @@ interface TeamOverviewProps {
 export function TeamOverview({
   active,
   cards,
+  heartbeat,
   focusOnOpen,
   snapshot,
   participants,
@@ -182,19 +184,14 @@ export function TeamOverview({
         ) : (
           <>
             <h3>{L('Scheduled tasks', '定时任务')}</h3>
-            {plans.length ? (
-              <div className="roppo-ui rp-schedule-stack">
-                {plans.map(p => <ScheduleCard key={p.id} plan={p} lang={lang} L={L}
-                  onChange={(revision,patch)=>changeSchedule(p.id,revision,patch)}
-                  onMessage={locateMessage} onFile={openFile}/>)}
-              </div>
-            ) : (
-              <p>
-                {snapshot && !snapshot.schedulingAvailable
-                  ? L('Scheduling is unavailable on this deployment', '当前部署未启用定时任务')
-                  : L('No scheduled tasks', '暂无定时任务')}
-              </p>
-            )}
+            <div className="roppo-ui rp-schedule-stack">
+              {heartbeat}
+              {plans.map(p => <ScheduleCard key={p.id} plan={p} lang={lang} L={L}
+                onChange={(revision,patch)=>changeSchedule(p.id,revision,patch)}
+                onMessage={locateMessage} onFile={openFile}/>)}
+            </div>
+            {snapshot && !snapshot.schedulingAvailable &&
+              <p>{L('Conversation schedules are unavailable on this deployment', '当前部署的会话定时任务不可用')}</p>}
           </>
         )}
       </div>

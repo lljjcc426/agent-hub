@@ -39,3 +39,13 @@
 .rp-schedule-save button { flex:none; }
 .rp-schedule-card [role=alert] { margin:6px 0 0; font-size:13px; }
 .team-tab-content .rp-schedule-stack { display:grid; gap:8px; background:transparent; }
+.rp-heartbeat-title { font-size:13px; margin:0 0 6px; }
+.rp-heartbeat-history { list-style:none; margin:0; padding:0; max-height:min(320px,36dvh); overflow:auto; }
+.rp-heartbeat-history > li { border-top:1px solid var(--rp-line); padding:9px 0; font-size:12px; }
+.rp-heartbeat-history ul { margin:4px 0 0; padding-inline-start:17px; color:var(--rp-muted); }
+.rp-heartbeat-run { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:3px 10px; }
+.rp-heartbeat-history [data-run-state=success] strong { color:var(--status-success); }
+.rp-heartbeat-history [data-run-state=failed] strong { color:var(--status-danger); }
+.rp-heartbeat-run time,.rp-heartbeat-permissions p { color:var(--rp-muted); }
+.rp-heartbeat-permissions summary { cursor:pointer; width:fit-content; font-size:13px; }
+.rp-heartbeat-permissions p { margin:6px 0 0; font-size:13px; }

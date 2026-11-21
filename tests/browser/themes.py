@@ -27,9 +27,11 @@ with tempfile.TemporaryDirectory(prefix='agenthub-themes-') as root:
             context.add_init_script("if(!localStorage.getItem('agenthub.configuration.language'))localStorage.setItem('agenthub.configuration.language','zh-CN')")
             context.on('request',lambda r:writes.append(r.url) if r.method=='POST' and urlsplit(r.url).path.endswith('/settings') else None)
             page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
-            page.goto(entry,wait_until='networkidle')
+            # The preview opens a conversation with a persistent event stream.
+            page.goto(entry,wait_until='domcontentloaded')
+            expect(page.locator('.chat-shell')).to_be_visible()
             def navigate(route='appearance'):
-                page.goto(base+'/configure#'+route,wait_until='networkidle')
+                page.goto(base+'/configure#'+route,wait_until='domcontentloaded')
                 expect(page.locator('.chat-shell')).to_be_visible()
             def capture(name):
                 page.locator('.appearance-settings h1').scroll_into_view_if_needed()
@@ -70,14 +72,14 @@ with tempfile.TemporaryDirectory(prefix='agenthub-themes-') as root:
             expect(page.locator('body')).to_have_css('background-color','rgb(24, 35, 50)')
             capture('appearance-zh-custom-dark')
             checks.append('Preset selection and custom background, foreground and accent HEX fields update the real page')
-            page.reload();page.wait_for_load_state('networkidle')
+            page.reload(wait_until='domcontentloaded')
             expect(page.locator('html')).to_have_attribute('data-theme','dark')
             expect(page.get_by_test_id('hex-dark-background')).to_have_value('#182332')
             expect(page.get_by_test_id('hex-dark-foreground')).to_have_value('#F1F5F9')
             expect(page.get_by_test_id('hex-dark-accent')).to_have_value('#8BA8FF')
             checks.append('Mode and all three custom colors survive reload')
             second=context.new_page();second.on('pageerror',lambda e:errors.append(str(e)))
-            second.goto(base+'/configure#appearance',wait_until='networkidle')
+            second.goto(base+'/configure#appearance',wait_until='domcontentloaded')
             second.get_by_role('radio',name='浅色',exact=True).check()
             expect(page.locator('html')).to_have_attribute('data-theme','light')
             second.get_by_role('radio',name='深色',exact=True).check()
@@ -108,4 +110,9 @@ with tempfile.TemporaryDirectory(prefix='agenthub-themes-') as root:
         assert not writes, writes
         print(json.dumps({'passed':len(checks),'screenshots':len(screenshots),'errors':errors}))
     finally:
-        server.terminate();server.wait(timeout=10)
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()

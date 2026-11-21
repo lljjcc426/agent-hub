@@ -95,13 +95,51 @@
 .rv-thinking-sparks i:nth-child(3) { inset: 1px 3px auto auto; animation-delay: 240ms; }
 .rv-clock { color: var(--rp-muted); white-space: nowrap; font-size: 12px; }
 .rv-thinking .rv-thinking-steps { padding: 3px 0 1px; }
+.rv-thinking-window {
+  position: relative;
+  --rv-thinking-row: 32px;
+  --rv-thinking-edge: 16px;
+}
+.rv-thinking-viewport {
+  max-block-size: min(calc(20 * var(--rv-thinking-row) + 4px),
+    max(128px, calc(var(--chat-transcript-content-height, 76dvh) - 44px)));
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scroll-padding-block: var(--rv-thinking-edge);
+  mask-image: linear-gradient(to bottom,
+    var(--rv-edge-start, black), black var(--rv-thinking-edge),
+    black calc(100% - var(--rv-thinking-edge)), var(--rv-edge-end, black));
+}
+.rv-thinking-window[data-before] .rv-thinking-viewport { --rv-edge-start: transparent; }
+.rv-thinking-window[data-after] .rv-thinking-viewport { --rv-edge-end: transparent; }
+.rv-thinking-window::before, .rv-thinking-window::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0 7px;
+  block-size: var(--rv-thinking-edge);
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  backdrop-filter: blur(2px);
+  transition: opacity 140ms ease;
+}
+.rv-thinking-window::before {
+  inset-block-start: 0;
+  mask-image: linear-gradient(black, transparent);
+}
+.rv-thinking-window::after {
+  inset-block-end: 0;
+  mask-image: linear-gradient(transparent, black);
+}
+.rv-thinking-window[data-before]::before, .rv-thinking-window[data-after]::after { opacity: 1; }
+.rv-thinking-viewport:focus-visible { outline: 2px solid var(--rp-muted); outline-offset: -2px; }
 .rv-thinking-step {
   position: relative;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: start;
   column-gap: 7px;
-  min-height: 32px;
+  min-height: var(--rv-thinking-row, 32px);
   padding: 5px 0;
   color: var(--rp-muted);
   animation: rv-reasoning-enter 520ms var(--rp-ease) both;
@@ -133,6 +171,9 @@
   animation: rv-reasoning-spark 1.2s ease-in-out infinite;
 }
 .rv-thinking-step[data-active][data-search] .rv-step-mark { color: var(--rv-reasoning-accent); }
+.rv-thinking-step[data-failed] .rv-step-mark,
+.rv-thinking-step[data-failed] small { color: var(--rv-red); }
+.rv-thinking-step-status { margin-inline-start: 8px; }
 .rv-thinking-terminal[data-result="done"] .rv-step-mark { color: var(--rv-reasoning-accent); }
 .rv-thinking-terminal[data-result="failed"] { color: var(--rv-red); }
 .rv-step-content { min-width: 0; }
@@ -703,6 +744,8 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
   .rv-commit-trail { --rv-commit-row-h: 40px; --rv-commit-nested-h: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .rv-thinking-window::before, .rv-thinking-window::after { transition: none; }
+  .rv-thinking-step, .rv-thinking-step::after { animation: none; }
   .rv-pending-arc, .rv-commit-writing, .rv-thinking-sheen, .rv-step-mark > i { animation: none !important; }
   .rv-commit-writing { color: var(--rv-rail); }
   .rv-thinking-sheen { color: var(--rp-muted); }

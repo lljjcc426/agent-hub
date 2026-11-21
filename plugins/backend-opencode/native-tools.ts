@@ -8,7 +8,8 @@ export const openCodeBuiltins = [
 ] as const
 
 const networkTools = new Set(['bash','webfetch','websearch','lsp'])
-export const openCodeReadOnlyTools:ReadonlySet<string>=new Set(['read','glob','grep','websearch','webfetch','webfetch_batch'])
+const webTools = ['websearch','webfetch','webfetch_batch']
+export const openCodeReadOnlyTools:ReadonlySet<string>=new Set(['read','glob','grep',...webTools])
 
 export function supportsOpenCodeTools(manifest: {id: string; version: string}, minimumMinor = 2): boolean {
   const [major = 0, minor = 0] = manifest.version.split('.').map(Number)
@@ -26,6 +27,10 @@ export function workspaceTools(mode: ModelRequest['harnessWorkspace']): string[]
 }
 
 export function nativeTools(request: ModelRequest): string[] {
-  if (request.opencodeNativeTools) return openCodeTools(request.opencodeNativeTools.network)
+  if (request.opencodeNativeTools) {
+    const {network}=request.opencodeNativeTools
+    if (request.role==='subagent') return network ? [...webTools] : []
+    return openCodeTools(network)
+  }
   return [...workspaceTools(request.harnessWorkspace),...(request.nativeTool === 'task-list' ? ['todowrite'] : [])]
 }

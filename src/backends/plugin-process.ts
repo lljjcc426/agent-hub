@@ -58,8 +58,10 @@ export class ProcessBackend implements Model {
    throw new BackendPluginError('configuration_invalid',this.id)
   }
   const old=request.threadId?this.record(request.threadId):undefined,pkg=this.pinned(old),caps=pkg.manifest.capabilities
+  const subagentWeb=request.role==='subagent'&&!request.operator&&this.config.work.network
   const defaultOpenCodeTools=supportsOpenCodeTools(pkg.manifest)&&request.allowNativeTools===true&&request.managed===true&&
-   !request.ephemeral&&request.options?.tools===undefined&&!!request.onTool&&!!request.tools?.length&&(request.role==='router'||request.role==='worker')
+   !request.ephemeral&&request.options?.tools===undefined&&!!request.onTool&&!!request.tools?.length&&
+   (request.role==='router'||request.role==='worker'||subagentWeb)
   const {opencodeNativeTools:unusedOpenCode,allowNativeTools:unusedGrant,webEvidenceQuery,webFetchReplay,opencodeWebPages:unusedPages,...activation}=request
   request=defaultOpenCodeTools?{...activation,opencodeNativeTools:{network:this.config.work.network},
    ...(this.config.work.network&&webEvidenceQuery&&supportsOpenCodeTools(pkg.manifest,3)?{webEvidenceQuery}:{}),

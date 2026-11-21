@@ -2,7 +2,7 @@ import {ArrowLeft,ChevronDown,History} from 'lucide-react'
 import {pendingHref} from './pending-links.ts'
 import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { ChatSessions, FileReview } from '../../src/chat.ts'
+import type { ChatRunState, ChatSessions, FileReview } from '../../src/chat.ts'
 import type { ChatDecision, PublicPlan } from '../../src/chat-workflow.ts'
 import { AgentPlan } from '../ui/agent-run.tsx'
 import { Button } from '../ui/controls.tsx'
@@ -22,10 +22,10 @@ type Plan = {
   live: boolean
 }
 type ChatCall = Snapshot['calls'][number]
-type CallItem = {kind:'call'; at:number; call:ChatCall; parentId?:string; model?:ChatCall}
+export type ThinkingItem = {kind:'thinking'; at:number; runId:string; calls:ChatCall[]; state?:ChatRunState}
 type FlowItem =
   | {kind:'plan'; at:number; plan:Plan}
-  | CallItem
+  | ThinkingItem
   | {kind:'question'; at:number; question:Snapshot['decisions'][number]}
   | {kind:'approval'; at:number; approval:Request}
 type Block=FlowItem[]
@@ -72,25 +72,21 @@ export function groupWorkflow(
     if(workerId&&workerId!==p.workerId||!p.workerId&&graphs.has(p.runId))continue
     add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
   }
-  const models=new Map(snapshot.calls.filter(call=>call.kind!=='tool' && (call.kind===call.name||call.status)
-    && (!workerId||call.workerId===workerId)).map(call=>[call.id,call]))
-  const attached=new Set<string>()
+  const activities=new Map<string,ChatCall[]>()
   for(const call of snapshot.calls){
-    if(call.kind!=='tool'||internalTools.has(call.name)||workerId&&workerId!==call.workerId)continue
+    if(workerId&&workerId!==call.workerId)continue
+    if(call.kind==='tool' ? internalTools.has(call.name) : call.name!==call.kind&&!call.status)continue
     if(call.permission==='pending' && snapshot.approvals.some(a=>a.runId===call.runId && a.workerId===call.workerId))continue
-    const candidates=call.parentId ? [] : [...models.values()].filter(model=>
-      model.runId===call.runId&&model.workerId===call.workerId&&model.ticketId===call.ticketId&&
-      model.startedAt<=call.startedAt&&(model.endedAt===undefined||model.endedAt>=call.startedAt))
-    const parent=call.parentId ? models.get(call.parentId) : candidates.length===1?candidates[0]:undefined
-    const model=parent?.runId===call.runId && !attached.has(parent.id) ? parent : undefined
-    if(add(call.runId,call.ticketId,{kind:'call',at:call.startedAt,call,parentId:call.parentId??parent?.id,model},call.state==='running') && model)
-      attached.add(model.id)
+    const calls=activities.get(call.runId)??[]
+    calls.push(call)
+    activities.set(call.runId,calls)
   }
-  // A model that called a visible tool shares that tool’s existing position.
-  // Keep tool-free activity while it is live or has a recorded public update.
-  for(const model of models.values()){
-    if(attached.has(model.id) || (model.state!=='running'&&!model.status)) continue
-    add(model.runId,model.ticketId,{kind:'call',at:model.startedAt,call:model},model.state==='running')
+  for(const [runId,calls] of activities){
+    calls.sort((a,b)=>a.startedAt-b.startedAt)
+    const first=calls.find(call=>call.kind==='tool')??calls.find(call=>call.status||call.state!=='completed')
+    if(!first)continue
+    const state=snapshot.run?.id===runId?snapshot.run.state:undefined
+    add(runId,first.ticketId,{kind:'thinking',at:first.startedAt,runId,calls,state},calls.some(call=>call.state==='running'))
   }
   for(const approval of snapshot.approvals){
     if(workerId&&workerId!==approval.workerId)continue
@@ -117,7 +113,7 @@ type FlowProps = {
   readDraft: (id: string) => Promise<{ text: string }>
   reviewFile: (id: string, state: 'approved' | 'denied') => Promise<void>
   authorize: (id: string, value: unknown) => Promise<void>
-  thinking: (calls: ChatCall[], model?: ChatCall) => ReactNode
+  thinking: (item: ThinkingItem) => ReactNode
 }
 const Flow = createContext<FlowProps | null>(null)
 export const WorkflowProvider = Flow.Provider
@@ -333,24 +329,11 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
     blocked: L('Blocked', '受阻'),
   }
   const rows:ReactNode[]=[]
-  let previous:CallItem[]=[]
-  function flush(){
-    const first=previous[0]
-    if(first){
-      const model=first.call.kind==='tool' ? first.model : first.call
-      rows.push(<div key={model?.id??first.call.id}>{thinking(first.call.kind==='tool'?previous.map(item=>item.call):[],model)}</div>)
-    }
-    previous=[]
-  }
   for(const item of b){
-    if(item.kind==='call'){
-      const last=previous.at(-1)
-      if(last&&(last.call.kind!=='tool'||item.call.kind!=='tool'||last.call.runId!==item.call.runId||
-        last.parentId!==item.parentId||last.call.workerId!==item.call.workerId||last.call.ticketId!==item.call.ticketId))flush()
-      previous.push(item)
+    if(item.kind==='thinking'){
+      rows.push(<div key={'thinking:'+item.runId}>{thinking(item)}</div>)
       continue
     }
-    flush()
     if(item.kind==='question'){
       const q=item.question
       rows.push(<PendingNotice key={q.id} id={q.id} kind="answer" subject={q.question} status={q.answer?.text}/>)
@@ -371,7 +354,6 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
       </div>)
     }
   }
-  flush()
   return <section className="roppo-ui workflow-block" aria-label={L('Run activity','执行活动')}>{rows}</section>
 }
 

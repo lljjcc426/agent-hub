@@ -29,6 +29,7 @@ import { AgentAvatar } from '../chat/agent-avatar.tsx'
 import { CopyButton } from '../chat/copy-button.tsx'
 import type { Localize } from '../chat/composer-commands.tsx'
 import { SelectField } from './controls.tsx'
+import { getMotionPreference } from './motion.ts'
 import './run-visualizations.css'
 
 const chinese: Localize = (_, zh) => zh
@@ -73,12 +74,94 @@ export interface ThinkingSource {
 export interface ThinkingStep {
   id: string
   label: string
-  state: 'working' | 'done'
+  state: 'working' | 'done' | 'failed' | 'interrupted'
   kind?: 'search'
   activeLabel?: string
   content?: ReactNode
   detail?: string
   sources?: ThinkingSource[]
+}
+
+function ThinkingViewport({ open, L, children }: { open: boolean; L: Localize; children: ReactNode }) {
+  const windowRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const follow = useRef(true)
+  useLayoutEffect(() => {
+    const container = windowRef.current, viewport = viewportRef.current
+    const content = viewport?.firstElementChild
+    if (!open || !container || !viewport || !content) return
+    let frame = 0
+    const distance = () => viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop
+    const updateEdges = () => {
+      const before = viewport.scrollTop > 2, after = distance() > 2
+      container.toggleAttribute('data-before', before)
+      container.toggleAttribute('data-after', after)
+      viewport.tabIndex = before || after ? 0 : -1
+    }
+    const reduced = getMotionPreference()
+    const bottom = () => {
+      viewport.scrollTop = viewport.scrollHeight
+      updateEdges()
+    }
+    const resize = () => {
+      updateEdges()
+      if (!follow.current || frame || distance() <= 2) return
+      let last = performance.now()
+      const step = (now: number) => {
+        const delta = distance()
+        if (delta <= 2 || reduced.matches) {
+          frame = 0
+          bottom()
+          return
+        }
+        viewport.scrollTop += Math.max(1, delta * (1 - Math.exp(-Math.min(64, now - last) / 58)))
+        last = now
+        frame = requestAnimationFrame(step)
+      }
+      frame = requestAnimationFrame(step)
+    }
+    const scroll = () => {
+      if (!frame) follow.current = distance() <= 2
+      updateEdges()
+    }
+    const stop = () => {
+      cancelAnimationFrame(frame)
+      frame = 0
+      follow.current = false
+    }
+    const wheel = (event: WheelEvent) => { if (frame || event.deltaY < 0) stop() }
+    const pointer = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === 'touch' || event.target === viewport ||
+          event.target instanceof Element && event.target.closest('summary')) stop()
+    }
+    const keys = (event: globalThis.KeyboardEvent) => {
+      if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End'].includes(event.key)) stop()
+    }
+    if (follow.current) bottom()
+    else updateEdges()
+    const observer = new ResizeObserver(resize)
+    observer.observe(viewport)
+    observer.observe(content)
+    viewport.addEventListener('scroll', scroll, { passive: true })
+    viewport.addEventListener('wheel', wheel, { passive: true })
+    viewport.addEventListener('pointerdown', pointer)
+    viewport.addEventListener('keydown', keys)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+      viewport.removeEventListener('scroll', scroll)
+      viewport.removeEventListener('wheel', wheel)
+      viewport.removeEventListener('pointerdown', pointer)
+      viewport.removeEventListener('keydown', keys)
+    }
+  }, [open])
+  return (
+    <div className="rv-thinking-window" ref={windowRef}>
+      <div className="rv-thinking-viewport" ref={viewportRef} role="region" aria-label={L('Thinking history', '思考记录')} tabIndex={-1}>
+        {children}
+      </div>
+    </div>
+  )
 }
 
 function SourceChip({ source, index }: { source: ThinkingSource; index: number }) {
@@ -119,28 +202,74 @@ function ThinkingSources({ sources, L }: { sources: ThinkingSource[]; L: Localiz
   )
 }
 
+function ThinkingClock({elapsedMs,liveSince,L}: {elapsedMs: number; liveSince?: number; L: Localize}) {
+  const [now,setNow] = useState(Date.now)
+  useEffect(() => {
+    if (liveSince === undefined) return
+    const tick = () => setNow(Date.now())
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [liveSince])
+  const elapsed = liveSince === undefined ? elapsedMs : now - liveSince
+  const seconds = Number.isFinite(elapsed) ? Math.max(0, Math.floor(elapsed / 1000)) : 0
+  return <span className="rv-clock">{L(seconds + ' s', seconds + ' 秒')}</span>
+}
+
 export function ThinkingState({
   steps,
   state,
   elapsedMs,
+  liveSince,
   L = chinese,
   defaultExpanded = true,
+  scrollable = false,
 }: {
   L?: Localize
   defaultExpanded?: boolean
+  scrollable?: boolean
   steps: ThinkingStep[]
   state: 'running' | 'done' | 'failed'
   elapsedMs: number
+  liveSince?: number
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  const toggled = useRef(false)
+  useEffect(() => {
+    if (scrollable && defaultExpanded && !toggled.current) setExpanded(true)
+  }, [scrollable, defaultExpanded])
   const id = useId()
-  const elapsed = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0
-  const seconds = Math.floor(elapsed / 1000)
   const label = { running: L('Thinking', '正在思考'), done: L('Thought for', '已思考'), failed: L('Interrupted', '思考已中断') }[state]
+  const list = (
+    <ol className="rv-thinking-steps" aria-live="polite" aria-relevant="additions">
+      {steps.map((step) => {
+        const active = state === 'running' && step.state === 'working'
+        const search = step.kind === 'search' || !!step.sources?.length
+        const failed = step.state === 'failed' || step.state === 'interrupted'
+        return (
+          <li className="rv-thinking-step" key={step.id} data-active={active || undefined} data-search={search || undefined}
+            data-failed={failed || undefined}>
+            <span className="rv-step-mark" aria-hidden="true">{failed ? <CircleAlert size={13} /> : search ? <Search size={15} /> : <i />}</span>
+            <div className="rv-step-content">
+              {step.content ?? <span className={active ? 'rv-thinking-sheen' : undefined}>{active && step.activeLabel ? step.activeLabel : step.label}</span>}
+              {step.detail && <p>{step.detail}</p>}
+              {!!step.sources?.length && <ThinkingSources sources={step.sources} L={L} />}
+            </div>
+          </li>
+        )
+      })}
+      {state !== 'running' && (
+        <li className="rv-thinking-step rv-thinking-terminal" data-result={state}>
+          <span className="rv-step-mark" aria-hidden="true">{state === 'done' ? <Check size={13} /> : <CircleAlert size={14} />}</span>
+          <span>{state === 'done' ? L('Finished thinking', '思考完成') : L('Thinking interrupted', '思考已中断')}</span>
+        </li>
+      )}
+    </ol>
+  )
   return (
     <section className="rv-thinking" aria-label={L("Thinking status", "思考状态")} data-state={state}>
       <button type="button" className="rv-thinking-head" aria-expanded={expanded} aria-controls={id}
-        onClick={() => setExpanded((open) => !open)}>
+        onClick={() => { toggled.current = true; setExpanded((open) => !open) }}>
         <span className="rv-thinking-mark" aria-hidden="true">
           <AgentAvatar size={17} />
           {state === 'running' && <span className="rv-thinking-sparks"><i /><i /><i /></span>}
@@ -148,32 +277,11 @@ export function ThinkingState({
         <span className="rv-thinking-label" key={state}>
           <span className={state === 'running' ? 'rv-thinking-sheen' : undefined}>{label}</span>
         </span>
-        <span className="rv-clock">{L(seconds + ' s', seconds + ' 秒')}</span>
+        <ThinkingClock L={L} elapsedMs={elapsedMs} liveSince={liveSince} />
         <ChevronDown className="rv-chevron" size={13} aria-hidden="true" />
       </button>
       <RunFold id={id} open={expanded}>
-        <ol className="rv-thinking-steps" aria-live="polite" aria-relevant="additions">
-          {steps.map((step) => {
-            const active = state === 'running' && step.state === 'working'
-            const search = step.kind === 'search' || !!step.sources?.length
-            return (
-              <li className="rv-thinking-step" key={step.id} data-active={active || undefined} data-search={search || undefined}>
-                <span className="rv-step-mark" aria-hidden="true">{search ? <Search size={15} /> : <i />}</span>
-                <div className="rv-step-content">
-                  {step.content ?? <span className={active ? 'rv-thinking-sheen' : undefined}>{active && step.activeLabel ? step.activeLabel : step.label}</span>}
-                  {step.detail && <p>{step.detail}</p>}
-                  {!!step.sources?.length && <ThinkingSources sources={step.sources} L={L} />}
-                </div>
-              </li>
-            )
-          })}
-          {state !== 'running' && (
-            <li className="rv-thinking-step rv-thinking-terminal" data-result={state}>
-              <span className="rv-step-mark" aria-hidden="true">{state === 'done' ? <Check size={13} /> : <CircleAlert size={14} />}</span>
-              <span>{state === 'done' ? L('Finished thinking', '思考完成') : L('Thinking interrupted', '思考已中断')}</span>
-            </li>
-          )}
-        </ol>
+        {scrollable ? <ThinkingViewport open={expanded} L={L}>{list}</ThinkingViewport> : list}
       </RunFold>
     </section>
   )

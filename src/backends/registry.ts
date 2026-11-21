@@ -153,7 +153,10 @@ export class BackendRegistry implements Model {
   const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
   const profileBackend=profile?.backend??this.selected(role)
   const {allowNativeTools,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
-  const hostedTurn=allowNativeTools===true&&r.managed===true&&!r.ephemeral&&role!=='subagent'
+  const managedNative=allowNativeTools===true&&r.managed===true&&!r.ephemeral
+  const hostedTurn=managedNative&&role!=='subagent'
+  const subagentWeb=managedNative&&role==='subagent'&&!r.operator&&this.config.work.network&&
+   options.tools===undefined&&!!r.onTool&&!!r.tools?.length
   const interactive=hostedTurn&&r.onTool&&r.tools?.length
   const granted=profileBackend===id&&profile?.nativeTool===nativeToolFor(definition)?profile?.nativeTool:undefined
   r=interactive&&granted?{...activation,nativeTool:granted,instructions:r.instructions+'\nThe operator grants the native CLI '+granted+' tool for this task.'}:activation
@@ -163,10 +166,10 @@ export class BackendRegistry implements Model {
   }
   const previous=r.threadId?this.store.get<Binding>('backend-binding',r.threadId):undefined
   // The bundled text harness requires a managed sandbox. Vision connections retain the image-capable API executor.
-  const eligible=hostedTurn&&bundledCLI&&isApiBackend(definition)&&!definition.images
+  const eligible=(hostedTurn||subagentWeb)&&bundledCLI&&isApiBackend(definition)&&!definition.images
   let engineId=previous?.harness
   if(!r.threadId&&eligible&&await this.presetSandboxAvailable())engineId=bundledEngineId
-  if(hostedTurn&&(engineId||definition.kind==='plugin'&&definition.plugin==='opencode-cli'))r={...r,allowNativeTools:true}
+  if((hostedTurn||subagentWeb)&&(engineId||definition.kind==='plugin'&&definition.plugin==='opencode-cli'))r={...r,allowNativeTools:true}
   if(r.threadId&&this.writers.has(r.threadId))throw Error('Backend thread already has an active writer')
   let locked=r.threadId;if(locked)this.writers.add(locked)
   const binding=this.binding(id)

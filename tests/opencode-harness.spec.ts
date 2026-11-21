@@ -12,6 +12,7 @@ import {openCodeBuiltins,nativeTools} from '../plugins/backend-opencode/native-t
 import {openHarnessProvider} from '../src/backends/harness-provider.ts'
 import {apiBackendDefinition} from '../src/backend-config.ts'
 import {BackendRegistry} from '../src/backends/registry.ts'
+import {ApiModel} from '../src/backends/api.ts'
 import {ProcessBackend,pluginIdentity} from '../src/backends/plugin-process.ts'
 import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from '../src/backends/bundled-opencode.ts'
 import {stableDigest} from '../src/sources.ts'
@@ -81,6 +82,46 @@ it('grants the stock OpenCode tools with the task network and workspace bounds',
   await expect(normal('unregistered',{})).rejects.toThrow(/unavailable/)
  }finally{
   for(const guard of guards)rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
+  rmSync(root,{recursive:true,force:true})
+ }
+})
+
+it('limits native OpenCode tools on managed subagents to authorized web reads',async()=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'opencode-child-')))
+ const cwd=join(root,'work');mkdirSync(cwd)
+ const config=configSchema.parse({stateDir:join(root,'state'),
+  work:{network:true,sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
+  execution:{backend:'api'},backends:{api:{kind:'openai-responses',model:'sample',baseUrl:'http://127.0.0.1:1/v1'}},
+  sources:[{id:'local',kind:'local',cwd,allowedActors:['owner']}]})
+ const records=new Map<string,any>()
+ const store={get:(kind:string,id:string)=>records.get(kind+id),put:(kind:string,id:string,value:any)=>{records.set(kind+id,value)}}
+ const result={threadId:'fixture',turnId:'turn',text:'{}'}
+ const cli=vi.spyOn(ProcessBackend.prototype,'run').mockResolvedValue(result)
+ const api=vi.spyOn(ApiModel.prototype,'run').mockResolvedValue(result)
+ const activation:ModelRequest={...request,cwd,role:'subagent',managed:true,allowNativeTools:true,
+  tools:[{type:'function',name:'superagent_read',description:'Read',inputSchema:{}}],
+  onTool:async()=>({success:true,contentItems:[]})}
+ const guard=workspaceGuard(root,{...activation,opencodeNativeTools:{network:true}},'web')
+ try{
+  await new BackendRegistry(config,store).run(activation)
+  expect(cli).toHaveBeenCalledOnce()
+  expect(cli.mock.lastCall![0]).toMatchObject({allowNativeTools:true,role:'subagent'})
+  expect(cli.mock.lastCall![0].harnessWorkspace).toBeUndefined()
+  expect(nativeTools({...activation,opencodeNativeTools:{network:true}})).toEqual(['websearch','webfetch','webfetch_batch'])
+  expect(nativeTools({...activation,opencodeNativeTools:{network:false}})).toEqual([])
+  const plugin=await import(guard.url+'/index.mjs')
+  const hooks=await plugin.default.server()
+  await hooks['tool.execute.before']({tool:'websearch',callID:'search'},{args:{query:'public documentation'}})
+  await expect(hooks['tool.execute.before']({tool:'bash',callID:'shell'},{args:{command:'pwd'}})).rejects.toThrow(/unavailable/)
+  await expect(hooks['tool.execute.before']({tool:'write',callID:'write'},{args:{filePath:'draft.txt'}})).rejects.toThrow(/unavailable/)
+  await new BackendRegistry(config,store).run({...activation,allowNativeTools:false})
+  await new BackendRegistry(config,store).run({...activation,options:{tools:['superagent_read']}})
+  await new BackendRegistry({...config,work:{...config.work,network:false}},store).run(activation)
+  expect(cli).toHaveBeenCalledOnce()
+  expect(api).toHaveBeenCalledTimes(3)
+ }finally{
+  cli.mockRestore();api.mockRestore()
+  rmSync(fileURLToPath(guard.url),{recursive:true,force:true})
   rmSync(root,{recursive:true,force:true})
  }
 })

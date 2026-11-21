@@ -54,7 +54,7 @@ import {HeartbeatCard} from './heartbeat-card.tsx';
 import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
 import {useAppearanceMode} from './appearance-store.ts';
 import './appearance-theme.css';
 import {ComposerControls} from './composer-actions.tsx';
@@ -384,11 +384,10 @@ function StatusIcon({ state }: { state: string }) {
     <span className="idle-dot" />
   );
 }
-function ThinkingCalls({calls,model,workers,live}:{calls:Snapshot['calls'];model?:Snapshot['calls'][number];workers:Worker[];live:boolean}){
+function ThinkingCalls({item,workers,live}:{item:ThinkingItem;workers:Worker[];live:boolean}){
   const {L,lang,routerLabel}=useUI();
-  const first=model??calls[0]!;
-  const arrival=useArrival('thinking:'+first.id,first.startedAt);
-  return <ThinkingActivity calls={calls} model={model} L={L} locale={lang} arrival={arrival} live={live}
+  const arrival=useArrival('thinking:'+item.runId,item.at);
+  return <ThinkingActivity calls={item.calls} runState={item.state} L={L} locale={lang} arrival={arrival} live={live}
     actor={id=>workers.find(w=>w.id===id)?.label??id??routerLabel}/>;
 }
 function Readiness({ ready }: { ready: Ready | null }) {
@@ -935,6 +934,9 @@ function Chat(p: ChatProps) {
     const measure=()=>{
       if(!thread.clientWidth)return;
       thread.style.setProperty('--chat-scrollbar-gutter',(transcript.offsetWidth-transcript.clientWidth)/2+'px');
+      const {paddingTop,paddingBottom}=getComputedStyle(transcript);
+      const contentHeight=transcript.clientHeight-parseFloat(paddingTop)-parseFloat(paddingBottom);
+      thread.style.setProperty('--chat-transcript-content-height',Math.max(0,contentHeight)+'px');
     };
     const observer=new ResizeObserver(measure);observer.observe(thread);observer.observe(transcript);measure();
     return ()=>observer.disconnect();
@@ -1479,7 +1481,7 @@ function Chat(p: ChatProps) {
         arrivals:arrivals.current,
       }}
     >
-      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,thinking:(calls,model)=><ThinkingCalls calls={calls} model={model} workers={workers} live={connected&&!around}/>,
+      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,thinking:item=><ThinkingCalls item={item} workers={workers} live={connected&&!around}/>,
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});if(matchMedia('(max-width:600px)').matches)closeTray()}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),

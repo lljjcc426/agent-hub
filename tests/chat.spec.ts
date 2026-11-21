@@ -181,7 +181,7 @@ it('keeps the plan through a decision and reuses the latest measured Router inpu
   expect(()=>h.chat.contextUsage(c.id,'another-owner')).toThrow('not found')
   h.config.execution.router!.model='other-model'
   expect(()=>h.chat.contextUsage(c.id,'owner',latest.activity!)).toThrow('not found')
-  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({inputTokens:null,capacity:null,budget:null})
+  expect(h.chat.contextUsage(c.id,'owner')).toMatchObject({activity:latest.activity,model:'router-one',inputTokens:123,capacity:2048,previous:true})
 })
 
 it('recovers unanswered cards beyond the transcript window and reconciles earlier inline cards',async()=>{
@@ -855,17 +855,38 @@ it('receives a browser message exactly once and rejects conflicting identity reu
   expect(()=>send(h,c.id,'Parallel')).not.toThrow()
   expect(h.chat.view(c.id,'owner').messages).toHaveLength(2)
 })
-it('keeps conversation owners isolated while following current Router options',async()=>{
-  const {h,calls,config}=fixture(),a=h.chat.create('owner'),b=h.chat.create('other')
-  send(h,a.id,'A');h.chat.send(b.id,'other',{text:'B',clientMessageId:randomUUID()})
-  config.execution.router!.model='router-two';config.execution.router!.effort='high'
+it('keeps accepted Chat messages bound to their Router options and uses changes on the next send',async()=>{
+  let release!:()=>void
+  const gate=new Promise<void>(resolve=>{release=resolve})
+  const {h,calls}=fixture(async request=>{
+    const text=JSON.parse(request.input).trigger.text
+    if(text==='A')await gate
+    return {reply:text}
+  }),a=h.chat.create('owner'),b=h.chat.create('other')
+  const first=send(h,a.id,'A'), queued=h.chat.send(b.id,'other',{text:'B',clientMessageId:randomUUID()})
+  let next!:ReturnType<typeof send>
+  try{
+    await settle(h,()=>calls.some(request=>request.activity?.triggerId===first.runId))
+    h.updateSettings(0,{execution:{...h.config.execution,router:{...h.config.execution.router,model:'router-two',effort:'high'}}})
+    expect(h.chat.view(a.id,'owner').run?.state).toBe('running')
+    next=send(h,a.id,'Next')
+  }finally{release()}
   await settle(h,()=>h.chat.view(a.id,'owner').run?.state==='completed'&&h.chat.view(b.id,'other').run?.state==='completed')
-  expect(calls.map(r=>r.model)).toEqual(['router-two','router-two'])
-  expect(calls.map(r=>r.options?.effort)).toEqual(['high','high'])
-  expect(h.chat.view(a.id,'owner').messages.at(-1)?.text).toContain('A')
+  for(const {runId} of [first,queued])expect(calls.find(r=>r.activity?.triggerId===runId)).toMatchObject({model:'router-one',options:{effort:'medium'}})
+  expect(calls.find(r=>r.activity?.triggerId===next.runId)).toMatchObject({model:'router-two',options:{effort:'high'}})
+  expect(h.chat.view(a.id,'owner').messages.at(-1)?.text).toContain('Next')
   expect(h.chat.list('owner')).toHaveLength(1)
   expect(()=>h.chat.view(a.id,'other')).toThrow('not found')
   expect(()=>h.chat.update(a.id,'other',{title:'Hijacked'})).toThrow('not found')
+})
+
+it('preserves a connection default for an accepted Chat message before an explicit model is selected',async()=>{
+  const {h,calls}=fixture()
+  h.updateSettings(0,{execution:{...h.config.execution,router:{...h.config.execution.router,model:undefined}}})
+  const c=h.chat.create('owner'),first=send(h,c.id,'Before selecting a model')
+  h.updateSettings(1,{execution:{...h.config.execution,router:{...h.config.execution.router,model:'router-two'}}})
+  await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+  expect(calls.find(request=>request.activity?.triggerId===first.runId)?.model).toBeUndefined()
 })
 it('projects real Router-to-Worker dialogue with distinct speakers and no extra external deliveries',async()=>{
   const {h,calls}=fixture(async r=>{

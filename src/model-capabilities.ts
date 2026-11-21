@@ -48,6 +48,7 @@ function officialProvider(definition:ApiDefinition){
 const officialSpecs:Record<string,Record<string,ReasoningCapability>>={
   // https://developers.openai.com/api/docs/models
   openai:{
+    'gpt-6.2-sol':capability(['low','medium','high','xhigh','max'],undefined,'official'),
     'gpt-6.1-terra':capability(['none','low','medium','high','xhigh','max'],'medium','official'),
     'gpt-6.1-sol':capability(['low','medium','high','xhigh','max'],'medium','official'),
     'gpt-6-astra':capability(['low','medium','high','xhigh','max'],undefined,'official'),
@@ -81,7 +82,7 @@ const officialSpecs:Record<string,Record<string,ReasoningCapability>>={
   },
 }
 
-const knownOpenAiChatModels=new Set(['gpt-6.1-terra','gpt-5.4'])
+const knownOpenAiChatModels=new Set(['gpt-6.2-sol','gpt-6.1-terra','gpt-5.4'])
 
 export function openAiReasoningSpec(markdown:string,model:string,chat=false):ReasoningCapability|undefined {
   const id=/^\s*(?:-\s+)?Model ID:\s*`?([^\s`]+)/m.exec(markdown)?.[1]
@@ -96,20 +97,22 @@ export function openAiReasoningSpec(markdown:string,model:string,chat=false):Rea
 }
 
 type Cached<T>={expires:number;result:Promise<T>}
+type ConnectionCatalog=Cached<unknown[]|undefined>&{fingerprint:string;pending:boolean}
 
 export class ModelCapabilityCatalog {
-  private connections=new WeakMap<Runtime,Map<string,Cached<unknown[]>&{fingerprint:string}>>()
+  private connections=new WeakMap<Runtime,Map<string,ConnectionCatalog>>()
   private specs=new Map<string,Cached<ReasoningCapability|undefined>>()
 
-  private catalog(host:Runtime,id:string,definition:BackendDefinition){
+  private catalog(host:Runtime,id:string,definition:BackendDefinition,refresh:boolean){
     let cache=this.connections.get(host)
     if(!cache){cache=new Map();this.connections.set(host,cache)}
-    const fingerprint=connectionFingerprint(host,definition),saved=cache.get(id)
-    if(saved?.fingerprint===fingerprint&&saved.expires>Date.now())return saved.result
-    const entry={fingerprint,expires:Date.now()+listLifetime,result:this.load(host,id,definition).catch(()=>{
+    const fingerprint=connectionFingerprint(host,definition),previous=cache.get(id)
+    const saved=previous?.fingerprint===fingerprint?previous:undefined
+    if(saved&&(saved.pending||!refresh&&saved.expires>Date.now()))return saved.result
+    const entry:ConnectionCatalog={fingerprint,pending:true,expires:Date.now()+listLifetime,result:this.load(host,id,definition).catch(()=>{
       entry.expires=Date.now()+retryDelay
-      return []
-    })}
+      return saved?.result
+    }).finally(()=>{entry.pending=false})}
     cache.set(id,entry)
     return entry.result
   }
@@ -143,15 +146,16 @@ export class ModelCapabilityCatalog {
     this.specs.set(key,{expires:Date.now()+listLifetime,result})
     return result
   }
-  async read(host:Runtime,backend:string,model?:string,preview=false):Promise<ModelCapabilities>{
+  async read(host:Runtime,backend:string,model?:string,preview=false,refresh=false):Promise<ModelCapabilities>{
     const definition=Object.hasOwn(host.config.backends,backend)?host.config.backends[backend]:(backend==='codex'?{kind:'codex' as const}:undefined)
     if(!definition)return {models:model?[model]:[],reasoning:unknown}
-    const rows=preview?[]:await this.catalog(host,backend,definition)
+    const catalog=preview?[]:await this.catalog(host,backend,definition,refresh)
+    const rows=catalog??[], catalogStatus=catalog?{}:{catalogUnavailable:true}
     const defaultModel=ids(rows.find(row=>record(row)?.isDefault===true))[0]
     const selected=model??definition.model??(definition.kind==='codex'?host.config.model:undefined)??defaultModel
     const offered=selectableModelIds(rows,isApiBackend(definition)?definition:undefined)
     const available=[...new Set([...offered,...[definition.model,selected].filter((id):id is string=>!!id)])]
-    if(!selected)return {models:available,reasoning:unknown}
+    if(!selected)return {models:available,reasoning:unknown,...catalogStatus}
     const row=rows.find(row=>ids(row).includes(selected))
     let reasoning=catalogReasoning(row)
     if(!reasoning&&isApiBackend(definition)&&(!definition.subscription||row)){
@@ -160,6 +164,6 @@ export class ModelCapabilityCatalog {
       }
       reasoning??=await this.official(definition,selected,preview)
     }
-    return {model:selected,models:available,reasoning:reasoning??unknown}
+    return {model:selected,models:available,reasoning:reasoning??unknown,...catalogStatus}
   }
 }

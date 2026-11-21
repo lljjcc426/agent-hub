@@ -51,6 +51,32 @@ it('uses one authenticated catalog per connection and selects by exact model', a
   expect(other.reasoning.efforts).toEqual(['medium'])
 })
 
+it('refreshes on demand, shares the refresh and retains the last catalog through a provider failure', async () => {
+  const runtime = host({one:{kind:'openai-responses',baseUrl:'https://one.example/v1',model:'first'}})
+  const fetchCatalog = vi.fn()
+    .mockResolvedValueOnce(Response.json({data:[{id:'first',supported_reasoning_efforts:['low']},{id:'second'}]}))
+    .mockResolvedValueOnce(Response.json({data:[{id:'first',supported_reasoning_efforts:['high']},{id:'third'}]}))
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockRejectedValueOnce(new Error('offline after connection change'))
+  vi.stubGlobal('fetch',fetchCatalog)
+  const service = new ModelCapabilityCatalog()
+  expect((await service.read(runtime,'one')).models).toEqual(['first','second'])
+  const [fresh, shared] = await Promise.all([
+    service.read(runtime,'one','first',false,true),service.read(runtime,'one','third',false,true),
+  ])
+  expect(fresh).toMatchObject({models:['first','third'],reasoning:{efforts:['high']}})
+  expect(shared.models).toEqual(fresh.models)
+  expect(fetchCatalog).toHaveBeenCalledTimes(2)
+  expect(await service.read(runtime,'one',undefined,false,true)).toEqual(fresh)
+  const connection = runtime.config.backends.one!
+  if (connection.kind !== 'openai-responses') throw Error('Invalid test connection')
+  connection.baseUrl = 'https://another.example/v1'
+  expect(await service.read(runtime,'one',undefined,false,true)).toMatchObject({
+    models:['first'], reasoning:{source:'unknown'}, catalogUnavailable:true,
+  })
+  expect(fetchCatalog).toHaveBeenCalledTimes(4)
+})
+
 it('uses the default model advertised by Codex when no model was configured', async () => {
   const runtime = host({}, {data:[
     {id:'alpha', supportedReasoningEfforts:[{reasoningEffort:'low'}]},
@@ -80,6 +106,19 @@ it('falls back only for the official endpoint and respects an explicit empty cat
   await expect(service.read(runtime,'proxy')).resolves.toMatchObject({reasoning:{efforts:[],source:'unknown'}})
   await expect(service.read(runtime,'direct','gpt-5.4')).resolves.toMatchObject({reasoning:{efforts:[],source:'catalog'}})
   expect(fetchCatalog).toHaveBeenCalledTimes(2)
+})
+
+it.each(['openai-responses','openai-chat'] as const)('offers the documented GPT-6.2 Sol levels for official %s', async kind => {
+  const runtime = host({
+    direct:{kind,model:'gpt-6.2-sol',baseUrl:'https://api.openai.com/v1'},
+    proxy:{kind,model:'gpt-6.2-sol',baseUrl:'https://custom.example/v1'},
+  })
+  vi.stubGlobal('fetch',vi.fn(async () => Response.json({data:[{id:'gpt-6.2-sol'}]})))
+  const service = new ModelCapabilityCatalog()
+  await expect(service.read(runtime,'direct')).resolves.toMatchObject({
+    reasoning:{efforts:['low','medium','high','xhigh','max'],source:'official'},
+  })
+  await expect(service.read(runtime,'proxy')).resolves.toMatchObject({reasoning:{efforts:[],source:'unknown'}})
 })
 
 it('reads an official Markdown declaration for the exact model and checks Chat Completions compatibility', () => {

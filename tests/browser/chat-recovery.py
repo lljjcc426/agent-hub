@@ -126,7 +126,20 @@ try:
         assert page.evaluate('() => window.recoveryDocument') == 'same page'
         send(page, 'Table', 'Switched to table.')
         expect(page.get_by_role('button', name='上下文用量 · 已用 1.7%', exact=True)).to_be_visible()
+        empty = {'activity': None, 'at': None, 'model': None, 'composition': None,
+                 'inputTokens': None, 'capacity': None, 'budget': None, 'previous': False}
+        page.route(endpoint + '/context', lambda route: route.fulfill(json=empty))
+        page.reload(wait_until='domcontentloaded')
+        expect(previous_usage).to_be_visible()
+        with page.expect_response(lambda response: response.url == endpoint + '/context'):
+            previous_usage.click()
+        expect(page.get_by_role('dialog', name='上下文用量')).to_contain_text('已用 1.7%（上次记录）')
+        page.unroute(endpoint + '/context')
+        page.keyboard.press('Escape')
+        previous_usage.click()
+        expect(page.get_by_role('dialog', name='上下文用量')).to_contain_text('已用 1.7%')
+        expect(previous_usage).to_have_count(0)
         browser.close()
-        print('PASS closed stream recovery, transient snapshot failures, retained context usage, and host restart in the same page')
+        print('PASS stream recovery, retained context after reload and empty responses, and refresh on opening usage')
 finally:
     stop(host)

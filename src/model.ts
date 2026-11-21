@@ -26,6 +26,8 @@ export interface ModelRequest {
   cwd: string; instructions: string; input: string; schema: Record<string, unknown>
   role?: 'router'|'worker'|'subagent'; backendId?:string; onBackend?:(id:string)=>void
   model?:string;onModel?:(model:string)=>void
+  /** Preserve the connection default selected when this Chat message was accepted. */
+  useConnectionDefault?:boolean
   title?: string; threadId?: string; ephemeral?: boolean; sandbox?: 'read-only' | 'workspace-write'
   signal?: AbortSignal
   operator?:boolean

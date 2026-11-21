@@ -777,9 +777,9 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(req.method==='POST'&&path==='/model-connections/models'){send(res,200,await onboarding.models(await body(req)));return}
     if(req.method==='GET'&&path==='/model-connections/capabilities'){
       const query=new URL(req.url!,requestOrigin).searchParams
-      const input=z.object({backend:z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),model:z.string().trim().min(1).max(300).optional()}).strict().parse(Object.fromEntries(query))
+      const input=z.object({backend:z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),model:z.string().trim().min(1).max(300).optional(),refresh:z.literal('1').optional()}).strict().parse(Object.fromEntries(query))
       res.setHeader('cache-control','no-store')
-      send(res,200,await modelCapabilities.read(runtime,input.backend,input.model,options.configurationPreview===true));return
+      send(res,200,await modelCapabilities.read(runtime,input.backend,input.model,options.configurationPreview===true,input.refresh==='1'));return
     }
     if(req.method==='POST'&&(path==='/entry-setup/apply'||path==='/entry-setup/model/apply')){
       const input=z.object({id:z.string().uuid()}).strict().parse(await operatorBody(req));changing=true

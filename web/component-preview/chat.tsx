@@ -142,7 +142,7 @@ export function ChatExample({openFile, showTime, messages, addMessage, hasSample
           const file = event.target.files?.[0]; if (file) draft.setAttachment(file); event.target.value = ''
         }}/>
         <ChatComposer L={zh} visible sending={false} mode={mode} usage={usage} router="Router" model={model}
-          modelBusy={false} uploadDisabled={false} value={text} setText={draft.setText} canSend={canSend}
+          uploadDisabled={false} value={text} setText={draft.setText} canSend={canSend}
           onAttach={() => upload.current?.click()} onEnter={send} onSend={send} modelStore={modelStore}
           saveMode={async next => draft.setMode(next)} onContext={() => setDetails(true)}
           onModelSaved={async () => {

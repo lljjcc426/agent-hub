@@ -23,8 +23,9 @@ function SendMessage({ canSend, sending, L, onClick }: { canSend: boolean; sendi
 
 export type ComposerActionsProps = {
   L: Localize; visible: boolean; sending: boolean; mode?: Mode; usage: CurrentContext
-  router: string; model?: string; modelBusy: boolean; uploadDisabled: boolean
+  router: string; model?: string; modelBackend?: string; uploadDisabled: boolean
   onContext: () => void; saveMode: (next: Mode) => Promise<void>; onModelSaved: () => Promise<void>
+  onUsageOpen?: () => void
   onCommitTrail?: (opener: HTMLElement | null) => void
   onEnter: (text: string) => void
   loadSkills?: (signal: AbortSignal) => Promise<ChatSkillCatalog>
@@ -33,8 +34,8 @@ export type ComposerActionsProps = {
 }
 export type TextInputProps = Omit<ComponentPropsWithRef<'textarea'>, 'style'>
 
-export function ChatComposer({ L, visible, sending, mode, usage, router, model, modelBusy, uploadDisabled,
-  onContext, saveMode, onModelSaved, onCommitTrail, onEnter, loadSkills, skill, onSkillChange,
+export function ChatComposer({ L, visible, sending, mode, usage, router, model, modelBackend, uploadDisabled,
+  onContext, onUsageOpen, saveMode, onModelSaved, onCommitTrail, onEnter, loadSkills, skill, onSkillChange,
   Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
   Input?: ComponentType<TextInputProps> | 'textarea'; value?: string; canSend: boolean
   setText: (text: string) => void; onAttach: () => void; onSend: () => void; modelStore?: ModelConnectionStore
@@ -44,6 +45,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   const opener = useRef<HTMLElement>(null), palette = useRef<HTMLDivElement>(null), paletteBody = useRef<HTMLDivElement>(null)
   const [menu, setMenu] = useState<Menu | null>(null), [highlight, setHighlight] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
+  const [modelWrites, setModelWrites] = useState(0)
   const [catalog, setCatalog] = useState<ChatSkillCatalog>({items:[],refreshing:true})
   const [skillsFailed, setSkillsFailed] = useState(false)
   const current = useRef(menu)
@@ -76,6 +78,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   const title = commands.find(c => c.id === page)?.title(L)
 
   function show(next: Menu) {
+    if (next.page === 'context') onUsageOpen?.()
     setClosing(false)
     setMenu(next)
   }
@@ -291,7 +294,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           event.preventDefault()
           if (chooseActive()) return
           if (slash) close()
-          onEnter(event.currentTarget.value)
+          if (!modelWrites) onEnter(event.currentTarget.value)
         }}/>
     </div>
     <div className="composer-toolbar" onKeyDown={event => {
@@ -314,7 +317,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           title={[contextTitle, readout.tokens].filter(Boolean).join(' · ')}
           aria-haspopup="dialog" aria-expanded={!closing && source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
           onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>
-        <SendMessage canSend={canSend} sending={sending} L={L} onClick={() => {
+        <SendMessage canSend={canSend && !modelWrites} sending={sending} L={L} onClick={() => {
           if (chooseActive()) return
           if (slash) close()
           onSend()
@@ -335,7 +338,8 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           {page === 'commands' && <CommandList items={items} skills={skillItems} empty={empty} slash={slashList} listId={listId} active={active}
             uploadDisabled={uploadDisabled} mode={mode} L={L} onHighlight={highlightAt} onChoose={choose} onSkill={selectSkill}/>}
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
-          {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} busy={modelBusy} onSaved={onModelSaved} onClose={finish} onBack={nested ? back : undefined}/>}
+          {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} backend={modelBackend} onSaved={onModelSaved}
+            onSaving={active => setModelWrites(count => count + (active ? 1 : -1))} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
         </div></div>
       </div>, document.body

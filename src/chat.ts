@@ -55,7 +55,8 @@ type PendingCard =
   | {kind:'file';id:string;createdAt:number;name:string;review:FileReview}
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
-interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill}
+type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
+interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -295,12 +296,12 @@ export class ChatSessions {
     return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as ChatTask[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
   private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,sequence:c.sequence,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,...(c.project?{project:c.project}:{}),backend,model}}
-  private routerBinding(){
-    const ready=this.readiness(),router=this.host.config.execution.router??{}
+  private routerBinding(ready=this.readiness()):ChatRouterBinding{
+    const router=this.host.config.execution.router??{}
     const definition=this.host.model instanceof BackendRegistry?this.host.model.definition(ready.backend!):undefined
     const options=mergeOptions(definition?.defaults,agentOptionsSchema.parse(Object.fromEntries(Object.entries(router).filter(([k])=>k in agentOptionsSchema.shape))))
     if(definition?.kind==='codex'&&options.effort===undefined)options.effort=this.host.config.effort
-    return {backendId:ready.backend,model:ready.model,options}
+    return {backendId:ready.backend,model:ready.model,options,...(!ready.model?{useConnectionDefault:true}:{})}
   }
   private bindEntry(c:Conversation){
     const h=this.host,nativeId=c.nativeId??'chat:'+c.id
@@ -575,7 +576,7 @@ export class ChatSessions {
       const sample=(attempt:number|undefined)=>{
         const {inputTokens,capacity}=contextReading(usage,attempt)
         const budget=receipt&&(attempt===undefined||budgetAttempt===attempt)?{bytes:receipt.bytes,reservedBytes:receipt.reservedBytes,maxBytes:receipt.maxBytes}:null
-        return {activity:activity??null,at:source?.startedAt??null,model:model??usage?.model??source?.model??null,
+        return {activity:activity??null,at:source?.startedAt??null,model:usage?.model??source?.model??model??null,
           composition:recorded?.attempt===attempt?recorded?.size??null:null,inputTokens,capacity,budget,previous}
       }
       const measured=sample(latest)
@@ -594,10 +595,9 @@ export class ChatSessions {
 
     const previous=db.prepare(`SELECT c.body FROM records c WHERE c.kind='chat-call'
       AND json_extract(c.body,'$.conversationId')=? AND json_extract(c.body,'$.kind')='router'
-      AND json_extract(c.body,'$.backend') IS ? AND json_extract(c.body,'$.model') IS ?
       AND EXISTS(SELECT 1 FROM records r WHERE r.kind='chat-run' AND r.id=json_extract(c.body,'$.runId')
         AND json_extract(r.body,'$.feedback') IS NULL)
-      ORDER BY json_extract(c.body,'$.startedAt') DESC,c.rowid DESC`).iterate(id,backend??current?.backend??null,model??current?.model??null)
+      ORDER BY json_extract(c.body,'$.startedAt') DESC,c.rowid DESC`).iterate(id)
     for(const row of previous){
       const candidate=JSON.parse(String(row.body)) as ChatCall
       if(cleanup.blocked('chat-call',candidate.id,candidate))continue
@@ -745,7 +745,7 @@ export class ChatSessions {
   binding(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(!run)return
-    return this.routerBinding()
+    return run.router??this.routerBinding()
   }
   history(triggerId:string){
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)!
@@ -825,7 +825,8 @@ export class ChatSessions {
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
-      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now(),...(skill?{skill}:{})}
+      // Settings edits apply to messages accepted after the edit, including when turns are queued.
+      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now(),router:this.routerBinding(ready),...(skill?{skill}:{})}
       this.host.store.put('chat-run',run.id,run)
       this.uploads.bind(attachments.map(a=>a.id),run.id)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),

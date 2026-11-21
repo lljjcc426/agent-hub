@@ -1008,8 +1008,9 @@ function Chat(p: ChatProps) {
   const preferenceStarter=welcome&&p.preferences?.purpose&&p.preferences.purpose!=='general'
     ?chatPersonalizationCopy(L).purposes[p.preferences.purpose]:undefined;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
+  const [usageRefresh, setUsageRefresh] = useState(0);
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
-    routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext);
+    routerCall?.id, routerCall?.usageRevision, running || (overview && sidebarCards.items.includes('context')), loadContext, usageRefresh);
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
@@ -1681,10 +1682,11 @@ function Chat(p: ChatProps) {
                       <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                       <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                       <ComposerControls visible={!configuring} L={L} sending={outstanding?.stage==='sending'} router={currentRouter.label}
-                        model={ready?.model || ready?.backend} mode={p.approvalMode} usage={usage} modelBusy={!!reply}
+                        model={ready?.model || ready?.backend} modelBackend={ready?.backend} mode={p.approvalMode} usage={usage}
                         loadSkills={loadSkills} skill={skill} onSkillChange={saveSkill}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
-                        onContext={() => revealCard('context')} onCommitTrail={openActivityTray} saveMode={p.saveApprovalMode}
+                        onContext={() => revealCard('context')} onUsageOpen={() => setUsageRefresh(value => value + 1)}
+                        onCommitTrail={openActivityTray} saveMode={p.saveApprovalMode}
                         onModelSaved={id ? refresh : p.refreshReady}
                         onEnter={text => {
                           if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }

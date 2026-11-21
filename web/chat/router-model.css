@@ -69,8 +69,7 @@
 .model-picker-empty { margin: 5px 9px 10px; color: var(--rp-muted); font-size: 13px; }
 .model-connection-list .model-manage { border-top: 1px solid var(--rp-line); border-radius: 0 0 10px 10px; margin-top: 4px; font-size: 12px; }
 a.model-manage { text-decoration: none; }
-.router-model-notice, .composer-palette .router-model-error { margin: 7px 10px; font-size: 12px; }
-.router-model-notice { color: var(--rp-muted); }
+.composer-palette .router-model-error { margin: 7px 10px; font-size: 12px; }
 .router-model-error { color: var(--status-danger); }
 .router-model-error button { border: 0; background: none; color: inherit; padding: 3px 5px; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 @media (forced-colors: active) {

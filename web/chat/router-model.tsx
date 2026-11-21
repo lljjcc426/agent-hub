@@ -7,6 +7,7 @@ import type { ReasoningEffort } from '../../src/reasoning-effort.ts'
 import { SelectField, TextField } from '../ui/controls.tsx'
 import type { Localize } from './composer-commands.tsx'
 import { effortLabel, useModelCapabilities, type LoadModelCapabilities } from './model-capabilities.ts'
+import { lastRead, rememberRead } from './last-read.ts'
 import './router-model.css'
 
 type Effort = ReasoningEffort | null
@@ -27,7 +28,8 @@ export type ModelConnectionStore = {
 }
 type Props = {
   store?: ModelConnectionStore
-  onClose: () => void; onBack?: () => void; busy: boolean; model?: string; L: Localize; onSaved: () => Promise<void>
+  onClose: () => void; onBack?: () => void; model?: string; backend?: string; L: Localize; onSaved: () => Promise<void>
+  onSaving: (active: boolean) => void
 }
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin', signal, ...(body ? {
@@ -54,6 +56,17 @@ function configuredEffort(config: ModelConfig) {
   return configuredReasoningEffort(kind, config.execution.router, definition?.defaults, definition?.parameters, config.effort)
 }
 
+function selection(config: ModelConfig) {
+  const backend = selectedBackend(config)
+  const definitions: Record<string, ModelDefinition> = { codex: { kind: 'codex' }, ...config.backends }
+  const connections = Object.fromEntries(Object.entries(definitions).map(([id, d]) => [id, {
+    label: d.label ?? (id === 'codex' ? 'Codex' : id), model: d.model,
+  }]))
+  return {backend, model: selectedModel(config, backend), effort: configuredEffort(config), connections}
+}
+
+const lastSelection = 'roppo.models.selection'
+
 function changesModel(config: ModelConfig, {backend, model}: Choice) {
   return selectedBackend(config) !== backend || model !== undefined && model !== selectedModel(config)
 }
@@ -62,7 +75,10 @@ function modelPatch(config: ModelConfig, choice: Choice) {
   const {backend, model, effort} = choice
   const changed = changesModel(config, choice)
   const router = { ...config.execution.router, backend }
-  if (selectedBackend(config) !== backend) delete router.parameters
+  if (selectedBackend(config) !== backend) {
+    delete router.parameters
+    delete router.nativeTool
+  }
   if (changed) router.model = model
   Object.assign(router, reasoningOverride(config.backends[backend]?.kind ?? '', router.parameters, effort))
   return { execution: { ...config.execution, router }, ...(changed ? {
@@ -130,9 +146,11 @@ const hostSettings: ModelConnectionStore = {
   connectionsUrl: '/configure#models',
 }
 
-export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, store = hostSettings }: Props) {
+export function RouterModelOptions({ onClose, onBack, model, backend: activeBackend, L, onSaved, onSaving, store = hostSettings }: Props) {
   const [data, setData] = useState<Configuration | null>(null)
+  const [remembered] = useState(() => store === hostSettings ? lastRead<ReturnType<typeof selection>>(lastSelection, 'router') : undefined)
   const [picker, setPicker] = useState<{backend: string; query: string} | null>(null)
+  const [refreshes, setRefreshes] = useState<Record<string, number>>({})
   const [saving, setSaving] = useState(false), [error, setError] = useState('')
   const [draft, setDraft] = useState<Effort>()
   const version = useRef<Version | null>(null), pending = useRef<Choice | null>(null), writing = useRef(false)
@@ -142,9 +160,11 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
     setError('')
     try {
       const next = await store.load(signal)
+      if (signal?.aborted) return
       version.current = next.current
       setData(next)
       setDraft(undefined)
+      if (store === hostSettings) rememberRead(lastSelection, 'router', selection(next.current.config))
     } catch (e) { if (!signal?.aborted) setError((e as Error).message) }
   }
   useEffect(() => {
@@ -163,11 +183,12 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
   }, [picking])
 
   async function save(choice: Choice) {
-    if (busy || !version.current) return
+    if (!version.current) return
     pending.current = choice
     if (writing.current) return
     writing.current = true
     setSaving(true)
+    onSaving(true)
     setError('')
     let updated = false
     let lastChoice = choice
@@ -183,6 +204,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
         version.current = await store.save(current.revision, modelPatch(current.config, next))
         const saved = version.current
         setData(previous => previous && { ...previous, current: saved })
+        if (store === hostSettings) rememberRead(lastSelection, 'router', selection(saved.config))
         if (switching) setPicker(null)
         updated = true
       }
@@ -194,6 +216,7 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
     } finally {
       writing.current = false
       setSaving(false)
+      onSaving(false)
     }
     if (updated) await refreshChat()
   }
@@ -202,31 +225,38 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
     try { await onSaved(); setError(previous => previous === 'refresh_failed' ? '' : previous) }
     catch { setError(previous => previous || 'refresh_failed') }
   }
-  const config = data?.current.config, backend = config ? selectedBackend(config) : ''
-  const definitions: Record<string, ModelDefinition> = { codex: { kind: 'codex' }, ...config?.backends }
-  const connectionLabel = (id: string) => definitions[id]?.label ?? (id === 'codex' ? 'Codex' : id)
-  const configuredModel = config ? selectedModel(config, backend) : undefined
-  const capabilities = useModelCapabilities(backend, configuredModel, store.capabilities)
+  const config = data?.current.config
+  const saved = remembered && (!activeBackend || activeBackend === remembered.backend) &&
+    (!model || !remembered.model || model === remembered.model || model === remembered.backend) ? remembered : undefined
+  const current = config ? selection(config) : saved
+  const backend = current?.backend ?? ''
+  const connections = current?.connections ?? {}
+  const connectionLabel = (id: string) => connections[id]?.label ?? id
+  const configuredModel = current?.model
+  const refreshConnection = (id: string) => setRefreshes(previous => ({...previous, [id]: (previous[id] ?? 0) + 1}))
+  const capabilities = useModelCapabilities(backend, configuredModel, store.capabilities, 0, refreshes[backend] ?? 0)
   const activeModel = configuredModel ?? capabilities.model
   const modelName = activeModel ?? model ?? connectionLabel(backend)
-  const browsing = picker && Object.hasOwn(definitions, picker.backend) ? picker.backend : backend
-  const otherCatalog = useModelCapabilities(browsing === backend ? '' : browsing, definitions[browsing]?.model, store.capabilities)
+  const browsing = picker && Object.hasOwn(connections, picker.backend) ? picker.backend : backend
+  const otherCatalog = useModelCapabilities(browsing === backend ? '' : browsing, connections[browsing]?.model,
+    store.capabilities, 0, refreshes[browsing] ?? 0)
   const catalog = browsing === backend ? capabilities : otherCatalog
-  const fallback = browsing === backend ? activeModel ?? model : definitions[browsing]?.model
+  const fallback = browsing === backend ? activeModel ?? model : connections[browsing]?.model
   const available = catalog.models.length ? catalog.models : fallback ? [fallback] : []
   const query = picker?.query.trim().toLowerCase() ?? ''
   const results = available.filter(id => id.toLowerCase().includes(query))
   const currentIndex = browsing === backend && fallback ? results.indexOf(fallback) : -1
   if (currentIndex > 0) results.unshift(results.splice(currentIndex, 1)[0]!)
   const stops: Effort[] = [null, ...capabilities.efforts]
-  const configured = config ? configuredEffort(config) : undefined
+  const configured = current?.effort
   const displayed = stops.find(level => level === (draft === undefined ? configured : draft)) ?? null
-  const valueText = effortLabel(displayed, L)
-  const canReset = !busy && !saving && configured != null
+  const valueText = capabilities.pending && !capabilities.model && capabilities.reasoning.source === 'unknown'
+    ? L('Reasoning effort', '思考强度') : effortLabel(displayed, L)
+  const canReset = !!config && !saving && configured != null
   const backButton = (back: () => void, label: string) => <button type="button" className="model-icon" aria-label={label}
     onClick={back}><ArrowLeft size={16}/></button>
   function chooseModel(selected?: string) {
-    if (busy || saving || catalog.pending) return
+    if (!config || saving) return
     if (browsing === backend && selected === fallback) setPicker(null)
     else void save({backend: browsing, model: selected, effort: null})
   }
@@ -236,34 +266,39 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
       setPicker(null)
     }
   }}>
-    {!config && onBack && <div className="palette-heading">
+    {!current && onBack && <div className="palette-heading">
       {backButton(onBack, L('Back to chat actions', '返回对话操作'))}<strong>{L('Model connection', '模型连接')}</strong>
     </div>}
-    {!config && !error && <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…', '正在读取连接…')}</div>}
-    {config && (picker ? <div className="model-connection-list" ref={pickerPanel}>
+    {!current && !error && <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={16}/>{L('Loading connections…', '正在读取连接…')}</div>}
+    {current && (picker ? <div className="model-connection-list" ref={pickerPanel}>
       <div className="palette-heading">{backButton(() => setPicker(null), L('Back to model', '返回模型'))}
         <strong>{L('Choose a model', '选择模型')}</strong></div>
       <div className="model-picker-controls">
         <SelectField label={L('Model connection', '模型连接')} value={browsing} disabled={saving}
-          onChange={event => setPicker({backend: event.target.value, query: ''})}>
-          {Object.keys(definitions).map(id => <option key={id} value={id}>{connectionLabel(id)}</option>)}
+          onClick={() => refreshConnection(browsing)}
+          onChange={event => {
+            const next = event.target.value
+            if (next === backend) refreshConnection(next)
+            setPicker({backend: next, query: ''})
+          }}>
+          {Object.keys(connections).map(id => <option key={id} value={id}>{connectionLabel(id)}</option>)}
         </SelectField>
         {(available.length > 6 || picker.query) && <TextField type="search" label={L('Search models', '搜索模型')}
           placeholder={L('Search models', '搜索模型')} icon={<Search size={14}/>} value={picker.query}
           onChange={event => setPicker({...picker, query: event.target.value})}/>}
       </div>
-      {catalog.pending ? <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={15}/>{L('Loading models…', '正在读取模型…')}</div>
+      {catalog.pending && !available.length ? <div className="router-model-loading" role="status"><LoaderCircle className="spin" size={15}/>{L('Loading models…', '正在读取模型…')}</div>
         : query && !results.length ? <p className="model-picker-empty" role="status">{L('No matching models', '没有匹配的模型')}</p>
-        : <div role="menu" className="model-picker-results" aria-label={L('Models', '模型')} aria-busy={saving}>
+        : <div role="menu" className="model-picker-results" aria-label={L('Models', '模型')} aria-busy={saving || catalog.pending}>
           {results.map(id => {
             const selected = browsing === backend && id === fallback
             return <button key={id} type="button" role="menuitemradio" aria-checked={selected}
-              className="palette-row model-option" aria-disabled={busy || saving} onClick={() => chooseModel(id)}>
+              className="palette-row model-option" aria-disabled={!config || saving} onClick={() => chooseModel(id)}>
               <strong>{id}</strong>{selected && <Check size={15}/>}
             </button>
           })}
           {!available.length && <button type="button" role="menuitemradio" aria-checked={browsing === backend}
-            className="palette-row model-option" aria-disabled={busy || saving} onClick={() => chooseModel()}>
+            className="palette-row model-option" aria-disabled={!config || saving} onClick={() => chooseModel()}>
             <strong>{L('Use connection default', '使用连接默认模型')}</strong>{browsing === backend && <Check size={15}/>}
           </button>}
         </div>}
@@ -275,17 +310,19 @@ export function RouterModelOptions({ onClose, onBack, busy, model, L, onSaved, s
         <div className="model-dial-title">
           <strong key={valueText}>{valueText}</strong>
           <button ref={modelButton} type="button" className="model-name-button" aria-haspopup="menu"
-            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => setPicker({backend, query: ''})}>
+            aria-label={L('Model connection', '模型连接') + ' · ' + modelName} onClick={() => {
+              refreshConnection(backend)
+              setPicker({backend, query: ''})
+            }}>
             <span>{modelName}</span><ChevronRight size={13}/></button>
         </div>
         {(stops.length > 1 || !capabilities.pending && configured != null) && <button type="button" className="model-icon model-reset" aria-disabled={!canReset}
           aria-label={L('Reset reasoning to model default', '恢复模型默认思考强度')} title={L('Reset to model default', '恢复模型默认')}
           onClick={() => { if (canReset) void save({ backend, effort: null }) }}><RotateCcw size={15}/></button>}
       </div>
-      {stops.length > 1 && <EffortSlider stops={stops} index={stops.indexOf(displayed)} valueText={valueText} L={L} disabled={busy}
+      {stops.length > 1 && <EffortSlider stops={stops} index={stops.indexOf(displayed)} valueText={valueText} L={L} disabled={!config}
         onPreview={setDraft} onCommit={value => void save({ backend, effort: value })}/>}
     </div>)}
-    {busy && config && <p className="router-model-notice">{L('Available when this run finishes.', '本次任务结束后可切换。')}</p>}
     {error && <div className="router-model-error" role="alert">
       {error === 'settings_conflict' ? L('Settings changed. Reload to continue.', '配置已变更，请重新读取。')
         : error === 'refresh_failed' ? L('Saved. Chat could not refresh.', '已保存，Chat 刷新失败。')

@@ -15,4 +15,5 @@ export interface ModelCapabilities {
   model?: string
   models: string[]
   reasoning: ReasoningCapability
+  catalogUnavailable?: boolean
 }

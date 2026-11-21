@@ -181,7 +181,7 @@ export class BackendRegistry implements Model {
     const pkg=previous?this.pinnedBundle(previous):await this.prepareBundle()
     const engine=this.harness(id,engineId,pkg,r.threadId,previous)
     const d=apiOptions(engine.api,options)
-    const model=previous?.harnessModel??r.model??profile?.model??d.model
+    const model=previous?.harnessModel??r.model??(!r.useConnectionDefault?profile?.model:undefined)??d.model
     Object.assign(binding,{harness:engineId,harnessIdentity:engine.identity,harnessModel:model,...(engineId===bundledEngineId?{harnessDigest:engine.digest}:{})})
     const authorization=d.subscription?this.harnessSubscription(id,d.subscription,r.principal,previous):undefined
     if(authorization)binding.harnessAccount=authorization.account
@@ -199,7 +199,7 @@ export class BackendRegistry implements Model {
     runOptions={...options,parameters:{},effort:undefined,maxOutputTokens:undefined,maxSteps:d.maxSteps,maxToolCalls:d.maxToolCalls}
     executor=engine.model
    }else executor=this.model(id,options)
-   const prepared:ModelRequest={...r,options:runOptions,compactBeforeTurn:!!compact,onContextReady:()=>{if(definition.kind==='codex'&&r.managed&&nativeThread&&(!legacyContext||compact))this.store.put('native-context',nativeThread,{version:nativeContextProfile,at:Date.now(),compacted:!!compact});r.onContextReady?.()},instructions:appendAgentPrompt(r.instructions,options.prompt,options.persona),model:r.model??(!r.threadId&&role==='router'?this.config.execution.router?.model:undefined),onThread:threadId=>{nativeThread=threadId;if(!locked){locked=threadId;this.writers.add(threadId)}this.store.put('backend-binding',threadId,binding);r.onThread?.(threadId)}}
+   const prepared:ModelRequest={...r,options:runOptions,compactBeforeTurn:!!compact,onContextReady:()=>{if(definition.kind==='codex'&&r.managed&&nativeThread&&(!legacyContext||compact))this.store.put('native-context',nativeThread,{version:nativeContextProfile,at:Date.now(),compacted:!!compact});r.onContextReady?.()},instructions:appendAgentPrompt(r.instructions,options.prompt,options.persona),model:r.model??(!r.threadId&&role==='router'&&!r.useConnectionDefault?this.config.execution.router?.model:undefined),onThread:threadId=>{nativeThread=threadId;if(!locked){locked=threadId;this.writers.add(threadId)}this.store.put('backend-binding',threadId,binding);r.onThread?.(threadId)}}
    onPrepared?.(prepared)
    return await executor.run(prepared)}
   catch(error){throw harnessProvider?.failure()??error}

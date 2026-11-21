@@ -1,19 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ChatSessions } from '../../src/chat.ts'
 import { ContextWindow } from '../ui/agent-decisions.tsx'
 import { InspectorCard } from '../ui/layout.tsx'
+import { lastRead, rememberRead } from './last-read.ts'
 
 type Usage = ReturnType<ChatSessions['contextUsage']>
 type Localize = (en: string, zh: string) => string
 type LoadUsage = (id: string, signal: AbortSignal) => Promise<Usage>
+const readings = 'roppo.chat.context-usage'
+
+function measured(data?: Usage): data is Usage {
+  return !!data && (data.inputTokens != null || !!data.composition || !!data.budget)
+}
+
+function previous(data?: Usage): Usage | undefined {
+  return measured(data) ? {...data, previous: true} : undefined
+}
 
 export function useCurrentContext(conversationId: string | null, turnId: string | undefined,
   model: string | undefined, backend: string | undefined, callId: string | undefined,
-  usageRevision: number | undefined, watch: boolean, load: LoadUsage): CurrentContext {
-  const key = JSON.stringify([conversationId, backend, model])
-  const revision = JSON.stringify([turnId, callId, usageRevision])
-  const [snapshot, setSnapshot] = useState<{ key: string; revision: string; data?: Usage; failed?: boolean }>()
+  usageRevision: number | undefined, watch: boolean, load: LoadUsage, refresh = 0): CurrentContext {
+  const revision = JSON.stringify([turnId, backend, model, callId, usageRevision])
+  const saved = useMemo(() => conversationId ? lastRead<Usage>(readings, conversationId) : undefined, [conversationId])
+  const [snapshot, setSnapshot] = useState<{ id: string; revision: string; data?: Usage; failed?: boolean }>()
   useEffect(() => {
     if (!conversationId) return
     const id = conversationId
@@ -23,10 +33,18 @@ export function useCurrentContext(conversationId: string | null, turnId: string 
       let refreshIn = watch ? 4000 : 0
       try {
         const data = await load(id, controller.signal)
-        if (!controller.signal.aborted) setSnapshot({ key, revision, data })
+        if (controller.signal.aborted) return
+        if (measured(data)) {
+          // Preserve aggregate counts across reloads. File names come from the live detail response.
+          rememberRead(readings, id, {...data, composition: data.composition ? {...data.composition, files: []} : null})
+          setSnapshot({ id, revision, data })
+        } else {
+          setSnapshot(last => ({ id, revision, data: previous(last?.id === id ? last.data : undefined) ?? previous(saved) ?? data }))
+        }
       } catch {
-        if (!controller.signal.aborted) setSnapshot(last => last?.key === key
-          ? { ...last, failed: true } : { key, revision, failed: true })
+        if (controller.signal.aborted) return
+        setSnapshot(last => ({id, revision, failed: true,
+          data: previous(last?.id === id ? last.data : undefined) ?? previous(saved)}))
         refreshIn = 8000
       }
       if (refreshIn && !controller.signal.aborted) timer = setTimeout(read, refreshIn)
@@ -36,12 +54,11 @@ export function useCurrentContext(conversationId: string | null, turnId: string 
       controller.abort()
       clearTimeout(timer)
     }
-  }, [key, revision, conversationId, watch, load])
+  }, [revision, conversationId, watch, load, refresh, saved])
   if (!conversationId) return { empty: true }
-  if (snapshot?.key !== key) return {}
-  const data = snapshot.data
-  return data && (data.inputTokens != null || data.composition || data.budget) && snapshot.revision !== revision
-    ? { ...snapshot, data: { ...data, previous: true } } : snapshot
+  if (snapshot?.id !== conversationId) return {data: previous(saved)}
+  return snapshot.revision !== revision && measured(snapshot.data)
+    ? { ...snapshot, data: previous(snapshot.data) } : snapshot
 }
 
 export type CurrentContext = { data?: Usage; failed?: boolean; empty?: boolean }

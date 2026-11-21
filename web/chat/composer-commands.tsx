@@ -115,9 +115,9 @@ export function windowReadout(current: CurrentContext, L: Localize) {
     style: 'percent', maximumFractionDigits: 1,
   }).format(fraction)
   const label = percent ? L(percent + ' used', '已用 ' + percent)
-    : current.failed ? L('Usage unavailable', '暂时无法读取用量')
     : input != null ? L('Window capacity not reported', '模型未提供窗口容量')
     : current.data?.budget || current.data?.composition ? L('Model token count not reported yet', '模型尚未上报 token 数')
+    : current.failed ? L('Usage unavailable', '暂时无法读取用量')
     : !current.empty && !current.data ? L('Loading…', '读取中…') : L('No usage reported yet', '暂无用量记录')
   const tokens = input != null ? input.toLocaleString(locale) + (capacity ? ' / ' + capacity.toLocaleString(locale) : '') + ' tokens' : null
   const previous = current.data?.previous && (input != null || current.data.budget || current.data.composition)

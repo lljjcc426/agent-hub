@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process'
 import {once} from 'node:events'
 import {fileURLToPath} from 'node:url'
 import {digest} from '../plugins/cli-shared/files.ts'
+import {toolBridge} from '../plugins/cli-shared/mcp.ts'
 import {workspaceGuard} from '../plugins/backend-opencode/workspace.ts'
 import {openCodeBuiltins,nativeTools} from '../plugins/backend-opencode/native-tools.ts'
 import {openHarnessProvider} from '../src/backends/harness-provider.ts'
@@ -24,6 +25,73 @@ import type {ModelRequest} from '../src/model.ts'
 import {webPageDirectory,webPageFile,webPageCheckpointSchema} from '../src/backends/opencode-web-checkpoint.ts'
 
 const request:ModelRequest={instructions:'',input:'',schema:{type:'object'},cwd:tmpdir()}
+const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yR5cAAAAASUVORK5CYII='
+
+it('transports mixed MCP images and gives malformed images a non-fatal tool result',async()=>{
+ const fatal=vi.fn(),invoke=vi.fn(async(name:string)=>{
+  if(name==='read')return {success:true,contentItems:[
+   {type:'inputImage' as const,imageUrl:'data:image/png;base64,'+png},
+   {type:'inputText' as const,text:'fixture'},
+  ]}
+  if(name==='invalid')return {success:true,contentItems:[
+   {type:'inputImage' as const,imageUrl:'data:image/png;base64,_'},{type:'inputText' as const,text:'independent evidence'},
+  ]}
+  return {success:true,contentItems:[{type:'inputText' as const,text:'still available'}]}
+ })
+ const bridge=await toolBridge(['read','invalid','text'].map(name=>({type:'function',name,description:name,inputSchema:{}})),invoke,fatal,true)
+ const call=async(name:string,id:number)=>{
+  const res=await fetch(bridge.url,{method:'POST',headers:{authorization:'Bearer '+bridge.token,'content-type':'application/json'},
+   body:JSON.stringify({jsonrpc:'2.0',id,method:'tools/call',params:{name}})})
+  return (await res.json() as any).result
+ }
+ try{
+  const image={content:[{type:'image',mimeType:'image/png',data:png},{type:'text',text:'fixture'}],isError:false}
+  expect(await call('read',1)).toEqual(image)
+  expect(await call('read',1)).toEqual(image)
+  expect(await call('invalid',2)).toMatchObject({isError:true,content:[
+   {type:'text',text:expect.stringContaining('tool_image_invalid')},{type:'text',text:'independent evidence'},
+  ]})
+  expect(await call('text',3)).toEqual({content:[{type:'text',text:'still available'}],isError:false})
+  expect(invoke).toHaveBeenCalledTimes(3)
+  expect(fatal).not.toHaveBeenCalled()
+ }finally{await bridge.close()}
+})
+
+it.each([
+ {code:'image_not_supported'},
+ {code:'invalid_image',param:'input[0].output[1].image_url'},
+])('keeps a Responses session running after $code',async error=>{
+ const sent:any[]=[],issues=vi.fn()
+ const upstream=createServer(async(req,res)=>{
+  const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(chunk)
+  const input=JSON.parse(Buffer.concat(chunks).toString()).input
+  sent.push(input)
+  if(sent.length===1)res.writeHead(400,{'content-type':'application/json'}).end(JSON.stringify({error}))
+  else res.writeHead(200,{'content-type':'text/event-stream'}).end('data: [DONE]\n\n')
+ })
+ await new Promise<void>(ok=>upstream.listen(0,'127.0.0.1',ok))
+ const port=(upstream.address() as {port:number}).port
+ const profile=apiBackendDefinition.parse({kind:'openai-responses',model:'sample',baseUrl:'http://127.0.0.1:'+port+'/v1'})
+ const provider=await openHarnessProvider(profile,'sample',{...request,onBackendIssue:issues},async()=> 'fixture')
+ const media={type:'input_image',image_url:'data:image/png;base64,'+png}
+ const output={type:'function_call_output',call_id:'read-1',output:[{type:'input_text',text:'receipt'},media]}
+ const other={...output,call_id:'read-2'},input=[output,other]
+ const call=()=>fetch(provider.url+'/responses',{method:'POST',body:JSON.stringify({model:'sample',stream:true,input})})
+ try{
+  expect(await (await call()).text()).toContain('[DONE]')
+  expect(await (await call()).text()).toContain('[DONE]')
+  expect(sent[0]).toEqual(input)
+  const text=[output.output[0],{type:'input_text',text:expect.stringContaining('tool_image_rejected')}]
+  expect(sent[1]).toEqual([{...output,output:text},error.param?other:{...other,output:text}])
+  expect(sent[2]).toEqual(sent[1])
+  expect(issues).toHaveBeenCalledExactlyOnceWith({code:'unsupported',httpStatus:400,willRetry:true})
+  expect(provider.failure()).toBeUndefined()
+ }finally{
+  await provider.close()
+  upstream.closeAllConnections()
+  await new Promise<void>(ok=>upstream.close(()=>ok()))
+ }
+})
 
 it('restricts native tool paths and journals the vendor call ID before editing',async()=>{
  const root=realpathSync(mkdtempSync(join(tmpdir(),'harness-guard-')))

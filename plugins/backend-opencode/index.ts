@@ -51,7 +51,7 @@ export const opencodeDriver:CliDriver={
   if(!account?.key&&!account?.refresh)return
   return {identity:digest(JSON.stringify([provider,account.type,account.key??account.accountId??account.refresh])),files:[{source,target:'data/opencode/auth.json'}]}
  },
- prepare({config,root,cwd,nativeId,request,mcp,prompt,guardPlugin}){
+ prepare({config,root,cwd,nativeId,request,mcp,prompt,guardPlugin,toolImages}){
   if(request.options?.effort)throw new BackendAdapterError('unsupported')
   const selected=request.model??config.model
   if(!selected)throw new BackendAdapterError('configuration_invalid')
@@ -66,7 +66,8 @@ export const opencodeDriver:CliDriver={
    ?'\nFor public text research, use websearch to discover official or primary sources. Read known URLs directly with webfetch for one page or webfetch_batch for several pages. Batch independent URLs, reuse successful excerpts, and check that the returned content supports each citation. If a URL is missing, use the official documentation index or search to find its current address. Use the browser only for pages that need authenticated access, interaction, or rendering to retrieve the required content. With supplied URLs and an independent search, emit any required roppo_chat_opening, websearch and webfetch_batch together in the first response. Wait for search results only when the URLs must be discovered first.'
    :'')
   const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
-  const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{name:selected}},
+  const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{
+   name:selected,...(toolImages?{attachment:true,modalities:{input:['text','image'],output:['text']}}:{})}},
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
   const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
    agent:{...(request.managed?{title:{disable:true}}:{}),roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},

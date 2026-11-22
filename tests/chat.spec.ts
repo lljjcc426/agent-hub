@@ -1,9 +1,9 @@
-import {afterEach,expect,it} from 'vitest'
-import {mkdtempSync,rmSync,readFileSync,writeFileSync,mkdirSync,symlinkSync,existsSync} from 'node:fs'
+import {afterEach,expect,it,vi} from 'vitest'
+import {mkdtempSync,rmSync,readFileSync,writeFileSync,mkdirSync,symlinkSync,existsSync,realpathSync} from 'node:fs'
 import {Readable} from 'node:stream'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {randomUUID} from 'node:crypto'
+import {createHash,randomUUID} from 'node:crypto'
 import {deliveryHref,downloadUrl} from '../web/chat/delivery-links.ts'
 import {memoryWorkspace} from '../src/memory-workspace.ts'
 import {Runtime} from '../src/runtime.ts'
@@ -11,6 +11,9 @@ import {terminalTask} from '../src/terminal/tasks.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import type {ModelRequest} from '../src/model.ts'
+import {BackendPluginError} from '../src/backends/plugin-contract.ts'
+import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
+import {stableDigest} from '../src/sources.ts'
 import {measureChatInput} from '../src/chat-input.ts'
 import {createServer,type Server} from 'node:http'
 import {chatUploadLimits} from '../src/chat-attachments.ts'
@@ -27,6 +30,91 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+
+function interruptedOpenCode(h:Runtime,request:ModelRequest,calls:{
+ id:string;name:string;args:unknown;result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
+}[],nativeToolsDisabled=false){
+ const backendId='codex',threadId='plugin:'+randomUUID(),nativeId='native-'+randomUUID(),turnId=randomUUID(),folder=randomUUID()
+ const identity='1'.repeat(64),digest='2'.repeat(64),cwd=realpathSync(request.cwd)
+ const dir=join(realpathSync(h.config.stateDir),'backend-plugin-data',backendId,identity,'threads',stableDigest(threadId))
+ const root=join(dir,'sessions',folder)
+ mkdirSync(root,{recursive:true});mkdirSync(join(dir,'index'),{recursive:true})
+ writeFileSync(join(dir,'index',createHash('sha256').update(nativeId).digest('hex')+'.json'),JSON.stringify({id:nativeId,folder}))
+ const turns=[{id:turnId,state:'interrupted',tools:calls,...(nativeToolsDisabled?{nativeToolsDisabled:true}:{})}]
+ if(nativeToolsDisabled)turns.unshift({id:randomUUID(),state:'interrupted',tools:[],nativeToolsDisabled:true})
+ writeFileSync(join(root,'session.json'),JSON.stringify({format:1,folder,nativeId,cwd,turns}))
+ if(!nativeToolsDisabled)writeFileSync(join(root,turnId+'.ready'),'ready')
+ const effectIds=calls.map(call=>{
+  const id=stableDigest([threadId,turnId,call.id])
+  h.store.put('backend-plugin-tool',id,{state:call.result?'complete':'running',fingerprint:stableDigest([call.name,call.args]),result:call.result})
+  return id
+ })
+ h.store.put('backend-binding',threadId,{id:backendId,harness:bundledEngineId,harnessDigest:digest})
+ h.store.put('backend-plugin-thread',threadId,{id:threadId,backendId,pluginId:'opencode-cli',stateVersion:1,state:'failed',
+  turnId,identity,digest,cwd,nativeId,effectIds,lastFailure:{at:Date.now(),code:'process_failed'}})
+ request.onThread?.(threadId)
+ request.onTurn?.(turnId)
+ return {threadId,effectIds}
+}
+
+it.each([false,true])('recovers an interrupted OpenCode image read in the same Chat (later follow-up: %s)',async(later)=>{
+ const data='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yR5cAAAAASUVORK5CYII='
+ const imageId=randomUUID(),resource='asset/'+imageId
+ let attempt=0
+ const {h,calls}=fixture(async r=>{
+  if(++attempt===1){
+   const opening={text:'我先查看这张截图。'},read={resource}
+   const began=await r.onTool!('chat_opening',opening,'open')
+   const picture=await r.onTool!('router_read',read,'read')
+   expect(picture.contentItems[0]).toEqual({type:'inputImage',imageUrl:'data:image/png;base64,'+data})
+   interruptedOpenCode(h,r,[{id:'open',name:'chat_opening',args:opening,result:began},{id:'read',name:'router_read',args:read,result:picture}],!later)
+   throw new BackendPluginError('process_failed','codex')
+  }
+  const input=JSON.parse(r.input)
+  expect(r.threadId).toBeUndefined()
+  expect(input.continuity).toMatchObject({mode:'rebuild',recovery:{originalTriggerId:original.runId,
+   attachments:[{resource,name:'fixture.png'}],reads:[{tool:'router_read',resource}]}})
+  if(later)await r.onTool!('chat_opening',{text:'我继续核对原来的截图。'},'open-2')
+  else expect(r.tools?.some(t=>t.name==='chat_opening')).toBe(false)
+  expect((await r.onTool!('router_read',{resource},'read-2')).success).toBe(true)
+  return {reply:'已读取原截图。'}
+ })
+ if(later)h.scopes.command({action:'scope.put',operationId:'initial-scope',expectedRevision:0,
+  scope:{id:'team',tenantId:'local',name:'Team',managers:[JSON.stringify(['local','operator'])],
+   workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
+ const conversation=h.chat.create('owner')
+ await h.chat.uploads.upload(conversation.id,'owner',imageId,{name:'fixture.png',mimeType:'image/png'},Readable.from([Buffer.from(data,'base64')]))
+ const disabled=later?vi.spyOn(h.continuity,'recoverRead').mockReturnValue(undefined):undefined
+ const original=h.chat.send(conversation.id,'owner',{clientMessageId:randomUUID(),openingLocale:'zh-CN',text:'识别截图',attachments:[imageId]})
+ if(later){
+  await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
+  disabled!.mockRestore()
+  h.chat.send(conversation.id,'owner',{clientMessageId:randomUUID(),openingLocale:'zh-CN',text:'继续'})
+ }
+ await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='completed')
+ const view=h.chat.view(conversation.id,'owner')
+ expect(calls).toHaveLength(2)
+ expect(view.run?.recovery).toEqual({state:'rebuilding'})
+ expect(view.messages.filter(m=>m.opening&&m.runId===original.runId)).toHaveLength(1)
+ expect(view.messages.some(m=>m.text==='已读取原截图。')).toBe(true)
+})
+
+it('keeps an unconfirmed OpenCode write held and carries its receipt into a follow-up',async()=>{
+ let receiptId=''
+ const {h,calls}=fixture(async r=>{
+  const proof=interruptedOpenCode(h,r,[{id:'write',name:'github_write',args:{action:'update_issue'}}])
+  receiptId=proof.effectIds[0]!
+  throw new BackendPluginError('outcome_unknown','codex')
+ })
+ const conversation=h.chat.create('owner')
+ send(h,conversation.id,'Update the issue')
+ await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
+ expect(h.chat.view(conversation.id,'owner').run?.recovery).toEqual({state:'held',tool:'github_write',receiptId})
+ send(h,conversation.id,'继续')
+ await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
+ expect(calls).toHaveLength(1)
+ expect(h.store.get('backend-plugin-tool',receiptId)).toMatchObject({state:'running'})
+})
 
 it('offers setup for a new Chat, keeps skip and save idempotent, and preserves another owner’s changes', () => {
   const {h}=fixture(),empty=h.chat.space('owner',true)

@@ -248,7 +248,13 @@ function Timestamp({ at }: { at: Date | number }) {
 function MessageSkill({skill}:{skill?:ChatSkillRef}){
   return skill?<span className="message-skill"><Box size={13}/><span>/{skill.name}</span></span>:null;
 }
-function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string) {
+function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string, recovery?:import('../../src/chat-status.ts').ChatRecovery) {
+  if(state==='running'&&recovery?.state==='rebuilding')return L('Recovering the interrupted read','正在恢复中断的只读操作');
+  if(state==='failed'&&recovery?.state==='held'){
+    const action=recovery.tool?' · '+recovery.tool:'';
+    const receipt=recovery.receiptId?' · '+L('Receipt','回执')+' '+recovery.receiptId.slice(0,12):'';
+    return L('Previous operation needs verification','需核对上一轮操作结果')+action+receipt;
+  }
   return ({waiting:waitingLabel||L('Waiting for your input','等待你的补充'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
 }
 function UserMessage() {
@@ -326,7 +332,7 @@ function AssistantMessage() {
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
     streaming = status?.type === "running",
-    footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
+    footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
@@ -1020,7 +1026,7 @@ function Chat(p: ChatProps) {
   };
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
-  const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'') : undefined;
+  const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");

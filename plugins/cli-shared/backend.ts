@@ -16,7 +16,7 @@ import {openCodeReadOnlyTools} from '../backend-opencode/native-tools.ts'
 import {isParallelRead} from '../../src/tool-dispatch.ts'
 export {cliFailure} from './errors.ts'
 
-type Turn={id:string;input:string;instructions:string;state:'running'|'completed'|'interrupted';text:string;protocolBytes:number;tools:{id:string;name:string;args:unknown;result?:unknown}[]}
+type Turn={id:string;input:string;instructions:string;state:'running'|'completed'|'interrupted';text:string;protocolBytes:number;nativeToolsDisabled?:true;tools:{id:string;name:string;args:unknown;result?:unknown}[]}
 type Session={format:1;folder:string;nativeId?:string;cwd:string;cliVersion:string;turns:Turn[]}
 const exec=promisify(execFile)
 export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(raw,{dataDirectory}){
@@ -77,7 +77,10 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    // Replaying an interrupted tool turn with fresh MCP IDs could duplicate an
    // external write. Preserve it for reconciliation instead of guessing.
    if(session.turns.some(t=>t.state!=='completed'&&(t.tools.length||existsSync(join(root,t.id+'.operations'))))){unlock();throw new BackendAdapterError('outcome_unknown')}
-   const turn:Turn={id:randomUUID(),input:request.input,instructions:request.instructions,state:'running',text:'',protocolBytes:0,tools:[]}
+   const allowedNative=new Set(driver.nativeTools?.(request))
+   const nativeToolsDisabled=driver.id==='opencode-cli'&&!!config.apiProtocol&&!allowedNative.size&&!request.nativeTool
+   const turn:Turn={id:randomUUID(),input:request.input,instructions:request.instructions,state:'running',text:'',protocolBytes:0,
+    ...(nativeToolsDisabled?{nativeToolsDisabled:true as const}:{}),tools:[]}
    // A killed CLI leaves its exact native session and an explicitly incomplete turn.
    for(const old of session.turns)if(old.state==='running')old.state='interrupted'
    session.turns.push(turn)
@@ -85,12 +88,12 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    let child:ReturnType<typeof spawn>|undefined,bridge:Awaited<ReturnType<typeof toolBridge>>|undefined,failure:unknown,done=false,buffer='',stderr='',outputBytes=0
    let repeatedBatches=0
    let repeatedTargets=''
-   const allowedNative=new Set(driver.nativeTools?.(request))
+   const toolImages=driver.id==='opencode-cli'&&config.apiProtocol==='openai-responses'
    const guard=(config.apiProtocol&&request.harnessWorkspace||request.opencodeNativeTools)?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
    const readHistory=()=>{
-    if(driver.id!=='opencode-cli'||!guard?.ready())return
+    if(driver.id!=='opencode-cli'||!turn.nativeToolsDisabled&&!guard?.ready())return
     let ops:ReturnType<NonNullable<typeof guard>['operations']>
-    try{ops=guard.operations()}catch{return}
+    try{ops=guard?.operations()??[]}catch{return}
     if(ops.some(op=>!openCodeReadOnlyTools.has(op.tool))||turn.tools.some(t=>
      !t.name.startsWith('opencode/')&&(!t.result||t.name!=='superagent_status'&&!isParallelRead(t.name))))return
     return {effectFree:true as const,...(ops.length||turn.tools.length?{readOnlyHistory:true as const}:{})}
@@ -126,12 +129,19 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      let result=await request.onTool(name,args,id)
      if(request.requiresChatOpening&&name==='chat_opening'&&result.success)privateFile(join(root,turn.id+'.opening'),'delivered')
      if(request.contextBudget&&protocolBytes(result)>request.contextBudget.toolReserveBytes){
-      if(!request.retainToolResult)throw new BackendAdapterError('unsupported')
-      result=receiptReference(result,await request.retainToolResult(id,result),request.tools?.some(t=>t.name==='router_read')?'router_read':'superagent_read')
+      if(result.contentItems.some(c=>c.type==='inputImage')){
+       const receiptId=await request.retainToolResult?.(id,result)
+       result={success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+        code:'tool_image_too_large',receiptId,message:'The image exceeds the inline result budget for this turn.'
+       })}]}
+      }else{
+       if(!request.retainToolResult)throw new BackendAdapterError('unsupported')
+       result=receiptReference(result,await request.retainToolResult(id,result),request.tools?.some(t=>t.name==='router_read')?'router_read':'superagent_read')
+      }
      }
      call.result=result;save();budget('cli-tool-result');wire?.check('native-tool-result',{id,result})
      return call.result as Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
-    },fail)
+    },fail,toolImages)
     const toolInstructions=request.opencodeNativeTools
      ?' Use the supplied OpenCode and Roppo tools within the assigned task permissions. Use file paths relative to the task workspace.'
      :' Use only the supplied Roppo tools for external actions.'+(request.harnessWorkspace?' Use the native file tools with paths relative to the assigned task workspace.':'')
@@ -142,7 +152,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      if(!session.nativeId){const id=driver.discoverSession?.(root);if(id)bind(id)}
      if(!session.nativeId)throw new BackendAdapterError('invalid_output')
     })
-    const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,guardPlugin:guard?.url,prompt})
+    const prepared=driver.prepare({config:{...config,baseUrl:wire.url},root,cwd:session.cwd,nativeId:session.nativeId,newId:folder,request,mcp:bridge,guardPlugin:guard?.url,prompt,toolImages})
     request.onConfiguration?.({requested:request.options??{},sent:{model:request.model??config.model,parameters:request.options?.parameters,effort:request.options?.effort,cliVersion:config.cliVersion,...(config.apiProtocol?{harness:'opencode',protocol:config.apiProtocol,workspaceTools:driver.workspaceTools?.(request.harnessWorkspace)}:{}),...(request.opencodeNativeTools?{nativeTools:[...allowedNative]}:{})}})
     request.onCapabilities?.({mcpServers:['roppo'],disabledPlugins:[...(request.nativeTool||allowedNative.size?[]:['native-tools']),'workspace-plugins','workspace-hooks'],managed:request.managed===true})
     request.onContextReady?.()

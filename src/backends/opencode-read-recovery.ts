@@ -21,7 +21,7 @@ const operationSchema=z.object({id:callId,tool:z.string(),path:z.string().option
 const sessionSchema=z.object({
  format:z.literal(1),folder:uuid,nativeId:callId,cwd:z.string(),
  turns:z.array(z.object({
-  id:uuid,state:z.enum(['completed','interrupted','running']),
+  id:uuid,state:z.enum(['completed','interrupted','running']),nativeToolsDisabled:z.literal(true).optional(),
   tools:z.array(z.object({id:callId,name:z.string(),args:z.json(),result:resultSchema.optional()})),
  })).nonempty(),
 })
@@ -29,6 +29,25 @@ type GithubRead={id:string;receipt:PluginToolEffect}
 type InterruptedRead={kind:'github';interrupted:GithubRead[]}
  |{kind:'web_batch';replay:WebBatchReplay;urls:string[];batches:string[][];interrupted:GithubRead[]}
  |{kind:'read_only'}
+
+type RouterReadCall={name:string;args:unknown;receiptId:string;receipt:PluginToolEffect}
+export type InterruptedRouterTurn=
+ |{kind:'read_only';threadId:string;turnId:string;reads:RouterReadCall[]}
+ |{kind:'unverified';threadId:string;turnId:string;tool?:string;receiptId?:string}
+
+function isRouterRead(name:string,args:unknown){
+ const action=(args as {action?:unknown}|null)?.action
+ switch(name){
+  case 'router_read':return readSchema.safeParse(args).success
+  case 'github_read':return githubReadSchema.safeParse(args).success
+  case 'worker_manage':return action==='list'
+  case 'router_goal':return action==='list'||action==='inspect'
+  case 'router_journal':return action==='read'
+  case 'workspace_browser':return action==='snapshot'
+  case 'chat_opening':case 'superagent_status':return true
+  default:return false
+ }
+}
 
 function privateText(path:string,limit=maxWireBytes){
  const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK)
@@ -82,6 +101,65 @@ function operations(root:string,turnId:string){
  return lstatSync(journal,{throwIfNoEntry:false})
   ? privateText(journal).trim().split('\n').filter(Boolean).map(line=>operationSchema.parse(JSON.parse(line)))
   : []
+}
+
+/** Prove a stopped bundled Router turn from the native journal and host receipts. */
+export function inspectInterruptedRouterTurn(store:Pick<ThreadStore,'get'>,stateDir:string,
+ owner:{threadId:string;triggerId:string;sourceId:string;scopeId?:string;contextId?:string;cwd:string}):InterruptedRouterTurn|undefined{
+ const thread=store.get<PluginThread>('backend-plugin-thread',owner.threadId)
+ if(!thread||thread.state==='completed'||!thread.turnId)return
+ const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',owner.threadId)
+ const model=store.get<{threadId:string;cwd:string;ephemeral:boolean;triggerId:string;sourceId:string;scopeId:string;contextId:string;ticketId?:string}>('model-session',owner.threadId)
+ if(thread.id!==owner.threadId||thread.pluginId!=='opencode-cli'||thread.stateVersion!==1||binding?.harness!==bundledEngineId||
+  binding.id!==thread.backendId||binding.harnessDigest!==thread.digest||model?.threadId!==thread.id||
+  model.ticketId||model.ephemeral!==false||model.triggerId!==owner.triggerId||model.sourceId!==owner.sourceId||
+  model.scopeId!==owner.scopeId||model.contextId!==owner.contextId)return
+ const unverified:InterruptedRouterTurn={kind:'unverified',threadId:thread.id,turnId:thread.turnId}
+ try{
+  if(realpathSync(owner.cwd)!==thread.cwd||realpathSync(model.cwd)!==thread.cwd)return unverified
+  const location=sessionRoot(stateDir,thread)
+  if(!location||!stoppedWriter(location.root))return unverified
+  const {root,folder}=location
+  const session=sessionSchema.parse(JSON.parse(privateText(join(root,'session.json'))))
+  const last=session.turns.at(-1)!
+  if(session.folder!==folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd||
+   last.id!==thread.turnId)return unverified
+  if(last.state==='completed')return
+  const journal=operations(root,last.id)
+  if(!last.tools.length&&!journal.length&&(thread.effectIds.length===0||thread.lastFailure?.diagnostic?.effectFree))return
+  if(last.nativeToolsDisabled?journal.length>0:privateText(join(root,last.id+'.ready'),32)!=='ready')return unverified
+  const failed=thread.lastFailure
+  if(thread.state==='failed'&&!['outcome_unknown','process_failed','transient'].includes(failed?.code??'')&&!failed?.diagnostic?.readOnlyHistory)return unverified
+  const unsafe=journal.find(op=>!openCodeReadOnlyTools.has(op.tool))
+  if(unsafe)return {...unverified,tool:'opencode/'+unsafe.tool,receiptId:unsafe.id}
+  const nativeCalls=new Map(journal.map(op=>[op.id,op.tool]))
+  if(nativeCalls.size!==journal.length)return unverified
+  const effects=new Set(thread.effectIds),turns=new Set<string>(),reads:RouterReadCall[]=[]
+  if(effects.size!==thread.effectIds.length)return unverified
+  for(const turn of session.turns){
+   if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'&&(turn.tools.length||operations(root,turn.id).length))return unverified
+   turns.add(turn.id)
+   for(const call of turn.tools){
+    if(call.name.startsWith('opencode/')){
+     if(turn===last&&(nativeCalls.get(call.id)!==call.name.slice('opencode/'.length)||!call.result))return unverified
+     continue
+    }
+    const id=stableDigest([thread.id,turn.id,call.id])
+    const receipt=store.get<PluginToolEffect>('backend-plugin-tool',id)
+    const evidence={...unverified,tool:call.name,receiptId:id}
+    if(!effects.delete(id)||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return evidence
+    if(turn!==last){
+     if(receipt.state!=='complete'||!call.result)return evidence
+     continue
+    }
+    if(!isRouterRead(call.name,call.args))return evidence
+    if(receipt.state==='complete'&&!receipt.result||receipt.state==='running'&&(call.result||receipt.result))return evidence
+    reads.push({name:call.name,args:call.args,receiptId:id,receipt})
+   }
+  }
+  if(effects.size||!stoppedWriter(root))return unverified
+  return {kind:'read_only',threadId:thread.id,turnId:last.id,reads}
+ }catch{return unverified}
 }
 
 /** Read the saved excerpts only for the authorized task's planned batch. */

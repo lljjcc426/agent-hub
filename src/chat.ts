@@ -60,7 +60,7 @@ type PendingCard =
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
-interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding}
+interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -796,6 +796,12 @@ export class ChatSessions {
     const message=this.host.store.get<Message>('chat-message','opening:'+triggerId)
     return message?.opening==='introduced'?message.text:undefined
   }
+  recovery(triggerId:string,recovery:import('./chat-status.ts').ChatRecovery){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run||run.cancelled||run.cancelRequested)return
+    this.host.store.put('chat-run',triggerId,{...run,recovery})
+    this.changed(run.conversationId)
+  }
   introduce(triggerId:string,text:string){
     this.host.store.atomic(()=>{
       const run=this.host.store.get<ChatRun>('chat-run',triggerId)
@@ -1200,7 +1206,7 @@ export class ChatSessions {
     const sessionRouterPlans=workerView?visiblePlans.filter(plan=>!plan.workerId&&!plan.ticketId):undefined
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
     const handoffs=withPending?this.handoffs(id):[]
-    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue

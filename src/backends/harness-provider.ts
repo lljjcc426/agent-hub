@@ -6,7 +6,41 @@ import type {ApiDefinition} from '../backend-config.ts'
 import type {ModelRequest} from '../model.ts'
 import {checkBudget,ContextBudgetExceeded} from '../context-budget.ts'
 import {apiHeaders,apiOutputFormat} from './api-request.ts'
-import {apiCheckFailure,apiResponseError} from './api-errors.ts'
+import {apiCheckFailure,apiResponseError,type ApiResponseError} from './api-errors.ts'
+
+const rejectedImageCodes=new Set([
+ 'unsupported_image','unsupported_image_format','unsupported_image_type',
+ 'invalid_image','invalid_image_format','invalid_image_url','invalid_image_mode','image_too_large',
+])
+function hasToolImage(item:any){
+ return item?.type==='function_call_output'&&typeof item.call_id==='string'&&Array.isArray(item.output)&&
+  item.output.some((part:any)=>part?.type==='input_image')
+}
+
+function rejectedToolImages(error:ApiResponseError|undefined,input:any[]):'all'|string[]|undefined{
+ if(!error)return
+ const parameter=/^input(?:\[(\d+)\]|\.(\d+))\.output(?:\[(\d+)\]|\.(\d+))\.(?:image_url|image|type)$/.exec(error.parameter??'')
+ if(parameter){
+  const item=input[Number(parameter[1]??parameter[2])]
+  if(!hasToolImage(item)||item.output[Number(parameter[3]??parameter[4])]?.type!=='input_image')return
+  if(error.code!=='image_not_supported')return [item.call_id]
+ }
+ if(error.code==='image_not_supported')return 'all'
+ if(rejectedImageCodes.has(error.code??''))return input.filter(hasToolImage).map(item=>item.call_id)
+}
+
+function textOnlyToolOutputs(input:unknown,rejectAll:boolean,rejected:ReadonlySet<string>){
+ if(!Array.isArray(input)||!rejectAll&&!rejected.size)return input
+ return input.map(item=>{
+  if(!hasToolImage(item)||!rejectAll&&!rejected.has(item.call_id))return item
+  return {...item,output:[
+   ...item.output.filter((part:any)=>part?.type!=='input_image'),
+   {type:'input_text',text:JSON.stringify({
+    code:'tool_image_rejected',message:'This model connection rejected the image returned by this tool. Continue using the available text and report which image could not be inspected.'
+   })},
+  ]}
+ })
+}
 
 /** One private loopback endpoint per activation. Only the host authenticates upstream. */
 export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRequest,credential?:()=>Promise<string>){
@@ -14,7 +48,8 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
  const path={'openai-chat':'/chat/completions','openai-responses':'/responses',anthropic:'/messages'}[d.kind]
  const upstream=d.baseUrl.replace(/\/+$/,'')+path
  const lifetime=new AbortController()
- let port=0,steps=0,failure:unknown
+ let port=0,steps=0,failure:unknown,rejectAllToolImages=false
+ const rejectedImageCalls=new Set<string>()
  const server=createServer(async(req,res)=>{
   if(req.method!=='POST'||req.headers.host!=='127.0.0.1:'+port||req.headers.origin||req.url?.split('?')[0]!==prefix+path){
    res.writeHead(403).end()
@@ -46,20 +81,41 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
     body.max_output_tokens=d.maxOutputTokens
     if(d.subscription)body.include=['reasoning.encrypted_content']
    }else body.max_tokens=d.maxOutputTokens
-   const wire=JSON.stringify(body)
-   if(Buffer.byteLength(wire)>d.maxContextBytes){res.writeHead(413).end();return}
-   checkBudget(body,r.contextBudget,'api-wire','harness-provider',r.onBudget,true)
+   if(d.kind==='openai-responses')body.input=textOnlyToolOutputs(body.input,rejectAllToolImages,rejectedImageCalls)
+   const encode=()=>{
+    const wire=JSON.stringify(body)
+    if(Buffer.byteLength(wire)>d.maxContextBytes)return
+    checkBudget(body,r.contextBudget,'api-wire','harness-provider',r.onBudget,true)
+    return wire
+   }
+   let wire=encode()
+   if(!wire){res.writeHead(413).end();return}
 
    let headers:Record<string,string>
    try{headers=apiHeaders(d,await credential?.())}
    catch{res.writeHead(401).end();return}
    const send=()=>fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})
-   const response=await send().catch(error=>{
+   let response=await send().catch(error=>{
     // A reset before the response arrives cannot have executed a host tool.
     // Keep the same model step and deadline without resuming a native tool turn.
     if(!taskStep||signal.aborted||!['ECONNRESET','UND_ERR_SOCKET'].includes(error?.cause?.code))throw error
     return send()
    })
+   // The provider explicitly rejected this model request before returning a
+   // completion. Retry the same step with the affected tool results expressed as text.
+   if(d.kind==='openai-responses'&&[400,415,422].includes(response.status)&&Array.isArray(body.input)&&body.input.some(hasToolImage)){
+    const parsed=await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined)
+    const rejected=rejectedToolImages(parsed,body.input)
+    if(rejected){
+     if(rejected==='all')rejectAllToolImages=true
+     else for(const id of rejected)rejectedImageCalls.add(id)
+     body.input=textOnlyToolOutputs(body.input,rejectAllToolImages,rejectedImageCalls)
+     wire=encode()
+     if(!wire){res.writeHead(413).end();return}
+     r.onBackendIssue?.({code:'unsupported',willRetry:true,httpStatus:response.status})
+     response=await send()
+    }
+   }
    if(!response.ok||!response.body){
     const retryAfter=response.headers.get('retry-after')
     const parsed=response.status===429?await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined):undefined

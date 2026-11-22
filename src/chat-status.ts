@@ -6,6 +6,7 @@ export const chatStatusSchema=z.object({
  label:z.string().trim().min(1).max(48).refine(value=>!/[\r\n\x00-\x1f]/.test(value),'Use one short line'),
 }).strict()
 export type ChatStatus= z.infer<typeof chatStatusSchema> & {updatedAt:number}
+export type ChatRecovery={state:'rebuilding'|'held';tool?:string;receiptId?:string}
 export const chatStatusTool={
  type:'function',name:'superagent_status',
  description:'Update the short public Chat status for your current work. Use the user language, about 6–12 Chinese characters or 3–7 words, e.g. 正在审查输入组件. Report only an observable task stage, without private reasoning, secrets, or a claim of completion. Call once when starting substantial work and when the stage changes, not for every step. This only updates the interface; it does not send a message or change task state.',

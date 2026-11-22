@@ -28,6 +28,7 @@ import {
   type BrowserAction,
   type BrowserToolInput,
   type BrowserFrame,
+  type BrowserActivity,
 } from "./browser-contract.ts";
 
 type Control = "worker" | "router" | "human" | "paused" | "handoff" | "ended";
@@ -60,6 +61,8 @@ interface Session extends DriverSession {
   queue: Promise<unknown>;
   controller: AbortController;
   frame?: BrowserFrame;
+  activity?: BrowserActivity;
+  activityEpoch?: number;
   stopFrames?: () => void;
   startingFrames?: Promise<void>;
   streaming?: boolean;
@@ -81,6 +84,7 @@ interface BrowserCapture {
 const isCapture = (item: BrowserCapture | undefined): item is BrowserCapture =>
   item?.kind === 'browser-screenshot' || item?.kind === 'browser-recording';
 const pngSignature = Buffer.from([137,80,78,71,13,10,26,10]);
+const visibleActions = new Set<string>(['navigate','click','fill','press','scroll','back','forward','reload'] satisfies BrowserActivity['action'][]);
 
 function finalizedMp4(bytes: Buffer) {
   let fileType = false, media = false, index = false;
@@ -914,6 +918,11 @@ export class BrowserManager {
   frame(user: string, id: string) {
     return this.session(id, user).frame;
   }
+  activity(user:string,id:string) {
+    const s=this.session(id,user), activity=s.activity
+    if(!activity||s.activityEpoch!==s.epoch||Date.now()-activity.at>1800)return
+    if(s.control==='worker'||s.control==='router')return activity
+  }
   streamStatus(user: string, id: string) {
     return !!this.session(id, user).streaming;
   }
@@ -1005,6 +1014,7 @@ export class BrowserManager {
   private async perform(s: Session, input: BrowserAction, guard: () => void, download = false) {
     guard();
     const signal = s.controller.signal;
+    const tab=s.tabs.find(item=>item.active)?.id,epoch=s.epoch
     let downloaded: {name:string} | undefined;
     if (
       ["click", "fill", "press"].includes(input.action) &&
@@ -1075,8 +1085,19 @@ export class BrowserManager {
         await this.driverFor(s).run(s, ["scrollintoview", input.ref!], signal);
         guard();
       }
-      if (input.action !== "snapshot")
-        downloaded = (await this.driverFor(s).run(s, actions[input.action]!, signal))?.download;
+      if (input.action !== "snapshot") {
+        const result=await this.driverFor(s).run(s, actions[input.action]!, signal)
+        downloaded=result?.download
+        if(tab&&s.watchers.size&&epoch===s.epoch&&!signal.aborted&&
+           (s.control==='router'||s.control==='worker')&&visibleActions.has(input.action)){
+          const point=result?.point as BrowserActivity['point']
+          const positioned=point&&[point.x,point.y].every(value=>Number.isFinite(value)&&value>=0&&value<=1)
+          s.activity={action:input.action as BrowserActivity['action'],tab,at:Date.now(),seq:(s.activity?.seq??0)+1,
+            ...(positioned?{point:{x:point.x,y:point.y}}:{})}
+          s.activityEpoch=epoch
+          for(const notify of s.watchers)notify()
+        }
+      }
     }
     if (input.action !== "snapshot") s.revision++;
     s.updatedAt = Date.now();

@@ -4,6 +4,7 @@ import {expect,it} from 'vitest'
 
 const source=readFileSync(new URL('../src/ui/tab-motion.js',import.meta.url),'utf8')
 function fixture(kind='workspace'){
+ const browser=kind==='browser'||kind==='browser-dialog',separateHeader=kind==='browser-dialog'
  const calls:any[]=[],events=new Map<string,()=>void>(),frames=new Map<number,()=>void>()
  let frame=0,mutation=()=>{},preference=()=>{}
  class Node {
@@ -15,7 +16,7 @@ function fixture(kind='workspace'){
   getAttribute(k:string){return this.attrs[k]??null}
   setAttribute(k:string,v:string){this.attrs[k]=v}
   querySelector(selector:string){return selector.startsWith(':scope')?this.children.find(n=>n.className.includes('tab-motion-indicator'))??null:this.children.find(n=>n.attrs['aria-current']==='page')??null}
-  closest(){return {querySelector:()=>panel}}
+  closest(){return separateHeader?null:{querySelector:()=>panel}}
   querySelectorAll(){return this.children.filter(n=>n.tagName==='BUTTON')}
   append(node:Node){node.parentElement=this;this.children.push(node)}
   remove(){this.isConnected=false;if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(n=>n!==this)}
@@ -28,14 +29,21 @@ function fixture(kind='workspace'){
   }
  }
  const panel=new Node(),body=new Node()
+ panel.id='browser-viewport'
  const makeGroup=()=>{
   const group=new Node();group.rect.width=300;group.attrs['aria-label']='Tasks';group.nextElementSibling=panel
-  for(let i=0;i<3;i++){const b=new Node();b.tagName='BUTTON';b.id=kind==='browser'?'':'tab-'+i;if(kind==='browser')b.dataset.motionKey='browser-tab-'+i;b.rect={left:i*100,top:0,width:100,height:40};if(!i)b.attrs['aria-current']='page';group.append(b)}
+  for(let i=0;i<3;i++){
+   const b=new Node();b.tagName='BUTTON';b.id=browser?'':'tab-'+i
+   if(browser)b.dataset.motionKey='browser-tab-'+i
+   if(separateHeader)b.attrs['aria-controls']=panel.id
+   b.rect={left:i*100,top:0,width:100,height:40};if(!i)b.attrs['aria-current']='page';group.append(b)
+  }
   return group
  }
  let group=makeGroup()
  const media={matches:false,addEventListener:(_type:string,cb:()=>void)=>preference=cb,removeEventListener(){}}
- const document={hidden:false,documentElement:new Node(),createElement:()=>new Node(),querySelectorAll:(selector:string)=>selector===(kind==='browser'?'.browser-page-tabs':'.workspace-tabs')?[group]:[],querySelector:()=>body,
+ const document={hidden:false,documentElement:new Node(),createElement:()=>new Node(),querySelectorAll:(selector:string)=>selector===(browser?'.browser-page-tabs':'.workspace-tabs')?[group]:[],querySelector:()=>body,
+  getElementById:(id:string)=>id===panel.id?panel:null,
   addEventListener:(type:string,cb:()=>void)=>events.set(type,cb),removeEventListener:(type:string)=>events.delete(type)}
  const context=createContext({document,window:{addEventListener(){},removeEventListener(){}},location:{pathname:'/configure',hash:'#tasks/history'},matchMedia:()=>media,
   getComputedStyle:()=>({opacity:'.8',transform:'matrix(1,0,0,1,3,0)'}),Symbol,Map,Set,
@@ -90,6 +98,11 @@ it('uses browser tab identity and waits for confirmed selection rather than titl
  f.select(1);expect(f.calls).toHaveLength(2)
  f.group().children[1]!.attrs.title='Another page title';f.flush();expect(f.calls).toHaveLength(2)
  expect(f.group().children[1]!.dataset.motionKey).toBe('browser-tab-1')
+})
+it('animates the browser viewport when the selected tab is in a separate dialog header',()=>{
+ const f=fixture('browser-dialog')
+ f.select(1)
+ expect(f.calls.map(call=>call.node)).toEqual([f.group().querySelector(':scope'),f.panel])
 })
 it('installs once across both shells and removes its markers and animations on disposal',()=>{
  const f=fixture();runInContext(source,f.context);f.select(1)

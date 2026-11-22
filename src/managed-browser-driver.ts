@@ -2,7 +2,7 @@ import {existsSync} from 'node:fs'
 import {mkdir,rename,rm,writeFile} from 'node:fs/promises'
 import {randomUUID} from 'node:crypto'
 import {join} from 'node:path'
-import {chromium,type Browser,type BrowserContext,type CDPSession,type Download,type Page,type Screencast} from 'playwright-core'
+import {chromium,type Browser,type BrowserContext,type CDPSession,type Download,type Locator,type Page,type Screencast} from 'playwright-core'
 import {getDefaultEnvironment} from '@modelcontextprotocol/sdk/client/stdio.js'
 import type {z} from 'zod'
 import {BrowserError,type BrowserFrame,type browserConfigSchema} from './browser-contract.ts'
@@ -27,6 +27,24 @@ const viewport={width:1200,height:800}
 const previousChrome='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const browserProfileMarker='.roppo-browser-runtime'
 const asTab=(index:number)=>'t'+index
+const detailDelayMs=180
+const detailPixels={width:2880,height:1800}
+
+async function actionPoint(view:View,page:Page,control:Locator,signal?:AbortSignal){
+  if(!view.changed.size)return
+  try{
+    await control.scrollIntoViewIfNeeded({timeout:160,signal})
+    const box=await control.boundingBox({timeout:160,signal})
+    if(!box)return
+    const {width,height}=page.viewportSize()??await page.evaluate(()=>({width:innerWidth,height:innerHeight}))
+    const left=Math.max(0,box.x),top=Math.max(0,box.y)
+    const right=Math.min(width,box.x+box.width),bottom=Math.min(height,box.y+box.height)
+    if(left<right&&top<bottom)return {x:(left+right)/(2*width),y:(top+bottom)/(2*height)}
+  }catch{
+    signal?.throwIfAborted()
+    // Feedback is optional. Playwright still performs its normal action checks.
+  }
+}
 
 /** One warm Chromium process for Worker contexts. Personal profiles keep their user-data directory. */
 export class ManagedBrowserDriver implements BrowserDriver {
@@ -176,15 +194,21 @@ export class ManagedBrowserDriver implements BrowserDriver {
       case 'get':return {title:await page.title()}
       case 'click':{
         const control=page.getByRef(arg!.replace(/^@/,''))
-        if(value!=='--download'){await control.click({signal});return {}}
+        const point=await actionPoint(view,page,control,signal)
+        if(value!=='--download'){await control.click({signal});return {point}}
         const pending=page.waitForEvent('download',{signal})
         // An invalid ref must not leave a dangling rejected event promise.
         void pending.catch(()=>{})
         await control.click({signal})
-        return {download:await this.saveDownload(view,session,await pending)}
+        return {point,download:await this.saveDownload(view,session,await pending)}
       }
       case 'scrollintoview':await page.getByRef(arg!.replace(/^@/,'')).scrollIntoViewIfNeeded({signal});return {}
-      case 'fill':await page.getByRef(arg!.replace(/^@/,'')).fill(value!,{signal});return {}
+      case 'fill':{
+        const control=page.getByRef(arg!.replace(/^@/,''))
+        const point=await actionPoint(view,page,control,signal)
+        await control.fill(value!,{signal})
+        return {point}
+      }
       case 'press':await page.keyboard.press(arg!);return {}
       case 'scroll':{
         const distance=Number(value)
@@ -216,26 +240,81 @@ export class ManagedBrowserDriver implements BrowserDriver {
     await (await this.ready(session)).context.setStorageState(state)
   }
 
+  private channel(view:View,page:Page){
+    let channel=view.cdps.get(page)
+    if(!channel){
+      channel=view.context.newCDPSession(page).catch(error=>{
+        view.cdps.delete(page)
+        throw error
+      })
+      view.cdps.set(page,channel)
+    }
+    return channel
+  }
+
+  private async detailedFrame(view:View,page:Page) {
+    const channel=await this.channel(view,page)
+    const {width,height,x,y,dpr,pinch}=await page.evaluate(()=>({
+      width:innerWidth,height:innerHeight,x:scrollX,y:scrollY,dpr:devicePixelRatio,pinch:visualViewport?.scale??1,
+    }))
+    if(![width,height,dpr].every(value=>Number.isFinite(value)&&value>0)||pinch!==1)return
+    const scale=Math.min(2/dpr,detailPixels.width/(width*dpr),detailPixels.height/(height*dpr))
+    if(scale<=0||scale*dpr<=1.05)return
+    const {data}=await channel.send('Page.captureScreenshot',{
+      format:'jpeg',quality:93,captureBeyondViewport:false,clip:{x,y,width,height,scale},
+    })
+    return {data,width,height}
+  }
+
   async frames(session:DriverSession,callback:(frame:BrowserFrame)=>void,status?:(connected:boolean)=>void){
     const view=await this.ready(session)
     let sequence=0, generation=0
     let stop:Awaited<ReturnType<Screencast['start']>>|undefined
+    let clearDetail: (()=>void)|undefined
     let queue=Promise.resolve()
     const switchPage=()=>{
       const target=++generation
+      clearDetail?.()
       queue=queue.catch(()=>{}).then(async()=>{
         await stop?.dispose().catch(()=>{})
         stop=undefined
         if(target!==generation||!view.active)return
-        const page=this.page(view)
+        const tab=view.active,page=this.page(view,tab)
+        let timer:ReturnType<typeof setTimeout>|undefined
+        let preview:{bytes:Buffer;width:number;height:number}|undefined
+        let capturing=false
+        clearDetail=()=>clearTimeout(timer)
+        const scheduleDetail=()=>{
+          clearTimeout(timer)
+          timer=setTimeout(async()=>{
+            timer=undefined
+            if(target!==generation||capturing)return
+            capturing=true
+            const basedOn=preview
+            try{
+              const frame=await this.detailedFrame(view,page)
+              if(target===generation&&basedOn===preview&&frame)
+                callback({...frame,tab,detail:true,seq:++sequence,at:Date.now()})
+            }catch{/* A transient capture failure leaves the live stream available. */}
+            finally{
+              capturing=false
+              if(target===generation&&basedOn!==preview&&!timer)scheduleDetail()
+            }
+          },detailDelayMs)
+          timer.unref()
+        }
         const emit=(bytes:Buffer,width:number,height:number)=>{
-          if(target===generation)callback({data:bytes.toString('base64'),width,height,seq:++sequence,at:Date.now()})
+          if(target!==generation)return
+          if(preview?.width===width&&preview.height===height&&preview.bytes.equals(bytes))return
+          preview={bytes,width,height}
+          callback({data:bytes.toString('base64'),width,height,tab,seq:++sequence,at:Date.now()})
+          scheduleDetail()
         }
         // A blank or static tab may not produce a damage frame immediately.
         const size=page.viewportSize()??await page.evaluate(()=>({width:innerWidth,height:innerHeight}))
         emit(await page.screenshot({type:'jpeg',quality:75,scale:'css'}),size.width,size.height)
         if(target!==generation)return
-        stop=await page.screencast.start({quality:75,size:{width:1600,height:1100},onFrame:frame=>{
+        stop=await page.screencast.start({quality:80,size:{width:1920,height:1200},onFrame:frame=>{
           emit(frame.data,frame.viewportWidth,frame.viewportHeight)
         }})
         if(target===generation)status?.(true)
@@ -249,6 +328,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
     return ()=>{
       view.changed.delete(refresh)
       generation++
+      clearDetail?.()
       void queue.catch(()=>{}).then(()=>stop?.dispose()).catch(()=>{})
       status?.(false)
     }
@@ -265,9 +345,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
   async input(session:DriverSession,event:BrowserInput){
     const view=await this.ready(session), page=this.page(view)
     if(event.type==='text'){await page.keyboard.insertText(event.text);return}
-    let cdp=view.cdps.get(page)
-    if(!cdp){cdp=view.context.newCDPSession(page);view.cdps.set(page,cdp)}
-    const channel=await cdp
+    const channel=await this.channel(view,page)
     for(const message of inputMessages(event)){
       if(message.type==='input_keyboard'){
         const {type,eventType,...params}=message

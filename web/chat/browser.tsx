@@ -34,9 +34,10 @@ type Session = State["sessions"][number];
 type L = (en: string, zh: string) => string;
 // Stable while moving between conversations or reopening the panel; unique per document/window.
 const browserClient = crypto.randomUUID();
-async function request<T>(path: string, body?: unknown): Promise<T> {
+async function request<T>(path: string, body?: unknown, keepalive = false): Promise<T> {
   const r = await fetch("/api/browser" + path, {
     credentials: "same-origin",
+    keepalive,
     ...(body === undefined
       ? {}
       : {
@@ -280,8 +281,11 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
   const session = data?.sessions.find((s) => s.id === selected),
     controlled = !!session?.controlledByYou && connected;
   const popupOpenRef = useRef(false);
+  const viewLease = useRef<Session | undefined>(undefined);
+  const returning = useRef<{id:string;epoch:number;done:Promise<void>}|undefined>(undefined);
   popupOpenRef.current = popupOpen;
   sessionRef.current = session;
+  if (popupContent && session?.controlledByYou) viewLease.current = session;
   const fail = (e: unknown) => {
     if (active.current)
       setError(e instanceof Error ? e.message : "network_error");
@@ -309,11 +313,39 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
           ? {
               ...old,
               sessions: old.sessions.some((s) => s.id === value.id)
-                ? old.sessions.map((s) => (s.id === value.id ? value : s))
+                ? old.sessions.map((s) => (s.id === value.id && value.epoch >= s.epoch ? value : s))
                 : [...old.sessions, value],
             }
           : old,
       );
+  };
+  const returnControl = (held: Session | undefined, flushInput = true) => {
+    if (!held?.controlledByYou) return viewportDrain.current().then(() => {});
+    const pending = returning.current;
+    if (pending?.id === held.id && pending.epoch === held.epoch) return pending.done;
+    const done = (async () => {
+      if (flushInput) await viewportDrain.current().catch(fail);
+      try {
+        update(await request<Session>("/sessions/" + held.id + "/release", {
+          client, epoch: held.epoch,
+        }, true));
+      } catch (error) {
+        if (!(error instanceof Error && ["browser_control_required", "browser_control_changed", "browser_missing"].includes(error.message)))
+          throw error;
+      }
+      if (viewLease.current?.id === held.id && viewLease.current.epoch === held.epoch)
+        viewLease.current = undefined;
+    })();
+    returning.current = {id: held.id, epoch: held.epoch, done};
+    const forget = () => { if (returning.current?.done === done) returning.current = undefined; };
+    void done.then(forget, forget);
+    return done;
+  };
+  const receiveControl = (value: Session) => {
+    update(value);
+    if (!value.controlledByYou) return;
+    viewLease.current = value;
+    if (!active.current || !popupOpenRef.current) void returnControl(value).catch(fail);
   };
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -337,6 +369,17 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       clearInterval(timer);
     };
   }, [conversationId, settingsOnly]);
+  useEffect(() => {
+    const leave = () => {
+      popupOpenRef.current = false;
+      if (viewLease.current) void returnControl(viewLease.current, false).catch(fail);
+    };
+    window.addEventListener("pagehide", leave);
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      leave();
+    };
+  }, []);
   useEffect(() => {
     if (data && !data.sessions.some((s) => s.id === selected))
       setSelected(data.sessions[0]?.id ?? "");
@@ -418,10 +461,13 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     return request('/sessions/'+captured.id+'/input',{client,epoch:captured.epoch,event});
   };
   const openDefault=()=>act(async()=>{
+    await returning.current?.done;
+    if(viewLease.current && !viewLease.current.workspace)await returnControl(viewLease.current);
     await viewportDrain.current();
-    const value=await request<Session>('/open',{client,conversationId});update(value);setSelected(value.id);
+    const value=await request<Session>('/open',{client,conversationId});receiveControl(value);setSelected(value.id);
   });
   const showBrowser = () => {
+    popupOpenRef.current = true;
     setPopupContent(true);
     setPopupOpen(true);
   };
@@ -444,12 +490,13 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     }
     const id = requestedSession.id;
     void act(async()=>{
+      if(viewLease.current?.id!==id)await returnControl(viewLease.current);
       await viewportDrain.current();
       if (!data.sessions.some(s => s.id === id)) update(await request<Session>('/sessions/'+id+'?client='+client));
       if (!active.current) return;
       setSelected(id);
       showBrowser();
-      if(requestedSession.takeover)update(await request<Session>('/sessions/'+id+'/takeover',{client}));
+      if(requestedSession.takeover)receiveControl(await request<Session>('/sessions/'+id+'/takeover',{client}));
     });
   },[requestedSession,data,busy,conversationId]);
 
@@ -568,6 +615,23 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       </form>
     </Dialog>
   );
+  const browserTabs = session && popupContent ? <>
+    <BrowserPageTabs session={session} viewportId={viewportId} L={L}
+      editable={!!session.controlledByYou && !busy && popupOpen} operation={operation}/>
+    <SelectField aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
+      const id=e.target.value;
+      void act(async()=>{
+        await returnControl(viewLease.current);
+        if(id.startsWith('profile:')){
+          const value=await request<Session>('/profiles/'+id.slice(8)+'/open',{client,conversationId});
+          receiveControl(value);setSelected(value.id);
+        }else setSelected(id);
+      });
+    }}>
+      {data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}
+      {data?.profiles.filter(p=>!data.sessions.some(s=>s.personal&&s.profileId===p.id)).map(p=><option key={p.id} value={'profile:'+p.id}>{p.name}</option>)}
+    </SelectField>
+  </> : undefined;
   const content = (
     <aside
       className={'browser-panel'+(settingsOnly?' browser-settings':'')} aria-label={L("Browser", "浏览器")} id="browser-panel">
@@ -581,151 +645,128 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       {errorNotice}
       {!settingsOnly && (session ? (
         <>
-          <BrowserPageTabs session={session} viewportId={viewportId} L={L}
-            editable={!!session.controlledByYou && !busy && popupOpen} operation={operation}/>
-          <form
-            className="browser-address"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (address.trim())
-                void operation({
-                  action: "navigate",
-                  url: browserUrl(address) ?? "https://www.google.com/search?q=" + encodeURIComponent(address.trim()),
-                });
-            }}
-          >
-            <Button
-              label={L("Back", "后退")}
-              onClick={() => void operation({ action: "back" })}
-              disabled={!controlled || busy}
-            >
-              <ArrowLeft size={15} />
-            </Button>
-            <Button
-              label={L("Forward", "前进")}
-              onClick={() => void operation({ action: "forward" })}
-              disabled={!controlled || busy}
-            >
-              <ArrowRight size={15} />
-            </Button>
-            <Button
-              label={L("Reload", "重新加载")}
-              onClick={() => void operation({ action: "reload" })}
-              disabled={!controlled || busy}
-            >
-              <RotateCw size={15} />
-            </Button>
-            <InputControl
-              aria-label={L("Website address", "网站地址")}
-              placeholder={L("Enter a website", "输入网址")}
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              disabled={!controlled || busy}
-            />
-            {!session.workspace && <Button
-              label={L("Close this browser", "关闭此浏览器")}
-              onClick={() =>
-                void act(async () => {
-                  await request("/sessions/" + session.id + "/close", {
-                    client,
-                    epoch: session.epoch,
+          <div className="browser-toolbar">
+            <form
+              className="browser-address"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (address.trim())
+                  void operation({
+                    action: "navigate",
+                    url: browserUrl(address) ?? "https://www.google.com/search?q=" + encodeURIComponent(address.trim()),
                   });
-                  setSelected("");
-                })
-              }
-              disabled={
-                busy ||
-                (session.control === "human" && !session.controlledByYou)
-              }
+              }}
             >
-              <Power size={15} />
-            </Button>}
-          </form>
-          <BrowserViewport key={session.id} panelId={viewportId} tabId={browserPageId(viewportId, activePage(session)?.id)}
-            id={session.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
-            selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
-            onConnected={setConnected} onError={fail} L={L}/>
-          <footer className="browser-control">
-            <SelectField aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
-              const id=e.target.value;
-              void act(async()=>{
-                await viewportDrain.current();
-                if(id.startsWith('profile:')){
-                  const value=await request<Session>('/profiles/'+id.slice(8)+'/open',{client,conversationId});
-                  update(value);setSelected(value.id);
-                }else setSelected(id);
-              });
-            }}>
-              {data?.sessions.map(s=><option key={s.id} value={s.id}>{labelFor(s)}</option>)}
-              {data?.profiles.filter(p=>!data.sessions.some(s=>s.personal&&s.profileId===p.id)).map(p=><option key={p.id} value={'profile:'+p.id}>{p.name}</option>)}
-            </SelectField>
-            <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
-            <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
-            {(!session.workspace || session.profileId) && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
-            {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<DisclosureRoot className="browser-logins"><DisclosureSummary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></DisclosureSummary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></DisclosureRoot>:null}
-            <span>
-              {busy ? (
-                <LoaderCircle size={14} className="spin" />
-              ) : (
-                <span
-                  className={
-                    "browser-status-dot" + (connected ? " connected" : "")
-                  }
-                />
-              )}{" "}
-              {session.controlledByYou
-                ? L("You have control", "由你控制")
-                : session.control === "router" ? L("Your assistant has control","助手正在操作") : session.control === "worker"
-                  ? L("Worker has control", "由 Worker 控制")
-                  : session.control === "handoff"
-                    ? L("Handing over…", "正在交接…")
-                    : session.ended
-                      ? L("Task ended", "任务已结束")
-                      : L("Waiting for takeover", "等待接管")}
-            </span>
-            {session.controlledByYou ? (
-              <button
-                className="browser-primary"
-                disabled={busy}
+              <Button
+                label={L("Back", "后退")}
+                onClick={() => void operation({ action: "back" })}
+                disabled={!controlled || busy}
+              >
+                <ArrowLeft size={15} />
+              </Button>
+              <Button
+                label={L("Forward", "前进")}
+                onClick={() => void operation({ action: "forward" })}
+                disabled={!controlled || busy}
+              >
+                <ArrowRight size={15} />
+              </Button>
+              <Button
+                label={L("Reload", "重新加载")}
+                onClick={() => void operation({ action: "reload" })}
+                disabled={!controlled || busy}
+              >
+                <RotateCw size={15} />
+              </Button>
+              <InputControl
+                aria-label={L("Website address", "网站地址")}
+                placeholder={L("Enter a website", "输入网址")}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                disabled={!controlled || busy}
+              />
+              {!session.workspace && <Button
+                label={L("Close this browser", "关闭此浏览器")}
                 onClick={() =>
                   void act(async () => {
-                    await viewportDrain.current();
-                    update(
-                      await request<Session>(
-                        "/sessions/" + session.id + "/release",
-                        { client, epoch: session.epoch },
-                      ),
-                    );
+                    await request("/sessions/" + session.id + "/close", {
+                      client,
+                      epoch: session.epoch,
+                    });
+                    setSelected("");
                   })
                 }
-              >
-                <Play size={14} />
-                {session.workspace ? L("Return to assistant","交还助手") : session.personal || session.ended
-                  ? L("Release control", "结束操作")
-                  : L("Continue task", "继续任务")}
-              </button>
-            ) : (
-              <button
-                className="browser-primary"
-                disabled={busy || session.control === "handoff"}
-                onClick={() =>
-                  void act(async () =>
-                    update(
-                      await request<Session>(
-                        "/sessions/" + session.id + "/takeover",
-                        { client, force: session.control === "human" },
-                      ),
-                    ),
-                  )
+                disabled={
+                  busy ||
+                  (session.control === "human" && !session.controlledByYou)
                 }
               >
-                <Hand size={14} />
-                {session.control === "human"
-                  ? L("Take over here", "转移控制到此窗口")
-                  : L("Take control", "接管")}
-              </button>
-            )}
-          </footer>
+                <Power size={15} />
+              </Button>}
+            </form>
+            <div className="browser-control">
+              <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
+              <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
+              {(!session.workspace || session.profileId) && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
+              {controlled&&data?.credentials.some(a=>a.profileId===session.profileId)?<DisclosureRoot className="browser-logins"><DisclosureSummary className="icon-button" aria-label={L('Saved sign-ins','已保存登录')} title={L('Saved sign-ins','已保存登录')}><KeyRound size={16}/></DisclosureSummary><div>{data.credentials.filter(a=>a.profileId===session.profileId).map(a=><button key={a.id} onClick={e=>{e.currentTarget.closest('details')!.open=false;void operation({action:'login',credentialId:a.id})}}>{a.label}</button>)}</div></DisclosureRoot>:null}
+              <span>
+                {busy ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <span
+                    className={
+                      "browser-status-dot" + (connected ? " connected" : "")
+                    }
+                  />
+                )}{" "}
+                {session.controlledByYou
+                  ? L("You have control", "由你控制")
+                  : session.control === "router" ? L("Your assistant has control","助手正在操作") : session.control === "worker"
+                    ? L("Worker has control", "由 Worker 控制")
+                    : session.control === "handoff"
+                      ? L("Handing over…", "正在交接…")
+                      : session.ended
+                        ? L("Task ended", "任务已结束")
+                        : L("Waiting for takeover", "等待接管")}
+              </span>
+              {session.controlledByYou ? (
+                <button
+                  className="browser-primary"
+                  disabled={busy}
+                  onClick={() => void act(() => returnControl(session))}
+                >
+                  <Play size={14} />
+                  {session.workspace ? L("Return to assistant","交还助手") : session.personal || session.ended
+                    ? L("Release control", "结束操作")
+                    : L("Continue task", "继续任务")}
+                </button>
+              ) : (
+                <button
+                  className="browser-primary"
+                  disabled={busy || session.control === "handoff"}
+                  onClick={() =>
+                    void act(async () =>
+                      receiveControl(
+                        await request<Session>(
+                          "/sessions/" + session.id + "/takeover",
+                          { client, force: session.control === "human" },
+                        ),
+                      ),
+                    )
+                  }
+                >
+                  <Hand size={14} />
+                  {session.control === "human"
+                    ? L("Take over here", "转移控制到此窗口")
+                    : L("Take control", "接管")}
+                </button>
+              )}
+            </div>
+          </div>
+          <BrowserViewport key={session.id} panelId={viewportId} tabId={browserPageId(viewportId, activePage(session)?.id)}
+            id={session.id} pageId={activePage(session)?.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
+            selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
+            onConnected={setConnected} onError={fail} L={L}/>
         </>
       ) : (
         <div className="browser-empty">
@@ -934,10 +975,15 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       {data?.sessions.map(s => <BrowserPreview key={s.id} id={s.id} title={labelFor(s)} revision={s.revision}
         label={L('View browser', '查看浏览器') + ' · ' + labelFor(s)} enabled={!popupContent}
         open={() => { setError(''); setSelected(s.id); showBrowser(); }}/>)}
-      <Dialog open={popupOpen} className="roppo-ui browser-fullscreen" title={L("Browser", "浏览器")}
-        closeLabel={L("Close browser view", "关闭浏览器视图")} onClose={() => setPopupOpen(false)}
+      <Dialog open={popupOpen} className={"roppo-ui browser-fullscreen"+(browserTabs?" has-browser-page":"")}
+        title={L("Browser", "浏览器")} headerContent={browserTabs}
+        closeLabel={L("Close browser view", "关闭浏览器视图")} onClose={() => {
+          popupOpenRef.current=false;
+          setPopupOpen(false);
+        }}
         onAfterClose={() => {
-          void viewportDrain.current().catch(fail).finally(() => {
+          if(popupOpenRef.current)return;
+          void returnControl(viewLease.current).catch(fail).finally(() => {
             if (active.current && !popupOpenRef.current) setPopupContent(false);
           });
         }}>

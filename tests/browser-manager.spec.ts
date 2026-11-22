@@ -37,6 +37,7 @@ class Driver implements BrowserDriver {
   openGate?: () => Promise<void>;
   screenshotGate?: () => Promise<void>;
   fail = false;
+  point?: {x:number;y:number};
   snapshotText = '- button "Continue" [ref=e1]';
   async version() {
     return "fixture";
@@ -47,6 +48,7 @@ class Driver implements BrowserDriver {
     if (args[0] === "click") {
       if (this.gate) await this.gate();
       if (this.fail) throw new BrowserError("browser_uncertain", "Lost result");
+      if (this.point) return {point:this.point};
     }
     if (args[0] === "open" && this.openGate) {
       const gate = this.openGate;
@@ -1108,3 +1110,22 @@ it("preserves the inspected CDP page title in background tabs until the document
   Object.assign(background,{url:"https://example.com/third",title:"example.com/third"});
   expect((await run({action:"reload"})).tabs[0]?.title).toBe("example.com/third");
 });
+
+it("projects a completed agent click only to the watching browser and withdraws it on takeover",async()=>{
+  const {host,driver,config}=await fixture()
+  const user=randomUUID(),conversation=randomUUID(),turn=randomUUID(),client=randomUUID()
+  config.browser.workspace={owner:user,cdpPort:9222}
+  const act=(operation:unknown)=>host.browser.routerAction(user,conversation,turn,operation,()=>{})
+  const page=await act({action:'navigate',url:'https://example.com/'})
+  expect(host.browser.activity(user,page.id)).toBeUndefined()
+  const stop=await host.browser.subscribe(user,page.id)
+  try{
+    driver.point={x:.28,y:.61}
+    await act({action:'click',ref:'@e1',revision:page.revision})
+    const visible=host.browser.activity(user,page.id)
+    expect(visible).toEqual({action:'click',tab:'t1',seq:1,at:expect.any(Number),point:driver.point})
+    expect(()=>host.browser.activity(randomUUID(),page.id)).toThrow(BrowserError)
+    await host.browser.takeover(user,page.id,client)
+    expect(host.browser.activity(user,page.id)).toBeUndefined()
+  }finally{stop()}
+})

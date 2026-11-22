@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -6,12 +7,15 @@ import {
 } from "react";
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import type { BrowserInput } from "../../src/browser-input.ts";
+import type { BrowserActivity, BrowserFrame } from "../../src/browser-contract.ts";
 import { browserPoint } from "./browser-geometry.ts";
 import { BrowserInputQueue } from "./browser-input-queue.ts";
+import { BrowserFeedback } from "./browser-feedback.tsx";
 
 type Props = {
   panelId: string;
   tabId?: string;
+  pageId?: string;
   id: string;
   epoch: number;
   controlled: boolean;
@@ -26,6 +30,7 @@ type Props = {
 export function BrowserViewport({
   panelId,
   tabId,
+  pageId,
   id,
   epoch,
   controlled,
@@ -40,7 +45,7 @@ export function BrowserViewport({
   const image = useRef<HTMLImageElement>(null),
     viewport = useRef<HTMLDivElement>(null),
     keyboard = useRef<HTMLTextAreaElement>(null),
-    frame = useRef<{ width: number; height: number } | null>(null);
+    frame = useRef<Pick<BrowserFrame,'width'|'height'|'tab'> | null>(null);
   const clicks = useRef({
     at: 0,
     x: 0,
@@ -51,6 +56,16 @@ export function BrowserViewport({
   const composing = useRef(false),
     pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [queue] = useState(() => new BrowserInputQueue());
+  const [activity,setActivity]=useState<BrowserActivity>()
+  const [streamTab,setStreamTab]=useState<string>()
+  const activityTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
+  const owner=useRef({controlled,pageId})
+  owner.current={controlled,pageId}
+  const showActivity=useCallback((event:BrowserActivity)=>{
+    setActivity(event)
+    clearTimeout(activityTimeout.current)
+    activityTimeout.current=setTimeout(()=>setActivity(undefined),1450)
+  },[])
   const callbacks = useRef({ input, selection, onConnected, onError });
   callbacks.current = { input, selection, onConnected, onError };
   const [state, setState] = useState<
@@ -63,25 +78,42 @@ export function BrowserViewport({
   useEffect(() => {
     queue.cancel();
   }, [id, epoch, controlled, queue]);
+  useEffect(()=>{
+    setActivity(undefined)
+    return ()=>clearTimeout(activityTimeout.current)
+  },[id,epoch,controlled])
   useEffect(() => {
     frame.current = null;
+    setStreamTab(undefined)
+    setActivity(undefined)
     setState("connecting");
     callbacks.current.onConnected(false);
     const source = new EventSource("/api/browser/sessions/" + id + "/stream");
     source.addEventListener("frame", (event) => {
-      const f = JSON.parse((event as MessageEvent).data);
-      frame.current = f;
-      if (image.current) image.current.src = "data:image/jpeg;base64," + f.data;
+      const f:BrowserFrame = JSON.parse((event as MessageEvent).data);
+      frame.current = {width:f.width,height:f.height,tab:f.tab};
+      if (image.current) {
+        image.current.src = "data:image/jpeg;base64," + f.data;
+        image.current.dataset.detail=f.detail?'true':'false'
+      }
+      setStreamTab(f.tab)
       setState("connected");
       callbacks.current.onConnected(true);
     });
+    source.addEventListener('activity',event=>{
+      if(owner.current.controlled)return
+      const next:BrowserActivity=JSON.parse((event as MessageEvent).data)
+      if(next.tab===(frame.current?.tab??owner.current.pageId))showActivity(next)
+    })
     source.addEventListener("status", (event) => {
       if (!JSON.parse((event as MessageEvent).data).connected) {
+        setActivity(undefined)
         setState("disconnected");
         callbacks.current.onConnected(false);
       }
     });
     const disconnected = () => {
+      setActivity(undefined)
       setState("disconnected");
       callbacks.current.onConnected(false);
     };
@@ -91,7 +123,7 @@ export function BrowserViewport({
     });
     source.onerror = disconnected;
     return () => source.close();
-  }, [id, attempt]);
+  }, [id, attempt,showActivity]);
   const report = (error: unknown) => {
     if (!(error instanceof DOMException && error.name === "AbortError"))
       callbacks.current.onError(error);
@@ -150,6 +182,11 @@ export function BrowserViewport({
             ? Math.min(3, previous.count + 1)
             : 1,
       };
+      const current=frame.current, img=image.current, tab=current?.tab??pageId
+      if(current&&img?.naturalWidth&&img.naturalHeight&&tab)
+        showActivity({action:'click',tab,at,seq:at,point:{
+          x:p.x/current.width,y:p.y*img.naturalWidth/(current.width*img.naturalHeight),
+        }})
     }
     send({
       type: "pointer",
@@ -227,6 +264,8 @@ export function BrowserViewport({
         draggable={false}
         hidden={!frame.current}
       />
+      <BrowserFeedback activity={state==='connected'&&activity?.tab===(streamTab??pageId)?activity:undefined}
+        controlled={controlled} image={image} viewport={viewport} L={L}/>
       {state === "connecting" ? (
         <div className="browser-loading" role="status">
           <LoaderCircle size={22} className="spin" />

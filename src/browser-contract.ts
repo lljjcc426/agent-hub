@@ -253,4 +253,14 @@ export interface BrowserFrame {
   height: number;
   at: number;
   seq: number;
+  tab?: string;
+  detail?: true;
+}
+
+export interface BrowserActivity {
+  action: 'navigate' | 'click' | 'fill' | 'press' | 'scroll' | 'back' | 'forward' | 'reload';
+  tab: string;
+  at: number;
+  seq: number;
+  point?: {x: number; y: number};
 }

@@ -97,29 +97,38 @@
   font-size: 13px;
   line-height: 1.5;
 }
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--c-line);
+  background: var(--c-bg);
+}
 .browser-address {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px 10px;
-  background: var(--c-soft);
-  border-bottom: 1px solid var(--c-line);
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
 }
 .browser-address input {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--c-line);
-  border-radius: 6px;
-  background: var(--c-bg);
+  border-radius: 8px;
+  background: var(--c-soft);
   color: var(--c-text);
-  height: 31px;
+  height: 34px;
   font-size: var(--roppo-font-input);
-  padding: 0 9px;
-  margin-inline: 4px;
+  padding: 0 10px;
+  margin-inline-start: 5px;
 }
 .browser-address .icon-button {
-  width: 28px;
-  height: 28px;
+  flex: none;
+  width: 32px;
+  height: 32px;
 }
 .browser-viewport {
   position: relative;
@@ -131,6 +140,7 @@
   overflow: hidden;
   background: var(--c-soft);
   overscroll-behavior: contain;
+  touch-action: none;
 }
 .browser-viewport.controlled {
   cursor: default;
@@ -180,17 +190,17 @@
 .browser-control {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--c-line);
-  flex-shrink: 0;
+  gap: 5px;
+  flex: none;
+  min-width: 0;
 }
 .browser-control > span {
   display: flex;
   gap: 7px;
   align-items: center;
-  font-size: 12px;
+  margin-inline: 5px;
+  white-space: nowrap;
+  font-size: var(--roppo-font-meta);
   color: var(--c-muted);
 }
 .browser-status-dot {
@@ -204,6 +214,81 @@
 .browser-status-dot.connected {
   opacity: 1;
   background: var(--c-text);
+}
+.browser-control .icon-button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+}
+.browser-feedback {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  contain: layout paint;
+  pointer-events: none;
+}
+.browser-pointer,
+.browser-click-anchor {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.browser-pointer-icon {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  fill: var(--c-action);
+  stroke: var(--c-on-action);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 35%));
+}
+.browser-action-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--c-action);
+  color: var(--c-on-action);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+  font-size: var(--roppo-font-meta);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.browser-pointer .browser-action-label {
+  position: absolute;
+  top: 17px;
+  left: 18px;
+}
+.browser-pointer[data-left] .browser-action-label {
+  right: 8px;
+  left: auto;
+}
+.browser-pointer[data-above] .browser-action-label {
+  top: auto;
+  bottom: 8px;
+}
+.browser-action-toast {
+  position: absolute;
+  inset: 12px auto auto 12px;
+}
+.browser-click-ring {
+  position: absolute;
+  inset: -9px auto auto -9px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--c-action);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--c-on-action);
+  animation: browser-click 400ms 120ms cubic-bezier(.2,.75,.3,1) both;
+}
+@keyframes browser-click {
+  from { transform: scale(.68); opacity: 1; }
+  to { transform: scale(2.25); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-click-ring { animation: none; }
 }
 .browser-primary {
   background: var(--c-action);
@@ -434,9 +519,6 @@
     height: 54px;
     padding-inline: 12px;
   }
-  .browser-control {
-    padding: 11px 12px;
-  }
   .browser-select {
     padding-inline: 10px;
   }
@@ -463,13 +545,6 @@
 }
 .browser-pending-site{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--c-line);font-size:12px;color:var(--c-muted)}.browser-pending-site strong{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:100%;flex:1;color:var(--c-text)}.browser-pending-site .icon-button{margin-left:auto}
 
-/* Keep the page central; account and profile management live in Settings. */
-.browser-control{gap:8px;min-height:48px;padding:8px 12px}
-.browser-control select{min-width:0;max-width:160px;flex:1;background:transparent;border:0;color:var(--c-text);font:inherit;font-size:var(--roppo-font-meta);text-overflow:ellipsis}
-.browser-control>span{margin-left:auto;white-space:nowrap;font-size:var(--roppo-font-meta)}
-.browser-control .icon-button{flex-shrink:0;width:30px;height:30px}
-.browser-viewport{touch-action:none;padding:clamp(8px,1vw,16px);background:var(--c-soft)}
-.browser-viewport img{box-shadow:0 0 0 1px var(--c-line)}
 .browser-disconnected button{display:flex;align-items:center;gap:8px;background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-line);border-radius:7px;padding:8px 12px}
 .browser-settings{width:100%;min-width:0;max-width:760px;border:0;flex:initial}
 .browser-settings .browser-select{padding:0 0 16px;gap:8px}
@@ -478,7 +553,6 @@
 .browser-profile-list>button{display:flex;gap:12px;align-items:center;padding:16px 0;border-bottom:1px solid var(--c-line);text-align:left;color:var(--c-text)}
 .browser-profile-list>button span{flex:1}
 .browser-profile-list>button:hover{background:var(--c-hover)}
-@media(max-width:700px){.browser-control{flex-wrap:wrap}.browser-control select{max-width:140px}.browser-control>span{font-size:12px}.browser-control .browser-primary{min-height:36px}}
 .browser-files section { padding: 16px 20px; border-top: 1px solid var(--c-line); }
 .browser-files h3 { font-size: var(--roppo-font-body); margin: 0 0 12px; }
 .browser-files p { color: var(--c-muted); font-size: var(--roppo-font-body); margin: 0; }
@@ -488,7 +562,7 @@
 .browser-logins{position:relative;flex-shrink:0}
 .browser-logins summary{list-style:none;cursor:pointer}
 .browser-logins summary::-webkit-details-marker{display:none}
-.browser-logins>div{position:absolute;z-index:2;bottom:calc(100% + 8px);right:0;min-width:160px;max-width:240px;padding:4px;background:var(--c-bg);border:1px solid var(--c-line);border-radius:8px}
+.browser-logins>div{position:absolute;z-index:3;inset:calc(100% + 8px) 0 auto auto;min-width:160px;max-width:240px;padding:4px;background:var(--c-bg);border:1px solid var(--c-line);border-radius:8px}
 .browser-logins>div button{display:block;width:100%;padding:8px 12px;text-align:left;overflow-wrap:anywhere;font-size:var(--roppo-font-control)}
 .browser-logins>div button:hover{background:var(--c-hover)}
 
@@ -524,36 +598,54 @@
 }
 .rp-dialog.browser-fullscreen > section { display:flex; flex-direction:column; height:100%; min-height:0; padding:0; }
 .rp-dialog.browser-fullscreen > section > header {
-  flex:none; min-height:48px; padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));
+  flex:none; min-height:46px; padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));
   background:var(--c-bg); border-bottom:1px solid var(--c-line);
 }
 .rp-dialog.browser-fullscreen > section > header h2 { font-size:14px; }
+.rp-dialog.browser-fullscreen.has-browser-page > section > header { gap:8px; background:var(--c-side); }
+.browser-fullscreen > section > header > select {
+  width:clamp(118px,16vw,195px); min-width:0; min-height:32px; padding-block:4px;
+  font-size:var(--roppo-font-meta); text-overflow:ellipsis;
+}
 .browser-fullscreen .rp-dialog-body { display:flex; flex:1; min-height:0; margin:0; }
 .browser-fullscreen .browser-panel {
   position:relative; inset:auto; width:100%; min-width:0; flex:1; border:0; animation:none; box-shadow:none;
   padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
-.browser-fullscreen .browser-viewport img { width:100%; height:100%; box-shadow:none; }
+.browser-fullscreen .browser-viewport img { width:100%; height:100%; }
 .browser-fullscreen .browser-primary { color:var(--c-on-action); }
-.browser-fullscreen .browser-control > select { flex:0 1 180px; width:auto; max-width:180px; }
 .browser-page-bar {
-  display:flex; align-items:center; gap:4px; flex:none; padding:3px 8px 0;
-  background:var(--c-side); border-bottom:1px solid var(--c-line);
+  display:flex; align-items:center; gap:4px; flex:1; min-width:0;
 }
 .browser-page-tabs { display:flex; gap:4px; min-width:0; overflow:auto; scrollbar-width:none; }
 .browser-page-tab {
-  display:flex; align-items:center; flex:none; max-width:180px; min-height:34px;
-  color:var(--c-muted); border-radius:8px 8px 0 0;
+  display:flex; align-items:center; flex:none; max-width:190px; min-height:34px;
+  color:var(--c-muted); border:1px solid transparent; border-radius:8px;
 }
-.browser-page-tab:is(:hover,[data-active]) { background:var(--c-bg); color:var(--c-text); }
+.browser-page-tab:hover { background:var(--c-hover); color:var(--c-text); }
+.browser-page-tab[data-active] { background:var(--c-bg); color:var(--c-text); border-color:var(--c-line); }
 .browser-page-tab > [role=tab] {
   display:flex; align-items:center; gap:6px; min-width:0; padding:6px 8px; min-height:34px; font-size:13px;
 }
 .browser-page-tab > [role=tab] svg { flex:none; }
 .browser-page-tab > [role=tab] span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.browser-page-tab > [role=tab]:focus-visible { outline-offset:-2px; }
 .browser-page-bar .icon-button { flex:none; width:30px; height:30px; }
-@media (max-width:700px) {
+@media (max-width:760px) {
+  .browser-toolbar { flex-wrap:wrap; gap:5px; padding:6px 8px; }
+  .browser-address { flex-basis:100%; }
+  .browser-control { width:100%; }
+  .browser-control > span { margin-inline-start:auto; }
+  .browser-control .browser-primary { min-height:36px; }
+  .browser-page-tab { max-width:148px; }
   .browser-fullscreen > section > header .rp-icon-button { min-width:44px; min-height:44px; }
   .browser-fullscreen .browser-address input { font-size:16px; }
-  .browser-fullscreen .browser-control > select { flex-basis:126px; max-width:126px; }
+  .browser-fullscreen .browser-viewport { align-items:flex-start; }
+  .browser-fullscreen .browser-viewport img { height:auto; }
+}
+@media (max-width:420px) {
+  .browser-control { flex-wrap:wrap; }
+  .browser-control .icon-button { width:28px; }
+  .browser-control > span { gap:5px; margin-inline-end:0; }
+  .browser-control .browser-primary { padding-inline:8px; }
 }

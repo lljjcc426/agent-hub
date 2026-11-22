@@ -25,6 +25,7 @@ export function Dialog({
   role = 'dialog',
   children,
   footer,
+  headerContent,
 }: {
   open: boolean
   title: string
@@ -36,6 +37,7 @@ export function Dialog({
   role?: 'dialog' | 'alertdialog'
   children: ReactNode
   footer?: ReactNode
+  headerContent?: ReactNode
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const heading = useId()
@@ -68,7 +70,8 @@ export function Dialog({
     >
       <section>
         <header>
-          <h2 id={heading}>{title}</h2>
+          <h2 id={heading} className={headerContent ? 'rp-sr-only' : undefined}>{title}</h2>
+          {headerContent}
           <IconButton label={closeLabel} onClick={onClose}>
             <X size={18} />
           </IconButton>

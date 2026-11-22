@@ -114,7 +114,7 @@ export async function browserRequest(
       return;
     }
     if (action === "stream" && req.method === "GET") {
-      let seq = 0;
+      let seq = 0, activitySeq = 0;
       const push = (status = false) => {
         if (!res.headersSent || res.destroyed || res.writableEnded) return;
         if (!stillAuthorized()) {
@@ -124,6 +124,11 @@ export async function browserRequest(
         // Slow clients resume at the latest frame on drain, without queueing old JPEGs.
         if (res.writableNeedDrain) return;
         try {
+          const activity = manager.activity(user,id);
+          if(activity && activity.seq !== activitySeq){
+            activitySeq=activity.seq;
+            if(!res.write("event: activity\ndata: "+JSON.stringify(activity)+"\n\n"))return;
+          }
           const frame = manager.frame(user, id);
           if (frame && frame.seq !== seq) {
             seq = frame.seq;
@@ -141,6 +146,7 @@ export async function browserRequest(
         unsubscribe();
         return;
       }
+      activitySeq=manager.activity(user,id)?.seq??0;
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",

@@ -34,7 +34,48 @@ export const proactiveSpecs:ToolSpec[]=[{type:'function',name:'router_manage',de
 /** Durable host extension. Time creates source events; Eval itself never schedules a wake. */
 export class RouterProactive {
  private quietCache=new Map<string,{minute:number;until:number|undefined}>()
+ private settledVersion=-1
+ private readonly dueBatches
+ private readonly dueSchedules
+ private readonly scheduledRun
+ private readonly settlementJobs
+ private readonly settlementReplies
+ private readonly pendingTaskReports
+ private readonly assignedTasks
+
  constructor(readonly host:Runtime,readonly now:()=>number=Date.now){
+  const db=host.store.db
+  db.exec(`
+   CREATE INDEX IF NOT EXISTS router_batch_due ON records(json_extract(body,'$.dueAt'))
+     WHERE kind='router-batch' AND json_extract(body,'$.state')='pending';
+   CREATE INDEX IF NOT EXISTS router_schedule_due ON records(json_extract(body,'$.nextAt'))
+     WHERE kind='router-schedule' AND json_extract(body,'$.active')=1;
+   CREATE INDEX IF NOT EXISTS router_schedule_trigger ON records(json_extract(body,'$.triggerId')) WHERE kind='router-schedule-run';
+   CREATE INDEX IF NOT EXISTS jobs_trigger ON jobs(json_extract(payload,'$.triggerId')) WHERE json_valid(payload);
+   CREATE INDEX IF NOT EXISTS routed_task_trigger ON records(json_extract(body,'$.parentTrigger'))
+     WHERE kind IN ('worker-assignment','task-routing');
+   CREATE INDEX IF NOT EXISTS outbox_unsettled_ticket ON outbox(json_extract(body,'$.ticketId')) WHERE status NOT IN ('sent','dropped');
+   CREATE INDEX IF NOT EXISTS router_inbox_ticket ON records(json_extract(body,'$.ticketId')) WHERE kind='router-inbox';
+  `)
+  this.dueBatches=db.prepare(`SELECT body FROM records WHERE kind='router-batch' AND json_extract(body,'$.state')='pending'
+     AND json_extract(body,'$.dueAt')<=? ORDER BY rowid`)
+  this.dueSchedules=db.prepare(`SELECT body FROM records WHERE kind='router-schedule' AND json_extract(body,'$.active')=1
+     AND json_extract(body,'$.nextAt')<=? ORDER BY rowid`)
+  this.scheduledRun=db.prepare("SELECT body FROM records WHERE kind='router-schedule-run' AND json_extract(body,'$.triggerId')=? ORDER BY rowid LIMIT 1")
+  this.settlementJobs=db.prepare("SELECT state,error FROM jobs WHERE json_valid(payload) AND json_extract(payload,'$.triggerId')=? ORDER BY rowid")
+  this.settlementReplies=db.prepare(`SELECT d.status FROM records AS r JOIN outbox AS d ON d.id=r.id
+    WHERE r.kind='router-reply-owner' AND EXISTS(SELECT 1 FROM json_each(r.body,'$.inputs') WHERE value=?)`)
+  this.pendingTaskReports=db.prepare(`
+    SELECT 1 FROM outbox WHERE status NOT IN ('sent','dropped')
+      AND json_extract(body,'$.ticketId') IN (SELECT value FROM json_each(?))
+    UNION ALL
+    SELECT 1 FROM records AS i WHERE i.kind='router-inbox'
+      AND json_extract(i.body,'$.ticketId') IN (SELECT value FROM json_each(?))
+      AND NOT EXISTS(SELECT 1 FROM records WHERE kind='router-read' AND id=json_extract(i.body,'$.id'))
+    LIMIT 1`)
+  this.assignedTasks=db.prepare(`SELECT json_extract(body,'$.ticketId') AS ticketId FROM records
+    WHERE kind IN ('worker-assignment','task-routing') AND json_extract(body,'$.parentTrigger')=?
+    ORDER BY kind='task-routing',rowid`)
   host.routerIngress.rulesFor=t=>this.rules(t)
   host.routerIngress.ruleExecutionAllowed=ids=>ids.every(id=>host.config.rules.some(r=>r.id===id)||this.duties().some(d=>this.ruleId(d)===id&&d.mode==='auto'))
   host.routerIngress.defer=(a,t)=>this.collect(a,t)
@@ -171,7 +212,10 @@ export class RouterProactive {
   if(!c||c.route.scopeId!==p.scopeId||c.route.entryId!==p.entryId||this.host.scopes.binding(p.entryId).revision!==p.bindingRevision||!this.host.scopes.canManage(c))throw Error('Schedule ownership or entry authority changed')
   return {trigger,context:c,mandate:this.host.routerIngress.authority(trigger.id)}
  }
- runForTrigger(id:string){return this.host.store.list<ScheduledRun>('router-schedule-run').find(r=>r.triggerId===id)}
+ runForTrigger(id:string){
+  const row=this.scheduledRun.get(id)
+  return row?JSON.parse(String(row.body)) as ScheduledRun:undefined
+ }
  skillStart(input:unknown,context:ScopeContext){
   const run=this.runForTrigger(context.trigger.id)
   if(!run?.spec.skill)return false
@@ -256,12 +300,14 @@ export class RouterProactive {
  }
  tick(){
   const store=this.host.store,now=this.now()
-  for(const b of store.list<MessageBatch>('router-batch'))if(b.state==='pending'&&b.dueAt<=now){
+  for(const row of this.dueBatches.all(now)){
+   const b=JSON.parse(String(row.body)) as MessageBatch
    const settings=this.controls(b.scopeId),last=store.get<number>('router-intervention-clock',stableDigest([b.scopeId,b.entryId,b.discussion]))??0
    if(b.strength==='inferred'&&last+settings.cooldownMs>now)continue
    store.enqueue('router-batch:'+b.id+':'+b.dueAt,'router-batch',{batchId:b.id,discussion:b.discussion})
   }
-  for(const p of store.list<Schedule>('router-schedule'))if(p.active&&p.nextAt!==undefined&&p.nextAt<=now){
+  for(const row of this.dueSchedules.all(now)){
+   const p=JSON.parse(String(row.body)) as Schedule
    store.atomic(()=>{
     const due=latestDue(p.timing,p.nextAt!,Math.min(now,p.timing.endAt?Date.parse(p.timing.endAt):now))
     const next={...p,nextAt:nextTime(p.timing,Math.max(now,due)+1)}
@@ -297,7 +343,8 @@ export class RouterProactive {
   }catch(error){return skip(String(error))}
  }
  private ownedTasks(run:ScheduledRun){
-  return [...new Set([...(run.taskIds??[]),...(run.goalId?this.host.goals.get(run.goalId)?.taskIds??[]:[]),...[...this.host.store.list<any>('worker-assignment'),...this.host.store.list<any>('task-routing')].filter(a=>run.triggerId&&a.parentTrigger===run.triggerId).map(a=>String(a.ticketId))])]
+  const assigned=run.triggerId?this.assignedTasks.all(run.triggerId).map(row=>String(row.ticketId)):[]
+  return [...new Set([...(run.taskIds??[]),...(run.goalId?this.host.goals.get(run.goalId)?.taskIds??[]:[]),...assigned])]
  }
  private unsettled(run:ScheduledRun){
   if(!terminal.has(run.state))return true
@@ -315,21 +362,28 @@ export class RouterProactive {
  }
  private settleRuns(){
   const store=this.host.store
-  for(const r of store.list<ScheduledRun>('router-schedule-run')){
-   if(!r.triggerId||!r.spec||!Array.isArray(r.taskIds)||['cancelled','skipped'].includes(r.state))continue
-   r.taskIds=this.ownedTasks(r)
-   const jobs=store.db.prepare('SELECT id,kind,state,payload,error FROM jobs').all().filter(j=>{try{return JSON.parse(String(j.payload)).triggerId===r.triggerId}catch{return false}})
-   const messages=store.deliveries().filter(d=>(store.get<any>('router-reply-owner',d.id)?.inputs??[]).includes(r.triggerId!))
-   const delivery=messages.some(m=>['failed','uncertain','held','dropped'].includes(m.status))?'failed':messages.some(m=>m.status!=='sent')?'pending':messages.length?'sent':'none'
-   const pendingReports=store.deliveries().some(d=>d.ticketId&&r.taskIds.includes(d.ticketId)&&!['sent','dropped'].includes(d.status))||store.list<any>('router-inbox').some(m=>r.taskIds.includes(m.ticketId)&&!store.get('router-read',m.id))
-   const tasks=r.taskIds.map(id=>store.tickets.get(id)),failed=jobs.some(j=>['failed','blocked','uncertain'].includes(String(j.state))),busy=pendingReports||jobs.some(j=>['pending','running'].includes(String(j.state)))
-   let state=r.state
-   if(failed)state='failed'
-   else if(r.goalId){const goal=this.host.goals.get(r.goalId);state=goal?.state==='completed'?'completed':goal?.state==='cancelled'?'cancelled':['held','needs_input','paused'].includes(goal?.state??'')?'waiting':'running'}
-   else if(!busy&&jobs.length&&tasks.every(t=>!!t?.ended))state='completed'
-   else if(tasks.some(t=>!t?.ended&&t?.attention))state='waiting'
-   store.put('router-schedule-run',r.id,{...r,state,delivery,...(failed?{reason:String(jobs.find(j=>['failed','blocked','uncertain'].includes(String(j.state)))?.error??'Router execution requires review').slice(0,500)}:{}),...(terminal.has(state)?{finishedAt:r.finishedAt??this.now()}:{})})
-  }
+  if(store.revisions.version('schedule')===this.settledVersion)return
+  const version=store.atomic(()=>{
+   for(const r of store.list<ScheduledRun>('router-schedule-run')){
+    if(!r.triggerId||!r.spec||!Array.isArray(r.taskIds)||['cancelled','skipped'].includes(r.state))continue
+    const taskIds=this.ownedTasks(r),ids=JSON.stringify(taskIds)
+    const jobs=this.settlementJobs.all(r.triggerId),messages=this.settlementReplies.all(r.triggerId)
+    const delivery=messages.some(m=>['failed','uncertain','held','dropped'].includes(String(m.status)))?'failed':messages.some(m=>m.status!=='sent')?'pending':messages.length?'sent':'none'
+    const pendingReports=taskIds.length>0&&!!this.pendingTaskReports.get(ids,ids)
+    const tasks=taskIds.map(id=>store.tickets.get(id))
+    const failed=jobs.find(j=>['failed','blocked','uncertain'].includes(String(j.state)))
+    const busy=pendingReports||jobs.some(j=>['pending','running'].includes(String(j.state)))
+    let state=r.state
+    if(failed)state='failed'
+    else if(r.goalId){const goal=this.host.goals.get(r.goalId);state=goal?.state==='completed'?'completed':goal?.state==='cancelled'?'cancelled':['held','needs_input','paused'].includes(goal?.state??'')?'waiting':'running'}
+    else if(!busy&&jobs.length&&tasks.every(t=>!!t?.ended))state='completed'
+    else if(tasks.some(t=>!t?.ended&&t?.attention))state='waiting'
+    const next={...r,taskIds,state,delivery,...(failed?{reason:String(failed.error??'Router execution requires review').slice(0,500)}:{}),...(terminal.has(state)?{finishedAt:r.finishedAt??this.now()}:{})}
+    if(JSON.stringify(next)!==JSON.stringify(r))store.put('router-schedule-run',r.id,next)
+   }
+   return store.revisions.version('schedule')
+  })
+  if(!store.db.isTransaction)this.settledVersion=version
  }
  private candidates(triggers:Trigger[],discussion:string,c:ScopeContext){
   const text=triggers.map(t=>t.text).join('\n')

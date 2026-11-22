@@ -19,6 +19,10 @@ export interface MemoryObservation {id:string;kind?:'experience';parentSourceId?
 interface Vector {id:string;factId:string;revision:number;generation:number;scopeId:string;model:string;vector:number[]}
 interface Topic {id:string;space:string;scopeId:string;generation:number;label:string;aliases:string[];sources:{id:string;version:number}[];sessions:string[];proposalId?:string}
 interface QueryVector {vector?:number[];mode:string;at:number;epoch:number;generation:number;policyRevision:number;signature?:string;verified?:boolean;reranked?:{id:string;revision:number;score:number}[]}
+const maintenanceInterval=60_000
+const pendingObservation="kind='memory-observation' AND json_extract(body,'$.state')='pending'"
+const observationDue="json_extract(body,'$.nextAt')"
+
 export class AgentMemory {
  private queries=new Map<string,QueryVector>()
  private queryLifetime=new AbortController()
@@ -26,7 +30,16 @@ export class AgentMemory {
  private active?:Promise<void>
  private controller?:AbortController
  private closed=false
+ private reconciledVersion=-1
+ private nextReconcileAt=0
+ private nextMaintenanceAt=0
+ private readonly dueObservations
  constructor(readonly host:Runtime,readonly embed:EmbedMemory=embedMemory,readonly now=Date.now,readonly rerank:RerankMemory=rerankMemory){
+  const db=host.store.db
+  db.exec(`CREATE INDEX IF NOT EXISTS pending_memory_observation ON records(
+    ${observationDue},json_extract(body,'$.sequence')) WHERE ${pendingObservation}`)
+  this.dueObservations=db.prepare(`SELECT body FROM records WHERE ${pendingObservation} AND ${observationDue}<=?
+    ORDER BY ${observationDue},json_extract(body,'$.sequence')`)
   const schema=host.store.get<number>('memory-schema','current')??1
   if(schema>3)throw Error('Memory schema is newer than this host; use a compatible release')
   // Additive upgrade: legacy facts retain their IDs, state, audience and sources.
@@ -57,6 +70,7 @@ export class AgentMemory {
   return c
  }
  observations(){return this.host.store.list<MemoryObservation>('memory-observation')}
+ private pending(now:number){return this.dueObservations.all(now).map(row=>JSON.parse(String(row.body)) as MemoryObservation)}
  saveObservation(row:MemoryObservation){this.host.store.put('memory-observation',row.id,row)}
  observe(c:ScopeContext){
   if(!c.trigger.human||!this.enabled(c))return
@@ -257,17 +271,34 @@ export class AgentMemory {
  }
  tick(){
   if(this.closed||this.active)return
-  this.reconcile()
-  const row=this.observations().filter(r=>r.state==='pending'&&r.nextAt<=this.now()).sort((a,b)=>a.nextAt-b.nextAt||a.sequence-b.sequence).find(r=>{try{const c=this.context(r);return this.enabled(c)&&this.policy(c).writeMode!=='explicit_only'&&(!r.kind||this.policy(c).writeMode==='adaptive')&&this.now()>=(this.host.store.get<number>('memory-last-extract',r.space)??0)+this.policy(c).minIntervalMs}catch{return false}})
-  if(!row){this.maintain();return}
-  let c:ScopeContext;try{c=this.context(row)}catch{return}
-  if(!this.enabled(c)||this.policy(c).writeMode==='explicit_only')return
-  this.controller=new AbortController()
-  this.active=this.process(c,row,this.controller.signal).catch(()=>{}).finally(()=>{this.active=undefined;this.controller=undefined})
+  const {store}=this.host,now=this.now()
+  const dirty=store.revisions.version('memory')!==this.reconciledVersion
+  if(dirty||now>=this.nextReconcileAt){
+   this.reconcile()
+   if(!store.db.isTransaction){
+    this.reconciledVersion=store.revisions.version('memory')
+    this.nextReconcileAt=now+maintenanceInterval
+   }
+   this.nextMaintenanceAt=0
+  }
+  for(const row of this.pending(now)){
+   let context:ScopeContext
+   try{
+    context=this.context(row)
+    const policy=this.policy(context)
+    if(!this.enabled(context)||policy.writeMode==='explicit_only'||row.kind&&policy.writeMode!=='adaptive')continue
+    if(now<(store.get<number>('memory-last-extract',row.space)??0)+policy.minIntervalMs)continue
+   }catch{continue}
+   this.controller=new AbortController()
+   this.active=this.process(context,row,this.controller.signal).catch(()=>{}).finally(()=>{this.active=undefined;this.controller=undefined})
+   return
+  }
+  if(now>=this.nextMaintenanceAt)this.nextMaintenanceAt=this.maintain(now)
  }
  async drain(){await this.active}
  async close(){this.closed=true;this.controller?.abort();this.queryLifetime.abort();await Promise.allSettled([...this.preparing,...(this.active?[this.active]:[])])}
- private maintain(){
+ private maintain(now:number){
+  let next=now+maintenanceInterval
   for(const fact of this.host.store.list<MemoryFact>('memory-fact')){
    if(fact.archived||fact.state!=='active')continue
    const evidence=this.host.memory.evidence(fact.sources[0]?.id??''),trigger=evidence?.locator.startsWith('trigger:')?this.host.store.triggers.get(evidence.locator.slice(8)):undefined
@@ -276,8 +307,9 @@ export class AgentMemory {
     const c=this.host.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(!c||c.actor!==fact.owner||!this.enabled(c))continue
     this.host.routerIngress.authority(trigger.id)
     const p=this.policy(c),space=this.space(c),last=this.host.store.get<number>('memory-maintenance',space)??0
-    if(this.now()-last<60000||!p.embedding&&p.writeMode==='explicit_only')continue
-    this.host.store.put('memory-maintenance',space,this.now());this.controller=new AbortController()
+    if(!p.embedding&&p.writeMode==='explicit_only')continue
+    if(now-last<maintenanceInterval){next=Math.min(next,last+maintenanceInterval);continue}
+    this.host.store.put('memory-maintenance',space,now);this.controller=new AbortController()
     const signal=this.controller.signal
     this.active=(async()=>{
      await this.index(c,signal)
@@ -287,9 +319,10 @@ export class AgentMemory {
      if(this.policy(c).writeMode!=='explicit_only'&&(review?.status==='interrupted'||this.now()-(review?.at??0)>=86400000)&&this.authorized(c).filter(f=>f.owner===c.actor).length>=6)await consolidateMemories(this,c,signal)
      await reflectMemories(this,c,signal)
     })().catch(()=>{}).finally(()=>{this.active=undefined;this.controller=undefined})
-    return
+    return now
    }catch{}
   }
+  return next
  }
  private async process(c:ScopeContext,first:MemoryObservation,signal:AbortSignal){
   const policy=this.policy(c)

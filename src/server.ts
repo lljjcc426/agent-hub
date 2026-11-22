@@ -732,7 +732,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,await runtime.chat.cancel(id,owner,input.runId));return
         }
         if(action==='events'&&req.method==='GET'){
-          runtime.chat.view(id,owner)
+          runtime.chat.revision(id,owner)
           res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});res.flushHeaders()
           let last=String(req.headers['last-event-id']??''),heartbeat=0
           const update=()=>{
@@ -900,12 +900,17 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       send(res,200,await source.context(input.thread));return
     }
     if (req.method === 'GET' && path === '/status') {
-      const status=runtime.status(),client=String(req.headers['x-agenthub-client']??''),bridge=String(req.headers['x-agenthub-bridge']??''),query=new URL(req.url!,'http://localhost').searchParams
+      const client=String(req.headers['x-agenthub-client']??''),bridge=String(req.headers['x-agenthub-bridge']??''),query=new URL(req.url!,'http://localhost').searchParams
       const filter=z.object({discussion:z.string().min(1).max(300).optional(),requestId:z.string().min(1).max(200).optional()}).strict().parse(Object.fromEntries(['discussion','requestId'].filter(k=>query.has(k)).map(k=>[k,query.get(k)])))
-      const compact=clientIds.includes(client as any)||!!filter.discussion||!!filter.requestId,view=compact?clientStatus(status,filter):status
-      if(clientIds.includes(client as any)&&bridge.length<=100)for(const ticket of view.tickets){
-        const request=runtime.store.get<any>('entry-client-event',ticket.origin.triggerId)
-        if(request?.client===client&&request.bridge===bridge&&ticket.run?.phase==='idle'&&ticket.run.result&&!(ticket.run as any).replyTruncated&&ticket.run.result.length<=4000&&status.deliveries.some(d=>d.ticketId===ticket.id&&d.kind==='reply'&&d.status==='sent'))runtime.store.put('entry-client-receipt',ticket.id,{client,bridge,legacyBridge:!bridge,at:Date.now()})
+      const bridgeClient=clientIds.includes(client as any)
+      if(!bridgeClient&&!filter.discussion&&!filter.requestId){send(res,200,runtime.status());return}
+      const view=clientStatus(runtime,filter)
+      if(bridgeClient&&bridge.length<=100){
+        const sentReply=runtime.store.db.prepare("SELECT 1 FROM outbox WHERE status='sent' AND json_extract(body,'$.kind')='reply' AND json_extract(body,'$.ticketId')=? LIMIT 1")
+        for(const ticket of view.tickets){
+          const request=runtime.store.get<any>('entry-client-event',ticket.origin.triggerId)
+          if(request?.client===client&&request.bridge===bridge&&ticket.run?.phase==='idle'&&ticket.run.result&&!ticket.run.replyTruncated&&ticket.run.result.length<=4000&&sentReply.get(ticket.id))runtime.store.put('entry-client-receipt',ticket.id,{client,bridge,legacyBridge:!bridge,at:Date.now()})
+        }
       }
       send(res,200,view);return
     }

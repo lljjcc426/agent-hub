@@ -2,7 +2,7 @@ import {resourcePage,memoryCapacity} from './execution-limits.ts'
 import {z} from 'zod'
 import {addPersonalReset,applyPersonalReset} from './personal-memory-reset.ts'
 import {randomUUID} from 'node:crypto'
-import {appendFileSync,existsSync,readFileSync,openSync,fsyncSync,closeSync} from 'node:fs'
+import {appendFileSync,existsSync,readFileSync,openSync,fsyncSync,closeSync,statSync} from 'node:fs'
 import {join} from 'node:path'
 import type {Store} from './store.ts'
 import type {Trigger} from './vendor/dsh-core/index.ts'
@@ -61,6 +61,10 @@ export class RouterMemory {
   this.appendRevocation(r);this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash})
  };this.reconcile()}
  generation(scopeId:string){return this.store.get<number>('memory-generation',scopeId)??0}
+ revocationStamp(){
+  const file=statSync(join(this.stateDir,'memory-revocations.jsonl'),{bigint:true,throwIfNoEntry:false})
+  return file?`${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`:''
+ }
  /** Authenticated control-plane operation; never exposed as an agent tool. */
  resetChat(owner:string,operationId:string,conversationIds:string[]){
   this.reconcile()

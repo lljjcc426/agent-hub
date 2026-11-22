@@ -86,6 +86,7 @@ export class ChatSessions {
   private readonly deliveries:ChatDeliveries
   private listeners=new Map<string,Set<()=>void>>()
   private notifications=new Set<string>()
+  private revisions=new Map<string,{owner:string;stamp:string;browser:string;ledger:string;revision:number;at:number;until:number}>()
   private streams=new Map<string,{runId:string;outputId:string;raw:string;authorize?:()=>void;timer?:ReturnType<typeof setTimeout>}>()
   private unsubscribe:()=>void
   constructor(private host:Runtime){
@@ -105,7 +106,7 @@ export class ChatSessions {
     for(const message of host.store.deliveries())if(message.status==='sent')this.deliveredClarification(message)
   }
   subscribe(id:string,owner:string,listener:()=>void){this.get(id,owner);const set=this.listeners.get(id)??new Set();set.add(listener);this.listeners.set(id,set);return()=>{set.delete(listener);if(!set.size)this.listeners.delete(id)}}
-  private changed(id:string){if(this.notifications.has(id))return;this.notifications.add(id);queueMicrotask(()=>{this.notifications.delete(id);for(const listener of this.listeners.get(id)??[])listener()})}
+  private changed(id:string){if(this.notifications.has(id))return;this.notifications.add(id);queueMicrotask(()=>{this.notifications.delete(id);this.revisions.delete(id);for(const listener of this.listeners.get(id)??[])listener()})}
   hasContext(context:ExecutionContext){
     const assignment=context.ticketId?this.host.store.get<Delegation>('worker-assignment',context.ticketId):undefined
     const triggerId=assignment?.parentTrigger??context.triggerId
@@ -171,7 +172,7 @@ export class ChatSessions {
     const m=this.host.store.get<Message>('chat-message','reply:'+jobId)
     if(m?.status==='streaming'){this.host.store.put('chat-message',m.id,{...m,status:state});this.changed(m.conversationId)}
   }
-  close(){for(const id of this.streams.keys())this.endOutput(id);this.unsubscribe();this.listeners.clear()}
+  close(){for(const id of this.streams.keys())this.endOutput(id);this.unsubscribe();this.listeners.clear();this.revisions.clear()}
   private rows<T>(kind:string, field:string, value:string):T[]{
     // field is an internal constant, never a request parameter.
     return this.host.store.db.prepare("SELECT body FROM records WHERE kind=? AND json_extract(body,?)=? ORDER BY rowid").all(kind,'$.'+field,value).map(r=>JSON.parse(String(r.body)))
@@ -1180,13 +1181,26 @@ export class ChatSessions {
         from:m.speaker,to:m.recipient,files:m.deliveries?.map(f=>f.name)??[]}]
     })
   }
-  /** A durable revision plus a fresh full projection recovers SSE gaps without replaying execution. */
+  /** Share the projection's durable version across listeners under the same conversation authority. */
   revision(id:string,owner:string){
+    const {store,browser,memory}=this.host,now=Date.now(),stamp=store.revisions.chat(id),ledger=memory.revocationStamp()
+    const cached=this.revisions.get(id)
+    if(!store.db.isTransaction&&cached?.owner===owner&&cached.stamp===stamp&&cached.ledger===ledger
+      &&now>=cached.at&&now<cached.until&&cached.browser===JSON.stringify(browser.conversation(owner,id)))return cached.revision
     const state=this.view(id,owner,undefined,undefined,undefined,undefined,undefined,true),hash=createHash('sha256').update(JSON.stringify(state)).digest('hex')
-    const previous=this.host.store.get<{hash:string;revision:number}>('chat-revision',id)
-    if(previous?.hash===hash)return previous.revision
-    const revision=(previous?.revision??0)+1
-    this.host.store.put('chat-revision',id,{hash,revision});return revision
+    const previous=store.get<{hash:string;revision:number}>('chat-revision',id)
+    const revision=previous?.hash===hash?previous.revision:(previous?.revision??0)+1
+    if(previous?.hash!==hash)store.put('chat-revision',id,{hash,revision})
+    if(!store.db.isTransaction){
+      // Deadlines can change the view without a durable write. Periodically check other transient state.
+      let until=now+15_000
+      for(const item of [...state.approvals,...state.decisions,...state.pendingCards.flatMap(card=>card.kind==='question'?[card.question]:[])]){
+        if(item.expiresAt!==null&&item.expiresAt>now)until=Math.min(until,item.expiresAt)
+      }
+      if(!cached&&this.revisions.size>=128)this.revisions.delete(this.revisions.keys().next().value!)
+      this.revisions.set(id,{owner,stamp,ledger,browser:JSON.stringify(state.browsers),revision,at:now,until})
+    }
+    return revision
   }
   async cancel(id:string,owner:string,runId:string){
     this.get(id,owner)

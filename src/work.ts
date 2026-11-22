@@ -37,6 +37,10 @@ function linkedGitDirectory(cwd:string){
  }catch{return undefined}
 }
 const terminal=(item:WorkItem)=>!['starting','running'].includes(item.state)
+const liveWork="json_extract(body,'$.state') IN ('starting','running')"
+const autoWork="json_extract(body,'$.notify')='auto'"
+const workTicket="json_extract(body,'$.ticketId')"
+const workAssignment="json_extract(body,'$.assignmentId')"
 /** Work survives a model turn. A process restart interrupts work rather than silently replaying it. */
 export class WorkManager {
  private agents=new Map<string,{controller:AbortController;promise:Promise<void>}>()
@@ -44,10 +48,28 @@ export class WorkManager {
  private runners=new Map<string,ChildProcess>()
  private stopping=false
   readonly recovered:Promise<void>
+ private readonly pollItems
+ private readonly liveItems
+ private readonly byTicket
+ private readonly byAssignment
+ private readonly autoByAssignment
  readonly directory:string
  constructor(readonly store:Store,readonly config:Config,private hooks:WorkHooks){
+  const db=store.db
+  db.exec(`
+   CREATE INDEX IF NOT EXISTS work_ticket ON records(${workTicket}) WHERE kind='work';
+   CREATE INDEX IF NOT EXISTS work_live_assignment ON records(${workTicket},${workAssignment})
+     WHERE kind='work' AND ${liveWork};
+   CREATE INDEX IF NOT EXISTS work_needs_poll ON records(json_extract(body,'$.state'))
+     WHERE kind='work' AND (${liveWork} OR ${autoWork});
+  `)
+  this.pollItems=db.prepare(`SELECT id FROM records WHERE kind='work' AND (${liveWork} OR ${autoWork}) ORDER BY rowid`)
+  this.liveItems=db.prepare(`SELECT body FROM records WHERE kind='work' AND ${liveWork} ORDER BY rowid`)
+  this.byTicket=db.prepare(`SELECT body FROM records WHERE kind='work' AND ${workTicket}=? ORDER BY rowid`)
+  this.byAssignment=db.prepare(`SELECT body FROM records WHERE kind='work' AND ${liveWork} AND ${workTicket}=? AND ${workAssignment}=? ORDER BY rowid`)
+  this.autoByAssignment=db.prepare(`SELECT body FROM records WHERE kind='work' AND ${liveWork} AND ${autoWork} AND ${workTicket}=? AND ${workAssignment}=? ORDER BY rowid`)
   this.directory=join(config.stateDir,'jobs');mkdirSync(this.directory,{recursive:true,mode:0o700})
-  const interrupted=this.list().filter(item=>!terminal(item))
+  const interrupted=this.live()
   for(const item of interrupted){
    // The runner's parent/lock monitor kills its own process group. Never signal a stale PID here.
    this.put({...item,state:'interrupted',endedAt:Date.now(),error:'Host restarted; inspect the retained output before repeating work'})
@@ -63,7 +85,10 @@ export class WorkManager {
   })()
   void this.recovered.catch(()=>{})
  }
- list(ticketId?:string){return this.store.list<WorkItem>('work').filter(w=>!ticketId||w.ticketId===ticketId)}
+ private decode(rows:Record<string,unknown>[]){return rows.map(row=>JSON.parse(String(row.body)) as WorkItem)}
+ private live(){return this.decode(this.liveItems.all())}
+ private assigned(ticketId:string,assignmentId:string){return this.decode(this.byAssignment.all(ticketId,assignmentId))}
+ list(ticketId?:string){return ticketId?this.decode(this.byTicket.all(ticketId)):this.store.list<WorkItem>('work')}
  private put(item:WorkItem){this.store.put('work',item.id,item);return item}
  private assert(owner:WorkOwner){if(this.stopping||!this.hooks.valid(owner))throw Error('This assignment no longer owns work tools')}
  private matching(owner:WorkOwner,item:WorkItem){return item.ticketId===owner.ticketId&&item.assignmentId===owner.assignmentId&&item.agentId===owner.agentId}
@@ -158,12 +183,12 @@ export class WorkManager {
   return {...item,output,outputOffset:offset,nextOffset:next<characters?next:null,outputCharacters:characters,resource:'job/'+item.id}
  }
  read(owner:WorkOwner,id:string,offset=0,limit=resourcePage.defaultCharacters){return this.view(this.own(owner,id),offset,limit)}
- active(ticketId:string,assignmentId:string){return this.list(ticketId).filter(w=>w.assignmentId===assignmentId&&!terminal(w)&&w.notify==='auto')}
+ active(ticketId:string,assignmentId:string){return this.decode(this.autoByAssignment.all(ticketId,assignmentId))}
  async tick(){
   if(this.hooks.expired){
-   const due=this.list().filter(w=>!terminal(w)&&w.deadline&&Date.now()>=w.deadline&&!w.agentId)
+   const due=this.live().filter(w=>w.deadline&&Date.now()>=w.deadline&&!w.agentId)
    for(const expired of new Map(due.map(w=>[w.ticketId+':'+w.assignmentId,w])).values()){
-    const owned=this.list(expired.ticketId).filter(w=>w.assignmentId===expired.assignmentId&&!w.agentId&&!terminal(w)&&w.notify==='auto'),killed:string[]=[]
+    const owned=this.active(expired.ticketId,expired.assignmentId).filter(w=>!w.agentId),killed:string[]=[]
     for(const w of owned){
      this.put({...w,deadline:undefined,notify:w.kind==='shell'?'held':w.notify})
      if(w.kind==='shell'){await this.cancel(this.store.get<WorkItem>('work',w.id)!,'Background turn deadline reached',false);killed.push(w.id)}
@@ -171,8 +196,9 @@ export class WorkManager {
     this.hooks.expired(expired,killed,owned.filter(w=>w.kind==='agent').map(w=>w.id))
    }
   }
-  for(let item of this.list()){
-   item=this.store.get<WorkItem>('work',item.id)!
+  for(const row of this.pollItems.all()){
+   let item=this.store.get<WorkItem>('work',String(row.id))
+   if(!item)continue
    if(item.kind==='shell'&&!terminal(item)){
     const path=join(this.directory,item.id+'.result.json')
     if(existsSync(path)){
@@ -182,7 +208,9 @@ export class WorkManager {
    }
    if(!terminal(item)&&!this.hooks.valid(item)){await this.cancel(item,'Assignment ended',true);continue}
    if(!terminal(item)&&item.deadline&&Date.now()>=item.deadline&&item.kind==='shell'){
-    await this.cancel(item,'Background turn deadline reached',false);item=this.store.get<WorkItem>('work',item.id)!
+    await this.cancel(item,'Background turn deadline reached',false)
+    item=this.store.get<WorkItem>('work',item.id)
+    if(!item)continue
    }
    if(terminal(item)&&item.notify==='auto'&&!this.waits.has(item.id)&&!this.stopping&&this.hooks.valid(item)){
     // Queue the wake and record notification in the same transaction.
@@ -190,13 +218,13 @@ export class WorkManager {
    }
   }
  }
- turnStarted(ticketId:string,assignmentId:string){for(const w of this.list(ticketId).filter(w=>w.assignmentId===assignmentId&&!w.agentId&&!terminal(w)&&w.notify==='auto'))this.put({...w,deadline:undefined})}
+ turnStarted(ticketId:string,assignmentId:string){for(const w of this.active(ticketId,assignmentId).filter(w=>!w.agentId))this.put({...w,deadline:undefined})}
  turnEnded(ticketId:string,assignmentId:string){
   const deadline=Date.now()+this.config.work.backgroundTimeoutMs
   for(const item of this.active(ticketId,assignmentId).filter(w=>!w.agentId))this.put({...item,deadline})
  }
  async handoff(ticketId:string,assignmentId:string){
-  for(const item of this.list(ticketId).filter(w=>w.assignmentId===assignmentId&&!terminal(w))){
+  for(const item of this.assigned(ticketId,assignmentId)){
    if(item.kind==='agent')await this.cancel(item,'Human handoff',true)
    else if(!item.agentId){const current=this.store.get<WorkItem>('work',item.id)!;if(!terminal(current))this.put({...current,notify:'held',deadline:undefined})}
   }
@@ -220,12 +248,12 @@ export class WorkManager {
  }
  async stop(owner:WorkOwner,id:string){await this.cancel(this.own(owner,id),'Cancelled by worker',false);return this.view(this.store.get<WorkItem>('work',id)!)}
  async cancelOwned(ticketId:string,assignmentId:string,agentId:string|undefined,reason:string){
-  for(const item of this.list(ticketId).filter(w=>w.assignmentId===assignmentId&&w.agentId===agentId&&!terminal(w)))await this.cancel(item,reason,true)
+  for(const item of this.assigned(ticketId,assignmentId).filter(w=>w.agentId===agentId))await this.cancel(item,reason,true)
  }
  async endAssignment(ticketId:string,assignmentId:string){await this.cancelOwned(ticketId,assignmentId,undefined,'Assignment ended')}
  async close(){
   this.stopping=true
-  for(const item of this.list().filter(w=>!terminal(w)))await this.cancel(item,'Host stopped',true)
+  for(const item of this.live())await this.cancel(item,'Host stopped',true)
   await Promise.allSettled([...this.agents.values()].map(a=>a.promise))
   await Promise.allSettled([...this.runners.values()].map(child=>new Promise<void>(resolve=>{
    if(child.exitCode!==null)return resolve();const timer=setTimeout(()=>{try{if(child.pid)process.kill(-child.pid,'SIGKILL')}catch{}resolve()},3000)

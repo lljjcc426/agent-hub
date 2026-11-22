@@ -98,7 +98,7 @@ export class RouterGoals {
  }
  private rawList(c:ScopeContext){this.host.scopes.assertCurrent(c);return this.host.store.list<RouterGoal>('router-goal').filter(g=>this.belongs(g,c)&&g.objective&&!this.host.memory.cleanup.blocked('router-goal',g.id,g))}
  list(c:ScopeContext){return this.rawList(c).map(g=>this.sourcesValid(g)?g:{...g,state:terminal.has(g.state)?g.state:'held' as const,title:'Goal needs source review',objective:'Prior derived goal content is unavailable',criteria:[],nodes:undefined,project:undefined,contract:undefined,plan:[],checks:undefined,nextAction:'Resume with a current explicitly authorized objective, criteria and plan',reason:'Goal sources changed or were revoked',nextAt:undefined})}
- snapshot(){return this.host.store.list<RouterGoal>('router-goal').flatMap(g=>{
+ snapshot(candidates=this.host.store.list<RouterGoal>('router-goal')){return candidates.flatMap(g=>{
   try{const binding=this.host.scopes.binding(g.entryId);if(binding.privateActor||binding.revision!==g.bindingRevision)return [];const t=this.host.store.triggers.get(g.triggerId);if(!t)return [];this.host.routerIngress.authority(t.id);const c=this.host.scopes.context(t,g.discussion);const visible=c&&this.list(c).find(item=>item.id===g.id);return visible?[visible]:[]}catch{return []}
  })}
  private anchor(g:RouterGoal){

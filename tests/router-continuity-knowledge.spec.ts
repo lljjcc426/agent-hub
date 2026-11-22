@@ -216,7 +216,7 @@ it('rejects cancelling a transferred goal task and exposes unresolved goal state
  let c=f.context(first)
  const g=f.h.goals.command({action:'start',operationId:'owned-goal',expectedRevision:0,title:'Goal',objective:'Check work',authorizationQuote:'Keep ownership boundaries',criteria:[{id:'proof',description:'Checked result'}]},c)
  const task=await f.h.manager.call({action:'assign',id:'one',text:'Work',requestId:'assigned',revision:0},{discussion:c.route.discussion,trigger:c.trigger,scoped:c});f.h.goals.noteTask(c.trigger.id,task.ticketId)
- expect(clientStatus(f.h.status(),{discussion:'g1-topic'}).goals[0]?.state).toBe('active')
+ expect(clientStatus(f.h,{discussion:'g1-topic'}).goals[0]?.state).toBe('active')
  f.h.scopes.command({action:'task.transfer',operationId:'move',expectedRevision:1,ticketId:task.ticketId,scopeId:'other'});c=f.context(first)
  expect(()=>f.h.goals.command({action:'cancel',id:g.id,operationId:'cancel-moved',expectedRevision:1},c)).toThrow('ownership')
  expect(f.h.store.tickets.get(task.ticketId)?.ended).toBeUndefined()

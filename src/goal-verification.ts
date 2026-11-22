@@ -18,6 +18,9 @@ export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId
 interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
 export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];method:'program'|'agent'}
 export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
+// Bounds retained snapshots. Model input and evidence pages have their own context budgets.
+const snapshotLimitMiB=2
+const snapshotLimitBytes=snapshotLimitMiB*1024*1024
 const verdict=z.object({checks:z.array(z.object({criterionId:z.string(),verdict:z.enum(['passed','failed','insufficient']),explanation:z.string().min(1).max(8000),evidenceIds:z.array(z.string()).min(1)}).strict()).min(1)}).strict()
 const operational=(e:Evidence)=>e.kind==='execution'||e.kind==='report'&&e.key==='watchdog-observation'
 const requiredEvidence=(e:Evidence,criterionId:string)=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||operational(e)&&criterionId==='__goal__')&&(criterionId==='__goal__'||e.criterionIds.includes(criterionId))
@@ -97,8 +100,15 @@ export class GoalVerification {
   return JSON.stringify({basis:'Host-managed execution ledger; not a Worker assertion',scope:'Task-side commands and tool calls. Configured model inference is outside task-side network policy. This is not an audit of unrelated OS processes.',complete:all.length<=100&&calls.length<=200&&receipts.length<=100&&publications.length<=100&&browserCaptures.length<=100&&ownedBrowserReceipts.length<=100,jobs,toolCalls:calls.slice(0,200).map(a=>({id:a.id,name:a.name,state:a.state})),browserActions,browserActionBasis:'Original host browser results for this task. Uncertain or omitted results cannot establish that a browser action succeeded. Earlier unowned receipts are not inferred from a Worker name or page URL.',externalTools,externalToolBasis:'Original provider payloads retained by the host, not Worker-authored quotations. A complete call may still return an API error. resultComplete=false cannot prove omitted content.',...(browserCaptures.length?{browserCaptures:browserCaptures.slice(0,100),browserCaptureBasis:'Host browser exported these PNG bytes at the recorded page. Match sha256 with the declared artifact; page title is DOM metadata, not a visual quality assessment.'}:{}),...(workflowActions.length?{workflowActions}:{}),repositoryPublications:publications.slice(0,100),publicationBasis:'Confirmed receipts describe provider readback at confirmedAt, not a fresh remote query; creating or uncertain phases do not prove success.',managedCapabilities:cap?{managed:cap.managed,mcpServers:cap.mcpServers}:null})
  }
  failureEvidence(g:RouterGoal):Evidence[]{
-  const c=this.host.goals.context(g),items:Evidence[]=[];let bytes=0
-  const add=(value:Omit<Evidence,'id'|'hash'>,referenceId?:string)=>{const hash=stableDigest(value),item={...value,id:referenceId??'evidence-'+hash,hash};bytes+=Buffer.byteLength(JSON.stringify(item));if(bytes>512*1024)throw Error('Replanning evidence exceeds 512 KiB');if(items.some(e=>e.id===item.id))throw Error('Duplicate failure evidence reference');items.push(item)}
+  const c=this.host.goals.context(g),items:Evidence[]=[]
+  let bytes=2
+  const add=(value:Omit<Evidence,'id'|'hash'>,referenceId?:string)=>{
+   const hash=stableDigest(value),item={...value,id:referenceId??'evidence-'+hash,hash}
+   bytes+=Buffer.byteLength(JSON.stringify(item))+(items.length?1:0)
+   if(bytes>snapshotLimitBytes)throw Error(`Replanning evidence exceeds ${snapshotLimitMiB} MiB; declare smaller artifacts`)
+   if(items.some(e=>e.id===item.id))throw Error('Duplicate failure evidence reference')
+   items.push(item)
+  }
   for(const n of g.nodes??[]){
    if(!n.ticketId)continue
    this.host.scopes.checkTask(n.ticketId,c,true)
@@ -136,8 +146,14 @@ export class GoalVerification {
    for(const owner of owners)for(const id of closure([owner]))if(id!==owner)ancestors.add(id)
    return {id:cr.id,ancestors}
   })
-  const tasks:Snapshot['tasks']=[],delegations:DelegationBinding[]=[],evidence:Evidence[]=[];let evidenceBytes=0,finalCommit:string|undefined
-  const add=(value:Omit<Evidence,'id'|'hash'>)=>{const hash=stableDigest(value),id='evidence-'+hash,item={...value,id,hash};evidenceBytes+=Buffer.byteLength(JSON.stringify(item));if(evidenceBytes>512*1024)throw Error('Acceptance evidence exceeds 512 KiB; declare smaller artifacts');evidence.push(item)}
+  const tasks:Snapshot['tasks']=[],delegations:DelegationBinding[]=[],evidence:Evidence[]=[]
+  let evidenceBytes=2,finalCommit:string|undefined
+  const add=(value:Omit<Evidence,'id'|'hash'>)=>{
+   const hash=stableDigest(value),id='evidence-'+hash,item={...value,id,hash}
+   evidenceBytes+=Buffer.byteLength(JSON.stringify(item))+(evidence.length?1:0)
+   if(evidenceBytes>snapshotLimitBytes)throw Error(`Acceptance evidence exceeds ${snapshotLimitMiB} MiB; declare smaller artifacts`)
+   evidence.push(item)
+  }
   const schedules=this.host.chat.scheduledReceipts(g.triggerId)
   if(schedules.length)add({kind:'execution',key:'chat-schedules',criterionIds:criteria.map(cr=>cr.id),content:JSON.stringify({basis:'Schedules registered by the host for this human request, with delivery to the original private Chat.',schedules})})
   if(nodes.some(n=>n.teamTargetId)){
@@ -206,7 +222,6 @@ export class GoalVerification {
     add({kind:'document',ticketId:n.ticketId,key:documentId,content:doc.content,revision:doc.revision,criterionIds:citeIds(assigned.filter(cr=>cr.documents?.includes(documentId)).map(cr=>cr.id))})
    }
   }
-  if(Buffer.byteLength(JSON.stringify(evidence))>512*1024)throw Error('Acceptance evidence exceeds 512 KiB; declare smaller artifacts')
   return {contract:stableDigest({objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
  }
  current(round:VerificationRound,g:RouterGoal,options:{readOnly?:boolean}={}):boolean {

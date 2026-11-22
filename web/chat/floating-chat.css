@@ -57,9 +57,23 @@
   --capsule-space: max(0px, calc(100% - 270px));
   width: min(var(--capsule-space), clamp(68px, calc(var(--resting-caption, 46px) + 22px), 240px));
   transition: width 1000ms cubic-bezier(.42, 0, .35, 1);
+  border-color: transparent;
   border-radius: 18px;
   padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
+.chat-float-center::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 2px;
+  border-radius: inherit;
+  background: var(--c-bg);
+  filter: blur(5px);
+  pointer-events: none;
+}
+.chat-float-center:has(> .chat-companion:hover)::before { background: var(--c-soft); }
 .chat-float-center[data-expanded] { width: min(var(--capsule-space), 248px); }
 .chat-float-center .chat-companion {
   flex-direction: column;

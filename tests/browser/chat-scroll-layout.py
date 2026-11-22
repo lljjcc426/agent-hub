@@ -34,6 +34,13 @@ with sync_playwright() as pw:
         expect(replies).to_have_count(count, timeout=15000)
 
     def show_first_message():
+        expect(transcript.locator('[data-streaming=true]')).to_have_count(0)
+        if latest.get_attribute('data-visible') == 'true':
+            latest.click()
+        page.wait_for_function("""() => {
+            const el = document.querySelector('.transcript');
+            return el.scrollHeight - el.clientHeight - el.scrollTop <= 1;
+        }""")
         transcript.hover()
         page.mouse.wheel(0, -10000)
         expect(latest).to_have_attribute('data-visible', 'true')
@@ -75,7 +82,18 @@ with sync_playwright() as pw:
     send(sender)
     expect(replies).to_have_count(7, timeout=15000)
     expect(latest).to_have_text('有新消息')
-    assert latest.evaluate('el => el.scrollWidth <= el.clientWidth')
+    badge = latest.evaluate("""button => {
+        const bounds = button.getBoundingClientRect();
+        const icon = button.querySelector('svg').getBoundingClientRect();
+        const text = button.querySelector('span').getBoundingClientRect();
+        return {
+            clearance: button.parentElement.getBoundingClientRect().top - bounds.bottom,
+            gap: text.left - icon.right,
+            centered: Math.abs((icon.top + icon.bottom) - (text.top + text.bottom)) < 1,
+            contained: text.right < bounds.right && text.bottom < bounds.bottom
+        };
+    }""")
+    assert badge['clearance'] >= 8 and badge['gap'] >= 4 and badge['centered'] and badge['contained'], badge
     sender.close()
     latest.press('Enter')
     expect(latest).to_have_attribute('data-visible', 'false')

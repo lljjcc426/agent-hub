@@ -118,6 +118,11 @@
 .composer-quote .icon-button{width:27px;height:27px;flex-shrink:0}
 .selection-reply{position:fixed;z-index:90;display:flex;align-items:center;gap:6px;background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-line);border-radius:10px;padding:8px 10px;font-size:12px;box-shadow:0 4px 18px #00000014;animation:feedback-in 160ms ease-out}
 .scroll-bottom {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -125,11 +130,17 @@
   width: 32px;
   height: 32px;
   padding: 0;
+  border: 1px solid var(--c-line);
+  border-radius: 50%;
+  background: var(--c-raised);
+  box-shadow: 0 2px 8px #00000009;
   font-size: 12px;
   white-space: nowrap;
   transition: opacity 160ms, transform 240ms var(--chat-spring), background 150ms;
 }
 .scroll-bottom:has(> span) { width: max-content; padding-inline: 9px; border-radius: 999px; }
+.scroll-bottom > svg { flex: none; }
+.scroll-bottom:disabled { display: none; }
 .scroll-bottom[data-visible=false]{opacity:0;transform:translate(-50%,8px) scale(.9);pointer-events:none}
 .send-button{transition:transform 200ms var(--chat-spring),background 160ms,opacity 160ms}
 .message[data-streaming=true] [data-message-body] :is(p,pre,li){animation:stream-block 220ms ease-out}

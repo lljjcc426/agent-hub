@@ -180,8 +180,10 @@ export class GoalReplanning {
     this.host.store.put('router-goal',g.id,next);save({state:'applied',appliedAt:this.now()})
    })
   }catch(error){
+   const g=this.host.goals.get(r.goalId)
+   if(g?.state==='cancelled'){save({state:'stale'});return}
    if(error instanceof ReplanningInterrupted)return false // Read-only reasoning can safely resume after host restart.
-   const g=this.host.goals.get(r.goalId),reason=String(error).slice(0,1500)
+   const reason=String(error).slice(0,1500)
    save({state:/changed|unavailable|current state|revoked|cannot be revived/.test(reason)?'stale':'errored',error:reason})
    if(g?.replanId===r.id&&['active','waiting'].includes(g.state))this.hold(g,'Autonomous replanning could not be accepted: '+reason)
   }

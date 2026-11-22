@@ -332,6 +332,7 @@ export class GoalVerification {
    if(!latest||latest.state==='cancelled'||!this.current(round,latest)){save({state:'stale',finishedAt:this.now()});return}
    save({checks,state:checks.some(c=>c.verdict==='failed')?'failed':checks.some(c=>c.verdict==='insufficient')?'insufficient':'passed',finishedAt:this.now()})
   }catch(error){
+   if(this.host.goals.get(round.goalId)?.state==='cancelled'){save({state:'stale',finishedAt:this.now()});return}
    if(this.host.shuttingDown){save({state:'running',error:undefined});return false}
    save({state:'errored',error:String(error).slice(0,1000),finishedAt:this.now()})
   }

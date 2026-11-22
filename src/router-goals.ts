@@ -26,7 +26,7 @@ const id=z.string().min(1).max(300)
 const criterion=criterionSchema
 const verification=z.object({criterionId:id,ticketId:id.optional(),delegationId:id.optional(),reportAt:id,explanation:z.string().min(1).max(4000)}).strict().refine(v=>!!v.ticketId!==!!v.delegationId,'A check needs its actual task or delegation reference')
 export const goalCommandSchema=z.object({action:z.enum(['list','inspect','start','update','wait','complete','pause','resume','cancel']),id:id.optional(),details:goalDetailsSchema.optional(),supersedes:z.object({goalId:id,expectedRevision:z.number().int().min(0)}).strict().optional(),operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),title:z.string().min(1).max(300).optional(),objective:z.string().min(1).max(16000).optional(),authorizationQuote:z.string().min(1).max(16000).optional(),criteria:z.array(criterion).min(1).max(50).optional(),plan:z.array(z.string().min(1).max(4000)).max(100).optional(),nextAction:z.string().min(1).max(4000).optional(),reason:z.string().min(1).max(4000).optional(),wakeAfterSeconds:z.number().int().min(10).max(86400).optional(),needsHuman:z.boolean().optional(),checks:z.array(verification).max(50).optional(),maxTurns:z.number().int().min(1).max(10000).optional(),nodes:z.array(nodeSchema).min(1).max(100).optional(),budget:z.object({maxMinutes:z.number().positive().max(43200).optional(),maxUsd:z.number().positive().optional()}).strict().refine(b=>b.maxMinutes!==undefined||b.maxUsd!==undefined,'Set a time or cost limit').optional(),maxParallel:z.number().int().min(1).max(10).optional(),maxRepairs:z.number().int().min(0).max(10).optional(),maxReplans:z.number().int().min(0).max(5).optional()}).strict()
-export interface RouterGoal {acceptanceOverflow?:EvidenceOverflow;supersedes?:string;supersededBy?:string;project?:GoalProject;id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerId:string;bindingRevision:number;revision:number;title:string;objective:string;criteria:z.infer<typeof criterion>[];plan:string[];state:'active'|'waiting'|'needs_input'|'paused'|'held'|'completed'|'cancelled';taskIds:string[];delegationIds?:string[];contextIds?:string[];nextAction:string;reason?:string;nextAt?:number;turns:number;maxTurns:number;failures:number;lastFingerprint?:string;checks?:z.infer<typeof verification>[];at:number;nodes?:GoalNode[];maxParallel?:number;maxRepairs?:number;finalRoundId?:string;recovery?:GoalFailure;recoveryAttempts?:number;managed?:boolean;contract?:GoalContract;planRevision?:number;replans?:number;maxReplans?:number;replanId?:string}
+export interface RouterGoal {cancelledByUser?:true;acceptanceOverflow?:EvidenceOverflow;supersedes?:string;supersededBy?:string;project?:GoalProject;id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerId:string;bindingRevision:number;revision:number;title:string;objective:string;criteria:z.infer<typeof criterion>[];plan:string[];state:'active'|'waiting'|'needs_input'|'paused'|'held'|'completed'|'cancelled';taskIds:string[];delegationIds?:string[];contextIds?:string[];nextAction:string;reason?:string;nextAt?:number;turns:number;maxTurns:number;failures:number;lastFingerprint?:string;checks?:z.infer<typeof verification>[];at:number;nodes?:GoalNode[];maxParallel?:number;maxRepairs?:number;finalRoundId?:string;recovery?:GoalFailure;recoveryAttempts?:number;managed?:boolean;contract?:GoalContract;planRevision?:number;replans?:number;maxReplans?:number;replanId?:string}
 interface Wake {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;triggerHash:string;goalRevision:number;state:'queued'|'running'|'done'|'failed';at:number}
 const terminal=new Set(['completed','cancelled'])
 const githubReadContinuation='The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
@@ -47,7 +47,7 @@ function readContinuation(proof:ReadRecovery['proof']){
  return {instruction:'Continue the original task in its retained workspace. Retry the recorded webfetch_batch calls. The tool reuses saved excerpts and fetches pages with missing results.',
   ...(proof.batches.length===1?{urls:proof.urls}:{batches:proof.batches})}
 }
-export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. inspect returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
+export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. Use list and inspect to find existing work from this Chat, including goals created during an internal Worker follow-up. Use worker_manage result with the goal ticket IDs to read Worker reports. When the user explicitly asks to cancel the entire task, identify the goal by title or ID and use cancel with its current revision. Cancelling one Worker is insufficient. If remote work is involved, check whether the remote team has confirmed cancellation. Inspect also returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
 
 export class RouterGoals {
  constructor(private host:Runtime,private now:()=>number=Date.now){
@@ -107,8 +107,15 @@ export class RouterGoals {
    store.jobState('goal-verify:'+round.id,'pending')
   })
  }
- private rawList(c:ScopeContext){this.host.scopes.assertCurrent(c);return this.host.store.list<RouterGoal>('router-goal').filter(g=>this.belongs(g,c)&&g.objective&&!this.host.memory.cleanup.blocked('router-goal',g.id,g))}
- list(c:ScopeContext){return this.rawList(c).map(g=>this.sourcesValid(g)?g:{...g,state:terminal.has(g.state)?g.state:'held' as const,title:'Goal needs source review',objective:'Prior derived goal content is unavailable',criteria:[],nodes:undefined,project:undefined,contract:undefined,plan:[],checks:undefined,nextAction:'Resume with a current explicitly authorized objective, criteria and plan',reason:'Goal sources changed or were revoked',nextAt:undefined})}
+ private accessible(g:RouterGoal,c:ScopeContext,delegated=false){
+  return !!g.objective&&(this.belongs(g,c)||delegated&&this.host.chat.canAccessDelegatedGoal(g,c))&&
+   !this.host.memory.cleanup.blocked('router-goal',g.id,g)
+ }
+ list(c:ScopeContext){
+  this.host.scopes.assertCurrent(c)
+  return this.host.store.list<RouterGoal>('router-goal').filter(g=>this.accessible(g,c,true)).map(g=>this.visibleGoal(g))
+ }
+ visibleGoal(g:RouterGoal){return this.sourcesValid(g)?g:{...g,state:terminal.has(g.state)?g.state:'held' as const,title:'Goal needs source review',objective:'Prior derived goal content is unavailable',criteria:[],nodes:undefined,project:undefined,contract:undefined,plan:[],checks:undefined,nextAction:'Resume with a current explicitly authorized objective, criteria and plan',reason:'Goal sources changed or were revoked',nextAt:undefined}}
  snapshot(candidates=this.host.store.list<RouterGoal>('router-goal')){return candidates.flatMap(g=>{
   try{const binding=this.host.scopes.binding(g.entryId);if(binding.privateActor||binding.revision!==g.bindingRevision)return [];const t=this.host.store.triggers.get(g.triggerId);if(!t)return [];this.host.routerIngress.authority(t.id);const c=this.host.scopes.context(t,g.discussion);const visible=c&&this.list(c).find(item=>item.id===g.id);return visible?[visible]:[]}catch{return []}
  })}
@@ -121,8 +128,44 @@ export class RouterGoals {
   if(!this.sourcesValid(g))throw Error('Goal sources changed; explicit goal reauthorization is required')
   return {trigger:t,mandate,context:c}
  }
+ private fenceCancelled(g:RouterGoal){
+  const {store}=this.host,tickets=new Set(g.taskIds)
+  this.host.delegation.goalTasks.cancel(g.id)
+  for(const wake of store.list<Wake>('goal-wake'))if(wake.goalId===g.id&&wake.state==='queued')store.put('goal-wake',wake.id,{...wake,state:'failed'})
+  for(const round of store.list<VerificationRound>('goal-verification'))if(round.goalId===g.id&&['pending','running'].includes(round.state))store.put('goal-verification',round.id,{...round,state:'stale',finishedAt:this.now()})
+  for(const round of store.list<import('./goal-replanning.ts').ReplanRound>('goal-replan'))if(round.goalId===g.id&&['pending','planning','reviewing','approved'].includes(round.state))store.put('goal-replan',round.id,{...round,state:'stale'})
+  for(const message of store.deliveries())if(message.status==='pending'&&(
+   !!message.ticketId&&tickets.has(message.ticketId)||store.get<{goalId?:string}>('router-reply-owner',message.id)?.goalId===g.id
+  ))store.outbox.withdraw(message.id)
+  store.db.prepare(`UPDATE jobs SET state='cancelled' WHERE state='pending' AND (
+   (kind IN ('router','goal-verify','goal-replan') AND json_extract(payload,'$.goalId')=?) OR
+   (kind IN ('start','execute') AND json_extract(payload,'$.ticketId') IN (SELECT value FROM json_each(?)))
+  )`).run(g.id,JSON.stringify(g.taskIds))
+ }
+ private finishCancellation(g:RouterGoal){
+  const {store}=this.host,reason=g.supersededBy?'Goal contract replaced':'Goal cancelled by user'
+  this.host.interruptGoalReviews(g.id)
+  if(g.project)this.host.stopProject(g,reason)
+  for(const ticketId of g.taskIds){
+   const ticket=store.tickets.get(ticketId)
+   this.host.interruptForAutomation(ticketId)
+   if(!ticket||ticket.ended)continue
+   store.atomic(()=>{
+    const attempt=store.get<{attemptId:string}>('async-worker-current',ticketId)
+    if(attempt)store.put('async-worker-revoked',attempt.attemptId,{ticketId,assignmentId:ticket.assignments.at(-1)?.id,reason:'goal_cancelled',at:this.now()})
+    for(const action of this.host.permissions.forWorker(ticketId))this.host.permissions.cancel(action.id)
+    this.host.engine.stopTicket(ticketId,reason)
+    for(const assignment of ticket.assignments)if(assignment.state!=='ended')store.enqueue('cleanup:'+assignment.id,'cleanup',{ticketId,assignmentId:assignment.id})
+   })
+  }
+ }
+ recoverCancellations(){
+  for(const g of this.host.store.list<RouterGoal>('router-goal'))if(g.cancelledByUser||g.supersededBy)
+   this.finishCancellation(g.supersededBy?{...g,taskIds:this.taskIdsForGoal(g)}:g)
+ }
+ taskCancelled(ticketId:string){return this.goalsForTask(ticketId).some(g=>!!(g.cancelledByUser||g.supersededBy))}
  private wake(triggerId:string){return this.host.store.get<Wake>('goal-wake',triggerId)}
- forInput(triggerId:string){const wake=this.wake(triggerId);return wake?this.host.store.get<RouterGoal>('router-goal',wake.goalId):this.host.store.list<RouterGoal>('router-goal').find(g=>(g.triggerId===triggerId||!!g.supersededBy&&this.triggerIdsForGoal(g).includes(triggerId))&&(!!g.supersededBy||!terminal.has(g.state)||!!g.contract?.skill||this.host.webhooks?.ownsTrigger(triggerId)||g.state==='completed'&&g.nodes?.some(n=>n.teamTargetId)))}
+ forInput(triggerId:string){const wake=this.wake(triggerId);return wake?this.host.store.get<RouterGoal>('router-goal',wake.goalId):this.host.store.list<RouterGoal>('router-goal').find(g=>(g.triggerId===triggerId||g.cancelledByUser&&g.contract?.triggerId===triggerId||!!g.supersededBy&&this.triggerIdsForGoal(g).includes(triggerId))&&(g.cancelledByUser||!!g.supersededBy||!terminal.has(g.state)||!!g.contract?.skill||this.host.webhooks?.ownsTrigger(triggerId)||g.state==='completed'&&g.nodes?.some(n=>n.teamTargetId)))}
  private authority(triggerId:string):Mandate|undefined{
   const wake=this.wake(triggerId);if(!wake)return
   const g=this.host.store.get<RouterGoal>('router-goal',wake.goalId),t=this.host.store.triggers.get(triggerId)
@@ -134,7 +177,7 @@ export class RouterGoals {
   return {...mandate,scope:g.objective}
  }
  private pending(g:RouterGoal){return this.host.store.db.prepare("SELECT payload FROM jobs WHERE state IN ('pending','running') AND kind='router'").all().some(row=>{const p=JSON.parse(String(row.payload));return p.triggerId===g.triggerId||this.wake(p.triggerId)?.goalId===g.id})}
- beforeTurn(triggerId:string,receipt=false){if(this.forInput(triggerId)?.supersededBy)throw Error('Goal was replaced by a new contract');const w=this.wake(triggerId);if(w){const g=this.host.store.get<RouterGoal>('router-goal',w.goalId);if(!g||!['active','waiting'].includes(g.state)&&!(receipt&&g.state==='completed'))throw Error('Goal continuation is not running');this.authority(triggerId);if(w.state==='queued')this.host.store.put('goal-wake',triggerId,{...w,state:'running'})}}
+ beforeTurn(triggerId:string,receipt=false){const goal=this.forInput(triggerId);if(goal?.supersededBy)throw Error('Goal was replaced by a new contract');if(goal?.cancelledByUser)throw Error('Goal was cancelled by the user');const w=this.wake(triggerId);if(w){const g=this.host.store.get<RouterGoal>('router-goal',w.goalId);if(!g||!['active','waiting'].includes(g.state)&&!(receipt&&g.state==='completed'))throw Error('Goal continuation is not running');this.authority(triggerId);if(w.state==='queued')this.host.store.put('goal-wake',triggerId,{...w,state:'running'})}}
  toolAllowed(triggerId:string,name:string,args:any){
   const w=this.wake(triggerId),g=this.forInput(triggerId);if(!g)return
   if(name==='team_delegate'){
@@ -766,8 +809,11 @@ export class RouterGoals {
   this.host.scopes.assertCurrent(c);const x=goalCommandSchema.parse(value)
   if((x.details||x.supersedes)&&x.action!=='start')throw Error('Contract details and replacement require a new goal')
   if(x.action==='list')return {items:this.list(c)}
-  if(x.action==='inspect'){const goal=this.list(c).find(g=>g.id===x.id);if(!goal||!this.sourcesValid(goal))throw Error('Goal unavailable');return {goal,replanning:this.host.replanning.list(goal),attempts:this.host.store.list<{goalId:string}>('goal-verification-attempt').filter(a=>a.goalId===goal.id),rounds:this.host.store.list<VerificationRound>('goal-verification').filter(r=>r.goalId===goal.id).map(({snapshot,...round})=>({...round,evidence:snapshot.evidence.map(({content,...e})=>e)}))}}
-  if(x.action!=='start'&&(x.objective!==undefined||x.criteria!==undefined)&&this.rawList(c).find(g=>g.id===x.id)?.contract)throw Error('Original goal objective and acceptance criteria are immutable; use a new explicitly authorized goal')
+  if(x.action==='inspect'){
+   const goal=x.id?this.get(x.id):undefined
+   if(!goal||!this.accessible(goal,c,true)||!this.sourcesValid(goal))throw Error('Goal unavailable')
+   return {goal:{...goal,taskIds:this.taskIdsForGoal(goal)},replanning:this.host.replanning.list(goal),attempts:this.host.store.list<{goalId:string}>('goal-verification-attempt').filter(a=>a.goalId===goal.id),rounds:this.host.store.list<VerificationRound>('goal-verification').filter(r=>r.goalId===goal.id).map(({snapshot,...round})=>({...round,evidence:snapshot.evidence.map(({content,...e})=>e)}))}
+  }
   if(x.budget&&x.action!=='start')throw Error('Set the project budget when starting the goal')
   if(x.nodes&&x.action!=='start')throw Error('Direct graph replacement is not allowed; failure-driven plans require independent review')
   if(!x.operationId||x.expectedRevision===undefined)throw Error('Goal mutation requires operationId and expectedRevision')
@@ -781,14 +827,18 @@ export class RouterGoals {
   const result=store.atomic(()=>{
    const receipt=store.get<any>('goal-receipt',key)
    if(receipt){if(receipt.fingerprint!==fingerprint)throw Error('operationId reused with different content');const current=this.list(c).find(g=>g.id===receipt.goalId);if(!current)throw Error('Goal receipt unavailable');return current}
-   const prior=x.supersedes?this.rawList(c).find(g=>g.id===x.supersedes!.goalId):undefined
+   const candidate=x.supersedes?this.get(x.supersedes.goalId):undefined
+   const prior=candidate&&this.accessible(candidate,c)?candidate:undefined
    if(x.supersedes){
     if(!prior||prior.supersededBy||terminal.has(prior.state))throw Error('Replacement goal is unavailable or already ended')
     if(this.triggerIdsForGoal(prior).includes(c.trigger.id))throw Error('Replacement requires a new explicit human request')
     if(prior.revision!==x.supersedes.expectedRevision)throw Error('Replaced goal revision conflict')
     for(const ticketId of this.taskIdsForGoal(prior))if(!store.tickets.get(ticketId)?.ended)this.host.scopes.checkTask(ticketId,c,true)
    }
-   let g=x.id?this.rawList(c).find(g=>g.id===x.id):undefined
+   const saved=x.id?this.get(x.id):undefined
+   let g=saved&&this.accessible(saved,c,x.action==='cancel')?saved:undefined
+   if(x.action!=='start'&&!g)throw Error('Goal unavailable')
+   if(x.action!=='start'&&(x.objective!==undefined||x.criteria!==undefined)&&g?.contract)throw Error('Original goal objective and acceptance criteria are immutable; use a new explicitly authorized goal')
    if((g?.revision??0)!==x.expectedRevision)throw Error('Goal revision conflict')
    if(x.action==='start'){
     if(g)throw Error('Goal already exists')
@@ -837,14 +887,23 @@ export class RouterGoals {
    }else if(x.action==='pause'||x.action==='cancel'){
     g={...g,state:x.action==='pause'?'paused':'cancelled',nextAt:undefined,reason:x.reason??'User requested '+x.action}
     if(x.action==='pause'&&store.list<import('./delegation/manager.ts').OutboundTask>('delegation-outbound').some(t=>t.goal?.goalId===g!.id&&t.desired==='running'&&!['ready','cancelled'].includes(t.remote?.state??'unknown')))throw Error('Remote execution pause is unsupported; cancel the goal or wait for the candidate before pausing verification')
-    if(g.project){
-     if(x.action==='pause')for(const node of g.nodes??[]){
+    if(g.project&&x.action==='pause'){
+     for(const node of g.nodes??[]){
       if(node.ticketId&&this.host.executionActive(node.ticketId))node.pausedAssignment=store.get<Run>('run',node.ticketId)?.assignmentId
      }
      this.host.stopProject(g,'User requested '+x.action)
     }
-    if(x.action==='cancel')this.host.delegation.goalTasks.cancel(g.id)
-    if(x.action==='cancel')for(const ticketId of g.taskIds)if(!store.tickets.get(ticketId)?.ended){this.host.scopes.checkTask(ticketId,c,true);this.host.engine.stopTicket(ticketId,'Goal cancelled by user')}
+    if(x.action==='cancel'){
+     const taskIds=this.taskIdsForGoal(g)
+     for(const ticketId of taskIds){
+      const ticket=store.tickets.get(ticketId)
+      if(!ticket||ticket.ended)continue
+      this.host.scopes.checkTask(ticketId,c,true,true)
+      if(store.get<Run>('run',ticketId)?.phase==='merging')throw Error('Reconcile the submitted merge before cancelling the goal')
+     }
+     g={...g,taskIds,cancelledByUser:true}
+     this.fenceCancelled(g)
+    }
    }else if(x.action==='wait'){
     if(!x.reason)throw Error('Waiting needs a concrete reason')
     g={...g,state:x.needsHuman?'needs_input':'waiting',reason:x.reason,nextAt:x.needsHuman?undefined:this.now()+(x.wakeAfterSeconds??60)*1000}
@@ -895,33 +954,26 @@ export class RouterGoals {
     }
     g={...g,state:'active',reason:undefined,nextAt:this.now()+(x.wakeAfterSeconds??60)*1000}
    }
-   g={...g,revision:g.revision+1,plan:x.plan??g.plan,nextAction:x.nextAction??g.nextAction,maxTurns:x.maxTurns??g.maxTurns,maxParallel:x.maxParallel??g.maxParallel,maxRepairs:x.maxRepairs??g.maxRepairs,maxReplans:x.maxReplans??g.maxReplans,contextIds:[...new Set([...(g.contextIds??[]),...(manifest?[manifest.id]:[])])]}
+   g={...g,revision:g.revision+1,plan:x.plan??g.plan,nextAction:x.action==='cancel'?'No further work':x.nextAction??g.nextAction,maxTurns:x.maxTurns??g.maxTurns,maxParallel:x.maxParallel??g.maxParallel,maxRepairs:x.maxRepairs??g.maxRepairs,maxReplans:x.maxReplans??g.maxReplans,contextIds:[...new Set([...(g.contextIds??[]),...(manifest&&x.action!=='cancel'?[manifest.id]:[])])]}
    if(g.project?.review?.state==='pending'&&x.action==='resume')g={...g,state:'needs_input',reason:'等待人工验收',nextAt:undefined}
    if(prior){
     // All new-contract validation completed before cancelling any execution.
     store.requireGoalReplacementSchema()
     const stopped={...prior,taskIds:this.taskIdsForGoal(prior),state:'cancelled' as const,revision:prior.revision+1,nextAt:undefined,supersededBy:g.id,reason:'Replaced by a new explicitly authorized goal'}
     store.put('router-goal',prior.id,stopped)
-    this.host.delegation.goalTasks.cancel(prior.id)
-    for(const wake of store.list<Wake>('goal-wake'))if(wake.goalId===prior.id&&wake.state==='queued')store.put('goal-wake',wake.id,{...wake,state:'failed'})
-    for(const round of store.list<VerificationRound>('goal-verification'))if(round.goalId===prior.id&&['pending','running'].includes(round.state))store.put('goal-verification',round.id,{...round,state:'stale',finishedAt:this.now()})
-    for(const round of store.list<import('./goal-replanning.ts').ReplanRound>('goal-replan'))if(round.goalId===prior.id&&['pending','planning','reviewing','approved'].includes(round.state))store.put('goal-replan',round.id,{...round,state:'stale'})
-    for(const message of store.deliveries())if(store.get<{goalId?:string}>('router-reply-owner',message.id)?.goalId===prior.id)store.outbox.withdraw(message.id)
+    this.fenceCancelled(stopped)
    }
    store.put('router-goal',g.id,g);store.put('goal-receipt',key,{scopeId:g.scopeId,entryId:g.entryId,triggerId:c.trigger.id,goalId:g.id,fingerprint,result:g})
    return this.list(c).find(item=>item.id===g.id)!
   })
-  // External cancellation only after the durable replacement commits. Replaying
-  // the receipt also finishes a cancellation interrupted by a host crash.
+  // Stop executors after the state and its receipt commit. Startup and duplicate
+  // commands finish a cancellation interrupted between these steps.
   if(x.supersedes){
-   const old=store.get<RouterGoal>('router-goal',x.supersedes.goalId)
-   if(old&&result&&old.supersededBy===result.id&&old.state==='cancelled'){
-    if(old.project)this.host.stopProject(old,old.reason??'Goal replaced')
-    for(const ticketId of this.taskIdsForGoal(old)){
-     this.host.interruptForAutomation(ticketId)
-     if(!store.tickets.get(ticketId)?.ended)this.host.engine.stopTicket(ticketId,old.reason??'Goal replaced')
-    }
-   }
+   const old=this.get(x.supersedes.goalId)
+   if(old?.supersededBy===result?.id&&old?.state==='cancelled')this.finishCancellation(old)
+  }else if(x.action==='cancel'&&result?.cancelledByUser){
+   const cancelled=this.get(result.id)
+   if(cancelled)this.finishCancellation(cancelled)
   }
   return result
  }

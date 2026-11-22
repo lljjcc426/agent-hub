@@ -24,6 +24,7 @@ import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {bodyDigest,stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
 import type {RouterGoal} from './router-goals.ts'
+import type {EntryBinding,RouterRoute,ScopeContext} from './router-scope.ts'
 import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attachments.ts'
@@ -373,7 +374,7 @@ export class ChatSessions {
       !original.feedback&&original.permissionEpoch===setting.epoch?'full':'ask'
   }
   permissionActor(triggerId:string,ticketId?:string,agentId?:string):PermissionActor|undefined {
-    const dest=ticketId?this.workerDestination(ticketId,true):undefined
+    const dest=ticketId?this.workerDestination(ticketId,{includeSilent:true}):undefined
     const run=ticketId?dest?.run:this.originRun(triggerId,true)
     if(!run||run.cancelRequested||run.cancelled||run.feedback)return
     const conversation=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
@@ -451,23 +452,29 @@ export class ChatSessions {
     const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
     this.message(c,{id:'delegated:'+id,handoff:assigned?'assignment':undefined,runId:run.id,role:'assistant',text:transcriptText('delegated:'+id,text),status:'complete',speaker:this.router(triggerId),recipient:this.worker(workerId),ticketId});this.changed(c.id)
   }
-  private workerDestination(ticketId:string,includeSilent=false){
-    const assignment=this.host.store.get<Delegation>('worker-assignment',ticketId),authority=this.host.taskAuthority(ticketId)
-    const triggerId=authority?.parentTrigger,run=triggerId&&this.originRun(triggerId,includeSilent)
-    if(!assignment||!run||run.cancelRequested||run.cancelled||!triggerId)return
-    const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
-    if(!c||this.host.memory.cleanup.blocked('chat-conversation',c.id,c))return
+  private workerResultAllowed(ticketId:string,triggerId:string,discussion:string){
     try{
       const trigger=this.host.store.triggers.get(triggerId)!
-      this.host.routerIngress.authority(triggerId,authority!.discussion)
-      const context=this.host.scopes.context(trigger,authority!.discussion)
+      this.host.routerIngress.authority(triggerId,discussion)
+      const context=this.host.scopes.context(trigger,discussion)
       if(context){this.host.scopes.checkTask(ticketId,context);this.host.scopes.checkTaskEntry(this.host.scopes.ownership(ticketId)!,context.route.entryId,'result')}
       const saved=this.host.store.get<{manifest:ContextManifest}>('task-context',ticketId);if(saved)this.host.memory.validate(saved.manifest)
-    }catch{return}
-    return {c,run,triggerId,worker:this.worker(assignment.workerId)}
+      return true
+    }catch{return false}
+  }
+  private workerDestination(ticketId:string,options:{includeSilent?:boolean;includeDelegated?:boolean}={}){
+    const assignment=this.host.store.get<Delegation>('worker-assignment',ticketId),authority=this.host.taskAuthority(ticketId)
+    const triggerId=authority?.parentTrigger
+    if(!assignment||!triggerId)return
+    const delegated=options.includeDelegated?this.delegatedRun(triggerId,authority.discussion):undefined
+    const run=delegated??this.originRun(triggerId,options.includeSilent)
+    if(!run||run.cancelRequested||run.cancelled)return
+    const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!c||this.host.memory.cleanup.blocked('chat-conversation',c.id,c)||!this.workerResultAllowed(ticketId,triggerId,authority.discussion))return
+    return {c,run,displayRunId:delegated?run.id:triggerId,worker:this.worker(assignment.workerId)}
   }
   approvalOrigin(ticketId:string){
-    const dest=this.workerDestination(ticketId,true)
+    const dest=this.workerDestination(ticketId,{includeSilent:true})
     if(dest)return {conversationId:dest.c.id,runId:dest.run.id,workerId:dest.worker.id}
   }
   answerApproval(id:string,owner:string,requestId:string,value:unknown){
@@ -635,7 +642,7 @@ export class ChatSessions {
   }
   deliveredWorker(message:{id:string;ticketId?:string;text:string;taskResult?:number}){
     if(!message.ticketId||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return
-    const dest=this.workerDestination(message.ticketId);if(!dest)return
+    const dest=this.workerDestination(message.ticketId,{includeDelegated:true});if(!dest)return
     this.message(dest.c,{id:'worker:'+message.id,handoff:message.taskResult===1?'result':undefined,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
   }
   scheduledFileTarget(triggerId:string){
@@ -755,14 +762,15 @@ export class ChatSessions {
     return {messageId:id,name:message.text,state:message.fileReview.state}
   }
 
+  canDeliverWorkerFiles(ticketId:string){return !!this.workerDestination(ticketId,{includeDelegated:true})}
   captureFiles(ticketId:string,cwd:string,paths:string[]){
-    const dest=this.workerDestination(ticketId)
-    return dest?this.deliveries.capture(dest.c.id,dest.triggerId,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
+    const dest=this.workerDestination(ticketId,{includeDelegated:true})
+    return dest?this.deliveries.capture(dest.c.id,dest.displayRunId,ticketId,dest.worker.id,cwd,paths).map(f=>f.id):[]
   }
   fileEvidence(ticketId:string,id:string){return this.deliveries.evidence(ticketId,id)}
   discardFiles(ids:string[]){this.deliveries.discard(ids)}
   publishFiles(ticketId:string,ids:string[]){
-    const dest=this.workerDestination(ticketId),id='worker-files:'+ids[0]
+    const dest=this.workerDestination(ticketId,{includeDelegated:true}),id='worker-files:'+ids[0]
     if(!ids.length||!dest)return false
     if(this.host.store.get('chat-message',id))return true
     const deliveries=this.deliveries.publish(dest.c.id,{ticketId},ids)
@@ -790,6 +798,65 @@ export class ChatSessions {
     if(direct||!triggerId.startsWith('scheduled:'))return direct
     const scheduled=this.host.proactive.runForTrigger(triggerId)
     if(scheduled&&(includeSilent||scheduled.spec.notification!=='silent'))return this.host.store.get<ChatRun>('chat-run',scheduled.spec.triggerId)
+  }
+  /** Follow persisted Worker commands back to their originating Chat, including old attachments. */
+  private delegatedRun(triggerId:string,discussion:string):ChatRun|undefined{
+    if(!triggerId.startsWith('router-followup:'))return
+    const {store,scopes,memory}=this.host,route=store.get<RouterRoute>('router-route',triggerId)
+    if(!route||route.discussion!==discussion||!route.scopeId.startsWith('@chat:'))return
+    const visited=new Set<string>()
+    for(let current=triggerId;!visited.has(current);){
+      visited.add(current)
+      const trigger=store.triggers.get(current),saved=store.get<RouterRoute>('router-route',current)
+      if(!trigger?.human||!saved||saved.scopeId!==route.scopeId||saved.entryId!==route.entryId||
+        saved.discussion!==trigger.source+':'+trigger.threads[0]?.id||memory.cleanup.blocked('trigger',current,trigger))return
+      const run=store.get<ChatRun>('chat-run',current)
+      if(run){
+        const c=store.get<Conversation>('chat-conversation',run.conversationId)
+        if(trigger.meta.delegatedBy||run.triggerId!==current||run.feedback||!c||
+          c.discussion!==saved.discussion||c.sourceId!==trigger.source||c.actor!==trigger.actor.id||
+          route.scopeId!=='@chat:'+stableDigest(c.owner)||memory.cleanup.blocked('chat-conversation',c.id,c))return
+        const entry=store.get<EntryBinding>('entry-binding',route.entryId)
+        if(entry?.scopeId===route.scopeId&&entry.sourceId===c.sourceId&&entry.privateActor===scopes.actor(trigger)&&
+          entry.nativeId===(c.nativeId??'chat:'+c.id)&&!scopes.triggerRestriction(trigger))return run
+        return
+      }
+      if(!/^router-followup:[a-f0-9]{64}$/.test(current)||trigger.meta.delegatedBy!=='router'||typeof trigger.meta.parentTrigger!=='string')return
+      const receipt=store.get<{status:string;scopeId?:string;result?:{status?:string;ticketId?:string}}>('worker-command',current.slice('router-followup:'.length))
+      const ticketId=receipt?.result?.ticketId,ticket=ticketId?store.tickets.get(ticketId):undefined
+      const parent=store.triggers.get(trigger.meta.parentTrigger)
+      const origin=ticket?store.triggers.get(ticket.origin.triggerId):undefined
+      if(receipt?.status!=='completed'||receipt.scopeId!==route.scopeId||receipt.result?.status!=='queued'||
+        !ticket||!ticket.inputs.some(input=>input.kind==='trigger'&&input.triggerId===current&&!input.context)||
+        origin?.source!==trigger.source||origin.threads[0]?.id!==trigger.threads[0]?.id||!parent||
+        trigger.source!==parent.source||scopes.actor(trigger)!==scopes.actor(parent))return
+      current=parent.id
+    }
+  }
+  private delegatedGoalRun(g:RouterGoal){
+    const triggerId=g.contract?.triggerId??g.triggerId,route=this.host.store.get<RouterRoute>('router-route',triggerId)
+    if(!route||route.entryId!==g.entryId||route.scopeId!==g.scopeId||
+      route.bindingRevision!==g.bindingRevision)return
+    const entry=this.host.store.get<EntryBinding>('entry-binding',g.entryId)
+    if(entry?.revision!==g.bindingRevision||entry.privateActor!==g.actor)return
+    return this.delegatedRun(triggerId,g.discussion)
+  }
+  canAccessDelegatedGoal(g:RouterGoal,c:ScopeContext){
+    if(g.scopeId!==c.route.scopeId||g.entryId!==c.route.entryId||g.actor!==c.actor)return false
+    const run=this.host.store.get<ChatRun>('chat-run',c.trigger.id)
+    return run?.triggerId===c.trigger.id&&!c.trigger.meta.delegatedBy&&!run.cancelRequested&&!run.cancelled&&!run.feedback&&
+      this.personalManagement({discussion:c.route.discussion,trigger:c.trigger,scoped:c})&&
+      this.delegatedGoalRun(g)?.conversationId===run.conversationId
+  }
+  private conversationGoals(c:Conversation){
+    const own=this.rows<RouterGoal>('router-goal','discussion',c.discussion)
+    const scopeId='@chat:'+stableDigest(c.owner),nativeId=c.nativeId??'chat:'+c.id
+    const entry=this.host.scopes.bindings().find(b=>b.scopeId===scopeId&&b.sourceId===c.sourceId&&b.nativeId===nativeId)
+    if(!entry)return own
+    const children=this.rows<RouterGoal>('router-goal','entryId',entry.id).filter(g=>
+      g.discussion!==c.discussion&&this.delegatedGoalRun(g)?.conversationId===c.id&&
+      !this.host.memory.cleanup.blocked('router-goal',g.id,g))
+    return [...own,...children.map(g=>this.host.goals.visibleGoal(g))]
   }
   private schedules(c:Conversation){
     const scopeId='@chat:'+stableDigest(c.owner)
@@ -1021,9 +1088,16 @@ export class ChatSessions {
       return {decision:businessDecision(h,input.id)!,duplicate:false}
     })
   }
-  private tasks(c:Conversation,run?:ChatRun,routerPlanIds?:ReadonlySet<string>):ChatTask[]{
-    const nodes=new Map(this.rows<RouterGoal>('router-goal','discussion',c.discussion).flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
-    return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>(d.discussion===c.discussion||!!d.parentTrigger?.startsWith('scheduled:')&&this.originRun(d.parentTrigger)?.conversationId===c.id)&&(!run||d.parentTrigger===run.triggerId||d.ticketId===run.decisionTicketId)).map(d=>{
+  private tasks(c:Conversation,run?:ChatRun,routerPlanIds?:ReadonlySet<string>,goals=this.conversationGoals(c)):ChatTask[]{
+    const nodes=new Map(goals.flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
+    return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>{
+      if(run&&d.parentTrigger!==run.triggerId&&d.ticketId!==run.decisionTicketId)return false
+      if(d.discussion===c.discussion)return true
+      if(!d.parentTrigger)return false
+      if(d.parentTrigger.startsWith('scheduled:'))return this.originRun(d.parentTrigger)?.conversationId===c.id
+      return this.delegatedRun(d.parentTrigger,d.discussion)?.conversationId===c.id&&
+        this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>this.workerResultAllowed(d.ticketId,d.parentTrigger!,d.discussion)))
+    }).map(d=>{
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
       const node=nodes.get(d.ticketId),reviewing=!!node?.reviewing&&!t?.ended&&!t?.attention
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':reviewing?'running':['starting','running','background','delivering','merging'].includes(r?.phase??'')?'running':r?.phase==='uncertain'||r?.phase==='human'||t?.attention||['blocked','failed','waiting'].includes(report?.state??'')?'waiting':report?.state==='ready'?'completed':'queued'
@@ -1042,12 +1116,18 @@ export class ChatSessions {
   private conversationTasks(c:Conversation){
     const conversationPlans=this.rows<ChatPlan>('chat-plan','conversationId',c.id)
     const routerPlanIds=new Set(conversationPlans.filter(plan=>!plan.ticketId&&!plan.workerId).map(plan=>plan.id))
-    return {conversationPlans,tasks:this.tasks(c,undefined,routerPlanIds)}
+    const goals=this.conversationGoals(c)
+    return {conversationPlans,goals,tasks:this.tasks(c,undefined,routerPlanIds,goals)}
+  }
+  private goalRunId(g:RouterGoal){return this.delegatedGoalRun(g)?.id??g.triggerId}
+  private goalPlan(g:RouterGoal){return {...goalPlan(g),runId:this.goalRunId(g)}}
+  private goalInConversation(g:RouterGoal,c:Conversation){
+    return g.discussion===c.discussion||this.delegatedGoalRun(g)?.conversationId===c.id
   }
   private acceptanceGoal(c:Conversation,taskId:string){
     if(c.archived||!taskId.startsWith('goal:'))return
     const goal=this.host.goals.get(taskId.slice(5))
-    if(!goal||goal.discussion!==c.discussion||this.host.memory.cleanup.blocked('router-goal',goal.id,goal))return
+    if(!goal||!this.goalInConversation(goal,c)||this.host.memory.cleanup.blocked('router-goal',goal.id,goal))return
     const trigger=this.host.store.triggers.get(goal.triggerId)
     if(!trigger?.human||trigger.actor.source!==c.sourceId||trigger.actor.id!==c.actor)return
     try{
@@ -1063,15 +1143,14 @@ export class ChatSessions {
     return result
   }
   taskDetail(id:string,owner:string,taskId:string):TaskExecutionDetail {
-    const c=this.get(id,owner),{conversationPlans,tasks}=this.conversationTasks(c)
-    const goals=this.rows<RouterGoal>('router-goal','discussion',c.discussion)
+    const c=this.get(id,owner),{conversationPlans,goals,tasks}=this.conversationTasks(c)
     const cleanup=this.host.memory.cleanup
     const cleaning=cleanup.plans().length>0
     const visible=(kind:string,key:string,value:unknown)=>!cleaning||!cleanup.blocked(kind,key,value)
     const plan=conversationPlans.find(item=>item.id===taskId)
     const goal=goals.find(item=>'goal:'+item.id===taskId)
     const specifiedTasks=cleaning?tasks.filter(task=>visible('ticket',task.id,this.host.store.tickets.get(task.id))):tasks
-    const activity=taskActivities({plans:goals.map(goalPlan),publicPlans:conversationPlans,tasks:specifiedTasks}).find(item=>item.id===taskId)
+    const activity=taskActivities({plans:goals.map(g=>this.goalPlan(g)),publicPlans:conversationPlans,tasks:specifiedTasks}).find(item=>item.id===taskId)
     if(!activity || plan&&!visible('chat-plan',plan.id,plan) || goal&&!visible('router-goal',goal.id,goal))
       throw new ChatError('task_missing','Task not found in this conversation.',404)
     const planTurn=plan&&this.turnPlan(c.id,plan.runId)===plan.id?plan.runId:undefined
@@ -1198,9 +1277,9 @@ export class ChatSessions {
     const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id),last=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
-    const goals=runId?this.rows<RouterGoal>('router-goal','discussion',c.discussion).filter(g=>g.triggerId===runId):[]
-    const {conversationPlans,tasks}=this.conversationTasks(c)
-    const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||goals.some(g=>g.taskIds.includes(t.id)))
+    const {conversationPlans,goals,tasks}=this.conversationTasks(c)
+    const runGoals=runId?goals.filter(g=>this.goalRunId(g)===runId):[]
+    const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
     const replying=this.host.store.db.prepare("SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId') WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running') ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid LIMIT 1").get(id)
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
     const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]
@@ -1270,7 +1349,7 @@ export class ChatSessions {
       ...requests.filter(a=>(!worker||a.chat?.workerId===worker)&&(!runId||a.chat?.runId===runId)).map(publicApproval),
       ...managedRequests.filter(a=>(!worker||a.actor.workerId===worker)&&(!runId||a.actor.runId===runId)).map(a=>permissionCard(a,this.host.store)),
     ].sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))
-    const plans=this.rows<RouterGoal>('router-goal','discussion',c.discussion).map(goalPlan)
+    const plans=goals.map(g=>this.goalPlan(g))
     const visiblePlans=conversationPlans.map(({conversationId,activityId,...p})=>({...p,live:calls.some(call=>call.id===activityId&&call.state==='running')}))
     const workerView=participant&&participant!==router.id
     const publicPlans=workerView?visiblePlans.filter(plan=>plan.workerId===participant):visiblePlans

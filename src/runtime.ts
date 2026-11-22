@@ -130,6 +130,14 @@ export class Runtime {
   executionActive(id:string){return this.controllers.has(id)}
   interruptForWatchdog(id:string){this.controllers.get(id)?.abort(Error('Watchdog recovery requested'))}
   interruptForAutomation(id:string){this.controllers.get(id)?.abort(Error('Automation authorization or execution state stopped'));this.toolConnections.cancel(id);this.approvals.cancel(id)}
+  interruptGoalReviews(goalId:string){
+    const jobs=this.store.db.prepare(`SELECT kind,json_extract(payload,'$.roundId') AS roundId FROM jobs
+      WHERE state='running' AND kind IN ('goal-verify','goal-replan') AND json_extract(payload,'$.goalId')=?`).all(goalId)
+    for(const {kind,roundId} of jobs){
+      if(kind==='goal-verify')this.controllers.get('goal-verify:'+roundId)?.abort()
+      else for(const stage of ['plan','review'])this.controllers.get('goal-replan:'+roundId+':'+stage)?.abort()
+    }
+  }
   readonly chat:ChatSessions
   readonly heartbeat:Heartbeat
   readonly store: Store
@@ -321,11 +329,7 @@ export class Runtime {
     this.store.recoverJobs()
     this.store.recoverDeliveries()
     if(!this.paused)recoverAnsweredGoalQuestions(this)
-    // Recover the commit-to-interrupt crash window before any task can auto-resume.
-    for(const g of this.store.list<RouterGoal>('router-goal'))if(g.supersededBy)for(const id of this.goals.taskIdsForGoal(g)){
-      this.interruptForAutomation(id)
-      if(!this.store.tickets.get(id)?.ended)this.engine.stopTicket(id,'Goal contract replaced')
-    }
+    this.goals.recoverCancellations()
     // An upgrade may carry this held task through its paused readback. Settle
     // only when the host resumes, and leave the original task and files intact.
     const artifactHolds=this.paused?new Set(heldArtifactReads(this.store,config.stateDir).map(hold=>hold.run.ticketId)):undefined
@@ -728,9 +732,8 @@ export class Runtime {
       if(key)this.controllers.get(key)?.abort(Error(reason))
     }
   }
-  private replacedTask(ticketId:string):boolean {return this.goals.goalsForTask(ticketId).some(g=>!!g.supersededBy)}
   validWork(owner:WorkOwner):boolean {
-    if(this.replacedTask(owner.ticketId))return false
+    if(this.goals.taskCancelled(owner.ticketId))return false
     const ticket=this.store.tickets.get(owner.ticketId),assignment=ticket&&latestAssignment(ticket)
     const project=this.goals.forTask(owner.ticketId)
     if(project?.project&&!['active','waiting'].includes(project.state))return false
@@ -1039,7 +1042,7 @@ export class Runtime {
       const { ticketId, assignmentId } = job.payload as { ticketId: string; assignmentId: string }
       const ticket = this.store.tickets.get(ticketId)
       if (!ticket || ticket.ended || latestAssignment(ticket)?.id !== assignmentId) { this.store.jobState(job.id, 'done'); return }
-      if(this.replacedTask(ticketId)){this.interruptForAutomation(ticketId);if(!ticket.ended)this.engine.stopTicket(ticketId,'Goal contract replaced');this.store.jobState(job.id,'done');return}
+      if(this.goals.taskCancelled(ticketId)){this.interruptForAutomation(ticketId);if(!ticket.ended)this.engine.stopTicket(ticketId,'Goal stopped');this.store.jobState(job.id,'done');return}
       const delegation=this.taskAuthority(ticketId)
       if(delegation?.mode==='host'&&delegation.parentTrigger)this.routerIngress.authority(delegation.parentTrigger,delegation.discussion)
       if (job.kind === 'start') {
@@ -1120,7 +1123,7 @@ export class Runtime {
     const handoff=browserRun&&!permissionId&&!fileReviewId&&!teamResultId?new RouterHandoff(controller.signal,chinese):undefined
     let unsubscribeHandoff:(()=>void)|undefined
     const authorizedMessage=(m:any)=>{
-      if(this.replacedTask(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
+      if(this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
       const owner=this.taskAuthority(m.ticketId)
       if(this.store.get<TaskContinuation>('task-continuation',m.ticketId)?.priorMessages.includes(m.id))return false
       if(!owner?.parentTrigger||owner.discussion!==discussion||!scoped&&this.store.get<{actor:string}>('worker-assignment',m.ticketId)?.actor!==trigger.actor.id)return false
@@ -1598,7 +1601,8 @@ export class Runtime {
       const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
       const fullAccess=builtInChat&&this.chat.permissionActor(ticket.origin.triggerId,ticket.id)?.mode==='full'
-      const schema=builtInChat?chatReportSchema:reportSchema
+      const chatDelivery=builtInChat||!!delegated&&this.chat.canDeliverWorkerFiles(ticket.id)
+      const schema=chatDelivery?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const specs=this.availableWorkerSpecs().filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
         && (s.name!=='superagent_desktop'||builtInChat)
@@ -1682,7 +1686,7 @@ export class Runtime {
         continueChangedInput()
         return
       }
-      const output = (builtInChat?chatReport:report).parse(JSON.parse(result.text))
+      const output = (chatDelivery?chatReport:report).parse(JSON.parse(result.text))
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
@@ -1861,7 +1865,7 @@ export class Runtime {
       }
       const notificationDelay=this.proactive.notificationDelay(message,replyOwner)
       if(notificationDelay.quiet||notificationDelay.nextAt>Date.now())continue
-      if(message.ticketId&&this.replacedTask(message.ticketId)){this.store.outbox.withdraw(message.id);blocked.delete(channel);continue}
+      if(message.ticketId&&this.goals.taskCancelled(message.ticketId)){this.store.outbox.withdraw(message.id);blocked.delete(channel);continue}
       const ticket = message.ticketId && this.store.tickets.get(message.ticketId)
       if (ticket && (ticket.ended?.by === 'human' || this.store.get<Run>('run', ticket.id)?.phase === 'human')) continue
       const source=this.sources.get(message.channel.source)

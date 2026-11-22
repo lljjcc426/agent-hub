@@ -163,6 +163,7 @@ export class WorkerManager {
    const a=host.store.get<Delegation>('worker-assignment',input.ticketId);if(!a)throw Error('Unknown delegated task')
    const repositoryEvent=!!context?.scoped&&!!context.trigger&&!context.trigger.human&&continuation?.action==='attach'&&continuation.targetTicketId===input.ticketId&&canContinueRepositoryTask(host,context.trigger,input.ticketId)
    this.checkContext(a,context,!repositoryEvent)
+   if(host.goals.taskCancelled(input.ticketId))throw Error('This task belongs to a cancelled goal. Start a new goal for new work.')
    if(repositoryEvent)host.scopes.checkTaskEntry(host.scopes.ownership(input.ticketId)!,context!.scoped!.route.entryId,'request')
    const ticket=host.store.tickets.get(input.ticketId)!,origin=host.store.triggers.get(ticket.origin.triggerId)!,previousInputs=ticket.inputs.map(i=>i.id)
    if(input.questionId!==undefined){

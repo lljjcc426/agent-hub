@@ -81,6 +81,18 @@
 .task-run-status[data-problem] { color: var(--task-run-alert); background: var(--task-run-alert-fill); }
 .task-run-note, .task-run-error { color: var(--team-muted); font-size: 13px; }
 .task-run-note { margin-block: 6px 12px; }
+.task-run-acceptance {
+  display: grid; gap: 8px; margin-block: 12px; padding: 11px 12px;
+  border: 1px solid var(--rp-line); border-radius: var(--rp-corner-field);
+  background: var(--rp-panel); font-size: var(--roppo-font-control);
+}
+.task-run-acceptance-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
+.task-run-acceptance h4, .task-run-acceptance p { margin: 0; }
+.task-run-acceptance-head span, .task-run-acceptance p { color: var(--team-muted); overflow-wrap: anywhere; }
+.task-run-acceptance ul { list-style: none; margin: 0; padding: 0; }
+.task-run-acceptance a { display: inline-flex; align-items: center; gap: 6px; color: inherit; overflow-wrap: anywhere; }
+.task-run-acceptance a svg { flex: none; }
+.task-run-acceptance .rp-button { justify-self: start; }
 .task-run-executors {
   display: grid;
   gap: 8px;

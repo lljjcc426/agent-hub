@@ -16,6 +16,7 @@ import type {RouterGoal} from '../src/router-goals.ts'
 import type {VerificationRound} from '../src/goal-verification.ts'
 import {classifyGoalFailure} from '../src/goal-contract.ts'
 import {protocolBytes} from '../src/context-budget.ts'
+import {deploymentBlockers,deploymentMaintenance} from '../src/deployment-maintenance.ts'
 import {operatorTask} from '../src/operator-workspace.ts'
 import {backupState,verifyBackup} from '../src/backup.ts'
 import {planHistory} from '../src/history-cleanup.ts'
@@ -684,19 +685,38 @@ it('resumes acceptance of retained evidence above 512 KiB without repeating the 
  const [ticketId]=f.goal().taskIds
  const delivery=f.h.store.get('goal-delivery',ticketId!)
  expect(delivery).toBeDefined()
+ const held=f.goal()
+ expect(f.h.goals.acceptanceStatus(held)).toMatchObject({state:'held',reason:'size',revision:held.revision})
+ expect(f.h.goals.retryAcceptance(held.id,held.revision)).toMatchObject({state:'held',
+  overflow:{bytes:expect.any(Number),limitBytes:2*1024*1024,largest:{key:path}}})
+ expect(f.goal()).toMatchObject({state:'held',revision:held.revision})
+ expect(f.rounds()).toEqual([])
+ expect(()=>f.h.goals.toolAllowed(held.triggerId,'router_goal',{action:'inspect',id:held.id})).not.toThrow()
+ expect(()=>f.h.goals.toolAllowed(held.triggerId,'worker_manage',{action:'send',ticketId})).toThrow('no longer accepts work')
+ expect(deploymentBlockers(f.h.store,f.h.activeExecutions)).toEqual([])
+ f.h.store.put('work','unfinished-effect',{id:'unfinished-effect',ticketId,state:'interrupted'})
+ expect(deploymentBlockers(f.h.store)).toContainEqual({kind:'goals',count:1})
+ f.h.store.db.prepare("DELETE FROM records WHERE kind='work' AND id='unfinished-effect'").run()
+ const operationId=randomUUID()
+ await expect(deploymentMaintenance(f.h,{action:'prepare',operationId,expectedRevision:f.h.settings.current().revision})).resolves.toMatchObject({state:'prepared'})
  writeFileSync(join(f.root,path),content)
  expect(Buffer.byteLength(JSON.stringify(f.h.verification.failureEvidence(f.goal())))).toBeGreaterThan(512*1024)
  await f.restart()
- const input=f.h.receive('local','alice',{id:'resume-large-report',thread:'test',scope:'test',text:'Resume acceptance of the retained report.',addressed:true}) as {triggerId:string}
- const context=f.h.scopes.context(f.h.store.triggers.get(input.triggerId)!,'local:test')!
- f.h.goals.command({action:'resume',id:original.id,operationId:'resume-large-report',expectedRevision:f.goal().revision},context)
+ expect(f.goal()).toMatchObject({state:'held',revision:held.revision})
+ expect(f.h.store.get('goal-delivery',ticketId!)).toEqual(delivery)
+ await expect(deploymentMaintenance(f.h,{action:'finish',operationId})).resolves.toMatchObject({resumed:true})
+ const queued=f.h.goals.retryAcceptance(held.id,held.revision)
+ expect(queued).toMatchObject({state:'queued',roundId:expect.any(String)})
+ expect(f.h.goals.retryAcceptance(held.id,held.revision)).toEqual(queued)
+ expect(f.rounds()).toHaveLength(1)
+ expect(f.goal().triggerId).toBe(held.triggerId)
  await until(f,()=>f.goal().state==='completed')
  expect(f.goal().taskIds).toEqual([ticketId])
  expect(f.goal().contract).toEqual(original.contract)
  expect(f.h.store.get('goal-delivery',ticketId!)).toEqual(delivery)
  expect([...f.attempts.values()]).toEqual([1])
  expect(f.rounds().map(round=>round.state)).toEqual(['passed','passed'])
-})
+},20_000)
 it('rejects skipped or partial evidence pages without publishing or repeating the Worker',async()=>{
  const f=fixture(r=>{writeFileSync(join(r.cwd,'result.txt'),'large evidence '.repeat(4000));return ready()},async(r,input)=>{
   for(const e of input.evidence){const result:any=await r.onTool!('goal_evidence',{id:e.id},e.id),page=JSON.parse(result.contentItems[0].text)

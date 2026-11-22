@@ -13,6 +13,7 @@ import {scopeBudget} from './context-budget.ts'
 import {inlineEvidenceBudget,evidenceAccess,type GoalEvidence as Evidence} from './goal-evidence.ts'
 import type {DelegationBinding} from './delegation/goals.ts'
 import {taskView} from './task-context.ts'
+import {AcceptanceEvidenceTooLarge,type EvidenceOverflow} from './goal-acceptance.ts'
 
 export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;reply?:string;files?:string[];inputRevision:number;at:number}
 interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
@@ -148,10 +149,13 @@ export class GoalVerification {
   })
   const tasks:Snapshot['tasks']=[],delegations:DelegationBinding[]=[],evidence:Evidence[]=[]
   let evidenceBytes=2,finalCommit:string|undefined
+  let largest:EvidenceOverflow['largest']={key:'',bytes:0}
   const add=(value:Omit<Evidence,'id'|'hash'>)=>{
    const hash=stableDigest(value),id='evidence-'+hash,item={...value,id,hash}
-   evidenceBytes+=Buffer.byteLength(JSON.stringify(item))+(evidence.length?1:0)
-   if(evidenceBytes>snapshotLimitBytes)throw Error(`Acceptance evidence exceeds ${snapshotLimitMiB} MiB; declare smaller artifacts`)
+   const bytes=Buffer.byteLength(JSON.stringify(item))
+   if(bytes>largest.bytes)largest={key:item.key,bytes}
+   evidenceBytes+=bytes+(evidence.length?1:0)
+   if(evidenceBytes>snapshotLimitBytes)throw new AcceptanceEvidenceTooLarge({bytes:evidenceBytes,limitBytes:snapshotLimitBytes,largest})
    evidence.push(item)
   }
   const schedules=this.host.chat.scheduledReceipts(g.triggerId)
@@ -233,8 +237,8 @@ export class GoalVerification {
   }
   try{return options.readOnly?this.host.scopes.readOnly(()=>this.host.memory.readOnly(compare)):compare()}catch{return false}
  }
- ensure(g:RouterGoal,node?:GoalNode):VerificationRound {
-  const snapshot=this.snapshot(g,node,false),id='verify-'+stableDigest([g.id,node?.id??'goal',snapshot])
+ ensure(g:RouterGoal,node?:GoalNode,requireSettled=false):VerificationRound {
+  const snapshot=this.snapshot(g,node,requireSettled),id='verify-'+stableDigest([g.id,node?.id??'goal',snapshot])
   const prior=this.host.store.get<VerificationRound>('goal-verification',id);if(prior){if(prior.state==='pending')this.host.store.db.prepare("UPDATE jobs SET state='pending' WHERE id=? AND state IN ('done','failed')").run('goal-verify:'+id);return prior}
   if(snapshot.tasks.some(t=>!this.host.goals.effectsSettled(t.ticketId)))throw Error('Task has unfinished or uncertain effects')
   const round:VerificationRound={id,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}

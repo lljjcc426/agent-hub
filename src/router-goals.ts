@@ -19,12 +19,14 @@ import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
 import {previouslyRecoveredRead,proveInterruptedOpenCodeRead} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
+import {AcceptanceEvidenceTooLarge,acceptanceRetryTarget,type AcceptanceRetryResult,type AcceptanceRetryStatus,type EvidenceOverflow} from './goal-acceptance.ts'
+import {ChatError} from './chat-errors.ts'
 
 const id=z.string().min(1).max(300)
 const criterion=criterionSchema
 const verification=z.object({criterionId:id,ticketId:id.optional(),delegationId:id.optional(),reportAt:id,explanation:z.string().min(1).max(4000)}).strict().refine(v=>!!v.ticketId!==!!v.delegationId,'A check needs its actual task or delegation reference')
 export const goalCommandSchema=z.object({action:z.enum(['list','inspect','start','update','wait','complete','pause','resume','cancel']),id:id.optional(),details:goalDetailsSchema.optional(),supersedes:z.object({goalId:id,expectedRevision:z.number().int().min(0)}).strict().optional(),operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),title:z.string().min(1).max(300).optional(),objective:z.string().min(1).max(16000).optional(),authorizationQuote:z.string().min(1).max(16000).optional(),criteria:z.array(criterion).min(1).max(50).optional(),plan:z.array(z.string().min(1).max(4000)).max(100).optional(),nextAction:z.string().min(1).max(4000).optional(),reason:z.string().min(1).max(4000).optional(),wakeAfterSeconds:z.number().int().min(10).max(86400).optional(),needsHuman:z.boolean().optional(),checks:z.array(verification).max(50).optional(),maxTurns:z.number().int().min(1).max(10000).optional(),nodes:z.array(nodeSchema).min(1).max(100).optional(),budget:z.object({maxMinutes:z.number().positive().max(43200).optional(),maxUsd:z.number().positive().optional()}).strict().refine(b=>b.maxMinutes!==undefined||b.maxUsd!==undefined,'Set a time or cost limit').optional(),maxParallel:z.number().int().min(1).max(10).optional(),maxRepairs:z.number().int().min(0).max(10).optional(),maxReplans:z.number().int().min(0).max(5).optional()}).strict()
-export interface RouterGoal {supersedes?:string;supersededBy?:string;project?:GoalProject;id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerId:string;bindingRevision:number;revision:number;title:string;objective:string;criteria:z.infer<typeof criterion>[];plan:string[];state:'active'|'waiting'|'needs_input'|'paused'|'held'|'completed'|'cancelled';taskIds:string[];delegationIds?:string[];contextIds?:string[];nextAction:string;reason?:string;nextAt?:number;turns:number;maxTurns:number;failures:number;lastFingerprint?:string;checks?:z.infer<typeof verification>[];at:number;nodes?:GoalNode[];maxParallel?:number;maxRepairs?:number;finalRoundId?:string;recovery?:GoalFailure;recoveryAttempts?:number;managed?:boolean;contract?:GoalContract;planRevision?:number;replans?:number;maxReplans?:number;replanId?:string}
+export interface RouterGoal {acceptanceOverflow?:EvidenceOverflow;supersedes?:string;supersededBy?:string;project?:GoalProject;id:string;scopeId:string;entryId:string;discussion:string;actor:string;triggerId:string;bindingRevision:number;revision:number;title:string;objective:string;criteria:z.infer<typeof criterion>[];plan:string[];state:'active'|'waiting'|'needs_input'|'paused'|'held'|'completed'|'cancelled';taskIds:string[];delegationIds?:string[];contextIds?:string[];nextAction:string;reason?:string;nextAt?:number;turns:number;maxTurns:number;failures:number;lastFingerprint?:string;checks?:z.infer<typeof verification>[];at:number;nodes?:GoalNode[];maxParallel?:number;maxRepairs?:number;finalRoundId?:string;recovery?:GoalFailure;recoveryAttempts?:number;managed?:boolean;contract?:GoalContract;planRevision?:number;replans?:number;maxReplans?:number;replanId?:string}
 interface Wake {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;triggerHash:string;goalRevision:number;state:'queued'|'running'|'done'|'failed';at:number}
 const terminal=new Set(['completed','cancelled'])
 const githubReadContinuation='The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
@@ -131,6 +133,10 @@ export class RouterGoals {
    if(g.managed&&!['list','inspect'].includes(args.action))throw Error('Managed goal delegations are scheduled and accepted by the host; use router_goal for goal control')
   }
   if(g.state==='completed'){if(name==='router_goal'&&['list','inspect','complete'].includes(args.action)||name==='worker_manage'&&['list','inspect','result'].includes(args.action)&&(args.action==='list'||g.taskIds.includes(args.ticketId))||name==='team_delegate'&&['list','inspect'].includes(args.action)&&(args.action==='list'||g.delegationIds?.includes(args.id)))return;throw Error('Completed goal only permits inspection of its accepted results')}
+  if(g.state==='held'&&(
+    name==='router_goal'&&(args.action==='list'||args.action==='inspect'&&args.id===g.id)||
+    name==='worker_manage'&&(args.action==='list'||['inspect','result'].includes(args.action)&&g.taskIds.includes(args.ticketId))
+  ))return
   if(!['active','waiting'].includes(g.state))throw Error('Goal no longer accepts work in this turn')
   if(g.managed&&name==='worker_manage'&&['assign','send'].includes(args.action))throw Error('Goal tasks are scheduled and repaired by the host; inspect existing nodes')
   if(!w&&!this.host.webhooks.ownsTrigger(triggerId)&&(!g.contract?.skill||this.host.store.triggers.get(triggerId)?.human))return
@@ -208,6 +214,54 @@ export class RouterGoals {
  }
  get(id:string){return this.host.store.get<RouterGoal>('router-goal',id)}
  context(g:RouterGoal){return this.anchor(g).context}
+ private activeAcceptance(g:RouterGoal){
+  if(g.state!=='active'&&g.state!=='waiting')return
+  for(const id of [g.finalRoundId,...(g.nodes??[]).map(node=>node.roundId)]){
+   const round=id&&this.host.store.get<VerificationRound>('goal-verification',id)
+   if(round&&round.goalId===g.id&&(round.state==='pending'||round.state==='running'))
+    return {state:round.state==='pending'?'queued' as const:'running' as const,roundId:round.id}
+  }
+ }
+ acceptanceStatus(g:RouterGoal):AcceptanceRetryStatus|undefined {
+  const active=this.activeAcceptance(g)
+  if(active)return {state:active.state}
+  const target=acceptanceRetryTarget(this.host.store,g)
+  if(target&&!this.host.replanning.active(g)){
+   return {state:'held',revision:g.revision,reason:target.reason,overflow:g.acceptanceOverflow}
+  }
+ }
+ retryAcceptance(id:string,revision:number):AcceptanceRetryResult {
+  if(!this.host.canWrite())throw new ChatError('host_paused','The host is paused.',409)
+  const {store}=this.host
+  try{return store.atomic(()=>{
+   const goal=this.get(id)
+   if(!goal)throw new ChatError('task_missing','Task not found.',404)
+   const active=this.activeAcceptance(goal)
+   if(active&&(goal.revision===revision||goal.revision===revision+1))return active
+   if(goal.revision!==revision)throw new ChatError('acceptance_changed','This task changed. Reload its details.',409)
+   const target=acceptanceRetryTarget(store,goal)
+   if(!target||this.host.replanning.active(goal))throw new ChatError('acceptance_unavailable','This task is not ready to retry acceptance.',409)
+   const round=this.host.verification.ensure(goal,target.node,true)
+   if(round.state==='errored'||round.state==='stale')this.retryVerification(round)
+   else if(round.state!=='pending')throw new ChatError('acceptance_unavailable','This evidence already has a verification result.',409)
+   const jobId='goal-verify:'+round.id
+   store.enqueue(jobId,'goal-verify',{roundId:round.id,goalId:goal.id,triggerId:round.triggerId,discussion:goal.discussion})
+   if(store.db.prepare('SELECT state FROM jobs WHERE id=?').get(jobId)?.state!=='pending')
+    throw new ChatError('acceptance_unavailable','Acceptance could not be queued.',409)
+   if(target.node){
+    Object.assign(target.node,{state:'verifying',roundId:round.id,reason:undefined,failure:undefined,retryAt:undefined,recoveries:0})
+   }else goal.finalRoundId=round.id
+   this.save({...goal,revision:goal.revision+1,state:'active',reason:undefined,nextAt:undefined,acceptanceOverflow:undefined,recovery:undefined,recoveryAttempts:0})
+   return {state:'queued',roundId:round.id}
+  })}catch(error){
+   if(error instanceof AcceptanceEvidenceTooLarge){
+    const goal=this.get(id)
+    if(goal?.state==='held'&&goal.revision===revision)this.save({...goal,acceptanceOverflow:error.overflow})
+    return {state:'held',overflow:error.overflow}
+   }
+   throw error
+  }
+ }
  forTask(ticketId:string){const row=this.host.store.db.prepare(`SELECT r.body FROM goal_reference link JOIN records r ON r.kind='router-goal' AND r.id=link.goal_id
    WHERE link.kind='task' AND link.ref=? AND json_extract(r.body,'$.state') NOT IN ('completed','cancelled') ORDER BY r.rowid LIMIT 1`).get(ticketId)
   return row?JSON.parse(String(row.body)) as RouterGoal:undefined}
@@ -672,7 +726,16 @@ export class RouterGoals {
      if(this.host.replanning.consider(g))continue
      g.state='held';g.reason=heldReason(g.nodes!);g.nextAt=undefined;this.save(g);this.notice(g,g.reason)
     }
-   }catch(error){const latest=this.get(g.id);if(latest&&['active','waiting'].includes(latest.state)){g={...latest,state:'held',reason:String(error),nextAt:undefined};this.save(g);if(g.project)this.host.stopProject(g,g.reason!);this.notice(g,g.reason!)}}
+   }catch(error){
+    const latest=this.get(g.id)
+    if(latest&&['active','waiting'].includes(latest.state)){
+     g={...latest,state:'held',reason:String(error),nextAt:undefined,
+      acceptanceOverflow:error instanceof AcceptanceEvidenceTooLarge?error.overflow:undefined}
+     this.save(g)
+     if(g.project)this.host.stopProject(g,g.reason!)
+     this.notice(g,g.reason!)
+    }
+   }
   }
  }
  command(value:unknown,c:ScopeContext,manifest?:ContextManifest,skill?:{id:string;version:number}):any{
@@ -804,7 +867,7 @@ export class RouterGoals {
       allowNewTaskInputs(store,task.id,prior)
      }
      for(const id of [g.finalRoundId,...(g.nodes??[]).map(n=>n.roundId)].filter((id):id is string=>!!id)){const round=store.get<VerificationRound>('goal-verification',id);if(round?.state==='errored'){store.put('goal-verification',id,{...round,state:'pending',error:undefined,finishedAt:undefined});store.jobState('goal-verify:'+id,'pending')}}
-     g={...g,triggerId:automationOrigin??c.trigger.id,bindingRevision:this.host.scopes.binding(c.route.entryId).revision,failures:0,turns:0,recovery:undefined,recoveryAttempts:0,nodes:g.nodes?.map(n=>n.state==='held'?{...n,state:n.ticketId||n.delegationId?'running' as const:'pending' as const,reason:undefined,retryAt:undefined,recoveries:0,failure:undefined}:n)}
+     g={...g,acceptanceOverflow:undefined,triggerId:automationOrigin??c.trigger.id,bindingRevision:this.host.scopes.binding(c.route.entryId).revision,failures:0,turns:0,recovery:undefined,recoveryAttempts:0,nodes:g.nodes?.map(n=>n.state==='held'?{...n,state:n.ticketId||n.delegationId?'running' as const:'pending' as const,reason:undefined,retryAt:undefined,recoveries:0,failure:undefined}:n)}
     }
     g={...g,state:'active',reason:undefined,nextAt:this.now()+(x.wakeAfterSeconds??60)*1000}
    }

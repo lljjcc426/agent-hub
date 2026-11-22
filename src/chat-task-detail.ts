@@ -3,6 +3,8 @@ import type { ChatDecision, ChatPlan } from './chat-workflow.ts'
 import type { ExecutionCall } from './execution-activity.ts'
 import type { Store } from './store.ts'
 import type { Ticket } from './vendor/dsh-core/index.ts'
+import type { AcceptanceRetryStatus } from './goal-acceptance.ts'
+import type { ChatDelivery } from './chat-deliveries.ts'
 
 export interface TaskExecutionEvent {
   id: string
@@ -36,6 +38,7 @@ export interface TaskExecutionDetail {
   handoffs?: TaskExecutionHandoff[]
   callsTruncated: boolean
   span: { from: number; to: number; complete: boolean } | null
+  acceptance?: AcceptanceRetryStatus & { files: Pick<ChatDelivery, 'id' | 'name' | 'preview' | 'conversationId'>[] }
 }
 
 export const taskCallLimit = 200

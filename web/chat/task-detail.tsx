@@ -1,15 +1,18 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
-import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, Wrench, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, RotateCcw, Wrench, X } from 'lucide-react'
 import { taskCallLimit, type TaskExecutionCall, type TaskExecutionDetail, type TaskExecutionEvent } from '../../src/chat-task-detail.ts'
+import type { AcceptanceRetryResult } from '../../src/goal-acceptance.ts'
 import { Button, IconButton } from '../ui/controls.tsx'
 import { taskStatus } from '../ui/task-activity.tsx'
 import { AgentIdentity } from '../ui/work.tsx'
 import type { Localize } from './composer-commands.tsx'
 import { toolLabel, toolStatus } from './tool-trace.tsx'
 import { TaskHandoffSequence } from './task-handoff-sequence.tsx'
+import { downloadUrl } from './delivery-links.ts'
 
 type Tab = 'progress' | 'tools'
 type LoadTask = (id: string, signal: AbortSignal) => Promise<TaskExecutionDetail>
+type RetryAcceptance = (id: string, revision: number) => Promise<AcceptanceRetryResult>
 type Entry = { id: string; at: number; event?: TaskExecutionEvent; call?: TaskExecutionCall }
 type Tone = 'working' | 'problem' | 'done'
 const problems = new Set(['failed', 'interrupted', 'blocked', 'cancelled', 'held'])
@@ -96,9 +99,65 @@ function RecordRow({label, description, meta, tone, open, toggle, children}: {
   </>
 }
 
-function TaskRecord({record, locale, L, agentName, selectAgent}: {
+function TaskAcceptance({id, acceptance, retry, refresh, locale, L}: {
+  id: string; acceptance: NonNullable<TaskExecutionDetail['acceptance']>; retry: RetryAcceptance;
+  refresh: () => void; locale: string; L: Localize;
+}) {
+  const [result,setResult]=useState<AcceptanceRetryResult>()
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  const state=result?.state??acceptance.state
+  const overflow=result?.state==='held'?result.overflow:acceptance.state==='held'?acceptance.overflow:undefined
+  const format=new Intl.NumberFormat(locale,{maximumFractionDigits:2})
+  const size=(bytes:number)=>bytes>=1024*1024
+    ? format.format(bytes/(1024*1024))+' MiB' : format.format(bytes/1024)+' KiB'
+  const collected=overflow&&(size(overflow.bytes)===size(overflow.limitBytes)
+    ? format.format(overflow.bytes)+' '+L('bytes','字节') : size(overflow.bytes))
+  const source=overflow?.largest.key==='host-execution'?L('Execution log','命令和工具记录')
+    : overflow?.largest.key==='delivery'?L('Worker report','Worker 汇报')
+    : overflow?.largest.key
+  async function submit(){
+    if(busy||state!=='held'||acceptance.state!=='held')return
+    setBusy(true)
+    setError('')
+    try{setResult(await retry(id,acceptance.revision));refresh()}
+    catch{setError(L('Could not queue acceptance. Check the task and try again.','暂时无法排队验收，请查看任务状态后重试。'));refresh()}
+    finally{setBusy(false)}
+  }
+  return <section className="task-run-acceptance" aria-label={L('Independent acceptance','独立验收')}>
+    <div className="task-run-acceptance-head">
+      <h4>{L('Independent acceptance','独立验收')}</h4>
+      <span role="status">{busy?L('Checking evidence…','正在检查材料…'):
+        state==='queued'?L('Acceptance queued','验收已排队'):
+        state==='running'?L('Reviewing','正在验收'):L('Acceptance paused','验收暂停')}</span>
+    </div>
+    {overflow ? <>
+      <p>{L('Evidence collected so far is '+collected+' and exceeds the '+size(overflow.limitBytes)+' limit.',
+        '目前已收集 '+collected+'，超过 '+size(overflow.limitBytes)+' 上限。')}</p>
+      <p>{L('Largest item read so far is ','已读取的最大来源为 ')}<strong>{source}</strong> · {size(overflow.largest.bytes)}</p>
+    </> : state==='held' && acceptance.state==='held' && <p>
+      {acceptance.reason==='size'?L('The previous evidence package exceeded the limit. Retry to check the current files.',
+        '上次验收材料超限。重试时会重新检查当前材料。'):
+        L('Retry the review of the saved delivery.','可以用已保存的交付重试验收。')}
+    </p>}
+    {!!acceptance.files.length && <ul aria-label={L('Files awaiting acceptance','待验收交付')}>
+      {acceptance.files.map(file=>{
+        const query=new URLSearchParams({acceptance:id,...(file.preview?{preview:'1'}:{})})
+        return <li key={file.id}><a href={downloadUrl(file)+'?'+query}
+          target={file.preview?'_blank':undefined} rel="noreferrer"><FileText size={14} aria-hidden="true"/>{file.name}</a></li>
+      })}
+    </ul>}
+    {error && <p role="alert">{error}</p>}
+    {state==='held' && <Button disabled={busy} onClick={()=>void submit()}>
+      <RotateCcw size={14} aria-hidden="true"/>{L('Retry acceptance','重试验收')}
+    </Button>}
+  </section>
+}
+
+function TaskRecord({record, locale, L, agentName, selectAgent, retryAcceptance, refresh}: {
   record: TaskExecutionDetail; locale: string; L: Localize;
   agentName: (id?: string) => string; selectAgent: (id: string) => void;
+  retryAcceptance: RetryAcceptance; refresh: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('progress')
   const [expanded, setExpanded] = useState<string>()
@@ -178,6 +237,8 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
       </span>
     </div>
     {(activity.objective || activity.nextAction) && <p className="task-run-note">{activity.objective || activity.nextAction}</p>}
+    {record.acceptance && <TaskAcceptance key={record.acceptance.state==='held'?record.acceptance.revision:record.acceptance.state}
+      id={activity.id} acceptance={record.acceptance} retry={retryAcceptance} refresh={refresh} locale={locale} L={L}/>}
 
     {!!executors.size && <div className="task-run-executors" aria-label={L('Agents and recorded models','处理 Agent 和记录的模型')}>
       {[...executors.entries()].map(([key,{call,workerId,models}]) => <AgentIdentity key={key} size={32}
@@ -261,8 +322,9 @@ function TaskRecord({record, locale, L, agentName, selectAgent}: {
   </>
 }
 
-export function TaskDetail({id, load, active, closing, layerRef, back, close, locale, L, agentName, selectAgent}: {
+export function TaskDetail({id, load, retryAcceptance, active, closing, layerRef, back, close, locale, L, agentName, selectAgent}: {
   id: string; load: LoadTask; active: boolean; closing: boolean; layerRef: Ref<HTMLElement>;
+  retryAcceptance: RetryAcceptance;
   back: () => void; close: () => void; locale: string; L: Localize;
   agentName: (id?: string) => string; selectAgent: (id: string) => void;
 }) {
@@ -284,7 +346,8 @@ export function TaskDetail({id, load, active, closing, layerRef, back, close, lo
         <span role="status">{L('The latest record could not be loaded.','暂时读不到最新记录。')}</span>
         <Button onClick={retry}>{L('Retry','重试')}</Button>
       </div>}
-      {record ? <TaskRecord record={record} locale={locale} L={L} agentName={agentName} selectAgent={selectAgent}/>
+      {record ? <TaskRecord record={record} locale={locale} L={L} agentName={agentName} selectAgent={selectAgent}
+        retryAcceptance={retryAcceptance} refresh={retry}/>
         : !failed && <p className="task-run-note" role="status">{L('Loading task history…','正在读取任务记录…')}</p>}
     </div>
   </section>

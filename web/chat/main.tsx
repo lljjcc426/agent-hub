@@ -53,6 +53,7 @@ import {initialTeamPanel,type TeamTab} from './chat-panel-state.ts';
 import {HeartbeatCard} from './heartbeat-card.tsx';
 import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
+import type {AcceptanceRetryResult} from '../../src/goal-acceptance.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
 import {WorkflowProvider,WorkflowCards,FileReviewCard,RouterDecision,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
 import {useAppearanceMode} from './appearance-store.ts';
@@ -798,6 +799,8 @@ function Chat(p: ChatProps) {
   const taskOpener=useRef<HTMLButtonElement>(null);
   const loadTask=useCallback((task:string,signal:AbortSignal) =>
     api<TaskExecutionDetail>('/conversations/'+id+'/task-detail?'+new URLSearchParams({task}),undefined,'GET',signal),[id]);
+  const retryAcceptance=useCallback((task:string,revision:number) =>
+    api<AcceptanceRetryResult>('/conversations/'+id+'/task-acceptance',{task,revision}),[id]);
   useEffect(()=>{
     if(route === '/chat#schedules'){setTeamTab('schedules');setTeamPanelOpen(true)}
     if(new URL(route, location.origin).searchParams.get('browser') === 'open'){
@@ -1740,7 +1743,7 @@ function Chat(p: ChatProps) {
                   />
                   </div>
                   {id && taskPresence.view && <Suspense fallback={<div className="task-drawer-layer task-run-scroll"><p className="task-run-note" role="status">{L('Loading task history…','正在读取任务记录…')}</p></div>}>
-                    <TaskDetail key={taskPresence.view} id={taskPresence.view} load={loadTask}
+                    <TaskDetail key={taskPresence.view} id={taskPresence.view} load={loadTask} retryAcceptance={retryAcceptance}
                     active={!sessionPresence.closing&&!taskPresence.closing} closing={taskPresence.closing}
                     layerRef={taskPresence.ref} back={backToTasks} close={closePanel} locale={lang} L={L} selectAgent={readAgent}
                     agentName={id=>id ? participants.find(agent=>agent.id===id)?.label??id : teamName(currentRouter.label)}/>

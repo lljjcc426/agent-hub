@@ -37,6 +37,7 @@ import {ChatError} from './chat-errors.ts'
 import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentReaction,type ChatQuote,type ChatQuoteView} from './chat-interactions.ts'
 import {taskActivities,type ChatTask} from './chat-task-activity.ts'
 import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
+import {retainedGoalDelivery} from './goal-acceptance.ts'
 import {basename} from 'node:path'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
@@ -667,7 +668,7 @@ export class ChatSessions {
   fileReviewText(id:string,owner:string,messageId:string){
     const {message,review}=this.fileReviewMessage(id,owner,messageId)
     if(review.state!=='pending')throw new ChatError('request_closed','This review has closed.')
-    const {bytes}=this.deliveries.read(id,review.fileId,message.runId)
+    const {bytes}=this.deliveries.read(id,review.fileId,{runId:message.runId})
     return {text:Buffer.from(bytes).toString('utf8')}
   }
   answerFileReview(id:string,owner:string,messageId:string,state:'approved'|'denied'){
@@ -704,8 +705,18 @@ export class ChatSessions {
     this.changed(dest.c.id)
     return true
   }
-  delivery(id:string,owner:string,fileId:string){
-    this.get(id,owner)
+  delivery(id:string,owner:string,fileId:string,acceptanceTask?:string){
+    const c=this.get(id,owner)
+    if(acceptanceTask&&!this.host.store.get<{published?:boolean}>('chat-delivery',fileId)?.published){
+      const goal=this.acceptanceGoal(c,acceptanceTask)
+      if(goal&&this.host.goals.acceptanceStatus(goal)){
+        for(const ticketId of goal.taskIds){
+          const delivery=retainedGoalDelivery(this.host.store,goal,ticketId)
+          if(delivery?.files?.includes(fileId))return this.deliveries.read(id,fileId,{ticketId})
+        }
+      }
+      throw new ChatError('delivery_missing','Delivery unavailable.',404)
+    }
     return this.deliveries.read(id,fileId)
   }
   private originRun(triggerId:string,includeSilent=false){
@@ -960,6 +971,24 @@ export class ChatSessions {
     const routerPlanIds=new Set(conversationPlans.filter(plan=>!plan.ticketId&&!plan.workerId).map(plan=>plan.id))
     return {conversationPlans,tasks:this.tasks(c,undefined,routerPlanIds)}
   }
+  private acceptanceGoal(c:Conversation,taskId:string){
+    if(c.archived||!taskId.startsWith('goal:'))return
+    const goal=this.host.goals.get(taskId.slice(5))
+    if(!goal||goal.discussion!==c.discussion||this.host.memory.cleanup.blocked('router-goal',goal.id,goal))return
+    const trigger=this.host.store.triggers.get(goal.triggerId)
+    if(!trigger?.human||trigger.actor.source!==c.sourceId||trigger.actor.id!==c.actor)return
+    try{
+      this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>this.host.goals.context(goal)))
+      return goal
+    }catch{return}
+  }
+  retryTaskAcceptance(id:string,owner:string,taskId:string,revision:number){
+    const goal=this.acceptanceGoal(this.get(id,owner),taskId)
+    if(!goal)throw new ChatError('task_missing','Task not found in this conversation.',404)
+    const result=this.host.goals.retryAcceptance(goal.id,revision)
+    this.changed(id)
+    return result
+  }
   taskDetail(id:string,owner:string,taskId:string):TaskExecutionDetail {
     const c=this.get(id,owner),{conversationPlans,tasks}=this.conversationTasks(c)
     const goals=this.rows<RouterGoal>('router-goal','discussion',c.discussion)
@@ -973,7 +1002,19 @@ export class ChatSessions {
     if(!activity || plan&&!visible('chat-plan',plan.id,plan) || goal&&!visible('router-goal',goal.id,goal))
       throw new ChatError('task_missing','Task not found in this conversation.',404)
     const planTurn=plan&&this.turnPlan(c.id,plan.runId)===plan.id?plan.runId:undefined
-    return taskExecutionDetail(this.host.store,c.id,activity,{plan,planTurn,goalCreatedAt:goal?.at},visible)
+    const detail=taskExecutionDetail(this.host.store,c.id,activity,{plan,planTurn,goalCreatedAt:goal?.at},visible)
+    const acceptance=goal&&this.host.goals.acceptanceStatus(goal)
+    if(goal&&acceptance&&this.acceptanceGoal(c,taskId)){
+      const store=this.host.store
+      const files=goal.taskIds.flatMap(ticketId=>
+        (retainedGoalDelivery(store,goal,ticketId)?.files??[]).flatMap(fileId=>{
+          const file=store.get<ChatDelivery>('chat-delivery',fileId)
+          if(!file?.mime||file.conversationId!==id||file.ticketId!==ticketId||!visible('chat-delivery',fileId,file))return []
+          return [{id:fileId,name:file.name,preview:file.preview,conversationId:id}]
+        }))
+      detail.acceptance={...acceptance,files}
+    }
+    return detail
   }
   async commitHistory(owner:string,input:{conversation?:string;repository?:string;branch?:string},
     authorize:()=>void,signal:AbortSignal):Promise<ChatCommitHistory>{

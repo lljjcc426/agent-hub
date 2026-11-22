@@ -703,7 +703,8 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       }
       const delivery=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/deliveries\/([a-f0-9-]{36})$/)
       if(delivery&&(req.method==='GET'||req.method==='HEAD')){
-        const {item,bytes}=runtime.chat.delivery(delivery[1]!,owner,delivery[2]!)
+        const acceptance=z.string().min(1).max(500).optional().parse(query.get('acceptance')??undefined)
+        const {item,bytes}=runtime.chat.delivery(delivery[1]!,owner,delivery[2]!,acceptance)
         const inline=query.get('preview')==='1'&&!!item.preview
         res.writeHead(200,{'content-type':inline?item.mime:'application/octet-stream','content-length':item.size,'content-disposition':(inline?'inline':'attachment')+"; filename*=UTF-8''"+encodeURIComponent(item.name),'content-security-policy':"default-src 'none'; sandbox",'x-content-type-options':'nosniff','cache-control':'private, no-store'})
         res.end(req.method==='HEAD'?undefined:bytes);return
@@ -732,7 +733,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|task-detail|approval-history|approvals|decisions|file-reviews))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|task-detail|task-acceptance|approval-history|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
         if(action==='approval-history'&&req.method==='GET'){
@@ -751,6 +752,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           const task=z.string().min(1).max(500).parse(query.get('task'))
           res.setHeader('cache-control','no-store')
           send(res,200,runtime.chat.taskDetail(id,owner,task));return
+        }
+        if(action==='task-acceptance'&&req.method==='POST'){
+          const input=z.object({task:z.string().min(1).max(500),revision:z.number().int().nonnegative().safe()}).strict().parse(await operatorBody(req))
+          const result=runtime.chat.retryTaskAcceptance(id,owner,input.task,input.revision)
+          send(res,result.state==='held'?200:202,result);return
         }
         if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner,query.get('activity')??undefined));return}
         if(action==='file-reviews'){

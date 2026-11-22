@@ -193,13 +193,15 @@ export class ChatDeliveries {
       .all(conversationId)
       .map((row) => JSON.parse(String(row.body)) as ChatDelivery)
   }
-  read(conversationId: string, id: string, draftRunId?: string) {
+  read(conversationId: string, id: string, draft?: { runId: string } | { ticketId: string }) {
     const item = this.host.store.get<ChatDelivery & { published: boolean }>('chat-delivery', id)
     if (
       !item ||
       !item.mime ||
       item.conversationId !== conversationId ||
-      (draftRunId === undefined ? !item.published : item.published || !!item.ticketId || item.runId !== draftRunId) ||
+      (!draft ? !item.published :
+        'runId' in draft ? item.published || !!item.ticketId || item.runId !== draft.runId :
+        item.ticketId !== draft.ticketId) ||
       this.host.memory.cleanup.blocked('chat-delivery', id, item)
     )
       throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)

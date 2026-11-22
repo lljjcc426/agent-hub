@@ -13,6 +13,7 @@ import {PluginGitHub,githubLocation} from './plugin-github.ts'
 import {extractPluginArchive} from './plugin-archive.ts'
 import {compatible,compareVersion,latestCompatible,marketId,type CatalogPlugin,type InstalledPlugin,type MarketOperation,type MarketPlan,type MarketRelease,type SourceCompatibility} from './plugin-market-contract.ts'
 import {marketState,objectDirectory,applyMarketConfig,recoverMarket,type ManagedMarketState,type MarketActivation} from './plugin-market-state.ts'
+import type {Ticket} from './vendor/dsh-core/index.ts'
 
 export class MarketError extends Error {constructor(readonly code:string,message:string,readonly status=409){super(message)}}
 export const marketPlanInput=z.object({action:z.enum(['install','activate','enable','disable','rollback','uninstall','ignore']),pluginId:marketId,catalogId:z.string().max(80).optional(),version:z.string().max(100).optional(),revision:z.number().int().nonnegative()}).strict()
@@ -20,18 +21,18 @@ export function packagePermissions(manifest:ViewManifest|PluginManifest){
   if('category'in manifest)return [...manifest.capabilities].sort()
   return [...(manifest.network?['network']:[]),...manifest.methods.map(m=>'source.'+m),...Object.keys(manifest.credentials).map(k=>'credential.'+k),...manifest.tools.map(t=>'tool.'+t.name),...(['local','webhook','github','wecom','feishu'].includes(manifest.kind)?['adapter.replace:'+manifest.kind]:[])].sort()
 }
-export function marketBlockers(host:Runtime){
+export function marketBlockers({store}:{store:Pick<Store,'db'|'list'|'deliveries'>}){
   const items:{kind:string;count:number}[]=[]
   const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
-  count('tasks',host.store.tickets.open().length)
-  count('goals',host.store.list<any>('router-goal').filter(g=>!['completed','cancelled'].includes(g.state)).length)
-  count('deliveries',host.store.deliveries().filter(d=>['pending','sending','uncertain','held'].includes(d.status)).length)
-  count('tool-receipts',host.store.list<any>('tool-receipt').filter(r=>['running','uncertain'].includes(r.state)).length)
-  count('backend-effects',host.store.list<any>('backend-plugin-tool').filter(r=>r.state==='running').length)
-  count('repository-publications',host.store.list<any>('pr-delivery').filter(r=>['pushing','creating','uncertain'].includes(r.phase)).length)
-  count('repository-merges',host.store.list<any>('merge-attempt').filter(r=>['submitting','uncertain'].includes(r.phase)).length)
-  count('repository-reviews',host.store.list<any>('review-action').filter(r=>r.phase==='pending').length)
-  count('jobs',Number(host.store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('pending','running')").get()!.n))
+  count('tasks',store.list<Ticket>('ticket').filter(t=>!t.ended).length)
+  count('goals',store.list<any>('router-goal').filter(g=>!['completed','cancelled'].includes(g.state)).length)
+  count('deliveries',store.deliveries().filter(d=>['pending','sending','uncertain','held'].includes(d.status)).length)
+  count('tool-receipts',store.list<any>('tool-receipt').filter(r=>['running','uncertain'].includes(r.state)).length)
+  count('backend-effects',store.list<any>('backend-plugin-tool').filter(r=>r.state==='running').length)
+  count('repository-publications',store.list<any>('pr-delivery').filter(r=>['pushing','creating','uncertain'].includes(r.phase)).length)
+  count('repository-merges',store.list<any>('merge-attempt').filter(r=>['submitting','uncertain'].includes(r.phase)).length)
+  count('repository-reviews',store.list<any>('review-action').filter(r=>r.phase==='pending').length)
+  count('jobs',Number(store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('pending','running')").get()!.n))
   return items
 }
 type Rebuild=(config:Config,activationId?:string)=>Promise<void>

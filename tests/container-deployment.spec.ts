@@ -8,7 +8,7 @@ import {Runtime} from '../src/runtime.ts'
 import {Store,MAX_DB_SCHEMA} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
-import {deploymentMaintenance} from '../src/deployment-maintenance.ts'
+import {deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
 import {initContainer,inspectContainer} from '../src/container-cli.ts'
 import {publicOriginSchema,requestHostOrigin} from '../src/http-deployment.ts'
 const roots:string[]=[],hosts:Runtime[]=[],closers:(()=>Promise<void>)[]=[]
@@ -66,6 +66,18 @@ it('keeps a later human pause even when its boolean value did not change',async(
  const h=host(),id=randomUUID();await prepare(h,id);h.pause(true)
  expect(await deploymentMaintenance(h,{action:'finish',operationId:id})).toMatchObject({resumed:false,reason:'pause_control_changed'})
  expect(h.schedulingPaused).toBe(true)
+})
+it('adopts the precise pause from a legacy cutover and rejects a newer operator pause',async()=>{
+ const h=host(),operationId=randomUUID()
+ h.pause(true)
+ const legacyPauseSeq=pauseControl(h).seq
+ h.pause(true)
+ const input={action:'prepare',operationId,expectedRevision:h.settings.current().revision,legacyPauseSeq}
+ await expect(deploymentMaintenance(h,input)).rejects.toMatchObject({code:'maintenance_pause_changed'})
+ expect(h.schedulingPaused).toBe(true)
+ await expect(deploymentMaintenance(h,{...input,legacyPauseSeq:pauseControl(h).seq})).resolves.toMatchObject({state:'prepared',wasPaused:false})
+ await expect(deploymentMaintenance(h,{action:'finish',operationId})).resolves.toMatchObject({resumed:true})
+ expect(h.schedulingPaused).toBe(false)
 })
 it('preserves an originally paused instance and a prepared receipt across restart',async()=>{
  const h=host();h.pause(true);const id=randomUUID();await prepare(h,id);const config=h.config;await h.close()

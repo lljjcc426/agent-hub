@@ -1,14 +1,19 @@
 import {afterEach,expect,it} from 'vitest'
 import {request as httpRequest} from 'node:http'
-import {mkdtempSync,mkdirSync,rmSync,readFileSync,writeFileSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,rmSync,readFileSync,realpathSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {randomUUID} from 'node:crypto'
+import {createHash,randomUUID} from 'node:crypto'
 import {Runtime} from '../src/runtime.ts'
-import {Store,MAX_DB_SCHEMA} from '../src/store.ts'
+import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
-import {deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
+import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
+import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
+import {artifactReadAssetId} from '../src/goal-artifacts.ts'
+import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
+import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
+import {stableDigest} from '../src/sources.ts'
 import {initContainer,inspectContainer} from '../src/container-cli.ts'
 import {publicOriginSchema,requestHostOrigin} from '../src/http-deployment.ts'
 const roots:string[]=[],hosts:Runtime[]=[],closers:(()=>Promise<void>)[]=[]
@@ -25,6 +30,50 @@ async function mappedRequest(url:string,headers:Record<string,string>,body?:stri
  })
 }
 const prepare=(h:Runtime,id=randomUUID())=>deploymentMaintenance(h,{action:'prepare',operationId:id,expectedRevision:h.settings.current().revision})
+
+function interruptedArtifact(h:Runtime,followingTool='superagent_read'){
+ const {store}=h,{stateDir}=h.config,cwd=realpathSync(h.config.sources[0]!.cwd)
+ const {triggerId}=h.receive('local','operator',{id:'artifact',thread:'artifact',text:'Open the original artifact',addressed:true}) as {triggerId:string}
+ const decision=h.engine.decide(triggerId,{kind:'accept',title:'Open the original artifact',scope:'Check artifact',reason:'Requested',rules:[]})
+ const ticket=store.tickets.get(decision.ticketId!)!,assignment=ticket.assignments.at(-1)!
+ h.engine.assignmentStarted(ticket.id,assignment.id)
+ h.engine.report(ticket.id,{state:'blocked',summary:'Interrupted artifact open',question:null})
+ const saved=store.tickets.get(ticket.id)!
+ store.put('ticket',ticket.id,{...saved,undelivered:[]})
+ store.db.exec("UPDATE jobs SET state='done'")
+ const threadId='plugin:'+randomUUID(),turnId=randomUUID(),folder=randomUUID()
+ const nativeId='native-artifact',identity=stableDigest('account'),digest=stableDigest('engine'),artifactId='unavailable-artifact'
+ const run:Run={ticketId:ticket.id,assignmentId:assignment.id,cwd,phase:'uncertain',prepared:true,threadId,turnId,backendId:'codex',error:'outcome_unknown'}
+ store.put('run',ticket.id,run)
+ store.put('model-session',threadId,{threadId,cwd,ticketId:ticket.id,ephemeral:false})
+ store.put('backend-binding',threadId,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
+ const result={success:true,contentItems:[]}
+ const calls=[
+  {id:'number:2',name:'superagent_status',args:{label:'Checking an artifact'},result},
+  {id:'number:3',name:'superagent_artifact_read',args:{id:artifactId}},
+  {id:'number:4',name:followingTool,args:{resource:'catalog'}},
+ ]
+ const effectIds=calls.slice(0,2).map(call=>{
+  const id=stableDigest([threadId,turnId,call.id]),fingerprint=stableDigest([call.name,call.args])
+  const receipt:PluginToolEffect=call.result?{fingerprint,state:'complete',result}:
+   {fingerprint,state:'running',failure:{operation:'tool',reason:'exception'}}
+  store.put('backend-plugin-tool',id,receipt)
+  return id
+ })
+ const thread:PluginThread={id:threadId,turnId,backendId:'codex',pluginId:'opencode-cli',digest,stateVersion:1,
+  cwd,identity,nativeId,state:'failed',effectIds,lastFailure:{code:'outcome_unknown',at:Date.now()}}
+ store.put('backend-plugin-thread',threadId,thread)
+ const data=join(stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
+ const journal=join(data,'sessions',folder),session=join(journal,'session.json')
+ mkdirSync(journal,{recursive:true})
+ mkdirSync(join(data,'index'))
+ writeFileSync(join(data,'index',createHash('sha256').update(nativeId).digest('hex')+'.json'),JSON.stringify({id:nativeId,folder}))
+ writeFileSync(session,JSON.stringify({format:1,folder,nativeId,cwd,turns:[{id:turnId,state:'interrupted',tools:calls}]}))
+ writeFileSync(join(journal,turnId+'.ready'),'ready')
+ const original=join(cwd,'retained-package.zip')
+ writeFileSync(original,'original file bytes')
+ return {ticketId:ticket.id,run,thread,receiptId:effectIds[1]!,asset:join(stateDir,'assets',artifactReadAssetId(ticket.id,artifactId)),session,original}
+}
 it('initializes once and changes only deployment-owned origin when reopening a container volume',async()=>{
  const p=root();await initContainer(p,'http://127.0.0.1:55001',false)
  const file=join(p,'state/config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.prompts.router='Retain my prompt';config.work.network=true;writeFileSync(file,JSON.stringify(config))
@@ -89,6 +138,64 @@ it('rejects unfinished work without pausing or inventing a completed maintenance
  const h=host();h.receive('local','operator',{id:'work',thread:'work',text:'Do a bounded task',addressed:true})
  await expect(prepare(h)).rejects.toThrow('Unsettled work')
  expect(h.schedulingPaused).toBe(false)
+})
+
+it('preserves a held artifact task through deployment and reconciles its failed read on resume without replay',async()=>{
+ const home=root(),h=host(home),f=interruptedArtifact(h),operationId=randomUUID()
+ const original=h.store.get('ticket',f.ticketId)
+ const previousJobs=h.store.db.prepare('SELECT * FROM jobs ORDER BY id').all()
+ const journal=readFileSync(f.session)
+ expect(deploymentBlockers(h.store)).toEqual([{kind:'backend-effects',count:1},{kind:'tasks',count:1}])
+ expect(heldArtifactReads(h.store,h.config.stateDir)).toHaveLength(1)
+ h.pause(true)
+ await expect(deploymentMaintenance(h,{action:'prepare',operationId,expectedRevision:h.settings.current().revision,
+  legacyPauseSeq:pauseControl(h).seq})).resolves.toMatchObject({state:'prepared',wasPaused:false})
+ await h.close()
+ const next=host(home)
+ expect(next.store.get('ticket',f.ticketId)).toEqual(original)
+ expect(next.store.get('run',f.ticketId)).toEqual(f.run)
+ expect(next.store.get('backend-plugin-tool',f.receiptId)).toMatchObject({state:'running'})
+ expect(await deploymentMaintenance(next,{action:'finish',operationId})).toMatchObject({state:'finished',resumed:true})
+ expect(next.store.get('backend-plugin-tool',f.receiptId)).toMatchObject({
+  state:'complete',result:{success:false},
+  reconciliation:{reason:'interrupted_artifact_read',ticketId:f.ticketId,assignmentId:f.run.assignmentId,threadId:f.run.threadId,turnId:f.run.turnId},
+ })
+ expect(next.store.get('run',f.ticketId)).toMatchObject({phase:'idle',threadId:f.run.threadId,assignmentId:f.run.assignmentId})
+ expect(next.store.get('ticket',f.ticketId)).toEqual(original)
+ expect(next.store.get('backend-plugin-thread',f.run.threadId!)).toEqual(f.thread)
+ expect(next.store.db.prepare('SELECT * FROM jobs ORDER BY id').all()).toEqual(previousJobs)
+ expect(readFileSync(f.session)).toEqual(journal)
+ expect(readFileSync(f.original,'utf8')).toBe('original file bytes')
+ expect(deploymentBlockers(next.store,0,next.config.stateDir)).toEqual([])
+ next.pause(false)
+ expect(next.store.db.prepare("SELECT 1 FROM audit WHERE json_extract(body,'$.type')='artifact.read.reconciled'").all()).toHaveLength(1)
+})
+
+it.each(['wrong fingerprint','unknown callback','materialized asset','pending work','other unknown effect'])(
+ 'keeps deployment blocked when artifact recovery also finds %s',async reason=>{
+  const h=host(),f=interruptedArtifact(h,reason==='unknown callback'?'github_write':undefined)
+  if(reason==='wrong fingerprint'){
+   const receipt=h.store.get<PluginToolEffect>('backend-plugin-tool',f.receiptId)!
+   h.store.put('backend-plugin-tool',f.receiptId,{...receipt,fingerprint:'mismatched'})
+  }
+  if(reason==='materialized asset'){mkdirSync(f.asset,{recursive:true});writeFileSync(join(f.asset,'package.zip'),'keep this')}
+  if(reason==='pending work')h.store.enqueue('pending-artifact-work','execute',{ticketId:f.ticketId,assignmentId:f.run.assignmentId})
+  if(reason==='other unknown effect')h.store.put('backend-plugin-tool','unrelated',{state:'running',fingerprint:'unrelated'})
+  await expect(prepare(h)).rejects.toMatchObject({code:'deployment_busy'})
+  expect(h.schedulingPaused).toBe(false)
+  expect(h.store.get('backend-plugin-tool',f.receiptId)).toMatchObject({state:'running'})
+ },
+)
+
+it('preserves the terminal state of an explicitly stopped task',()=>{
+ const h=host(),f=interruptedArtifact(h)
+ h.engine.stopTicket(f.ticketId,'Stopped by operator')
+ const stopped=h.store.get('ticket',f.ticketId)
+ const receipt=h.store.get('backend-plugin-tool',f.receiptId)
+ h.pause(false)
+ expect(h.store.get('ticket',f.ticketId)).toEqual(stopped)
+ expect(h.store.get('backend-plugin-tool',f.receiptId)).toEqual(receipt)
+ expect(readFileSync(f.original,'utf8')).toBe('original file bytes')
 })
 it('a human override while quiescing cannot be undone by the installer',async()=>{
  const h=host();let release!:()=>void;(h as any).tickIdle=new Promise<void>(r=>release=r)

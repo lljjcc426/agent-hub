@@ -20,6 +20,7 @@ export class ArtifactReadError extends Error {
 import type {ArtifactReference} from './artifact-reference.ts'
 export type {ArtifactReference} from './artifact-reference.ts'
 type CellCheck=Extract<NonNullable<GoalCriterion['check']>,{kind:'xlsx_cell_equals'}>
+export const artifactReadAssetId=(ticketId:string,artifactId:string)=>stableDigest([ticketId,artifactId])
 
 /** Read the same file descriptor used to check the workspace boundary and size. */
 export function evidenceBytes(cwd:string,path:string,limit:number):Buffer|undefined{
@@ -130,7 +131,7 @@ export class GoalArtifacts {
     const round=rounds.find(r=>r?.state==='passed'&&r.snapshot.evidence.some(e=>e.artifact?.id===id))
     if(!round||!this.host.verification.current(round,goal))throw new ArtifactReadError('artifact_unavailable','The artifact is outside the accepted prerequisites of this task.')
     const artifact=round.snapshot.evidence.find(e=>e.artifact?.id===id)!.artifact!
-    const assetId=stableDigest([owner.ticketId,id]),directory=join(this.host.config.stateDir,'assets',assetId)
+    const assetId=artifactReadAssetId(owner.ticketId,id),directory=join(this.host.config.stateDir,'assets',assetId)
     const path=join(directory,basename(artifact.path))
     atomicPrivateFile(path,this.bytes(id),0o400)
     const asset={id:assetId,path,name:basename(path),bytes:artifact.size,ticketId:owner.ticketId,artifactId:id,resource:'asset/'+assetId}

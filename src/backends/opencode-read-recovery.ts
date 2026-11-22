@@ -32,6 +32,11 @@ type InterruptedRead={kind:'github';interrupted:GithubRead[]}
  |{kind:'read_only'}
 
 type RouterReadCall={name:string;args:unknown;receiptId:string;receipt:PluginToolEffect}
+type ArtifactReconciliation={reason:'interrupted_artifact_read';ticketId:string;assignmentId:string;threadId:string;turnId:string;at:number}
+export type ArtifactReadProof={
+ receiptId:string;artifactId:string;threadId:string;turnId:string;
+ receipt:PluginToolEffect&{reconciliation?:ArtifactReconciliation}
+}
 export type InterruptedRouterTurn=
  |{kind:'read_only';threadId:string;turnId:string;reads:RouterReadCall[]}
  |{kind:'unverified';threadId:string;turnId:string;tool?:string;receiptId?:string}
@@ -202,8 +207,8 @@ export function retainedWebPages(store:Pick<ThreadStore,'get'>,stateDir:string,r
 /** Match the interrupted bridge call to the host's receipt and account for every native operation.
  * The adapter's writer lock and private journal belong to the old session, whose contents are retained.
  */
-export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):InterruptedRead|undefined{
- if(run.phase!=='uncertain'&&!run.failure?.readOnlyHistory||!run.prepared||!run.threadId||!run.turnId||!run.backendId)return
+function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
+ if(!run.prepared||!run.threadId||!run.turnId||!run.backendId)return
  const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
  const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',run.threadId)
  const model=store.get<{ticketId?:string;threadId:string;cwd:string;ephemeral:boolean}>('model-session',run.threadId)
@@ -213,15 +218,23 @@ export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,state
   binding?.harness!==bundledEngineId||binding.id!==thread.backendId||binding.harnessDigest!==thread.digest||
   model?.ticketId!==run.ticketId||model.threadId!==run.threadId||model.cwd!==run.cwd||model.ephemeral!==false)return
 
+ if(realpathSync(run.cwd)!==thread.cwd||!statSync(run.cwd).isDirectory())return
+ const location=sessionRoot(stateDir,thread)
+ if(!location||!stoppedWriter(location.root))return
+ const {root,folder}=location
+ const session=sessionSchema.parse(JSON.parse(privateText(join(root,'session.json'))))
+ const last=session.turns.at(-1)!
+ if(session.folder!==folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd||
+  last.id!==run.turnId||last.state==='completed')return
+ return {thread,root,session,last}
+}
+
+export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):InterruptedRead|undefined{
+ if(run.phase!=='uncertain'&&!run.failure?.readOnlyHistory)return
  try{
-  if(realpathSync(run.cwd)!==thread.cwd||!statSync(run.cwd).isDirectory())return
-  const location=sessionRoot(stateDir,thread)
-  if(!location||!stoppedWriter(location.root))return
-  const {root,folder}=location
-  const session=sessionSchema.parse(JSON.parse(privateText(join(root,'session.json'))))
-  const last=session.turns.at(-1)!
-  if(session.folder!==folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd||
-   last.id!==run.turnId||last.state==='completed')return
+  const bound=boundWorkerSession(store,stateDir,run)
+  if(!bound)return
+  const {thread,root,session,last}=bound
   const effects=new Set(thread.effectIds),turnIds=new Set<string>()
   if(effects.size!==thread.effectIds.length)return
   const interrupted:GithubRead[]=[]
@@ -273,4 +286,54 @@ export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,state
   // Older layouts, missing workspaces and incomplete or inconsistent evidence stay held.
   return
  }
+}
+
+const artifactReadArgs=z.object({id:z.string().min(1).max(1000)}).strict()
+
+/** Prove one failed artifact open from the bundled adapter's private journal.
+ * Host callbacks rejected after this failure can appear in history without a receipt.
+ */
+export function proveInterruptedArtifactRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):ArtifactReadProof|undefined{
+ if(run.phase!=='uncertain'&&run.phase!=='idle')return
+ try{
+  const bound=boundWorkerSession(store,stateDir,run)
+  if(!bound)return
+  const {thread,root,session,last}=bound
+  if(thread.state!=='failed'||thread.lastFailure?.code!=='outcome_unknown'||last.state!=='interrupted'||
+   operations(root,last.id).length||privateText(join(root,last.id+'.ready'),32)!=='ready')return
+  const remaining=new Set(thread.effectIds),turnIds=new Set<string>()
+  if(remaining.size!==thread.effectIds.length)return
+  let proof:ArtifactReadProof|undefined
+  for(const turn of session.turns){
+   if(turnIds.has(turn.id)||turn!==last&&turn.state!=='completed')return
+   turnIds.add(turn.id)
+   for(const call of turn.tools){
+    if(call.name.startsWith('opencode/')){
+     if(turn===last||!call.result)return
+     continue
+    }
+    const receiptId=stableDigest([thread.id,turn.id,call.id])
+    const receipt=store.get<ArtifactReadProof['receipt']>('backend-plugin-tool',receiptId)
+    const scopedRead=call.name==='superagent_status'
+     ||call.name==='superagent_read'&&readSchema.safeParse(call.args).success
+     ||call.name==='chat_artifact_find'&&findChatArtifactInput.safeParse(call.args).success
+    if(turn===last&&proof&&!receipt&&!call.result&&scopedRead&&!remaining.has(receiptId))continue
+    if(!remaining.delete(receiptId)||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return
+    if(turn===last&&(!scopedRead||proof)){
+     const args=artifactReadArgs.safeParse(call.args)
+     if(proof||call.name!=='superagent_artifact_read'||!args.success||call.result||
+      receipt.failure?.operation!=='tool'||receipt.failure.reason!=='exception')return
+     const marker=receipt.reconciliation
+     if(run.phase==='uncertain'){
+      if(receipt.state!=='running'||receipt.result!==undefined||marker)return
+     }else if(receipt.state!=='complete'||receipt.result?.success!==false||marker?.reason!=='interrupted_artifact_read'||
+      marker.ticketId!==run.ticketId||marker.assignmentId!==run.assignmentId||marker.threadId!==thread.id||marker.turnId!==turn.id)return
+     proof={receiptId,artifactId:args.data.id,threadId:thread.id,turnId:turn.id,receipt}
+     continue
+    }
+    if(receipt.state!=='complete'||!call.result||receipt.result?.success!==call.result.success)return
+   }
+  }
+  if(!remaining.size&&stoppedWriter(root))return proof
+ }catch{/* Missing or inconsistent evidence remains unsettled. */}
 }

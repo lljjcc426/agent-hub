@@ -25,7 +25,7 @@ export interface RepositoryMethods {
  merge(number:number,head:string,method:'squash'|'merge'|'rebase',identityHint?:string,mayAct?:()=>boolean):Promise<{merged:boolean;sha?:string}>
 }
 export type RepositorySource=Source&RepositoryMethods
-export function repositoryEffectsSettled(store:Store,ticketId:string){
+export function repositoryEffectsSettled(store:Pick<Store,'db'|'get'|'list'>,ticketId:string){
  const prefix=ticketId+':'
  if(store.db.prepare("SELECT 1 FROM records WHERE kind='pr-delivery' AND substr(id,1,?)=? AND json_extract(body,'$.phase') IN ('pushing','creating','uncertain') LIMIT 1").get(prefix.length,prefix))return false
  if(store.list<any>('review-action').some(r=>r.ticketId===ticketId&&r.phase==='pending'))return false

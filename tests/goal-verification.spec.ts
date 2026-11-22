@@ -92,6 +92,8 @@ it('hands a large versioned workbook to its dependent Worker and keeps earlier r
   }else{
    const dependency=f.rounds().find(round=>round.nodeId==='make'&&round.state==='passed')!
    const ref=dependency.snapshot.evidence.find(e=>e.artifact)!.artifact!
+   const missing=await r.onTool!('superagent_artifact_read',{id:'unverified-artifact'},'open-unavailable-version')
+   expect(missing).toMatchObject({success:false,contentItems:[{text:expect.stringContaining('artifact_unavailable')}]})
    const result=await r.onTool!('superagent_artifact_read',{id:ref.id},'open-accepted-version')
    const attachment=JSON.parse((result.contentItems[0] as any).text);opened=attachment.sha256
    const book=XLSX.read(readFileSync(attachment.path),{type:'buffer'})

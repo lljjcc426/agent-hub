@@ -1,6 +1,7 @@
 import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
+import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
 import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
@@ -18,19 +19,6 @@ export function pauseControl(host:Runtime){
  return row?{...JSON.parse(String(row.body)),seq:Number(row.seq)}:undefined
 }
 type DeploymentStore = Pick<Store,'db'|'get'|'list'|'deliveries'>
-
-function unsettledTaskEffects(store:DeploymentStore,id:string,since:number){
- return !!store.db.prepare(`SELECT 1 FROM records WHERE
-  (json_extract(body,'$.ticketId')=? AND (
-    (kind='work' AND (json_extract(body,'$.state') IN ('starting','running')
-      OR (json_extract(body,'$.state')='interrupted' AND coalesce(json_extract(body,'$.endedAt'),?)>=?)))
-    OR (kind='execution-call' AND json_extract(body,'$.state')='running')
-    OR (kind='workflow-action' AND json_extract(body,'$.state') IN ('pending','applying','uncertain'))
-    OR (kind='approval' AND (json_extract(body,'$.status')='pending'
-      OR (json_extract(body,'$.key') IS NOT NULL AND json_extract(body,'$.status')='resolved' AND coalesce(json_extract(body,'$.delivered'),0)=0)))))
-  OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=? AND
-    json_extract(body,'$.phase') IN ('pending','approved','executing','uncertain')) LIMIT 1`).get(id,since,since,id)
-}
 
 function heldAnsweredQuestionTasks(store:DeploymentStore,goal:RouterGoal){
  if(goal.state!=='held'||goal.nextAt!==undefined||goal.delegationIds?.length)return
@@ -58,11 +46,14 @@ function heldAcceptanceTasks(store:DeploymentStore,goal:RouterGoal):string[]|und
  return ids
 }
 
-export function deploymentBlockers(store:DeploymentStore,activeExecutions=0){
- const items=marketBlockers({store}).filter(i=>i.kind!=='goals'&&i.kind!=='tasks')
+export function deploymentBlockers(store:DeploymentStore,activeExecutions=0,stateDir?:string){
+ const artifactHolds=stateDir&&!activeExecutions?heldArtifactReads(store,stateDir):[]
+ const verifiedReceipts=new Set(artifactHolds.filter(hold=>hold.proof.receipt.state==='running').map(hold=>hold.proof.receiptId))
+ const items=marketBlockers({store}).filter(i=>i.kind!=='goals'&&i.kind!=='tasks').map(item=>
+  item.kind==='backend-effects'?{...item,count:item.count-verifiedReceipts.size}:item).filter(item=>item.count>0)
  const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
  const goals=store.list<RouterGoal&{deleted?:boolean}>('router-goal').filter(g=>g.objective&&!g.deleted&&!['completed','cancelled'].includes(g.state))
- const retained=new Set<string>()
+ const retained=new Set(artifactHolds.map(hold=>hold.run.ticketId))
  const unsettled=goals.filter(goal=>{
   const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)
   if(!ids)return true
@@ -103,7 +94,7 @@ export async function deploymentMaintenance(host:Runtime,input:unknown){
   if(!host.schedulingPaused||pause?.seq!==x.legacyPauseSeq||pause.value!==true||pause.controlId)
    throw new DeploymentError('maintenance_pause_changed','The recorded legacy pause is no longer current')
  }
- const busy=deploymentBlockers(store,host.activeExecutions);if(busy.length)throw new DeploymentError('deployment_busy','Unsettled work blocks upgrade: '+JSON.stringify(busy))
+ const busy=deploymentBlockers(store,host.activeExecutions,host.config.stateDir);if(busy.length)throw new DeploymentError('deployment_busy','Unsettled work blocks upgrade: '+JSON.stringify(busy))
  const record:Maintenance={id:x.operationId,state:'preparing',wasPaused:host.schedulingPaused&&x.legacyPauseSeq===undefined,at:Date.now()}
  store.put('deployment-maintenance',record.id,record)
  try{
@@ -111,7 +102,7 @@ export async function deploymentMaintenance(host:Runtime,input:unknown){
   if(store.get<Maintenance>('deployment-maintenance',record.id)?.state!=='preparing')throw new DeploymentError('maintenance_cancelled','Maintenance preparation was cancelled')
   const control=pauseControl(host)
   if(control?.controlId!==record.id)throw new DeploymentError('maintenance_pause_changed','Pause control changed during preparation')
-  const pending=deploymentBlockers(store,host.activeExecutions);if(pending.length)throw new DeploymentError('deployment_busy','New work arrived while preparing upgrade: '+JSON.stringify(pending))
+  const pending=deploymentBlockers(store,host.activeExecutions,host.config.stateDir);if(pending.length)throw new DeploymentError('deployment_busy','New work arrived while preparing upgrade: '+JSON.stringify(pending))
   store.put('deployment-maintenance',record.id,{...record,state:'prepared',pauseSeq:control.seq})
   return {operationId:record.id,state:'prepared',wasPaused:record.wasPaused}
  }catch(error){

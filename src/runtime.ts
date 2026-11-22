@@ -84,6 +84,7 @@ import type {EmbedMemory} from './memory-vectors.ts'
 import {fitResourcePage,scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
 import {executionEvidenceNotice} from './execution-output.ts'
 import {GoalArtifacts} from './goal-artifacts.ts'
+import {heldArtifactReads,reconcileArtifactReads} from './artifact-read-recovery.ts'
 import {WorkflowActions} from './workflow-actions.ts'
 import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
@@ -325,7 +326,12 @@ export class Runtime {
       this.interruptForAutomation(id)
       if(!this.store.tickets.get(id)?.ended)this.engine.stopTicket(id,'Goal contract replaced')
     }
+    // An upgrade may carry this held task through its paused readback. Settle
+    // only when the host resumes, and leave the original task and files intact.
+    const artifactHolds=this.paused?new Set(heldArtifactReads(this.store,config.stateDir).map(hold=>hold.run.ticketId)):undefined
+    if(!this.paused)reconcileArtifactReads(this.store,config.stateDir)
     for (const run of this.store.list<Run>('run')) {
+      if(artifactHolds?.has(run.ticketId))continue
       if(this.paused&&legacyAnsweredGoalReply(this.store,run)){
         this.recoverAnsweredQuestionsOnResume=true
         continue
@@ -1963,7 +1969,14 @@ export class Runtime {
       this.polls.set(source.config.id,poll)
     }
   }
-  pause(value: boolean,controlId?:string): void { const migration=this.store.get<any>('scope-migration','current');if(!value&&migration&&migration.phase!=='active')throw Error('Complete migration reconciliation and activation before resuming');this.paused = value; this.store.put('settings', 'paused', value); this.store.audit({ type: 'pause', value,...(controlId?{controlId}:{}) }) }
+  pause(value: boolean,controlId?:string): void {
+    const migration=this.store.get<any>('scope-migration','current')
+    if(!value&&migration&&migration.phase!=='active')throw Error('Complete migration reconciliation and activation before resuming')
+    if(!value)reconcileArtifactReads(this.store,this.config.stateDir,id=>this.executionActive(id))
+    this.paused=value
+    this.store.put('settings','paused',value)
+    this.store.audit({type:'pause',value,...(controlId?{controlId}:{})})
+  }
   async cancelRouter(triggerId:string,discussion:string):Promise<void>{
     this.delegation.cancelWhere(t=>t.triggerId===triggerId)
     const batch=this.store.list<{triggerIds:string[];jobIds:string[];phase:string}>('router-candidate').reverse().find(b=>b.triggerIds.includes(triggerId))

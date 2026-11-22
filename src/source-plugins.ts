@@ -5,6 +5,7 @@ import {MessageSource,type Source} from './sources.ts'
 import githubPlugin from '../plugins/github/index.ts'
 import feishuPlugin from '../plugins/feishu/index.ts'
 import {WecomSource} from './connectors/wecom.ts'
+import {DingtalkSource} from './connectors/dingtalk.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
 import {installPluginPackage,pointer,pluginManifestSchema,type PluginPackage} from './plugin-package.ts'
 import {ProcessSource} from './plugin-process.ts'
@@ -36,7 +37,8 @@ export class SourceRegistry {
       ['delegation','Delegated team',(c:SourceConfig)=>new MessageSource(c)],
       ['webhook','HTTP events',(c:SourceConfig)=>new MessageSource(c)],
       ['wecom','WeCom',(c:SourceConfig)=>new WecomSource(c)],
-    ] as const)this.register({apiVersion:1,kind,label,create,...(kind==='wecom'?{scopes:(c:SourceConfig)=>c.wecom?.chats.length?c.wecom.chats:undefined}:{})})
+    ] as const)this.register({apiVersion:1,kind,label,create,...(kind==='wecom'?{scopes:(c:SourceConfig)=>c.options.officePairing===true?c.listenScopes??[]:c.wecom?.chats.length?c.wecom.chats:undefined}:{})})
+    this.register({apiVersion:1,kind:'dingtalk',label:'DingTalk',create:c=>new DingtalkSource(c),scopes:c=>c.listenScopes??[]})
     this.register(githubPlugin)
     this.register(feishuPlugin)
   }

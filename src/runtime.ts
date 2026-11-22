@@ -40,6 +40,8 @@ import {SourceRegistry} from './source-plugins.ts'
 import {activatePluginPackages} from './plugin-package.ts'
 import {ProcessSource} from './plugin-process.ts'
 import {ToolConnections} from './tool-connections.ts'
+import {OfficeMcp} from './office-mcp.ts'
+import {pairedOfficeBot} from './office-groups.ts'
 import {GithubConnector,githubReadSpec,githubWriteSpec} from './github-connector.ts'
 import {GithubError,githubFailure} from './github-errors.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
@@ -145,6 +147,7 @@ export class Runtime {
   readonly usage:UsageLedger
   readonly sourceRegistry:SourceRegistry
   readonly toolConnections:ToolConnections
+  readonly officeMcp:OfficeMcp
   readonly github:GithubConnector
   readonly decision:DecisionLayer
   readonly routerIngress:RouterIngress
@@ -232,7 +235,8 @@ export class Runtime {
       this.settings=initial.settings;this.model=initial.model;this.delegation=new Delegations(this)
     }catch(error){this.approvals.close();this.store.close();unlinkSync(this.lock);throw error}
     this.paused = this.store.get<boolean>('settings', 'paused') ?? false
-    this.toolConnections=new ToolConnections(this)
+    this.officeMcp=new OfficeMcp(config.stateDir,this.store,id=>this.toolConnections.closeOffice(id))
+    this.toolConnections=new ToolConnections(this,this.officeMcp)
     this.github=new GithubConnector(this)
     this.scopes=new RouterScopes(this.store,config,id=>this.controllers.has(id)||[...this.controllers.keys()].some(k=>k.startsWith('router:')),this.sourceRegistry)
     try{this.memory=new RouterMemory(this.store,this.scopes,config.stateDir)}catch(error){this.approvals.close();this.store.close();unlinkSync(this.lock);throw error}
@@ -773,6 +777,12 @@ export class Runtime {
       return this.store.atomic(()=>this.scopes.acceptFeishuDirect(trigger)
         ?this.ingest(trigger):{disposition:'ignored',reason:'private_chat_unavailable',triggerId:trigger.id})
     }
+    if(adapter&&pairedOfficeBot(adapter.config)){
+      return this.store.atomic(()=>{
+        this.scopes.bindPairedOfficeGroup(adapter.config,trigger)
+        return this.ingest(trigger)
+      })
+    }
     if(adapter){
       const buffered=collectFeishuGroupMessage(this,adapter,trigger,this.clock())
       if(buffered)return buffered
@@ -1036,7 +1046,9 @@ export class Runtime {
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
     const githubTools=browserRun&&this.config.work.network?[githubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
-    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(chatBinding?[decisionTool,publicPlanTool]:[])])
+    const officeApps=browserRun&&this.config.work.network&&this.chat.permissionActor(triggerId)
+      ?this.officeMcp.inventory().filter(app=>app.status==='connected').map(app=>app.label):[]
+    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(officeApps.length?[officeApps]:[]),...(chatBinding?[decisionTool,publicPlanTool]:[])])
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,
       ...(selectedSkill?{selectedSkill:{...selectedSkill,notice:'Apply the skill the user selected to this request. Follow the current request and its permitted scope. If delegating, pass the relevant steps to the Worker. Relative references in the skill are relative to its file; use only available tools and report when a required resource is unavailable.'}}:{}),
       ...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
@@ -1203,7 +1215,7 @@ export class Runtime {
         permissionReceipt=action.phase==='approved'?await checkedRouterTool(action.tool,action.args,action.id):{tool:action.tool,state:action.phase,receipt:action.receipt}
       }
       const request:ModelRequest={role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick tool or approval check, use one bounded action and report the observed outcome in the conversation. Do not start a durable goal, require a report file or request additional approvals to document the test unless the user explicitly asks. If a Worker is needed, delegate that single check. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick tool or approval check, use one bounded action and report the observed outcome in the conversation. Do not start a durable goal, require a report file or request additional approvals to document the test unless the user explicitly asks. If a Worker is needed, delegate that single check. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')+(officeApps.length?'\nFor requests involving the connected '+officeApps.join(' or ')+' accounts, delegate to a root Chat Worker and ask it to inspect and use the connection via superagent_tools. Writes follow the current Chat approval mode.':'')
           + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : "")
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:auxiliaryDecision||permissionReceipt||fileReviewReceipt||replyPreferences?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt,replyPreferences}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(withPendingNotice),
@@ -1886,6 +1898,7 @@ export class Runtime {
     for (const controller of this.controllers.values()) controller.abort()
     await this.delegation.close()
     await this.desktop.close()
+    this.officeMcp.close()
     await this.toolConnections.close()
     await this.browser.close()
     await this.projectCode.close()

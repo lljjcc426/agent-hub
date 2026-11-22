@@ -13,6 +13,12 @@ import {WorkerTemplates,WorkerTemplateError} from './worker-templates.ts'
 import {ConnectorManagement,ConnectorError} from './connector-management.ts'
 import {GithubError} from './github-errors.ts'
 import {FeishuPairing,feishuGroupSelection} from './feishu-pairing.ts'
+import {OfficeBotPairing} from './office-bot-pairing.ts'
+import {officeBotKinds} from './office-bot-registration.ts'
+import {officeGroupActivatedAt,pairedOfficeBot} from './office-groups.ts'
+import {OfficeAuthorization,officeAppKinds} from './office-mcp.ts'
+import {DingtalkSource} from './connectors/dingtalk.ts'
+import {WecomSource} from './connectors/wecom.ts'
 import {ExecutionTrace,TraceError} from './execution-trace.ts'
 import {ResourceUsage} from './resource-usage.ts'
 import {isUsageTimeZone} from './usage-statistics.ts'
@@ -34,6 +40,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import {chatScheduleChange} from './chat-schedules.ts'
 import {validTimeZone} from './turn-context.ts'
@@ -86,6 +93,13 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   let delegationServer:Awaited<ReturnType<typeof serveDelegation>>|undefined
   const onboarding=new Onboarding(()=>runtime,options.configurationPreview===true)
   const feishuPairing=new FeishuPairing(()=>runtime,onboarding,join(runtime.config.stateDir,'setup','feishu-pairing.json'))
+  const officePairing=new OfficeBotPairing(()=>runtime,onboarding)
+  const officeAuthorization=new OfficeAuthorization(()=>runtime.officeMcp,async (signal,save)=>{
+    while(changing&&!stopping&&!unavailable)await delay(200,undefined,{signal,ref:false})
+    signal.throwIfAborted()
+    if(stopping||unavailable||runtimeClosed)throw new OnboardingError('configuration_busy','The host is unavailable.',503)
+    save(runtime.officeMcp)
+  })
   const sessions=new OperatorSessions(),entries=new EntrySetup(()=>runtime,onboarding,()=>endpoint,options.configurationPreview===true,options.clientHome,options.clientName)
   async function stopRuntime(){if(!runtimeClosed){library.close(runtime);runtimeClosed=true;closingRuntime=(async()=>{await delegationServer?.close();delegationServer=undefined;await runtime.close()})()}await closingRuntime}
   const localDiagnostics=new LocalDiagnostics(()=>runtime)
@@ -159,6 +173,16 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     const browserOperator=account.configured?account.authorized(req):sessions.authorized(req)
     const local=['::1','127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'') &&
       ['localhost','127.0.0.1','[::1]'].includes(new URL(requestOrigin).hostname)
+    const officeConnector=/^\/api\/connectors\/(dingtalk|wecom|linear|notion)\/(setup(?:\/(?:start|apply))?|disconnect|callback)$/.exec(path)
+    const callbackApp=officeConnector?.[2]==='callback'&&officeAppKinds.find(kind=>kind===officeConnector[1])
+    if(callbackApp&&req.method==='GET'){
+      if(!options.configurationPreview&&!stopping&&!unavailable)
+        officeAuthorization.callback(callbackApp,requestOrigin,new URL(req.url!,requestOrigin).searchParams)
+      res.writeHead(303,{location:'/configure#connectors','referrer-policy':'no-referrer',
+        'content-security-policy':"default-src 'none'; frame-ancestors 'none'"})
+      res.end()
+      return
+    }
     if(path==='/terminal/pair' || path.startsWith('/api/terminal/pair/')){
       if(!local||options.configurationPreview){send(res,403,{code:'local_host_required'});return}
       if(path==='/terminal/pair'&&req.method==='GET'){
@@ -257,10 +281,30 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     // Connector identities may only submit to their configured source.
     if (req.method === 'POST' && path.startsWith('/events/')) {
       const id = decodeURIComponent(path.slice('/events/'.length))
-      const source = runtime.sources.get(id)?.config
+      const receivingRuntime = runtime
+      const adapter = receivingRuntime.sources.get(id)
+      const source = adapter?.config
       const secret = source?.tokenEnv && process.env[source.tokenEnv]
       if (!source || source.kind === 'local' || !secret || !authorized(req, secret)) { send(res, 401, { error: 'Unauthorized connector' }); return }
       const input = z.object({ actor: z.string().min(1).max(300), human: z.boolean(), event: incomingSchema }).strict().parse(await body(req))
+      if((adapter instanceof DingtalkSource||adapter instanceof WecomSource)&&pairedOfficeBot(source)){
+        const {event}=input
+        if(runtime!==receivingRuntime||changing||unavailable||runtimeClosed||stopping){
+          send(res,503,{code:'configuration_restarting'});return
+        }
+        if(event.addressed||!event.scope||!event.at||!runtime.sourceRegistry.allowsScope(source,event.scope)||!adapter.validThread(event.thread)){
+          send(res,400,{code:'office_group_event_invalid'});return
+        }
+        const at=Date.parse(event.at)
+        if(!Number.isFinite(at)||at>Date.now()+60_000){send(res,400,{code:'office_group_event_stale'});return}
+        const activeAt=officeGroupActivatedAt(runtime.store,source.id,event.scope)
+        if(activeAt===undefined||at<activeAt){
+          send(res,202,{disposition:'ignored',reason:'office_group_before_activation'});return
+        }
+        const outcome=adapter.observe(event,input.actor,input.human)
+        send(res,outcome&&typeof outcome==='object'&&'disposition'in outcome&&outcome.disposition==='unavailable'?503:202,outcome)
+        return
+      }
       send(res, 202, runtime.receive(id, input.actor, input.event, input.human))
       return
     }
@@ -361,6 +405,38 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(req.method==='GET'&&path==='/api/local-diagnostics'){send(res,200,localDiagnostics.snapshot());return}
       if(req.method==='POST'&&path==='/api/local-diagnostics/probe'){send(res,200,await localDiagnostics.check(await operatorBody(req),()=>requireCurrentOperator(req)));return}
       send(res,405,{code:'method_not_allowed'});return
+    }
+    if(officeConnector){
+      const kind=officeConnector[1],action=officeConnector[2]
+      const app=officeAppKinds.find(value=>value===kind),bot=officeBotKinds.find(value=>value===kind)
+      requireCurrentOperator(req)
+      if(action==='setup'&&req.method==='GET'){
+        send(res,200,app?officeAuthorization.status(app):officePairing.status(bot!))
+        return
+      }
+      if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
+      if(options.configurationPreview){send(res,403,{code:'preview_restricted'});return}
+      const input=await operatorBody(req)
+      const authorize=()=>requireCurrentOperator(req)
+      if(app&&action==='setup/start'){
+        z.object({}).strict().parse(input)
+        send(res,200,officeAuthorization.start(app,requestOrigin,()=>requireApplyOperator(req)));return
+      }
+      if(app&&action==='disconnect'){
+        z.object({}).strict().parse(input)
+        send(res,200,officeAuthorization.disconnect(app));return
+      }
+      if(bot&&action==='setup/start'){
+        const {sourceId,reset}=z.object({sourceId:z.string().regex(/^[a-z][a-z0-9_-]*$/).max(100).optional(),reset:z.boolean().default(false)}).strict().parse(input)
+        send(res,200,officePairing.start(bot,sourceId,reset,authorize));return
+      }
+      if(bot&&action==='setup/apply'){
+        const {id,groups}=z.object({id:z.string().uuid(),groups:z.array(z.string().min(1).max(200)).min(1).max(50)}).strict().parse(input)
+        changing=true
+        try{send(res,200,await officePairing.apply(bot,id,groups,rebuild,()=>requireApplyOperator(req)))}finally{changing=false}
+        return
+      }
+      send(res,404,{code:'not_found'});return
     }
     if(path==='/api/connectors'||path.startsWith('/api/connectors/')){
       requireCurrentOperator(req)
@@ -953,7 +1029,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(runtime.config.port, runtime.config.http?.listenHost??'127.0.0.1', resolve) })
   let webhookListener:Awaited<ReturnType<typeof serveWebhooks>>|undefined
   try{if(runtime.config.webhooks&&!options.configurationPreview)webhookListener=await serveWebhooks(()=>runtime,runtime.config.webhooks.port,()=>!changing&&!unavailable&&!runtimeClosed)}catch(error){server.close();throw error}
-  server.once('close',()=>{feishuPairing.close();void webhookListener?.close().catch(()=>{})})
+  server.once('close',()=>{feishuPairing.close();officePairing.close();officeAuthorization.close();void webhookListener?.close().catch(()=>{})})
   const address = server.address() as { port: number }
   runtime.endpoint='http://'+(runtime.config.http?.listenHost==='::1'?'[::1]':'127.0.0.1')+':'+address.port
   endpoint=runtime.endpoint
@@ -961,7 +1037,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
   try{atomicPrivateFile(connectionFile,JSON.stringify({application:'agent-hub',version:1,url:endpoint,accessToken:token},null,2)+'\n')}catch(error){await new Promise<void>(r=>server.close(()=>r()));throw error}
   try{delegationServer=runtime.delegation.enabled?await serveDelegation(runtime.delegation,runtime.delegation.preferredPort):undefined}catch(error){await new Promise<void>(resolve=>server.close(()=>resolve()));await runtime.close();throw error}
   runtime.start()
-  return {server,url:endpoint,webhookUrl:webhookListener?.url,operatorUrl:sessions.link(runtime.config.http?.publicOrigin??endpoint),tokenPath,connectionFile,get runtime(){return runtime},async closeRuntime(){stopping=true;feishuPairing.close();await webhookListener?.close().catch(()=>{});await stopRuntime()}}
+  return {server,url:endpoint,webhookUrl:webhookListener?.url,operatorUrl:sessions.link(runtime.config.http?.publicOrigin??endpoint),tokenPath,connectionFile,get runtime(){return runtime},async closeRuntime(){stopping=true;feishuPairing.close();officePairing.close();officeAuthorization.close();await webhookListener?.close().catch(()=>{});await stopRuntime()}}
 }
 function send(response: ServerResponse, status: number, value: unknown) {
   if (!response.headersSent) response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })

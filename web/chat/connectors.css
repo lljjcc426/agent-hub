@@ -161,3 +161,27 @@
   gap: 4px;
   margin-inline-end: 14px;
 }
+
+.connector-group-picker > p {
+  margin: 0;
+}
+.connector-group-code,
+.connector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.connector-group-code {
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--rp-line);
+  border-radius: var(--rp-corner-field);
+}
+.connector-group-code code {
+  color: var(--rp-ink);
+  overflow-wrap: anywhere;
+}
+.connector-group-picker > .rp-button {
+  justify-self: start;
+}

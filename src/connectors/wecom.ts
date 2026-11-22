@@ -2,9 +2,10 @@ import {WSClient, decryptFile, type WSClientOptions} from '@wecom/aibot-node-sdk
 import {createHash} from 'node:crypto'
 import {mkdirSync,writeFileSync,readFileSync,existsSync} from 'node:fs'
 import {join,basename} from 'node:path'
-import {MessageSource,UncertainDelivery,bodyDigest,type SourceContext} from '../sources.ts'
+import {MessageSource,UncertainDelivery,bodyDigest,type Incoming,type SourceContext} from '../sources.ts'
 import type {SourceConfig} from '../config.ts'
 import type {Trigger,OutboundMessage} from '../vendor/dsh-core/index.ts'
+import {captureOfficeGroup} from '../office-groups.ts'
 import {imageResource} from '../resources.ts'
 
 export interface WecomTransport {
@@ -47,7 +48,8 @@ export class WecomSource extends MessageSource {
  private get options(){return this.config.wecom!}
  private get botId(){const id=process.env[this.options.botIdEnv];if(!id?.trim())throw Error('Missing WeCom bot ID environment variable');return id.trim()}
  private health(status:string){this.ctx?.store.put('source-live',this.config.id,{source:this.config.id,status,at:Date.now(),authenticated:this.authenticated})}
- private permitted(chat:string){return this.options.chats.includes(chat)||this.discovered.has(chat)}
+ private get paired(){return this.config.options.officePairing===true}
+ private permitted(chat:string){return this.paired?this.config.listenScopes?.includes(chat)===true:this.options.chats.includes(chat)||this.discovered.has(chat)}
  validThread(thread:string){
   try{const [kind,...parts]=thread.split(':'),id=decodeURIComponent(parts.join(':'));return valid(id)&&(kind==='single'?this.options.directMessages:kind==='group'&&this.permitted(id))}catch{return false}
  }
@@ -76,7 +78,7 @@ export class WecomSource extends MessageSource {
  async poll(){if(!this.authenticated)throw Error('企业微信机器人尚未连接。请检查 Bot ID、Secret 和当前企业的机器人权限。')}
  private ingest(record:Inbox){
   const ctx=this.ctx!;if(this.closing)return
-  ctx.store.atomic(()=>{ctx.receive(record.trigger);record.ingested=true;ctx.store.put('wecom-inbox',record.key,record)})
+  return ctx.store.atomic(()=>{const outcome=ctx.receive(record.trigger);record.ingested=true;ctx.store.put('wecom-inbox',record.key,record);return outcome})
  }
  async receiveFrame(frame:any){
   const ctx=this.ctx,body=frame?.body
@@ -84,8 +86,10 @@ export class WecomSource extends MessageSource {
   const group=body.chattype==='group',single=body.chattype==='single'
   if(!group&&!single||single&&!this.options.directMessages||group&&!valid(body.chatid))return
   const chat=group?body.chatid:body.from.userid
+  if(group&&this.paired&&body.msgtype==='text'&&typeof body.text?.content==='string'&&
+    captureOfficeGroup(ctx.store,this.config.id,{id:chat,actor:body.from.userid},body.text.content))return
   // The official smart-bot callback only supplies group messages addressed to this bot.
-  if(group&&!this.permitted(chat)){if(this.options.otherChats!=='mentions')return;this.discovered.add(chat)}
+  if(group&&!this.permitted(chat)){if(this.paired||this.options.otherChats!=='mentions')return;this.discovered.add(chat)}
   const parts:any[]=body.msgtype==='mixed'?body.mixed?.msg_item??[]:[body]
   if(!Array.isArray(parts)||parts.length>10)throw Error('Invalid or oversized WeCom message parts')
   const assets:Asset[]=[],downloads:{url:string;key?:string}[]=[],texts:string[]=[]
@@ -130,6 +134,26 @@ export class WecomSource extends MessageSource {
   }else for(const a of assets)a.error='Sender is not in the allowed list; media was not downloaded'
   this.ingest(record)
  }
+ /** An explicitly configured enterprise message feed supplies ordinary messages.
+  * A feed never extends the provider's active-send window or creates an @ mention. */
+ observe(input:Incoming,actor:string,human:boolean){
+  const ctx=this.ctx,chat=input.scope
+  if(!ctx||!this.config.enabled||this.closing)return {disposition:'unavailable'}
+  if(!valid(chat)||input.thread!=='group:'+encodeURIComponent(chat)||!input.at)throw Error('A scoped WeCom message is required')
+  if(!this.permitted(chat))return {disposition:'ignored'}
+  const key=this.config.id+':'+digest(input.id)
+  if(ctx.store.get<Inbox>('wecom-inbox',key))return {disposition:'duplicate'}
+  const trigger=this.trigger({id:'message:'+digest(input.id),thread:input.thread,text:input.text,addressed:false,at:input.at},actor,human)
+  trigger.meta={scope:chat,chat,chatType:'group',messageKey:key,messageId:input.id,resource:'wecom/'+trigger.id+'/message'}
+  trigger.channel!.address={chat,messageKey:key}
+  const record:Inbox={key,trigger,view:{id:input.id,chat,type:'text',from:actor,text:input.text},assets:[],
+   digest:bodyDigest({chat,actor,human,text:input.text}),receivedAt:Date.now(),ingested:false}
+  return ctx.store.atomic(()=>{
+   const outcome=this.ingest(record)
+   ctx.store.put('office-group-observed',this.config.id+':'+chat,{at:Date.now()})
+   return outcome
+  })
+ }
  async context(thread:string){
   if(!this.validThread(thread)||!this.ctx)throw Error('WeCom conversation is not available')
   return this.ctx.store.list<Inbox>('wecom-inbox').filter(r=>r.trigger.source===this.config.id&&r.trigger.threads[0]?.id===thread).sort((a,b)=>a.receivedAt-b.receivedAt).slice(-20).map(r=>r.view)
@@ -150,7 +174,7 @@ export class WecomSource extends MessageSource {
   const r=this.ctx.store.get<Inbox>('wecom-inbox',message.channel.address.messageKey??'')
   if(!r||r.trigger.source!==this.config.id||r.trigger.channel?.thread!==message.channel.thread||r.trigger.channel.address.chat!==message.channel.address.chat)throw Error('WeCom delivery is outside the original conversation')
   if(!this.validThread(r.trigger.threads[0]?.id??''))throw Error('WeCom conversation is no longer configured; nothing was sent')
-  const latest=Math.max(...this.ctx.store.list<Inbox>('wecom-inbox').filter(x=>x.trigger.source===this.config.id&&x.trigger.channel?.thread===r.trigger.channel!.thread).map(x=>x.receivedAt))
+  const latest=Math.max(...this.ctx.store.list<Inbox>('wecom-inbox').filter(x=>x.trigger.source===this.config.id&&x.trigger.channel?.thread===r.trigger.channel!.thread&&x.trigger.addressed==='direct').map(x=>x.receivedAt))
   if(Date.now()-latest>23.9*3600000)throw Error('WeCom active-message window expired; ask a person to send a fresh message before retrying')
   if(Buffer.byteLength(message.text)>20000)throw Error('WeCom reply exceeds the text limit; shorten it or deliver an artifact')
   try{await this.client.sendMessage(String(r.trigger.meta.chat),{msgtype:'markdown',markdown:{content:message.text}})}catch{throw new UncertainDelivery('WeCom send outcome unknown; check the conversation before an explicit retry')}

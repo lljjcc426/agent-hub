@@ -27,3 +27,8 @@ Model connection assets added 2026-11-17:
 - `opencode.png`: https://opencode.ai/favicon-96x96-v3.png (linked by the official OpenCode website).
 
 Only file format/size was adapted; brand artwork and supplied light/dark colors are retained. Unknown/custom providers use the neutral connection glyph. No provider image is fetched at runtime.
+
+Connector marks added 2026-11-22 from the official services:
+
+- `dingtalk.png`: app artwork from the official DingTalk listing https://apps.apple.com/cn/app/id930368978, converted to PNG.
+- `notion.ico`: https://www.notion.com/front-static/favicon.ico.

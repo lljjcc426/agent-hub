@@ -1,13 +1,17 @@
 import {scopeContextBytes} from './execution-limits.ts'
 import {z} from 'zod'
 import {randomUUID} from 'node:crypto'
-import type {Config} from './config.ts'
+import type {Config,SourceConfig} from './config.ts'
 import type {Store,Run} from './store.ts'
 import type {Trigger} from './vendor/dsh-core/index.ts'
 import {stableDigest} from './sources.ts'
 import {executionSchema} from './backend-config.ts'
+import {dingtalkBotSettings} from './connector-config.ts'
 import {builtinSources,type SourceRegistry} from './source-plugins.ts'
 import {feishuDirectThread} from './connectors/feishu.ts'
+import {pairedOfficeBot} from './office-groups.ts'
+import {workerProfiles} from './worker-pool.ts'
+import {configuredWorkerBackends} from './worker-catalog.ts'
 
 const id=z.string().min(1).max(300)
 const scopeInput=z.object({id,tenantId:id,name:id,managers:z.array(id).min(1),workerIds:z.array(id),teamTargetIds:z.array(id).optional(),sourceIds:z.array(id),backendIds:z.array(id),dataEntryIds:z.array(id).default([]),router:executionSchema.unwrap().shape.router.optional(),memoryEnabled:z.boolean().default(true),contextBytes:z.number().int().min(4096).max(scopeContextBytes.max).default(scopeContextBytes.default)}).strict()
@@ -87,6 +91,29 @@ export class RouterScopes {
   this.store.put('entry-binding',id,{id,tenantId:scopeId,sourceId:source.id,provider:'feishu',
    accountNamespace:namespace,nativeId:chat,scopeId,revision:1,active:true,history:'unknown',privateActor:actor} satisfies EntryBinding)
   return true
+ }
+ /** Establish an isolated entry for a group confirmed in local operator setup. */
+ bindPairedOfficeGroup(source:SourceConfig,trigger:Trigger){
+  const principal=source.options.officeBotPrincipal,chat=this.nativeId(trigger)
+  if(!pairedOfficeBot(source)||!source.enabled||!source.capabilities.events||typeof principal!=='string'||!principal||
+    !source.listenScopes?.includes(chat)||!this.registry.allowsScope(source,chat)||!this.enabled()||this.entry(trigger))return
+  const principalEnv=source.kind==='dingtalk'?dingtalkBotSettings.parse(source.options.dingtalk).appIdEnv:source.wecom?.botIdEnv
+  if(!principalEnv||process.env[principalEnv]!==principal)return
+  const namespace=source.kind+':bot:'+principal
+  const identity=this.store.get<{namespace:string}>('source-identity',source.id)
+  if(identity&&identity.namespace!==namespace)return
+  if(!identity)this.store.put('source-identity',source.id,{sourceId:source.id,namespace,provider:source.kind,principal,type:'bot',revision:1,verifiedAt:Date.now()})
+
+  const key=stableDigest([source.id,namespace,chat]),scopeId='@office-group:'+key
+  if(!this.store.get('management-scope',scopeId)){
+   this.command({action:'scope.put',operationId:'office-group-scope:'+key,expectedRevision:0,scope:{
+    id:scopeId,tenantId:scopeId,name:source.label??source.kind,
+    // Confirmation in a group is not permission to manage the Router.
+    managers:['@operator'],workerIds:workerProfiles(this.config).map(worker=>worker.id),sourceIds:[source.id],
+    backendIds:Object.keys(configuredWorkerBackends(this.config)),
+   }})
+  }
+  this.command({action:'entry.bind',operationId:'office-group-entry:'+key,expectedRevision:0,scopeId,sourceId:source.id,accountNamespace:namespace,nativeId:chat,history:'group'})
  }
  triggerRestriction(t:Trigger):'input_changed'|'entry_unavailable'|'member_unavailable'|undefined {
   if(this.store.get('source-invalid-trigger',t.id))return 'input_changed'

@@ -60,6 +60,37 @@ flowchart LR
 
 生成器返回启动命令。启动后在控制台确认发送者，群里使用 `/agent 请比较附件中的两版要求` 等自然请求。`mentionId` 需设为实际 bot ID 才能可靠识别仅 @ 的请求；初始化时也可先用 `/agent`。完整配置仍可调整允许列表、工作区、模型和其他来源。
 
+### 钉钉和企业微信扫码
+
+「设置 → 连接 → 连接器」里打开钉钉或企业微信，用对应 App 扫码。在目标群添加机器人，@ 它并发送 Roppo 显示的确认码，回来勾选一个或多个群。在「管理」可以增减群聊，确认码发送者沿用现有成员准入。
+
+机器人回调收到的 @ 消息按直接对话处理。平台确实送来的普通消息按 Roppo 当前行为规则和群范围判断。钉钉的 [Stream 机器人回调](https://opensource.dingtalk.com/developerpedia/docs/learn/stream/protocol/) 和 [企微智能机器人](https://intl.cloud.tencent.com/zh/document/product/1316/84454) 的标准扫码授权提供群里的 @ 消息。钉钉普通消息可以由企业授权的 [DWS 指定群事件](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/skills/multi/dingtalk-event/references/event-im-keys.md) 提供，企微可通过管理员开通的 [会话内容存档](https://developer.work.weixin.qq.com/document/path/91774) 提供。上述普通消息授权与平台数据采集需单独完成，扫码后的接入页面以收到消息为准。
+
+已获授权的消息转发服务可用对应机器人的 `POST /events/<sourceId>` 提交普通文本，鉴权使用该来源的 `tokenEnv` 凭据。发送已确认不含机器人 @ 的新消息，保留原始消息 ID 和时间，并映射到该机器人来源已授权的群 ID 与成员 ID。Roppo 按来源和原始消息 ID 去重，保留现有成员及行为规则。机器人回调仍负责 @ 对话。企微主动回发窗口沿用官方机器人通道。
+
+```json
+{
+  "actor": "native-sender-id",
+  "human": true,
+  "event": {
+    "id": "native-message-id",
+    "scope": "native-chat-id",
+    "thread": "group:native-chat-id",
+    "text": "消息正文",
+    "addressed": false,
+    "at": "2026-11-22T08:00:00.000Z"
+  }
+}
+```
+
+`thread` 由 `group:` 和 `encodeURIComponent(scope)` 拼接。转发服务的授权范围应当与勾选群一致。Roppo 只处理群启用后的普通消息，移除后重新添加的群从本次启用开始。企业微信只能在平台仍允许主动发消息的会话回发，接入普通消息不会延长该窗口。
+
+使用管理范围的宿主会为已确认的群建立独立会话入口，沿用已有群绑定和全局行为规则。回退到旧版时，扫码保存的机器人暂时停用。升级回来后可继续使用原有配置。
+
+### Linear 和 Notion
+
+在连接器点「连接」，在官方页面确认即可。Roppo 确认能读取工具后保存授权，重启后可继续使用。授权中遇到配置重载时可继续完成确认。授权登录需在 Roppo 宿主的浏览器完成。个人 Chat 的 Worker 可以使用已连接的工具，写操作沿用 Chat 审批。OAuth 授权存在宿主的私有状态目录，备份迁移后可在连接器中重新授权。
+
 ### 企业微信配置
 
 ```sh
@@ -116,7 +147,6 @@ SQLite 备份不包含 `wecom-media`、`assets` 里的附件或工作文件，�
 
 | 软件 | 官方接入方式 | 易用性取舍 |
 |---|---|---|
-| 钉钉 | 企业内部应用机器人 + Stream，见 [官方 Node SDK](https://github.com/open-dingtalk/dingtalk-stream-sdk-nodejs) | 与当前两款的长连接架构接近，可继续使用 Source；需应用创建及范围授权 |
 | Slack | 应用 + Socket Mode + App/Bot token，见 [官方说明](https://docs.slack.dev/apis/events-api/using-socket-mode/) | 不要求事件 Request URL，适合工作区内部部署；应用安装与权限仍需管理员或所有者处理 |
 | Teams | Teams 机器人/Agent 应用及消息服务端点，见 [官方创建说明](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/quickstart-create-agent-teams-sdk) | 先设计稳定的 HTTPS 服务部署，再补企业身份和会话映射；不假定能直接复用长连接配置 |
 

@@ -15,6 +15,7 @@ import type {Runtime} from './runtime.ts'
 import type {WorkOwner} from './work.ts'
 import type {ToolContent} from './model.ts'
 import type {ToolConnection} from './connector-config.ts'
+import {officeAppKinds,type AppToolGrant,type OfficeMcp} from './office-mcp.ts'
 
 interface Receipt {id:string;ticketId:string;agentId?:string;connection:string;tool:string;fingerprint:string;state:'running'|'complete'|'uncertain';result?:any;reason?:string}
 type ToolResult={success:boolean;contentItems:ToolContent[]}
@@ -47,6 +48,7 @@ function toolFailure(operation:Operation,error:unknown,signal?:AbortSignal){
   }
   return new OperationError(operation,'operation_failed')
 }
+type AuthorizedConnection = { config: ToolConnection; app?: AppToolGrant }
 interface Connection {client:Client;ready:Promise<Client>;controller:AbortController}
 /** Outbound MCP is independent of conversation sources and model backends. */
 export class ToolConnections {
@@ -54,13 +56,24 @@ export class ToolConnections {
   private readonly calls=new Map<string,{fingerprint:string;promise:Promise<ToolResult>;controller:AbortController;owner:WorkOwner}>()
   private closing=false
   private readonly shutdown=new AbortController()
-  constructor(private readonly host:Runtime){
+  constructor(private readonly host:Runtime,private readonly officeMcp?:OfficeMcp){
     for(const receipt of host.store.list<Receipt>('tool-receipt'))if(receipt.state==='running')host.store.put('tool-receipt',receipt.id,{...receipt,state:'uncertain',reason:'Host stopped during the call; inspect the destination before issuing a new request'})
   }
   configured(){return Object.entries(this.host.config.toolConnections).map(([id,c])=>({id,label:c.label??id,enabled:c.enabled,transport:c.transport.kind,...(c.transport.kind==='cli-mcp'?{workers:c.transport.workers}:{}),allowedTools:c.allowedTools}))}
   receipts(ticketId?:string){return this.host.store.list<Receipt>('tool-receipt').filter(r=>!ticketId||r.ticketId===ticketId).map(({result,fingerprint,...r})=>({...r,resource:'tool-call/'+r.id}))}
-  private allowed(owner:WorkOwner,id:string){
+  private personalOfficeTools(owner:WorkOwner){
+    if(owner.agentId||!this.host.config.work.network||owner.network===false||this.host.delegation.forTicket(owner.ticketId))return false
+    const trigger=this.host.taskAuthority(owner.ticketId)?.parentTrigger??this.host.store.tickets.get(owner.ticketId)?.origin.triggerId
+    return !!trigger&&!!this.host.chat.permissionActor(trigger,owner.ticketId)
+  }
+  private allowed(owner:WorkOwner,id:string,expected?:AuthorizedConnection):AuthorizedConnection{
     if(this.closing||!this.host.validWork(owner))throw Error('Assignment capability has ended')
+    const kind=officeAppKinds.find(kind=>'@'+kind===id)
+    if(kind){
+      const app=this.officeMcp&&this.personalOfficeTools(owner)?this.officeMcp.access(kind):undefined
+      if(!app||expected&&expected.app?.id!==app.id)throw Error('App connection is unavailable for this Chat task')
+      return {config:app.config,app}
+    }
     const grant=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.toolConnections??[]
     const connection=this.host.config.toolConnections[id]
     if(!grant.includes(id)||!connection?.enabled)throw Error('Tool connection is not enabled for this Worker')
@@ -69,9 +82,9 @@ export class ToolConnections {
       if(!worker||!connection.transport.workers.includes(worker))throw Error('CLI profile is not granted to this Worker')
       verifyCliMcpGrant(connection.transport,connection.allowedTools)
     }
-    return connection
+    return {config:connection}
   }
-  private connect(id:string,c:ToolConnection=this.host.config.toolConnections[id]!,headers?:Record<string,string>):Promise<Client>{
+  private connect(id:string,c:ToolConnection=this.host.config.toolConnections[id]!,headers?:Record<string,string>,app?:AppToolGrant):Promise<Client>{
     const existing=this.clients.get(id);if(existing)return existing.ready
     const client=new Client({name:'agenthub-tools',version:'1.0.0'},{capabilities:{},jsonSchemaValidator:schemas})
     const entry:Connection={client,ready:Promise.resolve(client),controller:new AbortController()}
@@ -80,7 +93,7 @@ export class ToolConnections {
         const resolveEnv=(refs:Record<string,string>)=>Object.fromEntries(Object.entries(refs).map(([key,env])=>{const value=process.env[env];if(!value)throw new OperationError('tool_initialize','configuration_invalid');return [key,value]}))
         const t=c.transport
         if(t.kind==='plugin')throw Error('Native plugin tools do not use an MCP transport')
-        const transport=t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:maxWireBytes}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:headers??resolveEnv(t.headerEnv),redirect:'error'}})
+        const transport=app?this.officeMcp!.transport(app):t.kind==='cli-mcp'?cliMcpTransport(t,c.allowedTools):t.kind==='stdio'?new StdioClientTransport({command:t.command,args:t.args,cwd:t.cwd,env:{...getDefaultEnvironment(),...resolveEnv(t.env)},stderr:'ignore',maxBufferSize:maxWireBytes}):new StreamableHTTPClientTransport(new URL(t.url),{requestInit:{headers:headers??resolveEnv(t.headerEnv),redirect:'error'}})
         client.onclose=()=>{if(this.clients.get(id)===entry)this.clients.delete(id)}
         await client.connect(transport,{timeout:c.timeoutMs,signal:entry.controller.signal});if(this.closing)throw Error('Host is stopping');return client
       }catch(error){await client.close().catch(()=>{});throw toolFailure('tool_initialize',error,entry.controller.signal)}
@@ -89,10 +102,11 @@ export class ToolConnections {
     void entry.ready.catch(()=>{if(this.clients.get(id)===entry)this.clients.delete(id)})
     return entry.ready
   }
-  private async tools(owner:WorkOwner,id:string,signal?:AbortSignal):Promise<Tool[]>{
-    const config=this.allowed(owner,id)
-    return this.listDeclared(id,config,()=>this.allowed(owner,id),signal)
+  private async tools(owner:WorkOwner,id:string,connection:AuthorizedConnection,signal?:AbortSignal):Promise<Tool[]>{
+    return this.listDeclared(this.key(id,connection),connection.config,()=>this.allowed(owner,id,connection),signal,undefined,connection.app)
   }
+  private key(id:string,connection:AuthorizedConnection){return connection.app?'@office:'+connection.app.id:id}
+  closeOffice(id:string){void this.closeClient('@office:'+id)}
   async inspect(id:string){
     const config=this.host.config.toolConnections[id]
     const check=()=>{
@@ -102,14 +116,14 @@ export class ToolConnections {
     check()
     return this.listDeclared(id,config!,check,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config!.timeoutMs)]))
   }
-  private async listDeclared(id:string,config:ToolConnection,check:()=>void,signal?:AbortSignal,headers?:Record<string,string>):Promise<Tool[]>{
+  private async listDeclared(id:string,config:ToolConnection,check:()=>void,signal?:AbortSignal,headers?:Record<string,string>,app?:AppToolGrant):Promise<Tool[]>{
     if(config.transport.kind==='plugin'){
       const source=this.host.sources.get(config.transport.sourceId)
       if(!(source instanceof ProcessSource)||!this.host.config.sources.find(s=>s.id===source.config.id)?.enabled)throw Error('Plugin connection is unavailable')
       return source.pkg.manifest.tools.filter(t=>config.allowedTools.includes(t.name)).map(t=>({name:t.name,description:t.description,inputSchema:t.inputSchema as Tool['inputSchema']}))
     }
     let client:Client
-    try{client=await abortable(this.connect(id,config,headers),signal)}catch(error){throw toolFailure('tool_initialize',error,signal)}
+    try{client=await abortable(this.connect(id,config,headers,app),signal)}catch(error){throw toolFailure('tool_initialize',error,signal)}
     const result:Tool[]=[],seen=new Set<string>();let cursor:string|undefined
     do{
       signal?.throwIfAborted();check()
@@ -118,6 +132,7 @@ export class ToolConnections {
       if(result.length>20_000||seen.size>=1_000||cursor&&seen.has(cursor))throw Error('Tool catalog pagination did not finish')
       if(cursor)seen.add(cursor)
     }while(cursor)
+    check()
     return result.filter(t=>config.allowedTools.includes(t.name))
   }
   // These sessions belong to a host connector and never appear in a Worker's
@@ -138,38 +153,45 @@ export class ToolConnections {
     try{return {result:await client.callTool({name:tool.name,arguments:input},undefined,{signal:bound,timeout:config.timeoutMs})} as const}
     catch(error){void this.closeManaged(id);throw error}
   }
-  async closeManaged(id:string){
-    const key='@managed:'+id,entry=this.clients.get(key)
+  async closeManaged(id:string){await this.closeClient('@managed:'+id)}
+  private async closeClient(key:string){
+    const entry=this.clients.get(key)
     if(!entry)return
     this.clients.delete(key)
     entry.controller.abort()
     await entry.client.close().catch(()=>{})
   }
   async permission(owner:WorkOwner,id:string,name:string){
-    const config=this.allowed(owner,id)
-    const tool=(await this.tools(owner,id,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs)]))).find(t=>t.name===name)
+    const connection=this.allowed(owner,id),{config,app}=connection
+    const tool=(await this.tools(owner,id,connection,AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs)]))).find(t=>t.name===name)
     if(!tool)throw Error('Tool is not advertised by the configured connection')
     return {readOnly:config.transport.kind==='plugin'||tool.annotations?.readOnlyHint===true&&tool.annotations.destructiveHint!==true,
-      version:stableDigest([config,tool.inputSchema])}
+      version:stableDigest(app?[config,tool.inputSchema,app.id]:[config,tool.inputSchema])}
   }
   async catalog(owner:WorkOwner,selection:{connection?:string;tool?:string}={}){
     const ids:string[]=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.toolConnections??[]
     const result=[]
+    if(!selection.connection&&this.officeMcp&&this.personalOfficeTools(owner)){
+      for(const kind of officeAppKinds){
+        const app=this.officeMcp.access(kind)
+        if(app)result.push({connection:'@'+kind,tools:app.config.allowedTools.map(name=>({name}))})
+      }
+    }
     for(const id of selection.connection?[selection.connection]:ids){
-      const config=this.allowed(owner,id)
-      const signal=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(config.timeoutMs)])
-      const tools=await this.tools(owner,id,signal)
+      const connection=this.allowed(owner,id)
+      const signal=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(connection.config.timeoutMs)])
+      const tools=await this.tools(owner,id,connection,signal)
       if(selection.tool&&!tools.some(t=>t.name===selection.tool))throw Error('Tool is not advertised by the configured MCP server')
       result.push({connection:id,tools:selection.tool?tools.filter(t=>t.name===selection.tool).map(({name,description,inputSchema,annotations})=>({name,description,inputSchema,annotations})):tools.map(({name})=>({name}))})
     }
     return result
   }
   call(owner:WorkOwner,input:{connection:string;tool:string;arguments:Record<string,unknown>;requestId:string}):Promise<ToolResult>{
-    const config=this.allowed(owner,input.connection)
+    const connection=this.allowed(owner,input.connection),{config,app}=connection
     if(!config.allowedTools.includes(input.tool))throw Error('Tool is not allowed on this connection')
     if(config.transport.kind==='plugin')this.pluginAuthorization(owner,input)
     if(JSON.stringify(input.arguments).length>100000)throw Error('Tool arguments exceed 100 KB')
-    const id=bodyDigest([owner.ticketId,owner.agentId??'',input.requestId]),fingerprint=stableDigest([input.connection,config,input.tool,input.arguments])
+    const id=bodyDigest([owner.ticketId,owner.agentId??'',input.requestId]),fingerprint=stableDigest(app?[input.connection,config,input.tool,input.arguments,app.id]:[input.connection,config,input.tool,input.arguments])
     const inflight=this.calls.get(id)
     if(inflight){if(inflight.fingerprint!==fingerprint)throw Error('Tool requestId was reused with different content');return inflight.promise}
     const receipt=this.host.store.get<Receipt>('tool-receipt',id)
@@ -178,18 +200,19 @@ export class ToolConnections {
       if(this.host.store.get<TaskContinuation>('task-continuation',owner.ticketId)?.priorToolCalls.includes(id))return Promise.resolve({success:false,contentItems:[{type:'inputText',text:JSON.stringify({id:receipt.id,state:receipt.state,body:'quarantined',replayed:false})}]})
       return Promise.resolve(this.result(receipt))
     }
-    const controller=new AbortController(),signal=AbortSignal.any([controller.signal,AbortSignal.timeout(config.timeoutMs)]),promise=this.execute(owner,input,id,fingerprint,signal).finally(()=>this.calls.delete(id))
+    const controller=new AbortController(),signal=AbortSignal.any([controller.signal,AbortSignal.timeout(config.timeoutMs)]),promise=this.execute(owner,input,id,fingerprint,connection,signal).finally(()=>this.calls.delete(id))
     this.calls.set(id,{fingerprint,promise,controller,owner})
     return promise
   }
-  private async execute(owner:WorkOwner,input:{connection:string;tool:string;arguments:Record<string,unknown>;requestId:string},id:string,fingerprint:string,signal:AbortSignal):Promise<ToolResult>{
-    const config=this.allowed(owner,input.connection),tools=await this.tools(owner,input.connection,signal),tool=tools.find(t=>t.name===input.tool)
+  private async execute(owner:WorkOwner,input:{connection:string;tool:string;arguments:Record<string,unknown>;requestId:string},id:string,fingerprint:string,connection:AuthorizedConnection,signal:AbortSignal):Promise<ToolResult>{
+    const {config,app}=connection,key=this.key(input.connection,connection)
+    const tools=await this.tools(owner,input.connection,connection,signal),tool=tools.find(t=>t.name===input.tool)
     if(!tool)throw Error('Tool is not advertised by the configured MCP server')
     if(tool.execution?.taskSupport==='required')throw Error('This tool requires MCP task execution, which is not supported by this adapter')
     const validation=schemas.getValidator(tool.inputSchema)(input.arguments)
     if(!validation.valid)return {success:false,contentItems:[{type:'inputText',text:'Invalid tool arguments: '+validation.errorMessage}]}
-    const client=config.transport.kind==='plugin'?undefined:await this.connect(input.connection)
-    signal.throwIfAborted();this.allowed(owner,input.connection)
+    const client=config.transport.kind==='plugin'?undefined:await this.connect(key,config,undefined,app)
+    signal.throwIfAborted();this.allowed(owner,input.connection,connection)
     const receipt:Receipt={id,ticketId:owner.ticketId,agentId:owner.agentId,connection:input.connection,tool:input.tool,fingerprint,state:'running'}
     this.host.store.put('tool-receipt',id,receipt)
     try{
@@ -199,15 +222,15 @@ export class ToolConnections {
     }catch{
       if(config.transport.kind==='plugin'){receipt.state='complete';receipt.result={isError:true,content:[{type:'text',text:'Plugin resource read failed; this requestId retains the failure.'}]}}
       else {receipt.state='uncertain';receipt.reason='No confirmed tool result. Inspect the destination; this requestId will not execute again.'}
-      if(this.clients.get(input.connection)?.client===client)this.clients.delete(input.connection)
+      if(this.clients.get(key)?.client===client)this.clients.delete(key)
       await client?.close().catch(()=>{})
     }
     this.host.store.put('tool-receipt',id,receipt)
-    try{this.allowed(owner,input.connection);if(config.transport.kind==='plugin')this.pluginAuthorization(owner,input)}catch{return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({id:receipt.id,state:receipt.state,body:'withheld',reason:'Assignment capability ended'})}]}}
+    try{this.allowed(owner,input.connection,connection);if(config.transport.kind==='plugin')this.pluginAuthorization(owner,input)}catch{return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({id:receipt.id,state:receipt.state,body:'withheld',reason:'Assignment capability ended'})}]}}
     return this.result(receipt)
   }
   private pluginAuthorization(owner:WorkOwner,input:{connection:string;tool:string;arguments:Record<string,unknown>}){
-    const config=this.allowed(owner,input.connection)
+    const {config}=this.allowed(owner,input.connection)
     if(config.transport.kind!=='plugin')throw Error('Not a plugin connection')
     const source=this.host.sources.get(config.transport.sourceId)
     if(!(source instanceof ProcessSource))throw Error('Plugin is unavailable')

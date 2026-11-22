@@ -3,9 +3,10 @@ import {join,dirname} from 'node:path'
 import {randomUUID} from 'node:crypto'
 import {DatabaseSync} from 'node:sqlite'
 import {z} from 'zod'
-import {configSchema,type Config} from './config.ts'
+import {configSchema,type Config,type SourceConfig} from './config.ts'
 import {backendsSchema} from './backend-config.ts'
 import {sourceDeployment} from './connector-config.ts'
+import {pairedOfficeBot} from './office-groups.ts'
 import {MAX_DB_SCHEMA} from './store.ts'
 
 const overlaySchema=z.object({format:z.literal(1),backends:backendsSchema,sources:z.array(configSchema.shape.sources.element)}).strict()
@@ -14,6 +15,31 @@ export type ManagedConnections=z.infer<typeof overlaySchema>
 const same=(a:unknown,b:unknown):boolean=>JSON.stringify(normalize(a))===JSON.stringify(normalize(b))
 function normalize(value:any):any{return Array.isArray(value)?value.map(normalize):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,normalize(value[k])])):value}
 const deployment=sourceDeployment
+const sourceSchema=configSchema.shape.sources.element
+const officeBotStorage=z.object({
+ format:z.literal(1),kind:z.enum(['dingtalk','wecom']),wecom:sourceSchema.shape.wecom,
+ tokenEnv:sourceSchema.shape.tokenEnv,replyUrl:sourceSchema.shape.replyUrl,options:sourceSchema.shape.options,capabilities:sourceSchema.shape.capabilities,
+}).strict()
+const inactiveCapabilities={events:false,replies:false,resources:false}
+
+// Keep the overlay readable on rollback. Older releases see a webhook with
+// no credentials, endpoints or capabilities, while common settings survive.
+function encodeSource(source:SourceConfig):SourceConfig{
+ if(source.kind!=='dingtalk'&&!pairedOfficeBot(source))return source
+ const {kind,wecom,tokenEnv,replyUrl,options,capabilities,...common}=source
+ return {...common,kind:'webhook',capabilities:inactiveCapabilities,options:{
+  managedOfficeBot:{format:1,kind,wecom,tokenEnv,replyUrl,options,capabilities},
+ }}
+}
+function decodeSource(source:SourceConfig):SourceConfig{
+ if(source.kind!=='webhook'||source.tokenEnv||source.replyUrl||Object.values(source.capabilities).some(Boolean)||!Object.hasOwn(source.options,'managedOfficeBot'))return source
+ const {format:_,...bot}=officeBotStorage.parse(source.options.managedOfficeBot)
+ return sourceSchema.parse({...source,...bot})
+}
+function parseOverlay(text:string):ManagedConnections{
+ const overlay=overlaySchema.parse(JSON.parse(text))
+ return {...overlay,sources:overlay.sources.map(decodeSource)}
+}
 export const managedFiles=(state:string)=>({directory:join(state,'setup'),connections:join(state,'setup','connections.json'),secrets:join(state,'setup','credentials.json'),journal:join(state,'setup','transaction.json')})
 export function atomicPrivateFile(path:string,text:string|Uint8Array,mode=0o600){
  mkdirSync(dirname(path),{recursive:true,mode:0o700})
@@ -24,7 +50,7 @@ export function atomicPrivateFile(path:string,text:string|Uint8Array,mode=0o600)
 function read(path:string){if(!existsSync(path))return undefined;if(lstatSync(path).isSymbolicLink())throw Error('Managed configuration must not be a symbolic link');return readFileSync(path,'utf8')}
 function restore(path:string,previous:string|undefined){if(previous===undefined){if(existsSync(path))unlinkSync(path)}else atomicPrivateFile(path,previous)}
 export function managedConnections(state:string):ManagedConnections{
- const text=read(managedFiles(state).connections);return text?overlaySchema.parse(JSON.parse(text)):{format:1,backends:{},sources:[]}
+ const text=read(managedFiles(state).connections);return text?parseOverlay(text):{format:1,backends:{},sources:[]}
 }
 export function managedSecrets(state:string){const text=read(managedFiles(state).secrets);return text?secretsSchema.parse(JSON.parse(text)):{} }
 interface Journal {id:string;connections?:string;secrets?:string;restore?:boolean;github?:boolean}
@@ -47,6 +73,7 @@ export function recoverManagedFiles(state:string){
 export function loadManagedConfig(config:Config){
  recoverManagedFiles(config.stateDir)
  const overlay=managedConnections(config.stateDir),next=configSchema.parse(config)
+ next.sources=next.sources.map(decodeSource)
  // Settings.save makes the persisted backend inventory authoritative. A managed
  // file may still contain its previous revision after a live edit or deletion.
  let revisioned=false
@@ -80,13 +107,16 @@ export function prepareManagedFiles(state:string,id:string,next:{connections?:st
   rollback(){restore(files.connections,journal.connections);restore(files.secrets,journal.secrets);if(existsSync(files.journal))unlinkSync(files.journal)},
  }
 }
-export function prepareManagedConfig(state:string,id:string,connections:ManagedConnections,secrets:Record<string,string>,github=false){return prepareManagedFiles(state,id,{connections:JSON.stringify(overlaySchema.parse(connections)),secrets:JSON.stringify(secretsSchema.parse(secrets)),github})}
+export function prepareManagedConfig(state:string,id:string,connections:ManagedConnections,secrets:Record<string,string>,github=false){
+ const overlay=overlaySchema.parse(connections)
+ return prepareManagedFiles(state,id,{connections:JSON.stringify({...overlay,sources:overlay.sources.map(encodeSource)}),secrets:JSON.stringify(secretsSchema.parse(secrets)),github})
+}
 export function validateManagedSnapshot(config:Config,connections?:string,secrets?:string){
- const overlay=connections?overlaySchema.parse(JSON.parse(connections)):{backends:{},sources:[]},keys=secrets?secretsSchema.parse(JSON.parse(secrets)):{}
+ const overlay=connections?parseOverlay(connections):{backends:{},sources:[]},keys=secrets?secretsSchema.parse(JSON.parse(secrets)):{}
  for(const [id,backend]of Object.entries(overlay.backends)){
   if(!same(config.backends[id],backend))throw Error('Backup configuration and managed connections differ')
   if('apiKeyEnv'in backend&&backend.apiKeyEnv?.startsWith('AGENTHUB_SETUP_')&&!keys[backend.apiKeyEnv])throw Error('Backup is missing managed credentials')
  }
- for(const source of overlay.sources){const saved=config.sources.find(s=>s.id===source.id);if(!saved||!same(deployment(saved),deployment(source)))throw Error('Backup configuration and managed workspaces differ')}
+ for(const source of overlay.sources){const saved=config.sources.find(s=>s.id===source.id);if(!saved||!same(deployment(decodeSource(saved)),deployment(source)))throw Error('Backup configuration and managed workspaces differ')}
  return overlay
 }

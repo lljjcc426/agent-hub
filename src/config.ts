@@ -7,7 +7,7 @@ import { resolve, dirname } from 'node:path'
 import { z } from 'zod'
 import {builtins} from './prompts.ts'
 import {backendsSchema,executionSchema,validateBackendSelection} from './backend-config.ts'
-import {sourcePluginsSchema,sourceCapabilitiesSchema,toolConnectionsSchema} from './connector-config.ts'
+import {dingtalkBotSettings,sourcePluginsSchema,sourceCapabilitiesSchema,toolConnectionsSchema} from './connector-config.ts'
 import {decisionConfigSchema} from './decision-config.ts'
 import {browserConfigSchema} from './browser-contract.ts'
 import {watchdogConfigSchema} from './watchdog-contract.ts'
@@ -60,6 +60,7 @@ const sourceSchema = z.object({
   if(s.kind==='local'&&!s.allowedActors.length)ctx.addIssue({code:'custom',message:'Local source requires an operator identity'})
   if(s.kind==='github'&&!s.repository)ctx.addIssue({code:'custom',message:'GitHub source requires repository'})
   if(s.kind==='feishu'&&(!s.feishu||(!s.feishu.cli&&(!s.feishu.appIdEnv||!s.feishu.appSecretEnv))))ctx.addIssue({code:'custom',message:'Feishu source requires CLI or app credential environment names'})
+  if(s.kind==='dingtalk'&&(!dingtalkBotSettings.safeParse(s.options.dingtalk).success||s.listenScopes===undefined))ctx.addIssue({code:'custom',message:'DingTalk source requires bot credentials and explicit group scopes'})
   if(s.kind==='wecom'&&!s.wecom)ctx.addIssue({code:'custom',message:'WeCom source requires smart-bot configuration'})
 })
 import {webhookConfigSchema} from './webhook-protocol.ts'

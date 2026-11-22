@@ -3,6 +3,7 @@ import {z} from 'zod'
 
 const envName=z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 const id=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)
+export const dingtalkBotSettings=z.object({appIdEnv:envName,appSecretEnv:envName}).strict()
 export const sourcePluginsSchema=z.array(z.union([
   z.object({module:z.string().min(1)}).strict(),
   z.object({directory:z.string().min(1),digest:z.string().regex(/^[a-f0-9]{64}$/),replaceBuiltin:z.boolean().default(false),readPaths:z.array(z.string().min(1)).default([])}).strict(),

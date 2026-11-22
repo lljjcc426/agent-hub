@@ -5,6 +5,7 @@ import type { Store } from './store.ts'
 import {validateBackendSelection} from './backend-config.ts'
 import {normalizeWorkerCount} from './worker-pool.ts'
 import {sourceDeployment} from './connector-config.ts'
+import {syncOfficeGroupActivations} from './office-groups.ts'
 
 const editableSchema = configSchema.pick({decision:true,backends:true,execution:true,models:true,model:true,effort:true,concurrency:true,acceptMode:true,rules:true,prompts:true,sources:true,watchdog:true,work:true,delivery:true})
 // Zod 4 optional/default fields materialize defaults even when omitted. A patch
@@ -42,9 +43,13 @@ export class Settings {
         return {...source,...Object.fromEntries(keys.filter(k=>k in previous).map(k=>[k,(previous as any)[k]]))}
       })
       Object.assign(config,configSchema.parse({...config,...dynamic,sources}));validateBackendSelection(config);normalizeWorkerCount(config)
+      syncOfficeGroupActivations(store,config.sources,saved.config.sources)
       store.put('settings','current',{...saved,config})
     }
-    else store.put('settings','current',{revision:0,at:new Date().toISOString(),config})
+    else {
+      syncOfficeGroupActivations(store,config.sources,[])
+      store.put('settings','current',{revision:0,at:new Date().toISOString(),config})
+    }
   }
   current():SettingsVersion{return this.store.get<SettingsVersion>('settings','current')!}
   save(expected:number,patch:unknown):SettingsVersion{
@@ -63,6 +68,7 @@ export class Settings {
       const deployment=sourceDeployment
       if(update.sources && JSON.stringify(update.sources.map(deployment))!==JSON.stringify(this.config.sources.map(deployment)))throw new SettingsError('restart_required','Source deployment changes require a controlled restart')
       const next={revision:expected+1,at:new Date().toISOString(),config}
+      if(update.sources)syncOfficeGroupActivations(this.store,config.sources,previous.config.sources)
       this.store.put('settings-history',String(previous.revision),previous)
       this.store.put('settings','current',next)
       if(update.backends)this.store.put('settings-backends','managed',true)

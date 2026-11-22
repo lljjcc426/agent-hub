@@ -71,6 +71,8 @@ Give your Router and Workers their own names, models and tools. Use **Behavior r
 
 Use **Settings → Appearance** for light, dark or system mode, theme presets, custom colors and contrast, interface/content/code sizes, reduced motion, smart punctuation, full-width conversations and diff indicators. Copy or import a theme to share its colors. Preferences stay in this browser and apply across its Roppo pages; existing light/dark choices are retained when upgrading.
 
+Save all appearance settings as a named **skin**, rename or delete saved skins, and share complete light/dark profiles and advanced options through `.roppo-skin.json` import/export. The reset icon beside **Visual style** restores the selected skin; temporary edits never overwrite it. New browsers follow the system color mode by default.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/appearance-settings-dark.jpg">
   <img src="docs/images/appearance-settings-light.jpg" alt="Appearance settings and theme presets in an isolated fixture, light shown in Chinese and dark in English">

@@ -19,7 +19,7 @@
     { id: 'vercel', name: 'Vercel', light: { background: '#ffffff', foreground: '#171717', accent: '#171717' }, dark: { background: '#0a0a0a', foreground: '#ededed', accent: '#ededed' } },
   ]
   const defaultSettings = () => ({
-    version: 1, mode: 'light', separate: false, uiSize: 14, contentSize: 15, codeSize: 13,
+    version: 1, mode: 'system', separate: false, uiSize: 14, contentSize: 15, codeSize: 13,
     motion: 'system', smart: true, fullWidth: false, diff: 'color',
     profiles: {
       light: { preset: 'default', accentName: 'default', contrast: 45, ...presets[0].light },
@@ -39,6 +39,21 @@
     && ['system', 'on', 'off'].includes(value.motion) && typeof value.smart === 'boolean'
     && typeof value.fullWidth === 'boolean' && ['color', 'sign'].includes(value.diff)
     && modes.every(mode => validProfile(value.profiles?.[mode]))
+
+  const copyProfile = value => ({
+    preset: value.preset, accentName: value.accentName, contrast: value.contrast,
+    background: value.background, foreground: value.foreground, accent: value.accent,
+  })
+  const copySettings = value => ({
+    version: 1, mode: value.mode, separate: value.separate,
+    uiSize: value.uiSize, contentSize: value.contentSize, codeSize: value.codeSize,
+    motion: value.motion, smart: value.smart, fullWidth: value.fullWidth, diff: value.diff,
+    profiles: { light: copyProfile(value.profiles.light), dark: copyProfile(value.profiles.dark) },
+  })
+  function parseSettings(value) {
+    if (!validSettings(value)) throw new Error('invalid-appearance')
+    return copySettings(value)
+  }
 
   let settings = defaultSettings()
   let migrated = false
@@ -203,6 +218,8 @@
     setAppearance,
     presets,
     defaultSettings,
+    copySettings,
+    parseSettings,
     exportTheme,
     importTheme,
     isTheme: value => { try { parseTheme(value); return true } catch { return false } },

@@ -59,13 +59,82 @@ with sync_playwright() as p:
  assert page.locator('.members .agent-portrait[data-agent-id="developer"]').get_attribute('src')==worker_portrait
  assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==original
  passed('display switching, selecting a Worker, navigation and reload preserve the same chat and Router draft')
- page.goto(f['url']+'/configure#general');page.locator('label:has(input[value="dark"])').click();chat();picker.click();page.get_by_role('button',name='开发 Worker',exact=True).click();expect(page.locator('.message')).to_have_count(2);page.screenshot(path=str(root/'worker-dark.png'),full_page=True)
+ page.goto(f['url']+'/configure#appearance');page.locator('label:has(input[value="dark"])').click();chat();picker.click();page.get_by_role('button',name='开发 Worker',exact=True).click();expect(page.locator('.message')).to_have_count(2);page.screenshot(path=str(root/'worker-dark.png'),full_page=True)
  assert page.locator('.assistant-identity .agent-portrait[data-kind="router"]').first.evaluate('(img)=>getComputedStyle(img).filter')=='invert(1)'
  assert page.locator('.members .agent-portrait[data-agent-id="developer"]').evaluate('(img)=>getComputedStyle(img).filter')=='none'
  page.set_viewport_size({'width':390,'height':844});picker.click();member=page.get_by_role('button',name='复核 Worker',exact=True);expect(member).to_be_visible();member.click();expect(page.get_by_role('heading',name='暂无协作消息',exact=True)).to_be_visible();expect(page.get_by_role('textbox',name='请与 Roppo 对话',exact=True)).to_be_disabled()
  assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
  page.screenshot(path=str(root/'worker-mobile.png'),full_page=True);passed('dark mode and 390px navigation/read-only empty state have no horizontal overflow')
- page.set_viewport_size({'width':1440,'height':960});settings();page.get_by_role('button',name='清空所有记忆和上下文',exact=True).click();page.get_by_role('button',name='取消',exact=True).click();assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==original
+ page.set_viewport_size({'width':1440,'height':960})
+
+ def detail(name):
+  page.goto(f['url']+'/configure#general')
+  choices = page.get_by_role('group', name='对话显示')
+  choices.get_by_text(name, exact=True).click()
+  expect(choices.get_by_role('radio', name=name, exact=True)).to_be_checked()
+
+ layout('群聊')
+ detail('简洁')
+ chat()
+ assignment = page.locator('.assistant-body').filter(has_text='请修复摘要遇到 emoji 被截断的问题')
+ final_reply = page.locator('.assistant-body').filter(has_text='开发 Worker 已完成修复和回归验证，请验收。')
+ expect(final_reply).to_be_visible()
+ expect(assignment).to_have_count(0)
+ expect(page.locator('.chat-thinking-activity')).to_have_count(0)
+ expect(picker).to_have_count(0)
+
+ layout('Agent 列表')
+ chat()
+ page.reload()
+ expect(final_reply).to_be_visible()
+ expect(picker).to_be_visible()
+ expect(page.get_by_role('textbox', name='向 Roppo 发送消息', exact=True)).to_have_value('保留这份未发送的草稿')
+ picker.click()
+ expect(page.locator('.members .member')).to_have_count(3)
+ page.get_by_role('button', name='开发 Worker', exact=True).click()
+ expect(page.get_by_role('textbox', name='请与 Roppo 对话', exact=True)).to_be_disabled()
+ expect(page.locator('.assistant-body').filter(has_text='摘要截断已修改')).to_be_visible()
+ expect(assignment).to_have_count(0)
+ page.get_by_role('button', name='前往 Roppo', exact=True).click()
+
+ companion = page.get_by_role('button', name='查看当前任务进展')
+ companion.click()
+ panel = page.locator('#session-panel')
+ expect(panel.get_by_role('tab', name='概览')).to_have_attribute('aria-selected', 'true')
+ panel.get_by_role('button', name='收起面板').click()
+ page.get_by_role('button', name='会话面板').click()
+ panel.get_by_role('tab', name='Agents', exact=True).click()
+ expect(panel.get_by_role('tabpanel').get_by_text('开发 Worker', exact=True)).to_be_visible()
+ panel.get_by_role('button', name='收起面板').click()
+
+ pending = page.locator('.pending-trigger')
+ pending.click()
+ expect(page.locator('#pending-tray')).to_be_visible()
+ pending.click()
+ page.get_by_role('button', name='工作动态').click()
+ expect(page.locator('#activity-tray')).to_be_visible()
+ page.get_by_role('button', name='隐藏工作动态').click()
+
+ composer.fill('/context')
+ page.get_by_role('option', name='上下文用量 /context').click()
+ page.get_by_role('button', name='查看用量明细').click()
+ dismiss_context = panel.get_by_role('button', name='关闭上下文用量')
+ expect(dismiss_context).to_be_visible()
+ dismiss_context.click()
+ composer.fill('/commits')
+ page.get_by_role('option', name='提交轨迹 /commits').click()
+ expect(page.locator('#activity-tray')).to_be_visible()
+ page.get_by_role('button', name='隐藏工作动态').click()
+ page.set_viewport_size({'width':390,'height':844})
+ expect(companion).to_be_visible()
+ picker.click()
+ expect(page.get_by_role('button', name='开发 Worker', exact=True)).to_be_visible()
+ page.keyboard.press('Escape')
+ page.set_viewport_size({'width':1440,'height':960})
+ passed('simple mode filters the transcript while preserving layout, Agent selection, top controls and composer commands')
+
+ detail('详细')
+ settings();page.get_by_role('button',name='清空所有记忆和上下文',exact=True).click();page.get_by_role('button',name='取消',exact=True).click();assert context.request.get(f['url']+'/api/chat/space').json()['conversation']['id']==original
  other=context.new_page();other.goto(f['url']+'/chat');expect(other.locator('.message').first).to_be_visible();
  page.get_by_role('button',name='清空所有记忆和上下文',exact=True).click();expect(page.get_by_text('相关任务将停止。保留登录、模型连接、插件、群聊配置和手动设置的人格，此操作无法撤销。',exact=True)).to_be_visible();page.get_by_role('button',name='确认清空',exact=True).click();expect(page.get_by_text('个人记忆已恢复到初始状态。',exact=True)).to_be_visible(timeout=15000)
  assert context.request.get(f['url']+'/api/chat/conversations/'+original).status==409

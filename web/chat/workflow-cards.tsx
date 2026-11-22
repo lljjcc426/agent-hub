@@ -45,6 +45,7 @@ export function groupWorkflow(
   messages: Snapshot['messages'],
   display: ChatSpace['display'],
   workerId?: string,
+  showDetails = true,
 ) {
   const blocks = new Map<string, Block>()
   if (!snapshot) return blocks
@@ -64,32 +65,34 @@ export function groupWorkflow(
     block.push(item);blocks.set(anchor,block)
     return true
   }
-  const graphs=new Set<string>()
-  for(const goal of snapshot.plans){
-    if(workerId||!goal.steps.length)continue
-    graphs.add(goal.runId)
-    add(goal.runId,undefined,{kind:'plan',at:goal.createdAt,plan:{...goal,live:goal.state==='active'}},goal.state==='active')
-  }
-  for(const p of snapshot.publicPlans){
-    const visible = workerId ? p.workerId === workerId : display === 'group' || !p.workerId
-    if(!visible || (!p.workerId && graphs.has(p.runId)))continue
-    add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
-  }
-  const activities=new Map<string,ChatCall[]>()
-  for(const call of snapshot.calls){
-    if(workerId&&workerId!==call.workerId)continue
-    if(call.kind==='tool' ? internalTools.has(call.name) : call.name!==call.kind&&!call.status)continue
-    if(call.permission==='pending' && snapshot.approvals.some(a=>a.runId===call.runId && a.workerId===call.workerId))continue
-    const calls=activities.get(call.runId)??[]
-    calls.push(call)
-    activities.set(call.runId,calls)
-  }
-  for(const [runId,calls] of activities){
-    calls.sort((a,b)=>a.startedAt-b.startedAt)
-    const first=calls.find(call=>call.kind==='tool')??calls.find(call=>call.status||call.state!=='completed')
-    if(!first)continue
-    const state=snapshot.run?.id===runId?snapshot.run.state:undefined
-    add(runId,first.ticketId,{kind:'thinking',at:first.startedAt,runId,calls,state},calls.some(call=>call.state==='running'))
+  if(showDetails){
+    const graphs=new Set<string>()
+    for(const goal of snapshot.plans){
+      if(workerId||!goal.steps.length)continue
+      graphs.add(goal.runId)
+      add(goal.runId,undefined,{kind:'plan',at:goal.createdAt,plan:{...goal,live:goal.state==='active'}},goal.state==='active')
+    }
+    for(const p of snapshot.publicPlans){
+      const visible = workerId ? p.workerId === workerId : display === 'group' || !p.workerId
+      if(!visible || (!p.workerId && graphs.has(p.runId)))continue
+      add(p.runId,p.ticketId,{kind:'plan',at:p.createdAt??0,plan:p},p.live)
+    }
+    const activities=new Map<string,ChatCall[]>()
+    for(const call of snapshot.calls){
+      if(workerId&&workerId!==call.workerId)continue
+      if(call.kind==='tool' ? internalTools.has(call.name) : call.name!==call.kind&&!call.status)continue
+      if(call.permission==='pending' && snapshot.approvals.some(a=>a.runId===call.runId && a.workerId===call.workerId))continue
+      const calls=activities.get(call.runId)??[]
+      calls.push(call)
+      activities.set(call.runId,calls)
+    }
+    for(const [runId,calls] of activities){
+      calls.sort((a,b)=>a.startedAt-b.startedAt)
+      const first=calls.find(call=>call.kind==='tool')??calls.find(call=>call.status||call.state!=='completed')
+      if(!first)continue
+      const state=snapshot.run?.id===runId?snapshot.run.state:undefined
+      add(runId,first.ticketId,{kind:'thinking',at:first.startedAt,runId,calls,state},calls.some(call=>call.state==='running'))
+    }
   }
   for(const approval of snapshot.approvals){
     if(workerId&&workerId!==approval.workerId)continue

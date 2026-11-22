@@ -15,8 +15,9 @@ export const commands = [
 export type ChatCommand = (typeof commands)[number]['id']
 export type Mode = ChatSpace['approvalMode']
 
-export function matchingCommands(query: string, L: Localize, commits = false) {
+export function matchingCommands(query: string, L: Localize, commits = false, context = true) {
   return commands.filter(command => (commits || command.id !== 'commits') &&
+    (context || command.id !== 'context') &&
     (command.id.startsWith(query) || command.title(L).toLowerCase().includes(query)))
 }
 

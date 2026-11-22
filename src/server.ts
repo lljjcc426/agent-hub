@@ -691,8 +691,15 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if(req.method==='GET'){send(res,200,runtime.chat.space(owner));return}
         if(req.method==='POST'){send(res,200,runtime.chat.space(owner,true));return}
         if(req.method==='PATCH'){
-          const input=z.union([z.object({display:z.enum(['group','agents'])}).strict(),z.object({approvalMode:z.enum(['ask','full'])}).strict()]).parse(await operatorBody(req))
-          send(res,200,'approvalMode' in input?runtime.chat.setApprovalMode(owner,input.approvalMode):runtime.chat.display(owner,input.display));return
+          const input=z.union([
+            z.object({display:z.enum(['group','agents'])}).strict(),
+            z.object({approvalMode:z.enum(['ask','full'])}).strict(),
+            z.object({detailMode:z.enum(['detailed','simple'])}).strict(),
+          ]).parse(await operatorBody(req))
+          if('detailMode' in input)send(res,200,runtime.chat.setDetailMode(owner,input.detailMode))
+          else if('approvalMode' in input)send(res,200,runtime.chat.setApprovalMode(owner,input.approvalMode))
+          else send(res,200,runtime.chat.display(owner,input.display))
+          return
         }
       }
       if(path==='/api/chat/reset'&&req.method==='POST'){

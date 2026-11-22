@@ -169,11 +169,17 @@ const Context = createContext({
   openFile: (_file:ChatDelivery)=>{},
   openAgent: (_id:string)=>{},
   run: null as Snapshot['run'],
+  showDetails: true,
   runMessageId: '',
   waitingLabel: '',
   arrivals: {since: Infinity, seen: new Set<string>()},
 });
 const useUI = () => useContext(Context);
+function simpleChatMessage(message: Snapshot["messages"][number]) {
+  if (message.handoff === "assignment") return false;
+  return !message.recipient || message.handoff === "result" || !!message.deliveries?.length ||
+    !!message.decision || !!message.fileReview;
+}
 function IconButton({
   label,
   children,
@@ -319,7 +325,7 @@ function Markdown(){
   return <Suspense fallback={<PlainText/>}><RichMarkdown L={L} files={files}/></Suspense>
 }
 function AssistantMessage() {
-  const { L, run, runMessageId, waitingLabel, routerLabel, openFile,openAgent } = useUI(),
+  const { L, run, runMessageId, waitingLabel, routerLabel, openFile,openAgent, showDetails } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
@@ -357,7 +363,7 @@ function AssistantMessage() {
         <AgentAvatar id={speaker?.id} kind={speaker?.kind} size={32} />
         <strong>{speaker?.kind==='worker'?speaker.label:teamName(speaker?.label??routerLabel)}</strong>
         <Timestamp at={createdAt}/>
-        {streaming ? (
+        {streaming && showDetails ? (
           <span className="output-state">
             <span className="live-dot" />
             {L("Writing", "正在输出")}
@@ -450,6 +456,7 @@ function App() {
   );
   const [id, setId] = useState<string | null>(null),
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
+    [detailMode, setDetailMode] = useState<ChatSpace["detailMode"]>("detailed"),
     [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>(),
     [ready, setReady] = useState<Ready | null>(null);
   const [personalization,setPersonalization] = useState<ChatPersonalization>();
@@ -500,6 +507,11 @@ function App() {
     spaceVersion.current++;
     setApprovalMode(saved.approvalMode);
   };
+  const saveDetailMode = async (mode: ChatSpace["detailMode"]) => {
+    const saved = await spaceRequest({detailMode: mode}, "PATCH");
+    spaceVersion.current++;
+    setDetailMode(saved.detailMode);
+  };
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && lastReset.current!==space.cleanup.id){
@@ -512,6 +524,7 @@ function App() {
       if(!currentId.current)carryInitialDraft(space.conversation.id);
     }
     setId(linked?.conversation || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
+    setDetailMode(space.detailMode);
     receivePersonalization(space.personalization);
   }, [recoverInitial,resetSends,receivePersonalization]);
   function focusComposer() {
@@ -674,6 +687,8 @@ function App() {
           id,
           display,
           setDisplay,
+          detailMode,
+          saveDetailMode,
           approvalMode,
           saveApprovalMode,
           ready,
@@ -713,6 +728,8 @@ type ChatProps = {
   navExpanded: boolean;
   setNavExpanded: (value: boolean) => void;
   display: ChatSpace["display"];
+  detailMode: ChatSpace["detailMode"];
+  saveDetailMode: (mode: ChatSpace["detailMode"]) => Promise<void>;
   approvalMode?: ChatSpace["approvalMode"];
   saveApprovalMode: (mode: ChatSpace["approvalMode"]) => Promise<void>;
   setDisplay: (value:ChatSpace["display"])=>void;
@@ -737,7 +754,6 @@ const emptySidebarCards: { items: "context"[]; revealing: boolean } = { items: [
 function Chat(p: ChatProps) {
   const {
     id,
-    display,
     ready: boot,
     lang,
     L,
@@ -749,6 +765,8 @@ function Chat(p: ChatProps) {
     navExpanded,
     setNavExpanded,
   } = p;
+  const showDetails = p.detailMode !== "simple";
+  const display = showDetails ? p.display : "group";
   const configuring = !route.startsWith("/chat");
   const [trayOpen,setTrayOpen]=useState(()=>read('roppo.chat.pendingTray')==='open');
   const trayButton=useRef<HTMLButtonElement>(null);
@@ -799,7 +817,7 @@ function Chat(p: ChatProps) {
     read('roppo.resources.' + (id ?? 'new')), read('roppo.chat.panel.' + (id ?? 'new'))));
   const [teamPanelOpen, setTeamPanelOpen] = useState(initialPanel.open);
   const [sidebarCards, setSidebarCards] = useState(emptySidebarCards);
-  const panel = sidebarCards.revealing || teamPanelOpen;
+  const panel = showDetails && (sidebarCards.revealing || teamPanelOpen);
   useEffect(() => { if (configuring) setSidebarCards(emptySidebarCards); }, [configuring]);
   const [teamTab,setTeamTab]=useState<TeamTab>(initialPanel.tab),[file,setFile]=useState<ChatDelivery|null>(null);
   useEffect(() => write(panelKey, teamPanelOpen ? teamTab : 'closed'), [panelKey, teamPanelOpen, teamTab]);
@@ -819,7 +837,7 @@ function Chat(p: ChatProps) {
   const sessionView = useMemo(() => panel && !configuring ? { cards:sidebarCards, tab:teamTab, task:selectedTask } : null,
     [panel, configuring, sidebarCards, teamTab, selectedTask]);
   const sessionPresence = usePanelPresence(sessionView);
-  const displayedSession = sessionPresence.view;
+  const displayedSession = showDetails ? sessionPresence.view : null;
   const shownTask = displayedSession?.task ?? null;
   const taskPresence = usePanelPresence(shownTask);
   const [pickerRequest,setPickerRequest]=useState(0);
@@ -935,7 +953,8 @@ function Chat(p: ChatProps) {
   const queuedEnter=useRef<string|null>(null);
   const reactionWrites=useRef(new Map<string,{reactions:string[];promise:Promise<string[]>}>());
   const saveQuote=useCallback((value:DraftQuote|null)=>{quoteCurrent.current=value;setQuote(value);write(quoteKey(id),JSON.stringify(value))},[id]);
-  const motion=useChatMotion(threadRef,(id??'new')+':'+selectedAgent+':'+(around??'latest'),!!around,snapshot?.messages.at(-1)?.id);
+  const latestMessage = showDetails ? snapshot?.messages.at(-1) : snapshot?.messages.findLast(simpleChatMessage);
+  const motion=useChatMotion(threadRef,(id??'new')+':'+selectedAgent+':'+(around??'latest'),!!around,latestMessage?.id);
   useEffect(()=>{const target=locateAfterLoad.current;if(!target||loading)return;const frame=requestAnimationFrame(()=>{if(motion.locate(target))locateAfterLoad.current=null});return()=>cancelAnimationFrame(frame)},[snapshot,loading,motion.locate]);
   useEffect(() => {
     const thread=threadRef.current, transcript=thread?.querySelector<HTMLElement>('.transcript');
@@ -987,7 +1006,9 @@ function Chat(p: ChatProps) {
   const attachmentAdapter=useMemo(()=>createAttachmentAdapter(ensureConversation,boot?.uploads.maxBytes??chatUploadLimits.maxBytes,(en,zh)=>attachmentLanguage.current(en,zh)),[ensureConversation,boot?.uploads.maxBytes]);
   const currentRouter = participants.find(a=>a.id===(snapshot?.routerId??"router"))!;
   const historicalWorker=snapshot?.tasks.find(t=>t.workerId===selectedAgent);
-  const selected=participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter);
+  const selected=showDetails
+    ? participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter)
+    : currentRouter;
   const readonly = selected.kind === "worker";
   const participantFilter = readonly ? selected.id : undefined;
   const {confirm,has,hasAttachment,reset:resetSends}=p.sends;
@@ -997,7 +1018,7 @@ function Chat(p: ChatProps) {
   const outstanding=outgoing.find(m=>m.stage!=='accepted');
   const sending=!!outstanding;
   const accepted=outgoing.findLast(m=>m.stage==='accepted')?.id;
-  const handoff=useHandoffPlayer(p.handoffCursor,id,snapshot,!configuring&&!around,participantFilter);
+  const handoff=useHandoffPlayer(p.handoffCursor,id,snapshot,showDetails&&!configuring&&!around,participantFilter);
   const companionActor=handoff.event?.to??handoff.holder??selected;
   const companionWorker=companionActor.kind==="worker"?companionActor.id:undefined;
   const viewKey=JSON.stringify([id,participantFilter,around]),viewRef=useRef(viewKey);viewRef.current=viewKey;
@@ -1020,7 +1041,7 @@ function Chat(p: ChatProps) {
     ?chatPersonalizationCopy(L).purposes[p.preferences.purpose]:undefined;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
   const [usageRefresh, setUsageRefresh] = useState(0);
-  const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
+  const usage = useCurrentContext(!showDetails || configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
     routerCall?.id, routerCall?.usageRevision, running || (panel && sidebarCards.items.includes('context')), loadContext, usageRefresh);
   const arrivals = p.arrivals;
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
@@ -1196,13 +1217,14 @@ function Chat(p: ChatProps) {
     };
   }, [id, refresh, resetSends]);
   const visibleMessages = (snapshot?.messages ?? []).filter(message => {
+    if (!showDetails) return simpleChatMessage(message);
     if (readonly) return message.speaker?.id === selected.id || message.recipient?.id === selected.id;
     if (display === "group") return true;
     return !message.recipient && (
       message.role === "user" || !message.speaker || message.speaker.id === selected.id || !!message.deliveries?.length
     );
   });
-  const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter);
+  const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter,showDetails);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];
     return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient;
@@ -1233,7 +1255,7 @@ function Chat(p: ChatProps) {
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
-        continuedReview:continuedReviews.has(m.id),speaker: m.speaker, recipient: m.recipient, attachments: m.attachments, deliveries: m.deliveries,
+        continuedReview:continuedReviews.has(m.id),speaker: m.speaker, recipient: showDetails ? m.recipient : undefined, attachments: m.attachments, deliveries: m.deliveries,
         inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length && !m.skill, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, skill:m.skill, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
@@ -1386,7 +1408,7 @@ function Chat(p: ChatProps) {
   const trayPresence = usePanelPresence<NonNullable<typeof trayView>, HTMLDivElement>(trayView, '#pending-tray');
   const displayedTray = trayPresence.view;
   const displayedPendingItem = displayedTray?.linkedItem;
-  const activityTrayVisible=activityTrayOpen&&!configuring&&!(panelOverlay&&panel);
+  const activityTrayVisible=showDetails&&activityTrayOpen&&!configuring&&!(panelOverlay&&panel);
   const activityPresence=usePanelPresence<string,HTMLDivElement>(activityTrayVisible ? id??'new' : null,'#activity-tray');
   useEffect(()=>{
     if(activityTrayVisible)document.getElementById('activity-tray')?.focus({preventScroll:true});
@@ -1497,8 +1519,9 @@ function Chat(p: ChatProps) {
         workers,
         routerLabel:currentRouter.label,
         openFile,openAgent:readAgent,
-        run: run ?? null,
+        run: showDetails ? run ?? null : null,
         runMessageId,waitingLabel:waitingLabel??'',
+        showDetails,
         arrivals:arrivals.current,
       }}
     >
@@ -1563,7 +1586,8 @@ function Chat(p: ChatProps) {
             </header> : null}
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
-            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} lang={lang} setLang={setLang} display={display} L={L}
+            {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} lang={lang} setLang={setLang} display={p.display} L={L}
+              detailMode={p.detailMode} onDetailModeChange={p.saveDetailMode}
               sendShortcut={p.sendShortcut} onSendShortcutChange={p.saveSendShortcut}
               onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
             {appearance && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading appearance…", "正在读取外观设置…")}</div>}><AppearanceSettings L={L}/></Suspense>}
@@ -1592,16 +1616,16 @@ function Chat(p: ChatProps) {
                   <a href="/configure#general" className="icon-button" aria-label={L("Settings","设置")} title={L("Settings","设置")}><Settings size={19}/></a>
                   {display === "agents" && <ChatMemberPicker L={L} participants={participants} selected={selected.id} select={readAgent}/>}
                 </div>
-                <ChatCompanion visible={!configuring} actor={companionActor} event={handoff.event} onFinish={handoff.finish}
+                {showDetails&&<ChatCompanion visible={!configuring} actor={companionActor} event={handoff.event} onFinish={handoff.finish}
                   status={companionStatus(snapshot,L,{participantId:companionWorker,connected,loading:loading&&!localMessages.length})} L={L}
-                  onOpen={()=>{setTeamTab("activity");showPanel(true)}}/>
+                  onOpen={()=>{setTeamTab("activity");showPanel(true)}}/>}
                 <div className="chat-float chat-float-end">
                   <button ref={trayButton} type="button" className={'icon-button pending-trigger'+(trayVisible?' selected':'')}
                     aria-label={L('Pending requests','待处理事项')+(pendingCards.length?' · '+pendingCards.length:'')}
                     title={L('Pending requests','待处理事项')} aria-expanded={trayVisible} aria-controls="pending-tray" onClick={toggleTray}>
                     <Inbox size={19}/>{pendingCards.length>0&&<span className="pending-badge" aria-hidden="true">{pendingCards.length>99?'99+':pendingCards.length}</span>}
                   </button>
-                  <button ref={activityButton} type="button" className="icon-button"
+                  {showDetails&&<><button ref={activityButton} type="button" className="icon-button"
                     aria-label={L('Work activity','工作动态')} title={L('Work activity','工作动态')}
                     aria-expanded={activityTrayVisible} aria-controls="activity-tray"
                     onClick={()=>activityTrayVisible?closeActivityTray():openActivityTray(activityButton.current)}>
@@ -1617,14 +1641,14 @@ function Chat(p: ChatProps) {
                     aria-controls="session-panel"
                   >
                     <PanelRight size={19} />
-                  </button>
+                  </button></>}
                 </div>
                 {displayedTray&&<div ref={trayPresence.ref} className="tray-presence" data-closing={trayPresence.closing||undefined}
                   inert={trayPresence.closing} aria-hidden={trayPresence.closing||undefined}>
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close pending panel','关闭待处理面板')} onClick={closeTray}/>
                   <PendingTray key={(id??'')+':'+displayedTray.linkVisit} read={readHistory} clearSelection={clearSelection}
                   cards={pendingCards} selectedId={displayedPendingItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray}/></div>}
-                {activityPresence.view!==null&&<div ref={activityPresence.ref} className="tray-presence"
+                {showDetails&&activityPresence.view!==null&&<div ref={activityPresence.ref} className="tray-presence"
                   data-closing={activityPresence.closing||undefined} inert={activityPresence.closing} aria-hidden={activityPresence.closing||undefined}>
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close work activity','关闭工作动态')} onClick={()=>closeActivityTray()}/>
                   <ChatTray id="activity-tray" heading={L('Work activity','工作动态')} icon={<GitCommitHorizontal size={17} aria-hidden="true"/>}
@@ -1675,7 +1699,7 @@ function Chat(p: ChatProps) {
                       {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftHasContext={!!quote||!!skill}
                         retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
-                      {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
+                      {showDetails&&run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}
                     </div>
@@ -1704,8 +1728,9 @@ function Chat(p: ChatProps) {
                         model={ready?.model || ready?.backend} modelBackend={ready?.backend} mode={p.approvalMode} usage={usage}
                         loadSkills={loadSkills} skill={skill} onSkillChange={saveSkill}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
-                        onContext={() => revealCard('context')} onUsageOpen={() => setUsageRefresh(value => value + 1)}
-                        onCommitTrail={openActivityTray} saveMode={p.saveApprovalMode}
+                        onContext={showDetails ? () => revealCard('context') : undefined}
+                        onUsageOpen={showDetails ? () => setUsageRefresh(value => value + 1) : undefined}
+                        onCommitTrail={showDetails ? openActivityTray : undefined} saveMode={p.saveApprovalMode}
                         onModelSaved={id ? refresh : p.refreshReady}
                         onEnter={text => {
                           if ((sending || loading || loadingAttachments) && text.trim()) { queuedEnter.current = text; return }
@@ -1713,7 +1738,7 @@ function Chat(p: ChatProps) {
                         }}/>
                     </ComposerPrimitive.Root></ComposerPrimitive.AttachmentDropzone>}
                   </div>
-                  {welcome ? <div className="starter-actions">
+                  {showDetails && welcome ? <div className="starter-actions">
                     {[
                       preferenceStarter?{Icon:ListChecks,label:preferenceStarter.starter,text:preferenceStarter.prompt}
                         :{Icon:ListChecks,label:L("Make a checklist","整理清单"),text:L("Prepare a launch checklist grouped by owner.","把发布前的检查项按负责人整理成一份清单。")},

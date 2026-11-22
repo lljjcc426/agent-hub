@@ -68,6 +68,7 @@ interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
 type ChatCall=ExecutionCall&{conversationId:string;runId:string;usageRevision?:number}
+export type ChatDetailMode='detailed'|'simple'
 function transcriptText(id:string,text:string){
   if(!id.startsWith('delegated:')||!text.startsWith('{"objective":'))return text
   try{
@@ -335,15 +336,20 @@ export class ChatSessions {
   }
   list(owner:string,archived=false){return this.rows<Conversation>('chat-conversation','owner',owner).filter(c=>c.archived===archived&&!this.host.memory.cleanup.blocked('chat-conversation',c.id,c)).sort((a,b)=>b.updatedAt-a.updatedAt).map(c=>this.publicConversation(c))}
   space(owner:string,create=false){
-    const key='chat-space:'+owner,saved=this.host.store.get<{conversationId?:string;display:'group'|'agents';nativeId?:string}>('settings',key)
+    const key='chat-space:'+owner,saved=this.host.store.get<{conversationId?:string;display?:'group'|'agents';detailMode?:ChatDetailMode;nativeId?:string}>('settings',key)
     const conversations=this.list(owner).filter(c=>!c.project),current=conversations.find(c=>c.id===saved?.conversationId)??conversations[0]??(create?this.create(owner):null)
     if(current&&saved?.conversationId!==current.id){
       if(saved?.nativeId){const c=this.get(current.id,owner);this.host.store.put('chat-conversation',c.id,{...c,nativeId:saved.nativeId})}
       this.host.store.put('settings',key,{...saved,conversationId:current.id,display:saved?.display??'group',nativeId:saved?.nativeId??'chat:'+current.id})
     }
     const cleanup=this.host.memory.cleanup.receipts().filter(r=>r.scopeId==='@chat:'+stableDigest(owner)).at(-1)??null
-    return {conversation:current,display:saved?.display??'group',approvalMode:this.permissionSetting(owner).mode,cleanup,
+    return {conversation:current,display:saved?.display??'group',detailMode:saved?.detailMode??'detailed',approvalMode:this.permissionSetting(owner).mode,cleanup,
       personalization:chatPersonalization(this.host.store,owner)}
+  }
+  setDetailMode(owner:string,detailMode:ChatDetailMode){
+    const key='chat-space:'+owner
+    this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),detailMode})
+    return this.space(owner)
   }
   private permissionSetting(owner:string){
     const setting=this.host.store.get<{approvalMode?:ApprovalMode;permissionEpoch?:number}>('settings','chat-space:'+owner)

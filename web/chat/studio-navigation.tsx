@@ -29,7 +29,7 @@ import { Brand, ChoiceGroup, IconButton, NavLink, Popover, SelectField, Selectio
 import { AgentAvatar } from './agent-avatar.tsx';
 import { SidebarSeparator } from './sidebar-separator.tsx';
 import { workspaceGroups } from './workspace-settings.tsx';
-import { spaceRequest } from './chat-settings.tsx';
+import { spaceRequest, type ChatSpace } from './chat-settings.tsx';
 import { modifierEnterLabel, parseSendShortcut, type SendShortcut } from './send-shortcut.ts';
 
 type L = (en: string, zh: string) => string;
@@ -47,7 +47,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
   return [
     { name: L('Preferences', '偏好'), rows: [
       row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat',
-        L('Send message keyboard shortcut Enter', '发送消息 快捷键 回车 Enter')),
+        L('Send message keyboard shortcut Enter Chat display Detailed Simple', '发送消息 快捷键 回车 Enter 对话显示 详细 简洁')),
       row('appearance', L('Appearance', '外观'), Sun, undefined, L('Theme colors fonts motion', '主题 颜色 字体 动效')),
       row('advanced/memory', L('Memory', '记忆'), Brain),
       ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
@@ -246,19 +246,23 @@ export function General({
   lang,
   setLang,
   display,
+  detailMode,
   L,
   onDisplayChange,
+  onDetailModeChange,
   openWorkspaces,
   onPersonalize,
   sendShortcut,
   onSendShortcutChange,
 }: {
   onDisplayChange: (value: 'group' | 'agents') => void;
+  onDetailModeChange: (value: ChatSpace['detailMode']) => Promise<void>;
   openWorkspaces: () => void;
   onPersonalize?: () => void;
   lang: string;
   setLang: (lang: 'en' | 'zh-CN') => void;
   display: 'group' | 'agents';
+  detailMode: ChatSpace['detailMode'];
   sendShortcut: SendShortcut;
   onSendShortcutChange: (value: SendShortcut) => void;
   L: L;
@@ -266,6 +270,7 @@ export function General({
   const [saving, setSaving] = useState(false),
     [error, setError] = useState('');
   const shortcutLabel = L('Send message shortcut', '发送消息快捷键');
+  const detailLabel = L('Chat display', '对话显示');
   async function changeDisplay(value: 'group' | 'agents') {
     if (saving || display === value) return;
     const previous = display;
@@ -278,6 +283,18 @@ export function General({
     } catch {
       onDisplayChange(previous);
       setError(L('Could not save the layout. Try again.', '未能保存布局，请重试。'));
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function changeDetailMode(value: ChatSpace['detailMode']) {
+    if (saving || detailMode === value) return;
+    setSaving(true);
+    setError('');
+    try {
+      await onDetailModeChange(value);
+    } catch {
+      setError(L('Could not save the chat display. Try again.', '未能保存对话显示，请重试。'));
     } finally {
       setSaving(false);
     }
@@ -311,6 +328,13 @@ export function General({
             <option value="enter">Enter</option>
             <option value="modifier-enter">{modifierEnterLabel}</option>
           </SelectField>
+        </section>
+        <section className="language-row">
+          <h2>{detailLabel}</h2>
+          <ChoiceGroup label={detailLabel} value={detailMode} onChange={changeDetailMode} choices={[
+            { value: 'detailed', label: L('Detailed', '详细'), disabled: saving },
+            { value: 'simple', label: L('Simple', '简洁'), disabled: saving },
+          ]} />
         </section>
         <section>
           <h2>{L('Chat layout', '对话布局')}</h2>

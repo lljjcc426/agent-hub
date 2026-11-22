@@ -1344,6 +1344,27 @@ it('protects settings/reset HTTP mutations with authentication and origin checks
  expect(h.chat.view(same.conversation.id,'local-operator').messages).toEqual([])
 })
 
+it('saves Chat detail mode per account independently of task permissions and layout',async()=>{
+ const {h,root}=fixture(),host=await serve(h);servers.push(host.server)
+ const owner='local-operator',conversation=h.chat.space(owner,true).conversation!
+ h.chat.display(owner,'agents')
+ h.chat.setApprovalMode(owner,'full')
+ const endpoint=host.url+'/api/chat/space',headers={
+  authorization:'Bearer '+readFileSync(join(root,'state/access-token'),'utf8').trim(),'content-type':'application/json',
+ }
+ const patch=(detailMode:string)=>fetch(endpoint,{method:'PATCH',headers,body:JSON.stringify({detailMode})})
+ expect(await (await fetch(endpoint,{headers})).json()).toMatchObject({detailMode:'detailed'})
+ expect((await patch('unknown')).status).toBe(400)
+ expect(await (await patch('simple')).json()).toMatchObject({
+  detailMode:'simple',display:'agents',approvalMode:'full',conversation:{id:conversation.id},
+ })
+ expect(await (await fetch(endpoint,{headers})).json()).toMatchObject({detailMode:'simple'})
+ expect(h.chat.space('other-account').detailMode).toBe('detailed')
+ expect(await (await patch('detailed')).json()).toMatchObject({
+  detailMode:'detailed',display:'agents',approvalMode:'full',conversation:{id:conversation.id},
+ })
+})
+
 it('preserves external entry memory/history in the same scope, other accounts and unrelated running work',async()=>{
  const {h,root}=fixture(),chat=h.chat.space('owner',true).conversation!,other=h.chat.space('another-account',true).conversation!;enableChatBatch(h,chat.id)
  for(const nativeId of ['external-group','chat:'+other.id])h.scopes.command({action:'entry.bind',operationId:nativeId,expectedRevision:0,scopeId:'team',sourceId:'local',accountNamespace:'local',nativeId,history:'group'})

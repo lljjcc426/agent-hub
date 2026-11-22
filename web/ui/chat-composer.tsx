@@ -29,7 +29,7 @@ function SendMessage({ canSend, sending, shortcut, L, onClick }: {
 export type ComposerActionsProps = {
   L: Localize; visible: boolean; sending: boolean; mode?: Mode; usage: CurrentContext
   router: string; model?: string; modelBackend?: string; uploadDisabled: boolean
-  onContext: () => void; saveMode: (next: Mode) => Promise<void>; onModelSaved: () => Promise<void>
+  onContext?: () => void; saveMode: (next: Mode) => Promise<void>; onModelSaved: () => Promise<void>
   onUsageOpen?: () => void
   onCommitTrail?: (opener: HTMLElement | null) => void
   onEnter: (text: string) => void
@@ -56,14 +56,16 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   const [skillsFailed, setSkillsFailed] = useState(false)
   const current = useRef(menu)
   current.current = menu
-  const source = visible ? menu?.source : undefined
+  const showContext = !!onContext
+  const displayedMenu = visible && (showContext || menu?.page !== 'context') ? menu : null
+  const source = displayedMenu?.source
   const open = !!source
-  const page = visible ? menu?.page : undefined
+  const page = displayedMenu?.page
   const slashList = source === 'slash' && page === 'commands'
   const slash = slashList && !closing
   const nested = page !== 'commands' && (source === 'slash' || source === 'plus')
   const query = menu?.query ?? ''
-  const items = matchingCommands(query, L, !!onCommitTrail)
+  const items = matchingCommands(query, L, !!onCommitTrail, showContext)
   const skillItems = slashList && loadSkills ? catalog.items.filter(item =>
     item.name.toLowerCase().includes(query) || item.description?.toLowerCase().includes(query)
   ).sort((a,b) => Number(b.name.toLowerCase().startsWith(query)) - Number(a.name.toLowerCase().startsWith(query))) : []
@@ -109,7 +111,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   }
   function updateQuery(text: string) {
     const query = /^\/[^\s/]*$/u.test(text) ? text.slice(1).toLowerCase() : null
-    if (query === null || (!loadSkills && !matchingCommands(query, L, !!onCommitTrail).length)) {
+    if (query === null || (!loadSkills && !matchingCommands(query, L, !!onCommitTrail, showContext).length)) {
       if (menu) close(false)
       return
     }
@@ -160,7 +162,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     options[next]?.focus()
   }
 
-  useEffect(() => { if (!visible) setMenu(null) }, [visible])
+  useEffect(() => {
+    if (!visible || (!showContext && current.current?.page === 'context')) setMenu(null)
+  }, [visible, showContext])
   useEffect(() => {
     if (!slash || !loadSkills) return
     const controller = new AbortController()
@@ -320,10 +324,10 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
         <PolicyIcon size={15}/><span>{policyLabel}</span>
       </button>
       <div className="send-actions">
-        <button type="button" data-menu-trigger className="icon-button composer-context" aria-label={contextTitle}
+        {showContext && <button type="button" data-menu-trigger className="icon-button composer-context" aria-label={contextTitle}
           title={[contextTitle, readout.tokens].filter(Boolean).join(' · ')}
           aria-haspopup="dialog" aria-expanded={!closing && source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
-          onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>
+          onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>}
         <SendMessage canSend={canSend && !modelWrites} sending={sending} shortcut={sendShortcut} L={L} onClick={() => {
           if (chooseActive()) return
           if (slash) close()
@@ -347,7 +351,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
           {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} backend={modelBackend} onSaved={onModelSaved}
             onSaving={active => setModelWrites(count => count + (active ? 1 : -1))} onClose={finish} onBack={nested ? back : undefined}/>}
-          {page === 'context' && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
+          {page === 'context' && onContext && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
         </div></div>
       </div>, document.body
     )}

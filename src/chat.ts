@@ -30,7 +30,7 @@ import {decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecisio
 import type {Approval} from './approvals.ts'
 import {githubRepository} from './github-read.ts'
 import {GithubError} from './github-errors.ts'
-import {approvalHistory,approvalHistoryItem,pendingChatApprovals,transcriptApprovals,type HistoryCursor} from './chat-approval-history.ts'
+import {approvalHistory,approvalHistoryItem,pendingChatApprovals,transcriptApprovals,type HistoryCursor,type HistoryFilter} from './chat-approval-history.ts'
 import type {UsageRecord} from './usage-ledger.ts'
 import type {BudgetReceipt} from './context-budget.ts'
 import {ChatError} from './chat-errors.ts'
@@ -1015,18 +1015,26 @@ export class ChatSessions {
       return {tasks,result}
     }catch{throw new ChatError('file_unavailable','This file is unavailable or cannot be previewed.',404)}
   }
-  approvalHistory(id:string,owner:string,cursor?:HistoryCursor){
+  approvalHistory(id:string,owner:string,cursor?:HistoryCursor,filter?:HistoryFilter){
     this.get(id,owner)
-    const page=approvalHistory(this.host.store,id,cursor)
+    const page=approvalHistory(this.host.store,id,cursor,filter)
     const cleanup=this.host.memory.cleanup
-    if(cleanup.plans().length)page.items=page.items.filter(item=>!cleanup.blocked(item.kind,item.id,this.host.store.get(item.kind,item.id)))
+    const cleaning=cleanup.plans().length>0
+    page.items=page.items.filter(item=>
+      (!cleaning||!cleanup.blocked(item.kind,item.id,this.host.store.get(item.kind,item.id))) &&
+      (item.kind!=='business-decision'||!!this.businessDecisions(id,owner,{questionId:item.id})[0]?.answer))
     return page
   }
   approvalRecord(id:string,owner:string,item:string){
     this.get(id,owner)
     const record=approvalHistoryItem(this.host.store,id,item)
-    const kind=record.kind==='file'?'chat-message':record.request.method==='roppo/tool'?'chat-permission':'approval'
+    const kind=record.kind==='file'||record.kind==='choice'?'chat-message':record.kind==='question'?'business-decision':record.request.method==='roppo/tool'?'chat-permission':'approval'
     if(this.host.memory.cleanup.blocked(kind,item,this.host.store.get(kind,item)))throw new ChatError('approval_missing','Approval record not found.',404)
+    if(record.kind==='question'){
+      const question=this.businessDecisions(id,owner,{questionId:item})[0]
+      if(!question?.answer)throw new ChatError('approval_missing','Approval record not found.',404)
+      return {...record,question}
+    }
     return record
   }
   private pendingCards(c:Conversation,closedRuns:Set<string>,requests:Approval[],managed:PermissionAction[]):PendingCard[]{

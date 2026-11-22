@@ -112,6 +112,6 @@
 
 .conversation-body,.conversation-sidebar {--c-success:var(--c-text)}
 .conversation-body .agent-portrait[data-kind=worker],.conversation-sidebar .agent-portrait[data-kind=worker] {filter:grayscale(1)}
-.conversation-body :is(.message-status,.run-status,.tool-call,.worker-state,.output-state,.chat-browser) svg {color:var(--team-muted)}
+.conversation-body :is(.message-status,.run-status,.tool-call,.worker-state,.output-state) svg {color:var(--team-muted)}
 .conversation-body :is(.live-dot,.tool-dot) {background:var(--team-muted)}
 .conversation-body :is(.reaction-chip,.reaction-pill)[aria-pressed=true] {background:var(--team-fill);border-color:var(--team-muted);color:var(--team-ink)}

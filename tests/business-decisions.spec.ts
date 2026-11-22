@@ -80,6 +80,12 @@ it('keeps the answer on its original turn across pages and a restart, including 
  hosts.add(reopened)
  const loaded=reopened.chat.view(chat.id,'owner',undefined,undefined,undefined,undefined,original.sequence)
  expect(loaded.decisions).toContainEqual(expect.objectContaining(expected))
+ const archive=reopened.chat.approvalHistory(chat.id,'owner',undefined,{result:'answered'})
+ expect(archive.items).toContainEqual(expect.objectContaining({id:question.id,result:'answered'}))
+ expect(reopened.chat.approvalRecord(chat.id,'owner',question.id)).toMatchObject({kind:'question',question:expected})
+ const unrelated=reopened.chat.create('owner')
+ expect(reopened.chat.approvalHistory(unrelated.id,'owner').items).toEqual([])
+ expect(()=>reopened.chat.approvalRecord(unrelated.id,'owner',question.id)).toThrow('not found')
 })
 it('invalidates changed report targets and renews to a new question before accepting an answer',async()=>{
  const f=await fixture();await f.finish();const old=current(f),attention=f.ticket().attention!

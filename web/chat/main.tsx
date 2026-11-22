@@ -43,8 +43,6 @@ import {
   Square,
   AlertCircle,
   RefreshCw,
-  Globe,
-  Hand,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
@@ -56,7 +54,7 @@ import {HeartbeatCard} from './heartbeat-card.tsx';
 import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,PendingNotice,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,FileReviewCard,RouterDecision,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
 import {useAppearanceMode} from './appearance-store.ts';
 import './appearance-theme.css';
 import {ComposerControls} from './composer-actions.tsx';
@@ -332,13 +330,11 @@ function AssistantMessage() {
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
-    body = <>{fileReview && <PendingNotice id={id} kind="review" notice={fileReview.notice} subject={fileReview.name}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>)}</>;
+    body = <>{fileReview && <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>)}</>;
   } else if (fileReview) {
-    body = <PendingNotice id={id} kind="review" notice={fileReview.notice} subject={fileReview.name} status={
-      fileReview.state==='denied'?L('Declined','已拒绝'):fileReview.state==='superseded'?L('Replaced','已替换'):undefined}/>;
+    body = <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>;
   } else if (decision) {
-    body = <PendingNotice id={id} kind="answer" notice={decision.pendingNotice} subject={decision.question}
-      status={decision.answer || (decision.closed?L('Cancelled','已取消'):undefined)}/>;
+    body = <RouterDecision id={id} decision={decision}/>;
   } else {
     body = <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }}/></div>;
   }
@@ -1610,7 +1606,6 @@ function Chat(p: ChatProps) {
                   inert={trayPresence.closing} aria-hidden={trayPresence.closing||undefined}>
                   <button type="button" className="pending-backdrop" tabIndex={-1} aria-label={L('Close pending panel','关闭待处理面板')} onClick={closeTray}/>
                   <PendingTray key={(id??'')+':'+displayedTray.linkVisit} read={readHistory} clearSelection={clearSelection}
-                  linkedAnswer={!!displayedPendingItem && (displayedPendingItem.startsWith('decision:') || !!snapshot?.decisions.some(q=>q.id===displayedPendingItem) || !!snapshot?.approvals.some(a=>a.id===displayedPendingItem && a.method==='item/tool/requestUserInput'))}
                   cards={pendingCards} selectedId={displayedPendingItem} loading={!!id && (loading || snapshot?.conversation.id !== id)} close={closeTray}/></div>}
                 {activityPresence.view!==null&&<div ref={activityPresence.ref} className="tray-presence"
                   data-closing={activityPresence.closing||undefined} inert={activityPresence.closing} aria-hidden={activityPresence.closing||undefined}>
@@ -1663,14 +1658,6 @@ function Chat(p: ChatProps) {
                       {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftHasContext={!!quote||!!skill}
                         retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
-                      {(snapshot?.browsers??[]).filter(b=>(!b.ended||b.runId===run?.id)&&(!readonly||b.workerId===selected.id)).map(b=><div className="chat-browser" key={b.id}>
-                        <Globe size={20}/><div><strong>{b.title||L('Browser','浏览器')}</strong><span>{b.handoffReason|| (b.ended?L('Task ended','任务已结束'):(b.control==='worker'||b.control==='router')?L('Agent is browsing','Agent 正在浏览'):L('Waiting for you','等待你操作'))}</span></div>
-                        <button onClick={()=>{
-                          setBrowserRequest({id:b.id,takeover:!b.ended&&b.control==='paused'});
-                          setTeamTab('agents');
-                          showPanel(true);
-                        }}>{!b.ended&&b.control==='paused'?<Hand size={15}/>:null}{!b.ended&&b.control==='paused'?L('Take control','接管'):L('View page','查看网页')}</button>
-                      </div>)}
                       {run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}

@@ -34,7 +34,7 @@ export function PendingRequests({items, loading, close, L, selectedId, heading, 
   return <ChatTray id={id} heading={heading??L('Pending requests', '待处理事项')} icon={<Inbox size={17} aria-hidden="true"/>}
     navigation={navigation} closeLabel={L('Hide pending requests','隐藏待处理事项')} close={close}
     onKeyDownCapture={event=>{
-      if(event.key==='Escape' && event.target instanceof Element && event.target.closest('.rp-approval,.permission-review')){
+      if(event.key==='Escape' && event.target instanceof Element && event.target.closest('.rp-approval,.chat-approval-card')){
         event.preventDefault();event.stopPropagation();close()
       }
     }}>

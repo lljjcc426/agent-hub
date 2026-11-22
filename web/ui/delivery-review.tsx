@@ -7,7 +7,7 @@ import './delivery.css'
 
 type Localize = (en: string, zh: string) => string
 
-function DraftText({ readDraft, L }: { readDraft: () => Promise<string>; L: Localize }) {
+export function DraftText({ readDraft, L }: { readDraft: () => Promise<string>; L: Localize }) {
   const [text, setText] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   async function load() {

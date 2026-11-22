@@ -320,6 +320,11 @@ it('resumes only the requesting Worker when its Chat owner answers a native appr
   expect(decisions).toEqual([{decision:'accept'},{answers:{word:{answers:['private-answer']}}}])
   expect(requests().map(a=>a.state)).toEqual(['approved','answered'])
   expect(JSON.stringify(h.store.get('approval',question.id))).not.toContain('private-answer')
+  const archived=h.chat.approvalHistory(c.id,'owner',undefined,{query:'check word?',result:'answered'})
+  expect(archived.items).toMatchObject([{id:question.id,label:'Check word?',result:'answered'}])
+  const detail=h.chat.approvalRecord(c.id,'owner',question.id)
+  expect(detail).toMatchObject({request:{state:'answered',answerText:''}})
+  expect(JSON.stringify({archived,detail})).not.toContain('private-answer')
 })
 it('replays the exact Router operation after restart and preserves a denied decision across mode changes',async()=>{
   const f=fixture(async r=>{
@@ -1668,6 +1673,13 @@ it('pages retained approval history across tied timestamps and looks up older re
   expect(new Set([...first.items,...second.items,...third.items].map(item=>item.id)).size).toBe(42)
   const detail=h.chat.approvalRecord(c.id,'owner','record-00')
   expect(detail).toMatchObject({request:{facts:{command:'historical command contents'},executionState:'complete'}})
+  const choice={question:'Which release language?',options:[{label:'English'},{label:'Chinese'}],answer:'English'}
+  h.store.put('chat-message','old-choice',{id:'old-choice',conversationId:c.id,createdAt:1,decision:choice})
+  h.store.put('chat-message','pending-choice',{id:'pending-choice',conversationId:c.id,createdAt:2,decision:{...choice,answer:undefined}})
+  const choices=h.chat.approvalHistory(c.id,'owner',undefined,{query:'RELEASE LANGUAGE',result:'answered'})
+  expect(choices.items).toMatchObject([{id:'old-choice',label:choice.question,result:'answered'}])
+  expect(h.chat.approvalRecord(c.id,'owner','old-choice')).toMatchObject({kind:'choice',decision:choice})
+  expect(h.chat.approvalHistory(c.id,'owner',undefined,{query:'release language',result:'denied'}).items).toEqual([])
   expect(()=>h.chat.approvalRecord(c.id,'owner','foreign')).toThrow()
   expect(()=>h.chat.approvalHistory(c.id,'other')).toThrow()
   expect(()=>h.chat.approvalRecord(c.id,'other','record-00')).toThrow()

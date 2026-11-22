@@ -742,7 +742,9 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
             at:z.coerce.number().int().nonnegative().safe().parse(query.get('before')??undefined),
             id:item.parse(query.get('beforeId')),
           }:undefined
-          send(res,200,runtime.chat.approvalHistory(id,owner,cursor));return
+          const result=z.enum(['approved','denied','answered','closed']).optional().parse(query.get('result')??undefined)
+          const search=z.string().trim().max(120).optional().parse(query.get('q')??undefined)
+          send(res,200,runtime.chat.approvalHistory(id,owner,cursor,{query:search,result}));return
         }
         if(action==='team-context'&&req.method==='GET'){send(res,200,runtime.chat.teamContext(id,owner));return}
         if(action==='task-detail'&&req.method==='GET'){

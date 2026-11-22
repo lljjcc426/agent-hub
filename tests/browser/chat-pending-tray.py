@@ -1,7 +1,7 @@
 """Run against a fresh examples/chat-acceptance.ts workflow host."""
 import json
 import sys
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
@@ -28,8 +28,11 @@ with sync_playwright() as pw:
         character = page.locator('.chat-companion .roppo-character').bounding_box()
         status = page.locator('.companion-label').bounding_box()
         assert status['y'] >= character['y'] + character['height']
-        for box in (center, character, status):
-            assert abs(box['x'] + box['width'] / 2 - width / 2) < 1
+        center_x = center['x'] + center['width'] / 2
+        for box in (character, status):
+            assert abs(box['x'] + box['width'] / 2 - center_x) < 1
+        if width > 600:
+            assert abs(center_x - width / 2) < 1
         assert center['x'] + center['width'] < right['x'] and right['x'] + right['width'] <= width
     trigger = page.locator('.pending-trigger')
     tray = page.get_by_role('complementary', name='Pending requests')
@@ -50,39 +53,32 @@ with sync_playwright() as pw:
     expect(panel.get_by_text('No tasks yet', exact=True)).to_be_visible()
     panel_button.click()
     send('Prepare the guide.')
-    choice = tray.get_by_role('group', name='Which language?')
+    choice = tray.get_by_role('region', name='Which language?')
     expect(choice).to_be_visible(timeout=20000)
     one_height = tray.bounding_box()['height']
     send('Let me review the release notes before delivery.')
-    file = tray.locator('.rp-approval').filter(has_text='release-notes.md')
+    file = tray.locator('.chat-approval-card').filter(has_text='release-notes.md')
     expect(file).to_be_visible(timeout=20000)
     assert empty_height < one_height < tray.bounding_box()['height']
     cards = tray.locator('.pending-list > li')
     expect(cards).to_have_count(2)
     first, second = cards.all()
     for card in (first, second):
-        expect(card).to_have_css('border-top-width', '1px')
-        expect(card).to_have_css('border-top-left-radius', '12px')
+        expect(card.locator('.chat-approval-card')).to_have_css('border-top-width', '1px')
+        expect(card.locator('.chat-approval-card')).to_have_css('border-top-left-radius', '12px')
     first_box, second_box = first.bounding_box(), second.bounding_box()
     assert second_box['y'] > first_box['y'] + first_box['height']
-    expect(choice).to_have_css('border-top-width', '0px')
-    expect(file).to_have_css('border-top-width', '0px')
     expect(tray.get_by_role('button', name='Go to original message')).to_have_count(0)
     tray.screenshot(path=str(out / 'pending-cards.png'))
     expect(trigger).to_have_accessible_name('Pending requests · 2')
     transcript = page.locator('.transcript')
-    expect(transcript.locator('.rp-decision, .rp-approval')).to_have_count(0)
-    answer_link = transcript.get_by_role('link', name='answer', exact=True)
-    review_link = transcript.get_by_role('link', name='approval', exact=True)
-    expect(answer_link.locator('..')).to_have_text('Before I draft the guide, please answer the language question.')
-    expect(review_link.locator('..')).to_have_text('Sending the release notes needs your approval.')
-    expect(answer_link).to_have_css('text-decoration-line', 'underline')
-    expect(answer_link).to_have_css('color', 'rgb(21, 93, 193)')
-    expect(review_link).to_have_css('text-decoration-line','underline')
-    assert review_link.evaluate('(e)=>getComputedStyle(e).color===getComputedStyle(e.parentElement).color')
-    for link, card in [(answer_link, choice), (review_link, file)]:
-        link.click()
+    expect(transcript.get_by_role('region', name='Which language?')).to_contain_text('Before I draft the guide')
+    expect(transcript.get_by_role('region', name='release-notes.md')).to_contain_text('Sending the release notes')
+    conversation_id = ctx.request.get(info['base'] + '/api/chat/conversations').json()['conversations'][0]['id']
+    for card in (choice, file):
         target = card.locator('xpath=ancestor::li[1]')
+        card_id = target.get_attribute('data-pending-id')
+        page.goto(f"{info['url']}#conversation/{conversation_id}/pending/{quote(card_id, safe='')}")
         expect(target).to_be_focused()
         expect(target).to_have_attribute('data-pending-id', unquote(page.url.split('/pending/')[-1]))
     review_url = page.url
@@ -126,7 +122,7 @@ with sync_playwright() as pw:
     expect(file).to_be_visible()
     expect(choice).to_be_visible()
     panel_button.click()
-    choice.locator('strong',has_text='Which language?').first.click()
+    choice.get_by_role('heading',name='Which language?').click()
     expect(panel).to_be_visible()
     expect(tray).to_be_visible()
     expect(transcript.locator('[data-located]')).to_have_count(0)
@@ -140,7 +136,7 @@ with sync_playwright() as pw:
     other=ctx.new_page()
     other.goto(info['url'],wait_until='domcontentloaded')
     other_tray=other.locator('#pending-tray')
-    other_file=other_tray.locator('.rp-approval').filter(has_text='release-notes.md')
+    other_file=other_tray.locator('.chat-approval-card').filter(has_text='release-notes.md')
     other_file.get_by_text('Read draft',exact=True).click()
     expect(other_file.locator('pre')).to_contain_text('Layout verified')
     source = other_file.locator('pre').text_content().encode()
@@ -162,8 +158,15 @@ with sync_playwright() as pw:
     expect(other_tray.locator('[data-record-id]')).to_contain_text('release-notes.md')
     expect(other_tray.get_by_role('button',name='Deliver file')).to_have_count(0)
     other.close()
-    choice.get_by_role('button',name='English',exact=False).click()
-    approval=tray.locator('.permission-review').filter(has_text='Inspect the working directory')
+    confirm=choice.get_by_role('button',name='Confirm selection')
+    option=choice.get_by_role('radio',name='English',exact=True)
+    expect(confirm).to_be_disabled()
+    option.check()
+    expect(option).to_be_checked()
+    expect(trigger).to_have_accessible_name('Pending requests · 1')
+    expect(confirm).to_be_enabled()
+    confirm.click()
+    approval=tray.locator('.chat-approval-card').filter(has_text='Inspect the working directory')
     expect(approval).to_be_visible(timeout=20000)
     member=page.get_by_role('button',name='@Research',exact=True).first
     member.click()
@@ -176,12 +179,13 @@ with sync_playwright() as pw:
     approval.get_by_role('button',name='Allow once').click()
     expect(tray).to_have_count(0)
     trigger.click()
-    native=tray.get_by_role('group',name='Which layout?')
+    native=tray.get_by_role('region',name='Which layout?')
     expect(native).to_be_visible(timeout=20000)
-    native.get_by_role('button',name='Table',exact=False).click()
+    native.get_by_role('radio',name='Table',exact=True).check()
+    native.get_by_role('button',name='Confirm selection').click()
     expect(tray.get_by_role('status')).to_have_text('You’re all caught up.')
     page.locator('.worker-readonly button').click()
-    expect(transcript.locator('.pending-notice').filter(has_text='Which language?')).to_contain_text('English')
+    expect(transcript.locator('.chat-approval-card').filter(has_text='Which language?')).to_contain_text('English')
     expect(page.locator('.transcript').get_by_text('Verified layout: Table',exact=True).first).to_be_visible(timeout=20000)
     page.keyboard.press('Escape')
     expect(tray).to_have_count(0)

@@ -15,6 +15,13 @@ export function withPendingNotice(spec:ToolSpec):ToolSpec {
   return {...spec, inputSchema:{...spec.inputSchema, properties:{...spec.inputSchema.properties as object,pendingNotice:pendingNoticeProperty}}}
 }
 
+export function withoutPendingNotice(spec:ToolSpec):ToolSpec {
+  const properties=spec.inputSchema.properties
+  if(!permissionNoticeTools.has(spec.name)||!properties||typeof properties!=='object'||!('pendingNotice' in properties))return spec
+  const {pendingNotice,...operationFields}=properties
+  return {...spec,inputSchema:{...spec.inputSchema,properties:operationFields}}
+}
+
 export function splitPendingNotice(name:string, value:unknown) {
   if (!permissionNoticeTools.has(name) || !value || typeof value!=='object' || !('pendingNotice' in value)) return {args:value}
   const {pendingNotice,...args}=value

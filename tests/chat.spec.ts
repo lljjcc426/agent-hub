@@ -462,6 +462,49 @@ it('replays the exact Router operation after restart and preserves a denied deci
   expect(h.chat.view(c.id,'owner').approvals).toHaveLength(2)
 })
 
+it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('runs full-access Worker operations without surfacing operation approvals',async()=>{
+  let target='',worker:ModelRequest|undefined
+  const f=fixture(async request=>{
+    if(request.role==='worker'){
+      if(worker)return report
+      worker=request
+      const args={command:'printf x >> "'+target+'/once.txt"',writePaths:[target]}
+      for(const id of ['first-write','retry-write']){
+        const result=await request.onTool!('superagent_shell',{...args,requestId:id},id)
+        expect(result).toMatchObject({success:true})
+        expect(result).not.toHaveProperty('permission')
+      }
+      expect(await request.onHumanRequest!({id:randomUUID(),method:'item/commandExecution/requestApproval',params:{command:'pwd',cwd:request.cwd}})).toEqual({decision:'accept'})
+      return report
+    }
+    const input=JSON.parse(request.input)
+    if(input.kind==='user_message')await request.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:input.trigger.id,text:'Write the receipt'},'assign')
+    return {reply:'Recorded.'}
+  },true)
+  const {h}=f,c=h.chat.create('owner')
+  target=join(f.root,'full-access');mkdirSync(target)
+  h.chat.setApprovalMode('owner','full')
+  const {runId}=send(h,c.id)
+  await settle(h,()=>h.permissions.forChat(c.id).some(item=>item.phase==='complete')&&h.activeExecutions===0)
+  expect(readFileSync(join(target,'once.txt'),'utf8')).toBe('x')
+  const operations=h.permissions.forChat(c.id)
+  expect(operations).toMatchObject([{automatic:true,phase:'complete'}])
+  expect(operations[0]).not.toHaveProperty('notice')
+  const actor=h.chat.permissionActor(runId)!
+  await h.permissions.run(actor,'test-operation',{action:'inspect'},{},async()=>({
+    success:false,permission:'uncertain',contentItems:[{type:'inputText',text:'Operation outcome unavailable'}]
+  }))
+  const router=f.calls.find(request=>request.role==='router'&&request.activity?.triggerId===runId)!
+  for(const request of [router,worker!]){
+    expect(request.instructions).not.toMatch(/permission mode|native_permission_decision|Chat approval policy/)
+    expect(request.tools!.find(tool=>tool.name===(request.role==='router'?'worker_manage':'superagent_shell'))?.inputSchema.properties)
+      .not.toHaveProperty('pendingNotice')
+  }
+  expect(h.chat.view(c.id,'owner').approvals).toEqual([])
+  expect(h.chat.approvalHistory(c.id,'owner').items).toEqual([])
+  expect(()=>h.chat.approvalRecord(c.id,'owner',operations[0]!.id)).toThrow('not found')
+})
+
 it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('resumes a Worker command from the stored decision and performs its filesystem write only once',async()=>{
   let target=''
   const f=fixture(async r=>{

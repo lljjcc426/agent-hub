@@ -349,15 +349,26 @@ export class ChatSessions {
     if(setting.mode!==approvalMode)this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),approvalMode,permissionEpoch:setting.epoch+1})
     return this.space(owner)
   }
+  private permissionMode(owner:string,run:ChatRun):ApprovalMode {
+    const setting=this.permissionSetting(owner)
+    if(setting.mode!=='full')return 'ask'
+    if(run.permissionEpoch!==undefined)return setting.epoch===run.permissionEpoch?'full':'ask'
+    // Old confirmation replies did not save the permission setting. Only reuse
+    // the still-current setting of the same task's original Chat assignment.
+    const ticket=run.decisionTicketId?this.host.store.tickets.get(run.decisionTicketId):undefined
+    const delegation=ticket&&this.host.store.get<{parentTrigger:string}>('router-delegation',ticket.origin.triggerId)
+    const original=delegation&&this.originRun(delegation.parentTrigger,true)
+    return original?.conversationId===run.conversationId&&!original.cancelRequested&&!original.cancelled&&
+      !original.feedback&&original.permissionEpoch===setting.epoch?'full':'ask'
+  }
   permissionActor(triggerId:string,ticketId?:string,agentId?:string):PermissionActor|undefined {
     const dest=ticketId?this.workerDestination(ticketId,true):undefined
     const run=ticketId?dest?.run:this.originRun(triggerId,true)
     if(!run||run.cancelRequested||run.cancelled||run.feedback)return
     const conversation=this.host.store.get<Conversation>('chat-conversation',run.conversationId)
     if(!conversation||this.host.memory.cleanup.blocked('chat-conversation',conversation.id,conversation))return
-    const setting=this.permissionSetting(conversation.owner)
     return {conversationId:conversation.id,runId:run.id,triggerId,ticketId,agentId,workerId:dest?.worker.id??this.router(triggerId).id,
-      mode:setting.mode==='full'&&setting.epoch===run.permissionEpoch?'full':'ask'}
+      mode:this.permissionMode(conversation.owner,run)}
   }
   private wakePermission(action:PermissionAction){
     const {ticketId,triggerId,conversationId}=action.actor
@@ -947,7 +958,7 @@ export class ChatSessions {
       let nextId=input.id
       if(input.action==='answer'){
         h.manager.sendImmediate({action:'send',ticketId:d.ticketId,questionId:d.id,decisionVersion:input.version,text,requestId:'chat-decision:'+key,revision:h.settings.current().revision},context)
-        const run:ChatRun={decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now()}
+        const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now()}
         h.store.put('chat-run',run.id,run)
         rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
         if(context.scoped)h.goals.resumeAnsweredQuestion(d.ticketId,d.summary,context.scoped)
@@ -1177,7 +1188,10 @@ export class ChatSessions {
       else if(state==='completed'&&goals.some(g=>g.state==='active'||g.state==='waiting'))state='running'
     }
     const workers=workerProfiles(this.host.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:tasks.filter(t=>t.workerId===w.id)}))
-    const calls=this.host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.conversationId')=? ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 200").all(id).map(r=>JSON.parse(String(r.body)) as ChatCall).reverse()
+    const correctedFullRuns=new Set(runs.filter(item=>item.decisionTicketId&&item.permissionEpoch===undefined&&
+      this.permissionMode(c.owner,item)==='full').map(item=>item.id))
+    const calls=this.host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.conversationId')=? ORDER BY json_extract(body,'$.startedAt') DESC,rowid DESC LIMIT 200").all(id).map(r=>JSON.parse(String(r.body)) as ChatCall)
+      .filter(call=>call.permission!=='pending'||!correctedFullRuns.has(call.runId)).reverse()
     const participants=new Map<string,Speaker>()
     // History preserves speakers, but does not make deleted Agents current contacts.
     const router=this.router(last?.triggerId??'');participants.set(router.id,router)
@@ -1193,7 +1207,7 @@ export class ChatSessions {
       from:messages.length>100?messages[1]!.createdAt:0,
       until:before ? Number(this.host.store.db.prepare("SELECT min(json_extract(body,'$.createdAt')) as at FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.sequence')>=?").get(id,before)?.at??Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER,
       worker,run:runId,
-    })
+    }).filter(approval=>approval.method==='item/tool/requestUserInput'||!correctedFullRuns.has(approval.runId))
     const approvals=[...previousApprovals,
       ...requests.filter(a=>(!worker||a.chat?.workerId===worker)&&(!runId||a.chat?.runId===runId)).map(publicApproval),
       ...managedRequests.filter(a=>(!worker||a.actor.workerId===worker)&&(!runId||a.actor.runId===runId)).map(a=>permissionCard(a,this.host.store)),

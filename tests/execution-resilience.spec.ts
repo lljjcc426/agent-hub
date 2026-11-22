@@ -116,7 +116,8 @@ function githubTransport(){
 it('holds a ready deliverable after an unconfirmed GitHub write, including after restart',async()=>{
  const remote=githubTransport(),f=fixture(async request=>{
   const receipt=await request.onTool!('github_write',{repository,action:'comment',number:1,body:'Fixture comment'},'write')
-  expect(receipt).toMatchObject({success:false,permission:'uncertain'})
+  expect(receipt).not.toHaveProperty('permission')
+  expect(receipt).toMatchObject({success:false,contentItems:[{text:expect.stringContaining('"status":"uncertain"')}]})
  })
  await f.host.github.connect({token:'ghp_RESILIENCE_FIXTURE',repositories:[repository]},()=>{})
  f.start()
@@ -133,7 +134,8 @@ it('holds a ready deliverable after an unconfirmed GitHub write, including after
 it('confirms the same remote merge via readback and releases the retained deliverable',async()=>{
  const remote=githubTransport(),f=fixture(async request=>{
   const receipt=await request.onTool!('github_write',{repository,action:'merge_pull',number:1,expectedHead},'merge')
-  expect(receipt).toMatchObject({success:false,permission:'uncertain'})
+  expect(receipt).not.toHaveProperty('permission')
+  expect(receipt).toMatchObject({success:false,contentItems:[{text:expect.stringContaining('"status":"uncertain"')}]})
  })
  await f.host.github.connect({token:'ghp_RESILIENCE_FIXTURE',repositories:[repository]},()=>{})
  f.start();await f.until(()=>f.goal().state==='held')
@@ -149,7 +151,8 @@ it('confirms the same remote merge via readback and releases the retained delive
 it('keeps a provider failure after a dispatched write behind the effects fence',async()=>{
  const remote=githubTransport(),f=fixture(async request=>{
   const receipt=await request.onTool!('github_write',{repository,action:'comment',number:1,body:'Fixture comment'},'write')
-  expect(receipt).toMatchObject({permission:'uncertain'})
+  expect(receipt).not.toHaveProperty('permission')
+  expect(receipt).toMatchObject({success:false,contentItems:[{text:expect.stringContaining('"status":"uncertain"')}]})
   throw new BackendPluginError('rate_limited','codex',{operation:'run',reason:'provider_status',httpStatus:429,retryAfterMs:1,effectFree:true})
  })
  await f.host.github.connect({token:'ghp_RESILIENCE_FIXTURE',repositories:[repository]},()=>{})

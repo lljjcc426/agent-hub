@@ -49,6 +49,7 @@ async function fixture(missing=false){
   scope:{id:'team',tenantId:'org',name:'Handoff fixture',contextBytes:128000,managers:[JSON.stringify(['local','operator'])],
    workerIds:['builder','reviewer'],sourceIds:['local'],backendIds:['codex']}})
  const chat=host.chat.create(owner)
+ host.chat.setApprovalMode(owner,'full')
  const discussion='local:chat:'+chat.id
  const send=(text:string)=>host.chat.send(chat.id,owner,{clientMessageId:randomUUID(),text,locale:'zh-CN'})
  const context=(id:string)=>host.scopes.context(host.store.triggers.get(id)!,discussion)!
@@ -88,6 +89,9 @@ it('keeps the approval and resumes the same held task with exact read-only copie
  await f.until(host,()=>f.reviews.length===2&&!host.executionActive(ticketId))
  const continued=f.reviews[1]!,{chatFiles}=JSON.parse(continued.input)
  expect(continued.activity?.ticketId).toBe(ticketId)
+ expect(host.chat.permissionActor(continued.activity!.triggerId!,ticketId)?.mode).toBe('full')
+ expect(continued.instructions).not.toMatch(/permission mode|native_permission_decision/)
+ expect(continued.tools!.find(tool=>tool.name==='superagent_tool')?.inputSchema.properties).not.toHaveProperty('pendingNotice')
  expect(continued.threadId).toBeDefined()
  expect(host.store.tickets.get(ticketId)!.assignments.map(item=>item.id)).toEqual([assignment])
  expect(chatFiles.map((item:{relativePath:string})=>item.relativePath)).toEqual([patch,report,installer])
@@ -136,6 +140,9 @@ it.each([false,true])('recovers the approved handoff after a legacy startup fail
   host.scopes.noteInput(ticketId,context)
   host.memory.moveTaskContext(ticketId,context)
   host.store.put('chat-run',duplicateReply.id,{id:duplicateReply.id,triggerId:duplicateReply.id,conversationId:chat.id,decisionTicketId:ticketId})
+  host.store.put('chat-permission','legacy-clone',{id:'legacy-clone',tool:'github_git',phase:'complete',automatic:false,
+    createdAt:Date.now(),args:{},facts:{tool:'github_git'},actor:{triggerId:duplicateReply.id,runId:duplicateReply.id,
+      conversationId:chat.id,workerId:'reviewer',ticketId,mode:'ask'}})
   const obsoleteId=host.store.tickets.get(ticketId)!.attention!.id
   const obsolete=host.store.get<object>('business-decision',obsoleteId)!
   host.store.put('business-decision',obsoleteId,{...obsolete,status:'answered',answer:{text:'？',at:Date.now()}})
@@ -160,6 +167,12 @@ it.each([false,true])('recovers the approved handoff after a legacy startup fail
  await f.until(reopened,()=>f.reviews.length===2&&!reopened.executionActive(ticketId))
  expect(reopened.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'answered',fileHandoff:{state:'ready',missing:[]}})])
  expect(reopened.store.tickets.get(ticketId)?.attention).toBeUndefined()
+ expect(reopened.chat.permissionActor(original.id,ticketId)?.mode).toBe('full')
+ expect(reopened.chat.view(chat.id,owner).approvals).toEqual([])
+ expect(reopened.chat.approvalHistory(chat.id,owner).items.map(item=>item.id)).toContain('legacy-clone')
+ reopened.chat.setApprovalMode(owner,'ask')
+ reopened.chat.setApprovalMode(owner,'full')
+ expect(reopened.chat.permissionActor(original.id,ticketId)?.mode).toBe('ask')
 })
 
 it('keeps an uncertain execution after the saved answer as a blocked status across restart',async()=>{

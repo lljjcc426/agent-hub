@@ -18,7 +18,7 @@ const message = (text: string, success: boolean): ToolResult => ({success,conten
 export const codeModeTool = {
   type:'function',
   name:'code_mode',
-  description:'Run bounded async JavaScript to combine already authorized host tools. Call tools.<name>(args) with the active names and JSON arguments. OpenCode roppo_ names also work. Each call returns {success, contentItems}. Use Promise.all for independent reads and return only the needed data. Mutating tools keep their normal approvals and receipts. The script has no filesystem, network, Node, or shell APIs of its own.',
+  description:'Run bounded async JavaScript to combine already authorized host tools. Call tools.<name>(args) with the active names and JSON arguments. OpenCode roppo_ names also work. Each call returns {success, contentItems}. Use Promise.all for independent reads and return only the needed data. The host applies each tool’s execution rules and retains its receipts. The script has no filesystem, network, Node, or shell APIs of its own.',
   inputSchema:{type:'object',additionalProperties:false,required:['source'],properties:{source:{type:'string',minLength:1,maxLength:maxSource}}},
 } satisfies ToolSpec
 

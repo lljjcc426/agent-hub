@@ -74,7 +74,7 @@ export class Approvals {
     if(saved?.status==='expired')return Promise.resolve(this.permission(native,'decline'))
     const id=saved?.id??randomUUID()
     const item:Approval=saved??{id,ticketId,native,chat,key,createdAt:Date.now(),expiresAt:durable?Number.MAX_SAFE_INTEGER:Date.now()+120000,status:'pending'}
-    if(durable&&full&&!saved&&!isQuestion(native)){
+    if(durable&&full&&!isQuestion(native)){
       this.store.put('approval',id,{...item,status:'resolved',outcome:'approved',delivered:true,automatic:true})
       return Promise.resolve(this.permission(native,'accept'))
     }

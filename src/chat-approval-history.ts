@@ -15,12 +15,12 @@ const managedScope = "kind='chat-permission' AND json_extract(body,'$.actor.conv
 const human = "coalesce(json_extract(body,'$.automatic'),0)=0"
 const created = "json_extract(body,'$.createdAt')"
 const completedPermissions = `((${nativeScope} AND json_extract(body,'$.status')!='pending' AND ${human}) OR
-  (${managedScope} AND json_extract(body,'$.phase')!='pending'))`
+  (${managedScope} AND json_extract(body,'$.phase')!='pending' AND ${human}))`
 
 export function pendingChatApprovals(store:Store, conversation:string) {
   const records = store.db.prepare(`SELECT kind,body FROM records WHERE
     (${nativeScope} AND ${human} AND json_extract(body,'$.status')='pending') OR
-    (${managedScope} AND json_extract(body,'$.phase')='pending')`).all(conversation,conversation)
+    (${managedScope} AND ${human} AND json_extract(body,'$.phase')='pending')`).all(conversation,conversation)
   const native:Approval[] = [], managed:PermissionAction[] = []
   for(const row of records){
     const body=JSON.parse(String(row.body))
@@ -33,8 +33,6 @@ export function pendingChatApprovals(store:Store, conversation:string) {
 export function transcriptApprovals(store:Store, conversation:string, window:{from:number;until:number;worker?:string;run?:string}) {
   // The message page's time window determines which approval notices belong in the transcript.
   const rows=store.db.prepare(`SELECT kind,body FROM records WHERE ${completedPermissions}
-    AND (${human} OR json_extract(body,'$.phase')='uncertain' OR json_extract(body,'$.receipt.success')=0
-      OR EXISTS(SELECT 1 FROM records job WHERE job.kind='work' AND job.id=json_extract(records.body,'$.jobId') AND json_extract(job.body,'$.state')='failed'))
     AND ${created} BETWEEN ? AND ?
     AND (? IS NULL OR coalesce(json_extract(body,'$.chat.workerId'),json_extract(body,'$.actor.workerId'))=?)
     AND (? IS NULL OR coalesce(json_extract(body,'$.chat.runId'),json_extract(body,'$.actor.runId'))=?)
@@ -66,7 +64,7 @@ function entry(store:Store,kind:string,body:string) {
 }
 
 const archiveScope = `(
-  (${completedPermissions} AND ${human} AND
+  (${completedPermissions} AND
     (coalesce(json_extract(body,'$.native.method'),'')!='item/tool/requestUserInput' OR json_extract(body,'$.outcome')='answered'))
   OR (kind='chat-message' AND json_extract(body,'$.conversationId')=? AND id NOT GLOB 'card-preview:*'
     AND (json_extract(body,'$.fileReview.state') IN ('approved','denied','superseded','cancelled')

@@ -33,6 +33,8 @@ export interface PermissionAction {
 }
 export const permissionInstructions =
   'The host enforces the permission mode. A pending approval defers only that operation. Continue independent steps within your role while the action awaits a decision. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. On your next user-facing reply after an approval decision, mention its observed outcome once, in one natural sentence in the user’s language. Approval alone does not establish execution success. If denied, failed, pending or unconfirmed, accurately state that result. Use the actual execution receipt. Explicit requests to review a file or make a user choice still apply.'
+export const nativePermissionInstructions =
+  'Native permission requests defer the current attempt while the request is in Pending items; the provider withholds that attempt. On a native_permission_decision input, repeat the exact native operation once if approved, or leave it undone if declined.'
 const kind = 'chat-permission'
 export const unconfirmedEffectMessage = 'An external operation is awaiting confirmation. Verify its saved receipt before completing or retrying this task.'
 const result = (state: Phase, id: string, extra?: string): ToolResult => ({
@@ -48,6 +50,23 @@ const result = (state: Phase, id: string, extra?: string): ToolResult => ({
     },
   ],
 })
+
+/** Expose an operation's outcome while keeping the host's decision and deduplication receipt private. */
+export function operationResult(value: ToolResult): ToolResult {
+  const {permission,...operation}=value
+  const [item]=operation.contentItems
+  if(operation.contentItems.length===1&&item?.type==='inputText'){
+    const decision=/^\{"permission":"(pending|approved|denied|executing|complete|uncertain|cancelled)","id":"permission:[a-f0-9]{64}"/.exec(item.text??'')?.[1]
+    if(decision){
+      const text=decision==='complete'?(value.success?'Operation completed.':'Operation failed.'):
+        decision==='executing'?'Operation is in progress.':
+        decision==='uncertain'?'Operation outcome is uncertain. Check the actual result before retrying.':
+        'Operation is unavailable for this request.'
+      return {success:(decision==='complete'||decision==='executing')&&value.success,contentItems:[{type:'inputText',text}]}
+    }
+  }
+  return operation
+}
 
 /** A decision authorizes one immutable operation at a particular task origin. No effect runs on the HTTP response path. */
 export class ChatPermissions {
@@ -136,6 +155,7 @@ export class ChatPermissions {
       this.cancel(expectedId)
       return result('cancelled', expectedId, 'The target or revision changed; request a new decision.')
     }
+    const automatic=actor.mode==='full'
     let action = this.get(id)
     if (!action) {
       action = this.save({
@@ -144,12 +164,14 @@ export class ChatPermissions {
         tool,
         args,
         facts,
-        ...(notice ? {notice} : {}),
-        phase: actor.mode === 'full' ? 'approved' : 'pending',
-        automatic: actor.mode === 'full',
-        approved: actor.mode === 'full' ? true : undefined,
+        ...(notice&&!automatic ? {notice} : {}),
+        phase: automatic ? 'approved' : 'pending',
+        automatic,
+        approved: automatic ? true : undefined,
         createdAt: Date.now(),
       })
+    }else if(automatic&&action.phase==='pending'){
+      action=this.save({...action,actor,notice:undefined,automatic:true,phase:'approved',approved:true})
     }
     if (action.phase !== 'approved') return action.receipt ?? result(action.phase, id)
     this.save({ ...action, phase: 'executing' })

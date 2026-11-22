@@ -332,9 +332,7 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
         send={answerWorker} refresh={refresh} footer={<RecordLink id={question.id}/>}/>)
     }else if(item.kind==='approval'){
       const a=item.approval
-      if('automatic' in a && a.automatic)
-        rows.push(<p className="pending-notice resolved" key={a.id} data-workflow-id={a.id}>{L('Execution needs attention','执行需要检查')}</p>)
-      else rows.push(<NativeCard key={a.id} request={a}/>)
+      if(!('automatic' in a && a.automatic))rows.push(<NativeCard key={a.id} request={a}/>)
     }
     else {
       const p=item.plan
@@ -343,7 +341,7 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
       </div>)
     }
   }
-  return <section className="roppo-ui workflow-block" aria-label={L('Run activity','执行活动')}>{rows}</section>
+  return rows.length?<section className="roppo-ui workflow-block" aria-label={L('Run activity','执行活动')}>{rows}</section>:null
 }
 
 

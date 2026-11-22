@@ -6,6 +6,20 @@
   transition:transform .2s var(--team-ease,var(--rp-ease)),border-color .18s;
 }
 .team-file + .team-file { margin-top:7px; }
+.delivery-local-file { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; width:min(100%,449px); }
+.delivery-local-file + .delivery-local-file { margin-top:7px; }
+.delivery-local-download {
+  display:grid;
+  align-items:center;
+  justify-content:center;
+  width:40px;
+  border:1px solid var(--team-line,var(--rp-line));
+  border-radius:13px;
+  color:var(--team-muted,var(--rp-muted));
+}
+.delivery-local-download:hover { color:var(--team-ink,var(--rp-ink)); background:var(--team-fill,var(--rp-soft)); }
+.delivery-local-download:focus-visible { outline:2px solid var(--team-action,var(--rp-action)); }
+a.team-file { text-decoration:none; }
 .team-file:hover { border-color:var(--team-muted,var(--rp-muted)); transform:translateY(-1px); }
 .team-file:active { transform:scale(.99); }
 .file-stamp {

@@ -4,6 +4,7 @@ import {ApiUsage} from './api-usage.ts'
 import {workspaceAction,workspaceBrowserSpec} from './browser-contract.ts'
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
 import {routerFileTool} from './chat-deliveries.ts'
+import {chatArtifactDeliver,chatArtifactFind,chatArtifactSpecs} from './chat-retained-artifacts.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
@@ -14,7 +15,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {RouterHandoff} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
-import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
+import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
@@ -347,7 +348,11 @@ export class Runtime {
           else if(this.isChatDecisionFollowup(ticket.id)&&(!ticket.attention||ticket.attention.question===legacyExecutionQuestion||
             this.store.get<{status:string}>('business-decision',ticket.attention.id)?.status==='answered'))
             this.engine.report(ticket.id,{state:'blocked',summary:run.error??'Execution interrupted; reconciliation required',question:null})
-          else this.reportWork(ticket.id, { state: 'blocked', summary: 'Execution interrupted; reconciliation required', question: ticket.attention?.question??'Inspect the native thread and workspace, then retry or take over.',...(ticket.attention?.triggerId?{askedBy:ticket.attention.triggerId}:{}) })
+          else if(this.isChatTask(ticket))this.engine.report(ticket.id,{
+            state:'blocked',summary:run.error??'Execution interrupted; reconciliation required',
+            ...(isRuntimeRecoveryQuestion(ticket.attention?.question)?{question:null}:{}),
+          })
+          else this.reportWork(ticket.id, { state: 'blocked', summary: 'Execution interrupted; reconciliation required', question: ticket.attention?.question??interruptedExecutionQuestion,...(ticket.attention?.triggerId?{askedBy:ticket.attention.triggerId}:{}) })
         }
         if(recover){
           this.store.put('run',run.ticketId,{...run,phase:'idle',error:undefined})
@@ -364,6 +369,9 @@ export class Runtime {
   private isChatDecisionFollowup(ticketId:string){
     const parent=this.taskAuthority(ticketId)?.parentTrigger
     return !!parent&&this.store.get<{decisionTicketId?:string}>('chat-run',parent)?.decisionTicketId===ticketId
+  }
+  private isChatTask(ticket:Ticket){
+    return this.chat.hasContext({ticketId:ticket.id,triggerId:ticket.origin.triggerId})
   }
   private workerModelInputs(inputs:TicketInput[],fullAccess:boolean){
     return inputs.filter(input=>!fullAccess||!isOperationDecision(input))
@@ -754,7 +762,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,...chatArtifactSpecs,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs(){return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&(s.name!=='superagent_artifact'||this.delegation.enabled)&&(!s.name.startsWith('github_')||this.config.work.network))}
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}
@@ -990,7 +998,9 @@ export class Runtime {
           if (payload.ticketId) {
             const ticket = this.store.tickets.get(payload.ticketId)
             if (ticket && !ticket.ended) this.reportWork(ticket.id, {state:'blocked',summary:String(error).slice(0,500),
-              question:this.isChatDecisionFollowup(ticket.id)?null:'Work could not start. Inspect the task and retry.'})
+              ...(this.isChatTask(ticket)
+                ?isRuntimeRecoveryQuestion(ticket.attention?.question)?{question:null}:{}
+                :{question:failedStartupQuestion})})
           }
         }).finally(() => { this.runningJobs.delete(job.id);if(serialRouter)this.routingDiscussions.delete(routerDiscussion!) })
         this.runningJobs.set(job.id, task)
@@ -1084,9 +1094,10 @@ export class Runtime {
     const fullAccess=permissionActor()?.mode==='full'
     const feishuDirect=source.kind==='feishu'&&trigger.meta.chatType==='p2p'&&trigger.human&&!messageId&&!this.proactive.runForTrigger(triggerId)
     const selectedSkill=!messageId&&chatBinding?this.chat.skillForTrigger(triggerId):undefined
-    const fileTool=chatBinding||this.chat.scheduledFileTarget(triggerId)?[routerFileTool]:[]
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
       ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
+    const artifactTools=browserRun?chatArtifactSpecs:[]
+    const fileTool=chatBinding||this.chat.scheduledFileTarget(triggerId)?[routerFileTool,...artifactTools]:[]
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
@@ -1218,6 +1229,8 @@ export class Runtime {
                 return {success:false,...(!snapshot?{permission:'uncertain' as const}:{}),contentItems:[{type:'inputText',text:snapshot?'The shared tab snapshot did not finish.':'The browser action did not return a result. Verify the current page before taking another action.'}]}
               }
             }
+            if(artifactTools.length&&(name===chatArtifactFind||name===chatArtifactDeliver))
+              return this.chat.artifactTool(triggerId,name,args,validateReplyContext,controller.signal)
             if(name==='chat_deliver_file'&&fileTool.length)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.deliverText(triggerId,args))}]}
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
@@ -1315,6 +1328,7 @@ export class Runtime {
         ?JSON.stringify({...JSON.parse(input),auxiliaryDecision,permissionReceipt,operationOutcome,fileReviewReceipt,replyPreferences}):input
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Delegate independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick coordination or approval check, take one bounded action and report the observed outcome. Delegate actual tool tests as one bounded check. Create a durable goal or report file when the user requests one or the task requires it. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')+(officeApps.length?'\nFor requests involving the connected '+officeApps.join(' or ')+' accounts, delegate to a root Chat Worker and ask it to inspect and use the connection via superagent_tools.':'')
+          +(artifactTools.length?'\nWhen the human asks for an existing output from this Chat, including a short follow-up such as 给我, use chat_artifact_find before delegating or requesting an upload. Search by a distinctive filename, extension or platform. After finding a clear match, use chat_artifact_deliver with its returned ID directly. Ask a focused question only when the human must choose between valid versions.':'')
           + (workspaceTool ? "\nFor an explicit request about the actual shared browser tab, use one workspace_browser snapshot and, if needed, one short action. Treat the action's returned page as the receipt. Delegate research and longer browser work to Workers." : "")
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:decorateInput(modelInput()),tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(fullAccess?withoutPendingNotice:withPendingNotice),
@@ -1766,13 +1780,15 @@ export class Runtime {
         run.failure=safeWorkerFailure(error,turnStarted,toolInvoked||this.permissions.hasUnconfirmedEffect(ticket.id))
         run.phase = run.failure?'idle':'uncertain'; run.error = String(error).slice(0, 500)
         persist()
+        const chatTask=this.isChatTask(current)
         const humanInputs=inputs.filter((i):i is Extract<TicketInput,{kind:'trigger'}>=>i.kind==='trigger'&&!!i.human&&!i.context)
         const apply=(receipt?:WorkerEventReceipt)=>{
           const previousMessages=new Set(this.store.deliveries().map(d=>d.id))
           if(run.failure)this.engine.inputsDelivered(ticket.id,assignmentId,inputs.map(i=>i.id))
-          const attention=this.isChatDecisionFollowup(ticket.id)?{question:null}:run.failure||this.goals.awaitingReadRecovery(run)?{}:{
-            question:legacyExecutionQuestion,
-            ...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{})
+          let attention:Pick<WorkerReport,'question'|'askedBy'>={}
+          if(this.isChatDecisionFollowup(ticket.id)||chatTask&&isRuntimeRecoveryQuestion(current.attention?.question))attention={question:null}
+          else if(!chatTask&&!run.failure&&!this.goals.awaitingReadRecovery(run)){
+            attention={question:legacyExecutionQuestion,...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{})}
           }
           this.reportWork(ticket.id,{state:'blocked',summary:run.error!,...attention})
           if(receipt)this.bindWorkerEventMessages(receipt,previousMessages)

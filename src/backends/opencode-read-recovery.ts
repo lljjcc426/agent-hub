@@ -5,6 +5,7 @@ import {z} from 'zod'
 import {maxWireBytes,toolParallelism} from '../execution-limits.ts'
 import {githubReadSchema} from '../github-read.ts'
 import {readSchema} from '../resources.ts'
+import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
 import {stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
 import type {ThreadStore} from './api.ts'
@@ -39,6 +40,7 @@ function isRouterRead(name:string,args:unknown){
  const action=(args as {action?:unknown}|null)?.action
  switch(name){
   case 'router_read':return readSchema.safeParse(args).success
+  case 'chat_artifact_find':return findChatArtifactInput.safeParse(args).success
   case 'github_read':return githubReadSchema.safeParse(args).success
   case 'worker_manage':return action==='list'
   case 'router_goal':return action==='list'||action==='inspect'

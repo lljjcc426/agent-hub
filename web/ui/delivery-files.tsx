@@ -1,13 +1,14 @@
 import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpRight, FileText, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, FileText, FolderOpen, X } from 'lucide-react'
 import type { ChatDelivery } from '../../src/chat-deliveries.ts'
 import './delivery.css'
 
 const DeliveryMarkdown = lazy(() => import('../chat/file-markdown.tsx'))
 type Localize = (en: string, zh: string) => string
-export type DeliveryFile = Pick<ChatDelivery, 'name' | 'size' | 'preview' | 'excerpt'> & {
+export type DeliveryFile = Pick<ChatDelivery, 'name' | 'size' | 'preview' | 'excerpt' | 'retained'> & {
   href: string
   previewHref?: string
+  revealHref?:string
 }
 
 function fileSize(bytes: number) {
@@ -22,13 +23,9 @@ export function DeliveryFileCard({ file, onOpen, L }: {
   onOpen: () => void
   L: Localize
 }) {
-  return (
-    <button
-      type="button"
-      className="team-file"
-      onClick={onOpen}
-      aria-label={L('Open file ', '打开文件 ') + file.name}
-    >
+  const download=L('Download ', '下载 ')+file.name
+  const label=(file.revealHref?L('Show in Finder ', '在 Finder 中显示 '):L('Open file ', '打开文件 '))+file.name
+  const content=<>
       <span className="file-stamp" aria-hidden="true">
         {file.preview === 'image' ? (
           <img
@@ -48,12 +45,18 @@ export function DeliveryFileCard({ file, onOpen, L }: {
       <span className="team-file-label">
         <strong>{file.name}</strong>
         <small>
-          {fileSize(file.size)} · {L('Delivered file', '交付文件')}
+          {fileSize(file.size)} · {file.revealHref?L('Local file','本机文件'):L('Delivered file', '交付文件')}
         </small>
       </span>
-      <ArrowUpRight size={16} />
-    </button>
-  )
+      {file.revealHref?<FolderOpen size={16} />:file.retained?<ArrowDownToLine size={16}/>:<ArrowUpRight size={16} />}
+  </>
+  if(file.retained&&!file.revealHref)return <a className="team-file" href={file.href} download={file.name} aria-label={download}>{content}</a>
+  const button=<button type="button" className="team-file" onClick={onOpen} aria-label={label}>{content}</button>
+  return file.revealHref?<div className="delivery-local-file">
+    {button}<a className="delivery-local-download" href={file.href} download={file.name} aria-label={download} title={download}>
+      <ArrowDownToLine size={17} aria-hidden="true"/>
+    </a>
+  </div>:button
 }
 
 function FileContents({ file, L }: { file: DeliveryFile; L: Localize }) {

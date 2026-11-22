@@ -199,6 +199,8 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
   const message =
     code==='skill_unavailable'?L('This skill is unavailable. Select a skill again or remove it from the draft.','这个技能已不可用。请重新选择，或从草稿中移除。'):
     code==='message_missing'?L('The original message is no longer available.','原消息已不可用。'):
+    code==='artifact_unavailable'||code==='delivery_missing'?L('This file is no longer available here.','此文件在当前聊天中已不可用。'):
+    code==='file_reveal_failed'?L('Finder could not show the file. You can download it from the file card.','Finder 未能定位文件，可以使用文件卡的下载按钮。'):
     code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
     code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
     code.startsWith("attachment_")?attachmentError(code,L):
@@ -1031,6 +1033,12 @@ function Chat(p: ChatProps) {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
   };
+  const openFile=(item:ChatDelivery)=>{
+    const link=deliveryFile(item)
+    if(link.revealHref){
+      void api(link.revealHref.slice('/api/chat'.length),{}).catch(fail)
+    }else setFile(item);
+  };
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!id) return;
     const version = ++fetchVersion.current;
@@ -1488,7 +1496,7 @@ function Chat(p: ChatProps) {
         L,
         workers,
         routerLabel:currentRouter.label,
-        openFile:setFile,openAgent:readAgent,
+        openFile,openAgent:readAgent,
         run: run ?? null,
         runMessageId,waitingLabel:waitingLabel??'',
         arrivals:arrivals.current,
@@ -1728,7 +1736,7 @@ function Chat(p: ChatProps) {
                     if (sidebarCards.revealing && tab !== 'activity') showPanel(true);
                     setTeamTab(tab);
                   }}
-                  close={closePanel} select={readAgent} openFile={setFile}
+                  close={closePanel} select={readAgent} openFile={openFile}
                   browsers={<BrowserPanel L={L} conversationId={id ?? undefined} routerLabel={teamName(currentRouter.label)}
                     requestedSession={browserRequest}
                     onRequestHandled={()=>setBrowserRequest(undefined)} createConversation={openFirstBrowser} />}

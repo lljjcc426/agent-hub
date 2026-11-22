@@ -6,7 +6,9 @@ export function downloadUrl(file: Pick<ChatDelivery, 'id' | 'conversationId'>) {
 
 export function deliveryFile(file: ChatDelivery) {
   const href = downloadUrl(file)
-  return { ...file, href, previewHref: href + '?preview=1' }
+  const reveal=file.localFile&&typeof window!=='undefined'&&
+    ['127.0.0.1','localhost','[::1]'].includes(window.location.hostname)&&/Mac/.test(window.navigator.platform)
+  return { ...file, href, previewHref: href + '?preview=1', ...(reveal?{revealHref:href+'/reveal'}:{}) }
 }
 
 /** Resolve model-written file references against this message's actual handoffs. */

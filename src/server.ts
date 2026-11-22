@@ -69,6 +69,7 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
+import {revealRetainedDelivery,sendRetainedDelivery} from './chat-file-http.ts'
 import {heartbeatChange} from './heartbeat.ts'
 import {changeChatPersonalization,chatPersonalizationChange} from './chat-personalization.ts'
 import {chatUploadLimits} from './chat-attachments.ts'
@@ -702,9 +703,23 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if(req.method==='GET'){send(res,200,{conversations:runtime.chat.list(owner,query.get('archived')==='true')});return}
         if(req.method==='POST'){send(res,201,runtime.chat.create(owner));return}
       }
-      const delivery=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/deliveries\/([a-f0-9-]{36})$/)
+      const delivery=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/deliveries\/([a-f0-9-]{36})(\/reveal)?$/)
+      if(delivery?.[3]){
+        if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
+        if(!local||process.platform!=='darwin'||req.headers.origin!==requestOrigin||req.headers.forwarded||req.headers['x-forwarded-for']||req.headers['x-real-ip']){
+          send(res,403,{code:'local_host_required'});return
+        }
+        z.object({}).strict().parse(await operatorBody(req))
+        await revealRetainedDelivery(await runtime.chat.retainedDelivery(delivery[1]!,owner,delivery[2]!,true))
+        send(res,200,{revealed:true});return
+      }
       if(delivery&&(req.method==='GET'||req.method==='HEAD')){
         const acceptance=z.string().min(1).max(500).optional().parse(query.get('acceptance')??undefined)
+        const retained=!acceptance&&await runtime.chat.retainedDelivery(delivery[1]!,owner,delivery[2]!)
+        if(retained){
+          try{await sendRetainedDelivery(req,res,retained)}catch(error){if(!res.headersSent)throw error;res.destroy()}
+          return
+        }
         const {item,bytes}=runtime.chat.delivery(delivery[1]!,owner,delivery[2]!,acceptance)
         const inline=query.get('preview')==='1'&&!!item.preview
         res.writeHead(200,{'content-type':inline?item.mime:'application/octet-stream','content-length':item.size,'content-disposition':(inline?'inline':'attachment')+"; filename*=UTF-8''"+encodeURIComponent(item.name),'content-security-policy':"default-src 'none'; sandbox",'x-content-type-options':'nosniff','cache-control':'private, no-store'})

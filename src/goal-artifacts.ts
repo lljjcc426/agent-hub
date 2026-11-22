@@ -14,6 +14,9 @@ import {atomicPrivateFile} from './managed-config.ts'
 
 const mimeTypes:Record<string,string>={'.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.pdf':'application/pdf','.mp4':'video/mp4','.png':'image/png'}
 export interface ArtifactVersion {id:string;goalId:string;ticketId:string;nodeId:string;path:string;version:number;sha256:string;size:number;mime:string}
+export class ArtifactReadError extends Error {
+  constructor(readonly code:'artifact_dependency_required'|'artifact_unavailable',message:string){super(message)}
+}
 import type {ArtifactReference} from './artifact-reference.ts'
 export type {ArtifactReference} from './artifact-reference.ts'
 type CellCheck=Extract<NonNullable<GoalCriterion['check']>,{kind:'xlsx_cell_equals'}>
@@ -95,7 +98,7 @@ export class GoalArtifacts {
   }
   private bytes(id:string){
     const row=this.host.store.db.prepare('SELECT bytes FROM goal_artifact_bytes WHERE id=?').get(id)
-    if(!row)throw Error('Artifact version unavailable')
+    if(!row)throw new ArtifactReadError('artifact_unavailable','The retained artifact bytes are unavailable.')
     return Buffer.from(row.bytes as Uint8Array)
   }
   private operatorVersion(id:string){
@@ -120,11 +123,12 @@ export class GoalArtifacts {
   open(owner:WorkOwner,id:string){
     const goal=this.host.goals.forTask(owner.ticketId)
     const node=goal?.nodes?.find(n=>n.ticketId===owner.ticketId)
-    if(!goal||!node||!this.host.validWork(owner))throw Error('An active dependent task is required')
-    this.host.goals.context(goal)
+    if(!goal||!node)throw new ArtifactReadError('artifact_dependency_required','This tool opens the accepted prerequisites of a goal task. Use chat_artifact_find for an existing file from another Chat task.')
+    if(!this.host.validWork(owner))throw new ArtifactReadError('artifact_unavailable','The task can no longer access this artifact.')
+    try{this.host.goals.context(goal)}catch{throw new ArtifactReadError('artifact_unavailable','The task can no longer access this artifact.')}
     const rounds=node.dependsOn.map(dep=>goal.nodes!.find(n=>n.id===dep)).filter(n=>n?.state==='passed').map(n=>this.host.store.get<VerificationRound>('goal-verification',n!.roundId!))
     const round=rounds.find(r=>r?.state==='passed'&&r.snapshot.evidence.some(e=>e.artifact?.id===id))
-    if(!round||!this.host.verification.current(round,goal))throw Error('Artifact is outside the accepted prerequisites of this task')
+    if(!round||!this.host.verification.current(round,goal))throw new ArtifactReadError('artifact_unavailable','The artifact is outside the accepted prerequisites of this task.')
     const artifact=round.snapshot.evidence.find(e=>e.artifact?.id===id)!.artifact!
     const assetId=stableDigest([owner.ticketId,id]),directory=join(this.host.config.stateDir,'assets',assetId)
     const path=join(directory,basename(artifact.path))

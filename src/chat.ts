@@ -2,7 +2,8 @@ import {resourcePage} from './execution-limits.ts'
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
-import {businessDecision,assertBusinessDecision,decisionActorMatches,legacyExecutionQuestion,type BusinessDecisionView} from './business-decisions.ts'
+import {z} from 'zod'
+import {businessDecision,assertBusinessDecision,decisionActorMatches,isRuntimeRecoveryQuestion,runtimeRecoveryQuestions,type BusinessDecisionView} from './business-decisions.ts'
 import {rememberFileHandoff} from './chat-file-handoff.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
 import {allowNewTaskInputs} from './task-context.ts'
@@ -43,6 +44,8 @@ import {basename} from 'node:path'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
 import {chatPersonalization} from './chat-personalization.ts'
+import {ChatRetainedArtifacts,chatArtifactFind,deliverChatArtifactInput} from './chat-retained-artifacts.ts'
+import type {ToolResult} from './chat-permissions.ts'
 export {ChatError} from './chat-errors.ts'
 
 interface Conversation {
@@ -88,6 +91,7 @@ export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'ac
 export class ChatSessions {
   readonly uploads:ChatAttachments
   private readonly deliveries:ChatDeliveries
+  private readonly retained:ChatRetainedArtifacts
   private listeners=new Map<string,Set<()=>void>>()
   private notifications=new Set<string>()
   private revisions=new Map<string,{owner:string;stamp:string;browser:string;ledger:string;revision:number;at:number;until:number}>()
@@ -95,6 +99,7 @@ export class ChatSessions {
   private unsubscribe:()=>void
   constructor(private host:Runtime){
     this.deliveries=new ChatDeliveries(host)
+    this.retained=new ChatRetainedArtifacts(host)
     this.uploads=new ChatAttachments(host,(id,owner)=>this.get(id,owner))
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_message_page ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message'")
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_call_conversation ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.startedAt')) WHERE kind='chat-call'")
@@ -639,6 +644,49 @@ export class ChatSessions {
     this.host.routerIngress.authority(triggerId)
     return c
   }
+  async artifactTool(triggerId:string,name:string,args:unknown,checkAuthority:()=>void,signal?:AbortSignal):Promise<ToolResult>{
+    const result=(value:unknown,success=true):ToolResult=>({success,contentItems:[{type:'inputText',text:JSON.stringify(value)}]})
+    const current=()=>{
+      signal?.throwIfAborted()
+      try{checkAuthority()}catch{throw new ChatError('artifact_unavailable','The file is unavailable in this Chat.',404)}
+    }
+    try{
+      current()
+      if(name===chatArtifactFind)return result(this.retained.find(triggerId,args))
+      const c=this.fileTarget(triggerId),{id}=deliverChatArtifactInput.parse(args)
+      const messageId='router-retained:'+stableDigest([triggerId,id])
+      const prepared=await this.retained.prepare(triggerId,id,signal)
+      current()
+      this.fileTarget(triggerId)
+      const file=this.host.store.atomic(()=>{
+        const previous=this.host.store.get<Message>('chat-message',messageId)?.deliveries?.[0]
+        if(previous){
+          if(previous.sha256!==prepared.reference.sha256)throw new ChatError('artifact_unavailable','The original file changed.',404)
+          return previous
+        }
+        const item=this.deliveries.retain(c.id,triggerId,prepared.item,prepared.reference,prepared.local)
+        this.message(c,{id:messageId,runId:triggerId,role:'assistant',text:item.name,status:'complete',deliveries:[item]})
+        return item
+      })
+      this.changed(c.id)
+      return result({name:file.name,size:file.size,sha256:file.sha256,messageId,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id,
+        ...(file.localFile?{local:true}:{})})
+    }catch(error){
+      if(error instanceof z.ZodError)return result({code:'invalid_request',message:'Invalid artifact tool arguments.'},false)
+      if(!(error instanceof ChatError))throw error
+      return result({code:error.code,message:error.message},false)
+    }
+  }
+
+  async retainedDelivery(id:string,owner:string,fileId:string,localOnly=false){
+    this.get(id,owner)
+    const entry=this.deliveries.reference(id,fileId)
+    if(!entry||localOnly&&!entry.item.localFile)return
+    if(!entry.item.runId)throw new ChatError('delivery_missing','Delivery unavailable.',404)
+    const source=await this.retained.access(entry.item.runId,entry.reference)
+    return {...entry,...source}
+  }
+
   deliverText(triggerId:string,value:unknown){
     const c=this.fileTarget(triggerId)
     const {name,content,requireApproval,pendingNotice}=routerFileInput.parse(value),id='router-file:'+stableDigest([triggerId,name,content])
@@ -983,7 +1031,8 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question===legacyExecutionQuestion?undefined:t?.attention?.question??undefined,summary:report?.summary??undefined}
+      const question=t?.attention?.question
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:isRuntimeRecoveryQuestion(question)?undefined:question??undefined,summary:report?.summary??undefined}
     })
   }
   private conversationTasks(c:Conversation){
@@ -1152,7 +1201,12 @@ export class ChatSessions {
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
     const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]
     const clarification=batch?.decision?.action==='clarify'?this.host.store.deliveries().find(d=>d.id==='router-clarify:'+batch.id):undefined
-    const messages=this.host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.sequence')<? AND (? IS NULL OR json_extract(body,'$.runId')=?) AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?) ORDER BY json_extract(body,'$.sequence') DESC LIMIT 101").all(id,before??Number.MAX_SAFE_INTEGER,runId??null,runId??null,participant??null,participant??null,participant??null).map(r=>JSON.parse(String(r.body)) as Message).reverse()
+    const messages=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*'
+      AND json_extract(body,'$.conversationId')=?
+      AND (id NOT GLOB 'worker:*' OR NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value=json_extract(body,'$.text')))
+      AND json_extract(body,'$.sequence')<? AND (? IS NULL OR json_extract(body,'$.runId')=?)
+      AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?)
+      ORDER BY json_extract(body,'$.sequence') DESC LIMIT 101`).all(id,JSON.stringify(runtimeRecoveryQuestions),before??Number.MAX_SAFE_INTEGER,runId??null,runId??null,participant??null,participant??null,participant??null).map(r=>JSON.parse(String(r.body)) as Message).reverse()
     const closedRuns=new Set(runs.filter(run=>run.cancelled||run.cancelRequested).map(run=>run.id))
     for(const message of messages){
       if(message.decision&&!message.decision.replyRunId&&closedRuns.has(message.runId))

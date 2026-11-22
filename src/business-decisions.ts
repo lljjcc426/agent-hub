@@ -23,6 +23,12 @@ export interface BusinessDecisionView {
 }
 interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
 export const legacyExecutionQuestion='Execution could not be confirmed. Review task records and the actual outcome before continuing.'
+export const interruptedExecutionQuestion='Inspect the native thread and workspace, then retry or take over.'
+export const failedStartupQuestion='Work could not start. Inspect the task and retry.'
+export const runtimeRecoveryQuestions=[legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion] as const
+export function isRuntimeRecoveryQuestion(question:string|null|undefined){
+ return runtimeRecoveryQuestions.some(prompt=>question===prompt)
+}
 const fail=(code:string)=>new ChatError(code,code,code==='decision_identity'?403:409)
 type DecisionStore=Pick<Store,'db'|'get'>
 function readDecision({store}:{store:DecisionStore},id:string):DecisionRecord|undefined {
@@ -58,9 +64,10 @@ export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:Decisi
 }
 export function businessDecision(host:Runtime,id:string,now=Date.now()):BusinessDecisionView|undefined {
  const d=readDecision(host,id);if(!d)return
- if(d.question===legacyExecutionQuestion&&!d.terms){
+ if(!d.terms&&isRuntimeRecoveryQuestion(d.question)){
+  if(host.chat.hasContext({ticketId:d.ticketId,triggerId:d.originTriggerId}))return
   const replied=d.originTriggerId&&host.store.get<{decisionTicketId?:string}>('chat-run',d.originTriggerId)
-  if(d.summary==='Error: async_worker_goal_unavailable'||replied&&replied.decisionTicketId===d.ticketId)return
+  if(d.question===legacyExecutionQuestion&&(d.summary==='Error: async_worker_goal_unavailable'||replied&&replied.decisionTicketId===d.ticketId))return
  }
  const {schema,originTriggerId,actor,basis:expected,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
  if(/^\s*\{\s*"/.test(view.target.label)){

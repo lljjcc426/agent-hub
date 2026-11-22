@@ -22,7 +22,7 @@ interface Request {
 interface Material {id:string;kind:'task-handoff';ticketId:string;sourceTicketId:string;name:string;relativePath:string;path:string;bytes:number}
 interface Delivery {id:string;ticketId:string;name:string}
 
-const validPath=(path:string)=>path.length<=1000&&path.split('/').every(
+export const validRetainedPath=(path:string)=>path.length<=1000&&path.split('/').every(
   part=>part!==''&&part!=='.'&&part!=='..'&&!/[\\:\x00-\x1f\x7f]/.test(part)&&!/^\.(git|env(?:\..*)?|ssh|aws|superagent(?:-.*)?)$/i.test(part)
 )
 const quotedPaths=(text:string)=>[...text.matchAll(/`([^`\r\n]+)`/g)].map(match=>match[1]!).filter(path=>/\.[a-z\d]+$/i.test(path))
@@ -101,7 +101,7 @@ function packageRows(report:string){
     const columns=line.split('|')
     for(let i=1;i+2<columns.length;i++){
       const path=quotedPaths(columns[i]!)[0],bytes=Number(columns[i+1]!.trim()),sha256=/^`([a-f\d]{64})`$/i.exec(columns[i+2]!.trim())?.[1]
-      if(path&&validPath(path)&&/\.(zip|dmg|exe|msi|appimage|deb|rpm|pkg)$/i.test(path)&&Number.isSafeInteger(bytes)&&bytes>0&&sha256)result.push({path,bytes,sha256:sha256.toLowerCase()})
+      if(path&&validRetainedPath(path)&&/\.(zip|dmg|exe|msi|appimage|deb|rpm|pkg)$/i.test(path)&&Number.isSafeInteger(bytes)&&bytes>0&&sha256)result.push({path,bytes,sha256:sha256.toLowerCase()})
     }
   }
   return result
@@ -159,7 +159,7 @@ export async function prepareFileHandoff(host:Runtime,ticketId:string,signal:Abo
   try{
     for(const file of files.values()){
       signal.throwIfAborted()
-      if(!source||!validPath(file.path)){missing.push(file.path);continue}
+      if(!source||!validRetainedPath(file.path)){missing.push(file.path);continue}
       const destination=join(directory,file.path)
       try{
         await mkdir(dirname(destination),{recursive:true,mode:0o700})

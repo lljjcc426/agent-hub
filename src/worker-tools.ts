@@ -21,6 +21,8 @@ import {githubGitSpec,githubReadSpec,githubWriteSpec,githubWriteInputSchema} fro
 import {githubGitSchema} from './github-git.ts'
 import {githubReadSchema} from './github-read.ts'
 import {GithubError,githubFailure} from './github-errors.ts'
+import {ArtifactReadError} from './goal-artifacts.ts'
+import {chatArtifactDeliver,chatArtifactFind,chatArtifactSpecs,deliverChatArtifactInput,findChatArtifactInput} from './chat-retained-artifacts.ts'
 import type {Runtime} from './runtime.ts'
 import type {WorkOwner} from './work.ts'
 import type {ToolSpec} from './model.ts'
@@ -33,6 +35,8 @@ const json=(properties:Record<string,unknown>,required:string[])=>({type:'object
 const text={type:'string'},integer={type:'integer',minimum:0}
 const isWorkflowPlan=(name:string|undefined,value:unknown)=>name==='superagent_workflow'&&!!value&&typeof value==='object'&&'action' in value&&value.action==='plan'
 export const workerDefinitions=[
+ ...chatArtifactSpecs.map(spec=>({name:spec.name,description:spec.description,schema:spec.inputSchema,
+  validator:spec.name===chatArtifactFind?findChatArtifactInput:deliverChatArtifactInput})),
  {name:githubReadSpec.name,description:githubReadSpec.description,validator:githubReadSchema,schema:githubReadSpec.inputSchema},
  {name:githubWriteSpec.name,description:githubWriteSpec.description,validator:githubWriteInputSchema,schema:githubWriteSpec.inputSchema},
  {name:githubGitSpec.name,description:githubGitSpec.description,validator:githubGitSchema,schema:githubGitSpec.inputSchema},
@@ -200,7 +204,20 @@ export class WorkerTools {
    }else if(workflowRevision&&result.state==='pending')throw Error('The workflow target changed before delivery')
   }
   else if(name==='superagent_event')result=this.host.webhooks.continuations.command(owner,args)
-  else if(name==='superagent_artifact_read')result=this.host.artifacts.open(owner,args.id)
+  else if(name===chatArtifactFind||name===chatArtifactDeliver){
+   const trigger=this.host.taskAuthority(owner.ticketId)?.parentTrigger
+   if(!trigger||owner.agentId&&name===chatArtifactDeliver)return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+    code:'artifact_unavailable',message:'A current Chat assignment is required to use this file.',
+   })}]}
+   return this.host.chat.artifactTool(trigger,name,args,checkAuthority,fence.signal)
+  }
+  else if(name==='superagent_artifact_read'){
+   try{result=this.host.artifacts.open(owner,args.id)}
+   catch(error){
+    if(!(error instanceof ArtifactReadError))throw error
+    return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({code:error.code,message:error.message})}]}
+   }
+  }
   else if(name==='superagent_artifact')result=this.host.delegation.capture(owner.ticketId,args.path)
   else if(name==='superagent_memory'){
    const saved=this.host.store.get<any>('task-context',owner.ticketId),manifest=saved?.manifest

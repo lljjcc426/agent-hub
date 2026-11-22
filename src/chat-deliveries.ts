@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { ToolSpec } from './model.ts'
 import type { Runtime } from './runtime.ts'
 import { evidenceBytes, workbookObservation } from './goal-artifacts.ts'
+import type {RetainedChatFile} from './chat-retained-artifacts.ts'
 import { chatUploadLimits } from './chat-attachments.ts'
 import { pendingNoticeSchema, pendingNoticeProperty } from './chat-pending-notice.ts'
 import { ChatError } from './chat-errors.ts'
@@ -20,7 +21,11 @@ export interface ChatDelivery {
   excerpt?: string
   mime: string
   createdAt: number
+  retained?: true
+  localFile?: true
+  sha256?: string
 }
+type DeliveryRow=ChatDelivery&{published:boolean;reference?:RetainedChatFile}
 const images: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -115,6 +120,12 @@ export class ChatDeliveries {
   text(conversationId: string, runId: string, name: string, content: string, published = true) {
     return this.save(conversationId, name, Buffer.from(content), published, { runId })
   }
+  retain(conversationId:string,runId:string,source:{name:string;size:number},reference:RetainedChatFile,local:boolean){
+    const item:ChatDelivery={id:randomUUID(),conversationId,runId,name:source.name,size:source.size,preview:null,retained:true,
+      ...(local?{localFile:true}:{}),sha256:reference.sha256,mime:'application/octet-stream',createdAt:Date.now()}
+    this.host.store.put('chat-delivery',item.id,{...item,published:true,reference} satisfies DeliveryRow)
+    return item
+  }
   capture(
     conversationId: string,
     runId: string,
@@ -191,10 +202,13 @@ export class ChatDeliveries {
         "SELECT body FROM records WHERE kind='chat-delivery' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.published')=1 AND json_extract(body,'$.mime') IS NOT NULL ORDER BY rowid DESC",
       )
       .all(conversationId)
-      .map((row) => JSON.parse(String(row.body)) as ChatDelivery)
+      .map((row) => {
+        const {reference,...item}=JSON.parse(String(row.body)) as DeliveryRow
+        return item
+      })
   }
-  read(conversationId: string, id: string, draft?: { runId: string } | { ticketId: string }) {
-    const item = this.host.store.get<ChatDelivery & { published: boolean }>('chat-delivery', id)
+  private allowed(conversationId:string,id:string,draft?:{runId:string}|{ticketId:string}){
+    const item = this.host.store.get<DeliveryRow>('chat-delivery', id)
     if (
       !item ||
       !item.mime ||
@@ -205,6 +219,15 @@ export class ChatDeliveries {
       this.host.memory.cleanup.blocked('chat-delivery', id, item)
     )
       throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)
+    return item
+  }
+  reference(conversationId:string,id:string){
+    const {reference,...item}=this.allowed(conversationId,id)
+    if(item.retained&&!reference)throw new ChatError('delivery_missing','Delivery unavailable.',404)
+    return reference?{item,reference}:undefined
+  }
+  read(conversationId: string, id: string, draft?: { runId: string } | { ticketId: string }) {
+    const {reference,...item}=this.allowed(conversationId,id,draft)
     const data = this.host.store.db.prepare('SELECT bytes FROM chat_delivery_bytes WHERE id=?').get(id)
     if (!data) throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)
     return { item, bytes: data.bytes as Uint8Array }

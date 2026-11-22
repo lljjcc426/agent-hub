@@ -764,7 +764,9 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
             </div>
           </div>
           <BrowserViewport key={session.id} panelId={viewportId} tabId={browserPageId(viewportId, activePage(session)?.id)}
-            id={session.id} pageId={activePage(session)?.id} epoch={session.epoch} controlled={!!session.controlledByYou} accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
+            id={session.id} pageId={activePage(session)?.id} epoch={session.epoch} controlled={!!session.controlledByYou}
+            agentControlled={session.control==="router" || session.control==="worker"}
+            accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
             onConnected={setConnected} onError={fail} L={L}/>
         </>

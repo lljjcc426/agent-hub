@@ -22,3 +22,8 @@ export function browserPoint(
   if(x<0||y<0||x>=image.width||y>=image.height)return null
   return {x:x*deviceWidth/image.width,y:y*deviceWidth/image.width}
 }
+
+export function browserPointerDuration(from:{x:number;y:number},to:{x:number;y:number}) {
+  const distance=Math.hypot(to.x-from.x,to.y-from.y)
+  return Math.round(Math.min(780,Math.max(320,280+distance*.62)))
+}

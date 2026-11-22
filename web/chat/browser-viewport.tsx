@@ -10,7 +10,7 @@ import type { BrowserInput } from "../../src/browser-input.ts";
 import type { BrowserActivity, BrowserFrame } from "../../src/browser-contract.ts";
 import { browserPoint } from "./browser-geometry.ts";
 import { BrowserInputQueue } from "./browser-input-queue.ts";
-import { BrowserFeedback } from "./browser-feedback.tsx";
+import { BrowserAgentGlow, BrowserFeedback, useBrowserImageBounds } from "./browser-feedback.tsx";
 
 type Props = {
   panelId: string;
@@ -19,6 +19,7 @@ type Props = {
   id: string;
   epoch: number;
   controlled: boolean;
+  agentControlled: boolean;
   accepting: boolean;
   input: (event: BrowserInput) => Promise<unknown>;
   selection: () => Promise<{ text: string }>;
@@ -34,6 +35,7 @@ export function BrowserViewport({
   id,
   epoch,
   controlled,
+  agentControlled,
   accepting,
   input,
   selection,
@@ -59,8 +61,8 @@ export function BrowserViewport({
   const [activity,setActivity]=useState<BrowserActivity>()
   const [streamTab,setStreamTab]=useState<string>()
   const activityTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
-  const owner=useRef({controlled,pageId})
-  owner.current={controlled,pageId}
+  const owner=useRef({agentControlled,pageId})
+  owner.current={agentControlled,pageId}
   const showActivity=useCallback((event:BrowserActivity)=>{
     setActivity(event)
     clearTimeout(activityTimeout.current)
@@ -72,6 +74,7 @@ export function BrowserViewport({
       "connecting" | "connected" | "disconnected"
     >("connecting"),
     [attempt, setAttempt] = useState(0);
+  const pageBounds=useBrowserImageBounds(image,viewport,state==='connected')
   useEffect(() => {
     return () => queue.cancel();
   }, [queue]);
@@ -101,7 +104,7 @@ export function BrowserViewport({
       callbacks.current.onConnected(true);
     });
     source.addEventListener('activity',event=>{
-      if(owner.current.controlled)return
+      if(!owner.current.agentControlled)return
       const next:BrowserActivity=JSON.parse((event as MessageEvent).data)
       if(next.tab===(frame.current?.tab??owner.current.pageId))showActivity(next)
     })
@@ -245,6 +248,8 @@ export function BrowserViewport({
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
   }, [controlled, accepting, state, id, epoch]);
+  const visibleActivity=state==='connected'&&(controlled||agentControlled)&&activity?.tab===(streamTab??pageId)
+    ?activity:undefined
   return (
     <div
       ref={viewport}
@@ -264,8 +269,9 @@ export function BrowserViewport({
         draggable={false}
         hidden={!frame.current}
       />
-      <BrowserFeedback activity={state==='connected'&&activity?.tab===(streamTab??pageId)?activity:undefined}
-        controlled={controlled} image={image} viewport={viewport} L={L}/>
+      <BrowserAgentGlow bounds={pageBounds} active={agentControlled&&accepting&&state==='connected'}/>
+      <BrowserFeedback key={epoch+'-'+(streamTab??pageId??'')} activity={visibleActivity}
+        controlled={controlled} bounds={pageBounds} L={L}/>
       {state === "connecting" ? (
         <div className="browser-loading" role="status">
           <LoaderCircle size={22} className="spin" />

@@ -220,6 +220,45 @@
   width: 32px;
   height: 32px;
 }
+.browser-agent-glow {
+  --browser-edge-depth: clamp(24px, 6vmin, 62px);
+  --browser-edge-mask:
+    linear-gradient(#000, transparent var(--browser-edge-depth), transparent calc(100% - var(--browser-edge-depth)), #000),
+    linear-gradient(90deg, #000, transparent var(--browser-edge-depth), transparent calc(100% - var(--browser-edge-depth)), #000);
+  position: absolute;
+  overflow: hidden;
+  contain: paint;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.browser-agent-glow[data-active] { opacity: 1; }
+.browser-agent-glow::before,
+.browser-agent-glow-edge {
+  position: absolute;
+  inset: 0;
+  mask-image: var(--browser-edge-mask);
+}
+.browser-agent-glow::before {
+  content: "";
+  background: rgb(66 122 219 / 27%);
+}
+.browser-agent-glow-edge { overflow: hidden; }
+.browser-agent-glow-edge::after {
+  content: "";
+  position: absolute;
+  inset: 0 -30%;
+  background: linear-gradient(112deg,
+    transparent 17%, rgb(94 136 234 / 10%) 33%, rgb(99 101 223 / 39%) 51%,
+    rgb(69 161 231 / 20%) 65%, transparent 79%);
+  animation: browser-agent-glow 5.6s ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.browser-agent-glow[data-moving] .browser-agent-glow-edge::after { animation-play-state: running; }
+@keyframes browser-agent-glow {
+  from { transform: translateX(-38%); }
+  to { transform: translateX(38%); }
+}
 .browser-feedback {
   position: absolute;
   inset: 0;
@@ -281,15 +320,21 @@
   border: 2px solid var(--c-action);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--c-on-action);
-  animation: browser-click 400ms 120ms cubic-bezier(.2,.75,.3,1) both;
+  opacity: 0;
+  animation: browser-click 420ms var(--browser-click-delay, 0ms) cubic-bezier(.2,.75,.3,1) forwards;
 }
 @keyframes browser-click {
   from { transform: scale(.68); opacity: 1; }
   to { transform: scale(2.25); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .browser-click-ring { animation: none; }
+  .browser-agent-glow { transition: none; }
+  .browser-agent-glow-edge::after { animation: none; }
+  .browser-click-ring { animation: none; opacity: 1; }
 }
+:root[data-appearance-motion="on"] .browser-agent-glow { transition: none; }
+:root[data-appearance-motion="on"] .browser-agent-glow-edge::after { animation: none; }
+:root[data-appearance-motion="on"] .browser-click-ring { animation: none; opacity: 1; }
 .browser-primary {
   background: var(--c-action);
   color: var(--c-on-action);

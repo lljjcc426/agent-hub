@@ -1,9 +1,9 @@
 import {z} from 'zod'
 import {bodyDigest} from './sources.ts'
 import {ChatError} from './chat-errors.ts'
-import {fileHandoffOutcome,rememberFileHandoff,type FileHandoffOutcome} from './chat-file-handoff.ts'
+import {approvedFilePaths,fileHandoffOutcome,rememberFileHandoff,type FileHandoffOutcome} from './chat-file-handoff.ts'
 import type {Runtime} from './runtime.ts'
-import type {Run} from './store.ts'
+import type {Run,Store} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {ActorRef,Ticket,Trigger} from './vendor/dsh-core/index.ts'
 
@@ -24,16 +24,17 @@ export interface BusinessDecisionView {
 interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
 export const legacyExecutionQuestion='Execution could not be confirmed. Review task records and the actual outcome before continuing.'
 const fail=(code:string)=>new ChatError(code,code,code==='decision_identity'?403:409)
-function readDecision(host:Runtime,id:string):DecisionRecord|undefined {
- const d=host.store.get<DecisionRecord>('business-decision',id),time=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0&&v<=8.64e15
+type DecisionStore=Pick<Store,'db'|'get'>
+function readDecision({store}:{store:DecisionStore},id:string):DecisionRecord|undefined {
+ const d=store.get<DecisionRecord>('business-decision',id),time=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0&&v<=8.64e15
  if(!d||d.schema!==1||d.id!==id||typeof d.ticketId!=='string'||!d.ticketId||typeof d.question!=='string'||!d.question||typeof d.summary!=='string'||!/^[a-f0-9]{64}$/.test(d.version)||d.basis!==d.version||!time(d.createdAt)||!time(d.expiresAt)||d.expiresAt<d.createdAt||!Number.isSafeInteger(d.admissionSeq)||d.admissionSeq<0||!d.actor?.source||!d.actor.id||!['pending','answered'].includes(d.status)||d.terms!==null&&!decisionTermsSchema.safeParse(d.terms).success||!d.target||typeof d.target.label!=='string'||typeof d.target.version!=='string')return
  if(d.status==='answered'&&(!d.answer||typeof d.answer.text!=='string'||!time(d.answer.at)))return
  return d
 }
 
-export function decisionAsker(host:Runtime,ticket:Ticket):Trigger|undefined {
- let t=host.store.triggers.get(ticket.attention?.triggerId??ticket.origin.triggerId)
- if(t?.meta.delegatedBy==='router'&&typeof t.meta.parentTrigger==='string')t=host.store.triggers.get(t.meta.parentTrigger)
+export function decisionAsker({store}:{store:DecisionStore},ticket:Ticket):Trigger|undefined {
+ let t=store.get<Trigger>('trigger',ticket.attention?.triggerId??ticket.origin.triggerId)
+ if(t?.meta.delegatedBy==='router'&&typeof t.meta.parentTrigger==='string')t=store.get<Trigger>('trigger',t.meta.parentTrigger)
  return t?.human?t:undefined
 }
 function basis(host:Runtime,ticket:Ticket,terms:DecisionTerms|null):string {
@@ -105,28 +106,39 @@ export function migrateBusinessDecisions(host:Runtime):void {
 }
 
 /** The old scheduler could reject this saved reply before starting any new model turn. */
+export function legacyAnsweredGoalReply(store:DecisionStore,run:Run){
+ if(run.phase!=='uncertain'||run.error!=='Error: async_worker_goal_unavailable')return
+ const ticket=store.get<Ticket>('ticket',run.ticketId)
+ if(!ticket||ticket.ended||ticket.assignments.at(-1)?.id!==run.assignmentId||ticket.attention?.question!==legacyExecutionQuestion)return
+ const followup=store.get<Trigger>('trigger',ticket.attention.triggerId??'')
+ if(followup?.meta.delegatedBy!=='router'||!ticket.inputs.some(input=>input.kind==='trigger'&&
+    input.triggerId===followup.id&&ticket.undelivered.includes(input.id)))return
+ const trigger=decisionAsker({store},ticket)
+ if(!trigger)return
+ const answer=store.db.prepare(`SELECT body FROM records WHERE kind='question-answer'
+  AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.assignmentId')=?`)
+  .get(ticket.id,trigger.id,run.assignmentId)
+ if(!answer)return
+ const {questionId,answerDigest,at}=JSON.parse(String(answer.body)) as {questionId:string;answerDigest:string;at:number}
+ const saved=readDecision({store},questionId),chat=store.get<{conversationId:string;decisionTicketId?:string}>('chat-run',trigger.id)
+ if(!saved?.answer||saved.ticketId!==ticket.id||saved.actor.id!==trigger.actor.id||saved.actor.source!==trigger.actor.source||
+    answerDigest!==bodyDigest(saved.answer.text)||!Number.isSafeInteger(at)||at<saved.answer.at||
+    chat?.decisionTicketId!==ticket.id||!approvedFilePaths(saved.question,saved.answer.text).length)return
+ return {ticket,trigger,saved,chat,at,text:saved.answer.text}
+}
+
 export function recoverAnsweredGoalQuestions(host:Runtime):void {
  const {store}=host
  for(const run of store.list<Run>('run')){
-  if(run.phase!=='uncertain'||run.error!=='Error: async_worker_goal_unavailable')continue
-  const ticket=store.tickets.get(run.ticketId)
-  if(!ticket||ticket.ended||ticket.attention?.question!==legacyExecutionQuestion)continue
-  const trigger=decisionAsker(host,ticket)
-  const answer=trigger&&store.db.prepare(`SELECT body FROM records WHERE kind='question-answer'
-   AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.assignmentId')=?`)
-   .get(ticket.id,trigger.id,run.assignmentId)
-  if(!trigger||!answer)continue
-  const {questionId}=JSON.parse(String(answer.body)) as {questionId:string}
-  const saved=readDecision(host,questionId),chat=store.get<{conversationId:string;decisionTicketId?:string}>('chat-run',trigger.id)
-  if(!saved?.answer||saved.ticketId!==ticket.id||chat?.decisionTicketId!==ticket.id||
-     !ticket.inputs.some(input=>input.kind==='trigger'&&ticket.undelivered.includes(input.id)&&
-       store.triggers.get(input.triggerId)?.meta.parentTrigger===trigger.id))continue
+  const reply=legacyAnsweredGoalReply(store,run)
+  if(!reply)continue
+  const {ticket,trigger,saved,chat,text}=reply
   try{
    store.atomic(()=>{
     const authority=host.taskAuthority(ticket.id)
     const context=authority&&host.scopes.context(trigger,authority.discussion)
     if(!context||!host.goals.resumeAnsweredQuestion(ticket.id,saved.summary,context,true))return
-    rememberFileHandoff(host,questionId,{ticketId:ticket.id,conversationId:chat.conversationId,triggerId:trigger.id,question:saved.question},saved.answer!.text)
+    rememberFileHandoff(host,saved.id,{ticketId:ticket.id,conversationId:chat.conversationId,triggerId:trigger.id,question:saved.question},text)
     store.put('run',ticket.id,{...run,phase:'idle',error:undefined,failure:undefined})
     host.engine.report(ticket.id,{state:'waiting',summary:saved.summary,question:null})
     const prior=ticket.inputs.map(item=>item.id)

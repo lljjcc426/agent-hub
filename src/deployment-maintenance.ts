@@ -2,8 +2,9 @@ import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
-import type {Store} from './store.ts'
-import type {RouterGoal} from './router-goals.ts'
+import type {Run,Store} from './store.ts'
+import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
+import {legacyAnsweredGoalReply} from './business-decisions.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
 import type {ChatDelivery} from './chat-deliveries.ts'
 import type {ReplanRound} from './goal-replanning.ts'
@@ -18,6 +19,27 @@ export function pauseControl(host:Runtime){
 }
 type DeploymentStore = Pick<Store,'db'|'get'|'list'|'deliveries'>
 
+function unsettledTaskEffects(store:DeploymentStore,id:string,since:number){
+ return !!store.db.prepare(`SELECT 1 FROM records WHERE
+  (json_extract(body,'$.ticketId')=? AND (
+    (kind='work' AND (json_extract(body,'$.state') IN ('starting','running')
+      OR (json_extract(body,'$.state')='interrupted' AND coalesce(json_extract(body,'$.endedAt'),?)>=?)))
+    OR (kind='execution-call' AND json_extract(body,'$.state')='running')
+    OR (kind='workflow-action' AND json_extract(body,'$.state') IN ('pending','applying','uncertain'))
+    OR (kind='approval' AND (json_extract(body,'$.status')='pending'
+      OR (json_extract(body,'$.key') IS NOT NULL AND json_extract(body,'$.status')='resolved' AND coalesce(json_extract(body,'$.delivered'),0)=0)))))
+  OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=? AND
+    json_extract(body,'$.phase') IN ('pending','approved','executing','uncertain')) LIMIT 1`).get(id,since,since,id)
+}
+
+function heldAnsweredQuestionTasks(store:DeploymentStore,goal:RouterGoal){
+ if(goal.state!=='held'||goal.nextAt!==undefined||goal.delegationIds?.length)return
+ const held=goal.nodes?.find(node=>node.state==='held')
+ if(!held?.ticketId||!goal.taskIds.includes(held.ticketId)||!goal.nodes!.every(node=>node===held||node.state==='passed'))return
+ const run=store.get<Run>('run',held.ticketId),reply=run&&legacyAnsweredGoalReply(store,run)
+ if(reply&&heldQuestionNode(goal,held.ticketId,reply.saved.summary)&&!unsettledTaskEffects(store,held.ticketId,reply.at))return [held.ticketId]
+}
+
 function heldAcceptanceTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined {
  if(goal.nextAt!==undefined||goal.delegationIds?.length||!acceptanceRetryTarget(store,goal))return
  const replan=goal.replanId&&store.get<ReplanRound>('goal-replan',goal.replanId)
@@ -27,16 +49,7 @@ function heldAcceptanceTasks(store:DeploymentStore,goal:RouterGoal):string[]|und
  for(const id of ids){
   const delivery=retainedGoalDelivery(store,goal,id)
   if(!delivery)return
-  if(store.db.prepare(`SELECT 1 FROM records WHERE
-    (json_extract(body,'$.ticketId')=? AND (
-      (kind='work' AND (json_extract(body,'$.state') IN ('starting','running')
-        OR (json_extract(body,'$.state')='interrupted' AND coalesce(json_extract(body,'$.endedAt'),?)>=?)))
-      OR (kind='execution-call' AND json_extract(body,'$.state')='running')
-      OR (kind='workflow-action' AND json_extract(body,'$.state') IN ('pending','applying','uncertain'))
-      OR (kind='approval' AND (json_extract(body,'$.status')='pending'
-        OR (json_extract(body,'$.key') IS NOT NULL AND json_extract(body,'$.status')='resolved' AND coalesce(json_extract(body,'$.delivered'),0)=0)))))
-    OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=? AND
-      json_extract(body,'$.phase') IN ('pending','approved','executing','uncertain')) LIMIT 1`).get(id,delivery.at,delivery.at,id))return
+  if(unsettledTaskEffects(store,id,delivery.at))return
   for(const fileId of delivery.files??[]){
    const file=store.get<ChatDelivery>('chat-delivery',fileId)
    if(!file?.mime||file.ticketId!==id||store.db.prepare('SELECT length(bytes) AS size FROM chat_delivery_bytes WHERE id=?').get(fileId)?.size!==file.size)return
@@ -51,7 +64,7 @@ export function deploymentBlockers(store:DeploymentStore,activeExecutions=0){
  const goals=store.list<RouterGoal&{deleted?:boolean}>('router-goal').filter(g=>g.objective&&!g.deleted&&!['completed','cancelled'].includes(g.state))
  const retained=new Set<string>()
  const unsettled=goals.filter(goal=>{
-  const ids=heldAcceptanceTasks(store,goal)
+  const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)
   if(!ids)return true
   for(const id of ids)retained.add(id)
   return false

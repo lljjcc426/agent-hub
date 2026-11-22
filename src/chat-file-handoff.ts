@@ -28,13 +28,16 @@ const validPath=(path:string)=>path.length<=1000&&path.split('/').every(
 const quotedPaths=(text:string)=>[...text.matchAll(/`([^`\r\n]+)`/g)].map(match=>match[1]!).filter(path=>/\.[a-z\d]+$/i.test(path))
 const accepted=(text:string)=>/^(可以|同意|允许|确认|yes|ok(?:ay)?|approved?|go ahead)[。！.!]?$/i.test(text.trim())
 
-/** An affirmative answer applies to the read-only files described in this question. */
-export function rememberFileHandoff(host:Runtime,id:string,request:Omit<Request,'paths'|'outcome'>,answer:string){
-  const question=request.question.trim()
+export function approvedFilePaths(question:string,answer:string){
+  question=question.trim()
   const asksForTransfer=/^(?:能否|是否可以)(?:将|把).+只读交接/s.test(question)||
     /^(?:may|can) I (?:hand off|transfer) .+read[- ]only/is.test(question)
-  if(!accepted(answer)||!asksForTransfer)return
-  const paths=[...new Set(quotedPaths(request.question))]
+  return accepted(answer)&&asksForTransfer?[...new Set(quotedPaths(question))]:[]
+}
+
+/** An affirmative answer applies to the read-only files described in this question. */
+export function rememberFileHandoff(host:Runtime,id:string,request:Omit<Request,'paths'|'outcome'>,answer:string){
+  const paths=approvedFilePaths(request.question,answer)
   if(paths.length&&!host.store.get('chat-file-handoff',id))host.store.put('chat-file-handoff',id,{...request,paths} satisfies Request)
 }
 
@@ -46,12 +49,17 @@ export function fileHandoffOutcome(host:Runtime,id:string){
 function sourceFiles(host:Runtime,request:Request){
   const {store}=host
   const trigger=store.triggers.get(request.triggerId)
-  const run=store.get<{conversationId:string}>('chat-run',request.triggerId)
-  if(!trigger||run?.conversationId!==request.conversationId)return
+  const run=store.get<{conversationId:string;decisionTicketId?:string}>('chat-run',request.triggerId)
+  if(!trigger?.human||run?.conversationId!==request.conversationId||run.decisionTicketId!==request.ticketId)return
   const authority=host.taskAuthority(request.ticketId)
-  if(!authority||authority.parentTrigger!==request.triggerId)return
+  if(!authority?.parentTrigger)return
+  const current=store.triggers.get(authority.parentTrigger)
+  const chat=store.get<{conversationId:string}>('chat-run',authority.parentTrigger)
+  if(!current?.human||chat?.conversationId!==request.conversationId||
+     current.actor.source!==trigger.actor.source||current.actor.id!==trigger.actor.id)return
   host.routerIngress.authority(trigger.id,authority.discussion)
-  const scoped=host.scopes.context(trigger,authority.discussion)
+  if(current.id!==trigger.id)host.routerIngress.authority(current.id,authority.discussion)
+  const scoped=host.scopes.context(current,authority.discussion)
   const deliveries=store.db.prepare(`SELECT r.body FROM records r
     WHERE r.kind='chat-delivery' AND json_extract(r.body,'$.conversationId')=?
     AND json_extract(r.body,'$.ticketId')!=? AND json_extract(r.body,'$.mime') IS NOT NULL`).all(request.conversationId,request.ticketId)

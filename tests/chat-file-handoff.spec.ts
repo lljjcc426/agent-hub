@@ -7,6 +7,7 @@ import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {ChatDeliveries} from '../src/chat-deliveries.ts'
 import {legacyExecutionQuestion} from '../src/business-decisions.ts'
+import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
 import type {RouterGoal} from '../src/router-goals.ts'
@@ -110,7 +111,7 @@ it.each(['absent','changed'] as const)('reports the %s package on the answered r
  expect(host.store.list('asset')).toHaveLength(0)
 })
 
-it('recovers a legacy answer that was rejected before execution, without showing the old technical question',async()=>{
+it.each([false,true])('recovers the approved handoff after a legacy startup failure (maintenance: %s)',async maintenance=>{
  const f=await fixture(),{host,chat,owner,ticketId,decision}=f
  const defer=vi.spyOn(host.goals,'resumeAnsweredQuestion').mockReturnValue(false)
  host.chat.decide(chat.id,owner,f.input)
@@ -119,6 +120,7 @@ it('recovers a legacy answer that was rejected before execution, without showing
  const followup=task.inputs.find(item=>item.kind==='trigger'&&item.triggerId.startsWith('router-followup:'))!
  expect(followup.kind).toBe('trigger')
  if(followup.kind!=='trigger')throw Error('Missing answered input')
+ const original=host.store.triggers.get(followup.triggerId)!
  const run=host.store.get<Run>('run',ticketId)!
  host.store.atomic(()=>{
   host.store.db.prepare("DELETE FROM records WHERE kind='chat-file-handoff' AND id=?").run(decision.id)
@@ -126,10 +128,35 @@ it('recovers a legacy answer that was rejected before execution, without showing
   host.store.put('run',ticketId,{...run,phase:'uncertain',error:'Error: async_worker_goal_unavailable'})
   const update=host as unknown as {reportWork:(id:string,value:{state:'blocked';summary:string;question:string;askedBy:string})=>void}
   update.reportWork(ticketId,{state:'blocked',summary:'Error: async_worker_goal_unavailable',question:legacyExecutionQuestion,askedBy:followup.triggerId})
+  // The user can also have replied to the obsolete card on the older host.
+  const prior=host.store.triggers.get(String(original.meta.parentTrigger))!
+  const duplicateReply={...prior,id:prior.id+':legacy-card-reply',text:'？'}
+  expect(host.routerIngress.admitDecision(duplicateReply).state).toBe('accepted')
+  const context=host.scopes.context(duplicateReply,prior.source+':chat:'+chat.id)!
+  host.scopes.noteInput(ticketId,context)
+  host.memory.moveTaskContext(ticketId,context)
+  host.store.put('chat-run',duplicateReply.id,{id:duplicateReply.id,triggerId:duplicateReply.id,conversationId:chat.id,decisionTicketId:ticketId})
+  const obsoleteId=host.store.tickets.get(ticketId)!.attention!.id
+  const obsolete=host.store.get<object>('business-decision',obsoleteId)!
+  host.store.put('business-decision',obsoleteId,{...obsolete,status:'answered',answer:{text:'？',at:Date.now()}})
  })
- await host.tick()
+ await f.until(host,()=>deploymentBlockers(host.store).length===0)
+ host.store.put('chat-permission','legacy-unconfirmed',{actor:{ticketId},phase:'uncertain'})
+ expect(deploymentBlockers(host.store)).toContainEqual({kind:'tasks',count:1})
+ host.store.db.prepare("DELETE FROM records WHERE kind='chat-permission' AND id='legacy-unconfirmed'").run()
+ if(maintenance)host.pause(true)
  await host.close();hosts.delete(host)
  const reopened=f.open()
+ if(maintenance){
+  expect(reopened.store.get<Run>('run',ticketId)).toEqual({...run,phase:'uncertain',error:'Error: async_worker_goal_unavailable'})
+  expect(reopened.store.tickets.get(ticketId)?.attention?.question).toBe(legacyExecutionQuestion)
+  const operationId=randomUUID()
+  await expect(deploymentMaintenance(reopened,{action:'prepare',operationId,
+    expectedRevision:reopened.settings.current().revision,legacyPauseSeq:pauseControl(reopened).seq})).resolves.toMatchObject({state:'prepared'})
+  await reopened.tick()
+  expect(f.reviews).toHaveLength(1)
+  await expect(deploymentMaintenance(reopened,{action:'finish',operationId})).resolves.toMatchObject({state:'finished',resumed:true})
+ }
  await f.until(reopened,()=>f.reviews.length===2&&!reopened.executionActive(ticketId))
  expect(reopened.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'answered',fileHandoff:{state:'ready',missing:[]}})])
  expect(reopened.store.tickets.get(ticketId)?.attention).toBeUndefined()

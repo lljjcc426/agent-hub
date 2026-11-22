@@ -14,7 +14,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {RouterHandoff} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
-import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyExecutionQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
+import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
@@ -189,6 +189,7 @@ export class Runtime {
   private lock: string
   private readonly clock: () => number
   private paused = false
+  private recoverAnsweredQuestionsOnResume=false
   readonly startupSourceIds:readonly string[]
   static async create(config:Config,options:{model?:Model;sources?:Source[];clock?:()=>number;browserDriver?:BrowserDriver;pluginActivation?:string;startupSourceIds?:readonly string[]}={}){loadMarketConfig(config,options.pluginActivation);return new Runtime(config,{...options,sourceRegistry:await SourceRegistry.load(config)})}
   constructor(readonly config: Config, options: { model?: Model; sources?: Source[];sourceRegistry?:SourceRegistry;clock?:()=>number;browserDriver?:BrowserDriver;memoryEmbed?:EmbedMemory;memoryRerank?:import('./memory-rerank.ts').RerankMemory;pluginActivation?:string;startupSourceIds?:readonly string[] } = {}) {
@@ -315,13 +316,17 @@ export class Runtime {
     this.manager.restoreSubscriptions()
     this.store.recoverJobs()
     this.store.recoverDeliveries()
-    recoverAnsweredGoalQuestions(this)
+    if(!this.paused)recoverAnsweredGoalQuestions(this)
     // Recover the commit-to-interrupt crash window before any task can auto-resume.
     for(const g of this.store.list<RouterGoal>('router-goal'))if(g.supersededBy)for(const id of this.goals.taskIdsForGoal(g)){
       this.interruptForAutomation(id)
       if(!this.store.tickets.get(id)?.ended)this.engine.stopTicket(id,'Goal contract replaced')
     }
     for (const run of this.store.list<Run>('run')) {
+      if(this.paused&&legacyAnsweredGoalReply(this.store,run)){
+        this.recoverAnsweredQuestionsOnResume=true
+        continue
+      }
       if (run.phase === 'running' || run.phase === 'starting' || run.phase === 'background' || run.phase==='interrupted' || run.phase === 'uncertain' || run.phase === 'delivering' || run.phase==='merging') {
         this.store.put('run', run.ticketId, { ...run, phase: 'uncertain', error: run.phase==='uncertain'&&run.error?run.error:'Host stopped during execution; inspect native history and workspace before retry' })
         const ticket = this.store.tickets.get(run.ticketId)
@@ -891,6 +896,10 @@ export class Runtime {
     let tickFinished!:()=>void
     this.tickIdle=new Promise(resolve=>{tickFinished=resolve})
     try {
+      if(!this.paused&&this.recoverAnsweredQuestionsOnResume){
+        this.recoverAnsweredQuestionsOnResume=false
+        recoverAnsweredGoalQuestions(this)
+      }
       this.store.put('health','host',{at:Date.now(),pid:process.pid})
       this.delegation.pump()
       this.fenceInvalidContexts()

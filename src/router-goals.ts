@@ -31,6 +31,15 @@ interface Wake {id:string;goalId:string;scopeId:string;entryId:string;triggerId:
 const terminal=new Set(['completed','cancelled'])
 const githubReadContinuation='The previous GitHub resource read failed. Continue the original task in its retained workspace with current tools. Use github_read for the repository and verify the evidence you cite.'
 const heldReason=(nodes:GoalNode[])=>nodes.filter(n=>n.state==='held').map(n=>n.title+': '+n.reason).join('; ')
+export function heldQuestionNode(goal:RouterGoal,ticketId:string,summary:string){
+ const node=goal.nodes?.find(item=>item.ticketId===ticketId)
+ if(!node||!['active','waiting','held'].includes(goal.state)||node.state!=='held'||goal.supersededBy||
+    goal.replanId||goal.acceptanceOverflow||goal.project?.review?.state==='pending')return
+ if(goal.state==='held'&&goal.reason!==heldReason(goal.nodes!))return
+ if(node.reason!==summary.slice(0,1000)||!['quality','environment'].includes(node.failure?.kind??'')||
+    node.dependsOn.some(id=>goal.nodes!.find(item=>item.id===id)?.state!=='passed'))return
+ return node
+}
 type ReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedOpenCodeRead>>}
 function readContinuation(proof:ReadRecovery['proof']){
  if(proof.kind==='github')return {instruction:githubReadContinuation}
@@ -271,12 +280,8 @@ export class RouterGoals {
  /** Resume the one node held by this answered report, preserving its assignment and contract. */
  resumeAnsweredQuestion(ticketId:string,summary:string,context:ScopeContext,recoverStartup=false){
   const goal=this.forTask(ticketId)
-  const node=goal?.nodes?.find(item=>item.ticketId===ticketId)
-  if(!goal||!node||!['active','waiting','held'].includes(goal.state)||node.state!=='held'||goal.supersededBy||
-     goal.replanId||goal.acceptanceOverflow||goal.project?.review?.state==='pending')return false
-  if(goal.state==='held'&&goal.reason!==heldReason(goal.nodes!))return false
-  if(node.reason!==summary.slice(0,1000)||!['quality','environment'].includes(node.failure?.kind??'')||
-     node.dependsOn.some(id=>goal.nodes!.find(item=>item.id===id)?.state!=='passed'))return false
+  const node=goal&&heldQuestionNode(goal,ticketId,summary)
+  if(!goal||!node)return false
   try{
    this.host.scopes.checkTask(ticketId,context,true)
    this.host.routerIngress.authority(goal.triggerId)

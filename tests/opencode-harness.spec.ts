@@ -307,12 +307,13 @@ it('binds subscription harness runs to the authorized principal and original sig
  const login=(subject:string)=>writeFileSync(join(accounts,'plan.json'),JSON.stringify({subject,access_token:'synthetic-token',expires_at:Date.now()+100000}))
  const registry=new BackendRegistry(config,store)
  const spy=vi.spyOn(ProcessBackend.prototype,'run').mockImplementation(async r=>{r.onThread?.('plugin:test');return {threadId:'plugin:test',turnId:'turn',text:'{}'}})
- const activation:ModelRequest={...request,role:'router',managed:true,allowNativeTools:true,principal:{source:'local',actor:'owner'},tools:[{type:'function',name:'router_read',description:'Read',inputSchema:{}}],onTool:async()=>({success:true,contentItems:[]})}
+ const activation:ModelRequest={...request,role:'router',managed:true,coordinationTurn:true,principal:{source:'local',actor:'owner'},tools:[{type:'function',name:'router_read',description:'Read',inputSchema:{}}],onTool:async()=>({success:true,contentItems:[]})}
  try{
   await expect(registry.run({...activation,principal:{source:'local',actor:'other'}})).rejects.toThrow(/owner/)
   await expect(registry.run(activation)).rejects.toThrow(/signed out/)
   login('original');await registry.run(activation)
-  expect(spy.mock.lastCall![0].harnessWorkspace).toBe('read')
+  expect(spy.mock.lastCall![0].harnessWorkspace).toBeUndefined()
+  expect(spy.mock.lastCall![0].allowNativeTools).toBeUndefined()
   expect(JSON.stringify(spy.mock.lastCall![0])).not.toContain('synthetic-token')
   login('other');await expect(registry.run({...activation,threadId:'plugin:test'})).rejects.toThrow(/account changed/)
   expect(spy).toHaveBeenCalledTimes(1)

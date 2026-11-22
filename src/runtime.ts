@@ -1,7 +1,7 @@
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
 import {ApiUsage} from './api-usage.ts'
 
-import {workspaceBrowserSpec} from './browser-contract.ts'
+import {workspaceAction,workspaceBrowserSpec} from './browser-contract.ts'
 import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {routerFileTool} from './chat-deliveries.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
@@ -11,6 +11,7 @@ import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
+import {RouterHandoff} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
@@ -42,7 +43,8 @@ import {ProcessSource} from './plugin-process.ts'
 import {ToolConnections} from './tool-connections.ts'
 import {OfficeMcp} from './office-mcp.ts'
 import {pairedOfficeBot} from './office-groups.ts'
-import {GithubConnector,githubReadSpec,githubWriteSpec} from './github-connector.ts'
+import {GithubConnector,githubWriteSpec} from './github-connector.ts'
+import {routerGithubReadSchema,routerGithubReadSpec} from './github-read.ts'
 import {GithubError,githubFailure} from './github-errors.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
@@ -489,18 +491,19 @@ export class Runtime {
     catch(error){if(this.closing)throw new ReplanningInterrupted('Host stopped during read-only replanning');throw error}
     finally{this.controllers.delete(key)}
   }
-  private async desktopRouterTurn(request:ModelRequest,triggerId:string,validate:()=>void):Promise<ModelResult>{
+  private async desktopRouterTurn(request:ModelRequest,triggerId:string,validate:()=>void,handoff?:RouterHandoff):Promise<ModelResult>{
+    const run=(activation:ModelRequest)=>this.runModel(activation,triggerId,handoff)
     const previous=this.chat.opening(triggerId)
     if(previous){
       // Crash recovery can rebuild the thread from history. Keep its full authorized input.
       validate()
-      return this.runModel({...request,instructions:request.instructions+'\nThe opening for this request was already delivered. Continue the work without repeating it.'})
+      return run({...request,instructions:request.instructions+'\nThe opening for this request was already delivered. Continue the work without repeating it.'})
     }
     if(request.onTool&&(!(this.model instanceof BackendRegistry)||this.model.supportsChatOpening(request.threadId,request.backendId))){
       const invoke=request.onTool
       let delivered!:()=>void
       const opening=new Promise<void>(resolve=>{delivered=resolve})
-      return this.runModel({...request,requiresChatOpening:true,tools:[chatOpeningTool,...request.tools??[]],
+      return run({...request,requiresChatOpening:true,tools:[chatOpeningTool,...request.tools??[]],
         instructions:request.instructions+'\nFor tasks using tools, begin with chat_opening (roppo_chat_opening in OpenCode) and a brief, specific sentence in the user language. The opening is a notification and returns no task data. Include it as the first item in the SAME response as the first work tools; do not send an opening-only response when work can start. Answer direct questions without tools.',
         chatOpeningReady:async()=>{
           if(!this.chat.opening(triggerId))await Promise.race([opening,delay(1000,undefined,{signal:request.signal,ref:false})])
@@ -520,7 +523,7 @@ export class Runtime {
         },
       })
     }
-    const first=await this.runModel({...request,
+    const first=await run({...request,
       instructions:request.instructions+'\n'+firstReplyInstructions,schema:firstReplySchema,
       tools:[],options:{...request.options,tools:[],toolConnections:[]},onTool:undefined,
     })
@@ -530,7 +533,7 @@ export class Runtime {
       Boolean(choice.reply.trim())===Boolean(choice.opening.trim()))throw Error('Expected a direct reply or a task opening')
     if(choice.reply.trim())return first
     this.chat.introduce(triggerId,choice.opening.trim())
-    return this.runModel({...request,threadId:first.threadId,
+    return run({...request,threadId:first.threadId,
       input:JSON.stringify({kind:'continue_after_opening',triggerId}),
       instructions:request.instructions+'\nYour opening has been delivered. Now carry out the user request from the preceding turn and report the actual results. Do not repeat the opening.',
     })
@@ -547,7 +550,7 @@ export class Runtime {
       eventAt:trigger?.at,schedule:schedule?{timeZone:schedule.spec.timing.timezone,dueAt:schedule.scheduledAt}:undefined,
     }))
   }
-  private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId):Promise<ModelResult>{
+  private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId,handoff?:RouterHandoff):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
     const project=()=>context.ticketId?this.goals.forTask(context.ticketId):context.triggerId?this.goals.forInput(context.triggerId):undefined
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
@@ -625,7 +628,8 @@ export class Runtime {
         return dispatch.run(isParallelRead(name),()=>{
           signal?.throwIfAborted()
           if(!isParallelRead(name))invokedEffect=true
-          return name===codeModeTool.name?this.activity.tool(name,context,()=>invoke(name,args,id),activity):invoke(name,args,id)
+          const call=()=>name===codeModeTool.name?this.activity.tool(name,context,()=>invoke(name,args,id),activity):invoke(name,args,id)
+          return handoff?handoff.tool(call):call()
         })
       }}
     }
@@ -634,7 +638,7 @@ export class Runtime {
     let threadId=request.threadId
     const originalInput=request.input
     for(let attempt=0;;attempt++){
-      let activeTurn=false
+      let turnId:string|undefined
       enforceBudget()
       this.usage.attempt(activity,attempt,'running')
       if(threadId||attempt>0)this.usage.update(activity,{sessionKey:threadId?stableDigest([request.backendId,threadId]):undefined})
@@ -647,7 +651,7 @@ export class Runtime {
           onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},
           onUsage:value=>{if(this.usage.record(activity,attempt,value)&&(role==='worker'||role==='router'))this.chat.usageChanged(activity);const g=project();if(g?.project?.policy.budget)this.goals.holdBudget(g);request.onUsage?.(value)},
           onThread:id=>{threadId=id;this.usage.update(activity,{sessionKey:stableDigest([request.backendId,id])});this.store.put('model-session',id,{threadId:id,cwd:request.cwd,ephemeral:request.ephemeral??false,activity,...context,scopeId,contextId:manifest?.id,at:Date.now()});request.onThread?.(id)},
-          onTurn:id=>{activeTurn=true;request.onTurn?.(id)},
+          onTurn:id=>{turnId=id;request.onTurn?.(id)},
         }
         const recordInput=role==='router'
           ? (prepared:ModelRequest)=>this.chat.recordContextInput(activity,attempt,prepared) : undefined
@@ -660,12 +664,16 @@ export class Runtime {
         if(result.threadId&&result.threadId!==threadId)this.usage.update(activity,{sessionKey:stableDigest([request.backendId,result.threadId])})
         this.usage.attempt(activity,attempt,'completed');this.usage.finish(activity,'completed');this.activity.finish(activity,'completed');return result}
       catch(error){
+        if(handoff?.yielded&&threadId&&turnId){
+          this.usage.attempt(activity,attempt,'completed');this.usage.finish(activity,'completed');this.activity.finish(activity,'completed')
+          return {threadId,turnId,text:JSON.stringify({reply:handoff.reply()})}
+        }
         this.usage.attempt(activity,attempt,request.signal?.aborted?'interrupted':'failed')
         if(error instanceof ContextBudgetExceeded){this.store.put('context-rebuild',context.ticketId??activity,{...context,activity,threadId,scopeId,state:'held',reason:error.code,receipt:error.receipt,at:Date.now()});throw error}
         const typed=backendFailure(error)
         const transient=typed?typed.code==='transient':error instanceof TransientModelError||/HTTP (408|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection reset|stream disconnected|temporar(?:y|ily)|error sending request/i.test(String(error))
         if(request.signal?.aborted||invokedEffect||attempt>=3||!transient||
-         typed&&(role==='worker'||activeTurn&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
+         typed&&(role==='worker'||turnId&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
          (typed?.diagnostic?.retryAfterMs??0)>10_000)throw error
         this.store.audit({type:'model.retry',threadId,attempt:attempt+1,error:String(error).slice(0,300)})
         request.input=JSON.stringify({retry:attempt+1,notice:'Continue the same work after a transient provider failure. Inspect native history and retained managed jobs before repeating any action.',previousInput:originalInput})
@@ -717,7 +725,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.work.network?[routerGithubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs(){return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&(s.name!=='superagent_artifact'||this.delegation.enabled)&&(!s.name.startsWith('github_')||this.config.work.network))}
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}
@@ -1020,7 +1028,9 @@ export class Runtime {
     if(job.kind==='router-admit'&&!candidates)return
     const followups=job.kind==='router-followup'?new RouterFollowupBatch(this,job):undefined
     if(followups&&!followups.actionable){followups.finish();return}
-    const {messageId}=job.payload as {messageId?:string}
+    const {messageId,permissionId,fileReviewId,teamResultId}=job.payload as {
+      messageId?:string;permissionId?:string;fileReviewId?:string;teamResultId?:string
+    }
     const discussion=candidates?.batch.discussion??(job.payload as any).discussion as string
     const triggerId=candidates?.batch.primary??followups?.trigger.id??(job.payload as any).triggerId as string
     const {batchId}=job.payload as {batchId?:string}
@@ -1045,7 +1055,7 @@ export class Runtime {
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
-    const githubTools=browserRun&&this.config.work.network?[githubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
+    const githubTools=browserRun&&this.config.work.network?[routerGithubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
     const officeApps=browserRun&&this.config.work.network&&this.chat.permissionActor(triggerId)
       ?this.officeMcp.inventory().filter(app=>app.status==='connected').map(app=>app.label):[]
     const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(officeApps.length?[officeApps]:[]),...(chatBinding?[decisionTool,publicPlanTool]:[])])
@@ -1054,6 +1064,10 @@ export class Runtime {
       ...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
     if(scoped&&!this.chat.isReactionInput(triggerId))this.memory.ingest(scoped)
     const controller=new AbortController(),key='router:'+discussion
+    const locale=this.chat.locale(triggerId)
+    const chinese=locale?locale.toLowerCase().startsWith('zh'):browserRun?.openingLocale==='zh-CN'||/\p{Script=Han}/u.test(trigger.text)
+    const handoff=browserRun&&!permissionId&&!fileReviewId&&!teamResultId?new RouterHandoff(controller.signal,chinese):undefined
+    let unsubscribeHandoff:(()=>void)|undefined
     const authorizedMessage=(m:any)=>{
       if(this.replacedTask(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
       const owner=this.taskAuthority(m.ticketId)
@@ -1109,6 +1123,10 @@ export class Runtime {
         }else void pending.catch(()=>{})
       }
       const modelInput=continuity?.input??packet?.input??JSON.stringify({...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),...(chatBinding&&!threadId?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{})})
+      let directGithubReadUsed=false,browserSnapshotUsed=false,browserActionUsed=false
+      const workerRequired=(message:string):ToolResult=>({success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+        code:'worker_required',message,
+      })}]})
       const callRouterTool=async(name:string,args:unknown):Promise<ToolResult>=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -1128,13 +1146,27 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
-            if(name==='github_read'&&githubTools.includes(githubReadSpec)){
-              const locale=this.chat.locale(triggerId)?.toLowerCase().startsWith('zh')?'zh-CN':'en'
-              return this.github.read({locale,...args as object},!!this.chat.permissionActor(triggerId),validateReplyContext,controller.signal)
+            if(name==='github_read'&&githubTools.includes(routerGithubReadSpec)){
+              const read=routerGithubReadSchema.safeParse(args)
+              if(directGithubReadUsed||!read.success)return workerRequired('Assign detailed GitHub reads and further checks to a Worker and finish the Router turn after handoff.')
+              directGithubReadUsed=true
+              const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(6000)])
+              return await this.github.read({locale:chinese?'zh-CN':'en',...read.data},!!this.chat.permissionActor(triggerId),validateReplyContext,signal)
             }
             if(name==='workspace_browser' && workspaceTool && browserRun && browserOwner){
-              const result = await this.browser.routerAction(browserOwner,browserRun.conversationId,triggerId,args,validateReplyContext)
-              return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+              const action=workspaceAction(args),snapshot=action.action==='snapshot'
+              if(browserActionUsed||snapshot&&browserSnapshotUsed)return workerRequired('This turn has used its shared-browser allowance. Delegate independent browsing to a Worker. The Worker has a separate browser; report progress if the request needs this exact tab.')
+              if(snapshot)browserSnapshotUsed=true
+              else browserActionUsed=true
+              const timeout=AbortSignal.timeout(6000)
+              const signal=AbortSignal.any([controller.signal,timeout])
+              try{
+                const result=await this.browser.routerAction(browserOwner,browserRun.conversationId,triggerId,action,validateReplyContext,signal)
+                return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+              }catch(error){
+                if(!signal.aborted)throw error
+                return {success:false,...(!snapshot?{permission:'uncertain' as const}:{}),contentItems:[{type:'inputText',text:snapshot?'The shared tab snapshot did not finish.':'The browser action did not return a result. Verify the current page before taking another action.'}]}
+              }
             }
             if(name==='chat_deliver_file'&&fileTool.length)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.deliverText(triggerId,args))}]}
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
@@ -1160,6 +1192,18 @@ export class Runtime {
             const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,manifest:packet?.manifest})),ticketId=(args as any).ticketId
             if(result.ticketId)this.proactive.noteTask(triggerId,result.ticketId)
             if(result.ticketId)this.goals.noteTask(triggerId,result.ticketId)
+            const action=(args as {action:string}).action
+            if(handoff&&result.status==='queued'&&result.ticketId&&(action==='assign'||action==='send')){
+              const assignment=this.store.get<{workerId:string}>('worker-assignment',result.ticketId)
+              if(assignment){
+                handoff.record(workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId,action==='assign')
+                if(!unsubscribeHandoff&&browserRun&&browserOwner){
+                  const prioritize=()=>{if(this.chat.pendingInputs(triggerId).size)handoff.prioritizeInput()}
+                  unsubscribeHandoff=this.chat.subscribe(browserRun.conversationId,browserOwner,prioritize)
+                  prioritize()
+                }
+              }
+            }
             if(ticketId&&packet){const owner=this.scopes.ownership(ticketId);if(owner&&!packet.manifest.taskOwners.some(t=>t.id===ticketId)){packet.manifest.taskOwners.push({id:ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});this.store.put('context-manifest',packet.manifest.id,packet.manifest)}}
             if(ticketId&&result.report?.at){
               readReports.set(ticketId,result.report.at)
@@ -1205,7 +1249,6 @@ export class Runtime {
         this.proactive.toolAllowed(triggerId,name,args);this.goals.toolAllowed(triggerId,name,args)
         return this.permissions.run(actor,name,input,risk,()=>callRouterTool(name,args),expectedId,authored.notice)
       }
-      const {permissionId,fileReviewId,teamResultId}=job.payload as {permissionId?:string;fileReviewId?:string;teamResultId?:string}
       const fileReviewReceipt=fileReviewId?this.chat.fileReviewOutcome(triggerId,fileReviewId):undefined
       const action=permissionId&&this.permissions.get(permissionId)
       let permissionReceipt:unknown
@@ -1214,14 +1257,14 @@ export class Runtime {
         if(!actor||actor.runId!==action.actor.runId||actor.conversationId!==action.actor.conversationId||action.actor.ticketId)throw Error('The original Chat authority ended')
         permissionReceipt=action.phase==='approved'?await checkedRouterTool(action.tool,action.args,action.id):{tool:action.tool,state:action.phase,receipt:action.receipt}
       }
-      const request:ModelRequest={role:'router',allowNativeTools:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Continue independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick tool or approval check, use one bounded action and report the observed outcome in the conversation. Do not start a durable goal, require a report file or request additional approvals to document the test unless the user explicitly asks. If a Worker is needed, delegate that single check. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')+(officeApps.length?'\nFor requests involving the connected '+officeApps.join(' or ')+' accounts, delegate to a root Chat Worker and ask it to inspect and use the connection via superagent_tools. Writes follow the current Chat approval mode.':'')
-          + (workspaceTool ? "\nFor work in the user’s workspace browser, directly use workspace_browser. It shares the actual tab with the user. Workers have separate browsers." : "")
+      const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?'\n'+permissionInstructions+' Effective mode: '+(permissionActor()?.mode??'ask')+'.\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Delegate independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick coordination or approval check, take one bounded action and report the observed outcome. Delegate actual tool tests as one bounded check. Create a durable goal or report file when the user requests one or the task requires it. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')+(officeApps.length?'\nFor requests involving the connected '+officeApps.join(' or ')+' accounts, delegate to a root Chat Worker and ask it to inspect and use the connection via superagent_tools. Writes follow the current Chat approval mode.':'')
+          + (workspaceTool ? "\nFor an explicit request about the actual shared browser tab, use one workspace_browser snapshot and, if needed, one short action. Treat the action's returned page as the receipt. Delegate research and longer browser work to Workers." : "")
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:auxiliaryDecision||permissionReceipt||fileReviewReceipt||replyPreferences?JSON.stringify({...JSON.parse(modelInput),auxiliaryDecision,permissionReceipt,fileReviewReceipt,replyPreferences}):modelInput,tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(withPendingNotice),
         onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
-          if(controller.signal.aborted)return
+          if(controller.signal.aborted||handoff?.yielded)return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
           catch(error){controller.abort(error);return}
@@ -1229,7 +1272,7 @@ export class Runtime {
         }}:{}),
         onThread:id=>this.store.put('router-session',sessionKey,{...previous,backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
-      const result=desktop?await this.desktopRouterTurn(request,triggerId,validateReplyContext):await this.runModel(request)
+      const result=desktop?await this.desktopRouterTurn(request,triggerId,validateReplyContext,handoff):await this.runModel(request,triggerId,handoff)
       controller.signal.throwIfAborted();candidates?.check()
       const quiet=followups?!followups.replied:!!candidates&&this.routerIngress.get(triggerId)?.state!=='accepted'
       if(candidates&&!quiet)for(const id of candidates.batch.triggerIds)authorityInputs.add(id)
@@ -1251,6 +1294,12 @@ export class Runtime {
           const saved=this.store.get<any>('router-session',sessionKey)
           this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
+        if(handoff?.yielded){
+          // An interrupted native tool turn may reject resume. Rebuild from the
+          // committed conversation and task state instead of replaying its tools.
+          const saved=this.store.get<Record<string,unknown>>('router-session',sessionKey)
+          this.store.put('router-session',sessionKey,{...saved,threadId:undefined,rebuildReason:'router_handoff'})
+        }
         if(output.reply.trim()&&trigger.channel&&this.proactive.notify(triggerId)){
           const id='router-reply:'+(messageId?bodyDigest([discussion,output.reply,[...readMessages].sort()]):job.id)
           const inputs=[...authorityInputs]
@@ -1264,7 +1313,7 @@ export class Runtime {
       candidates?.fail(error);this.chat.endOutput(job.id,controller.signal.aborted?'interrupted':'failed')
       if(error instanceof ContextBudgetExceeded||continuity?.reuse&&/thread[^\n]*not found|not found[^\n]*thread|unknown[^\n]*thread|conversation[^\n]*not found/i.test(String(error))){const saved=this.store.get<any>('router-session',sessionKey);if(saved)this.store.put('router-session',sessionKey,{...saved,signature:undefined,rebuildReason:error instanceof ContextBudgetExceeded?error.code:'native_session_unavailable'})}
       throw error
-    }finally{this.browser.endRouterTurn(triggerId);this.chat.endOutput(job.id);this.controllers.delete(key)}
+    }finally{unsubscribeHandoff?.();handoff?.dispose();this.browser.endRouterTurn(triggerId);this.chat.endOutput(job.id);this.controllers.delete(key)}
   }
   async scopeCommand(value:unknown):Promise<unknown>{
     if(['source.verify','identity.challenge','identity.link','identity.unlink'].includes((value as any)?.action))return new SourceIdentities(this.store,this.scopes,this.sources).command(value)

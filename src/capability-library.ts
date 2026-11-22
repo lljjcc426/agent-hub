@@ -105,18 +105,16 @@ function hostEntries(host:Runtime,owner:string,bridgeTools:CapabilityTool[]){
     const d=config.backends[id],native=nativeToolFor(d)
     const manifest=d?.kind==='plugin'?packages.get(d.plugin)?.manifest:undefined
     if(manifest&&supportsOpenCodeTools(manifest)){
-      const roles=[...(id===routerBackend&&router?.mode==='host'&&assigned(router,id,'tools')===undefined?['Router']:[]),
-        ...workers.filter(w=>w.backend===id&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,id,'tools')===undefined).map(w=>w.id)]
+      const roles=workers.filter(w=>w.backend===id&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,id,'tools')===undefined).map(w=>w.id)
       for(const name of openCodeTools(config.work.network,supportsOpenCodeTools(manifest,3)))put('CLI · '+id,name,{kind:'tool',name,status:roles.length?'conditional':'disabled',roles,version:manifest.version})
       continue
     }
-    const roles=[...(id===routerBackend&&router?.nativeTool===native?['Router']:[]),...workers.filter(w=>w.backend===id&&w.nativeTool===native&&w.state!=='paused'&&w.state!=='retiring').map(w=>w.id)]
+    const roles=workers.filter(w=>w.backend===id&&w.nativeTool===native&&w.state!=='paused'&&w.state!=='retiring').map(w=>w.id)
     if(native)put('CLI · '+id,native,{kind:'tool',name:native,status:roles.length?'conditional':'disabled',roles})
   }
   const eligible=[...backends].filter(id=>{const d=config.backends[id];return d&&isApiBackend(d)&&!d.images})
   if(eligible.length&&bundledCLI){
-    const roles=[...(router?.mode==='host'&&eligible.includes(routerBackend)&&assigned(router,routerBackend,'tools')===undefined?['Router']:[]),
-      ...workers.filter(w=>eligible.includes(w.backend)&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,w.backend,'tools')===undefined).map(w=>w.id)]
+    const roles=workers.filter(w=>eligible.includes(w.backend)&&w.state!=='paused'&&w.state!=='retiring'&&assigned(w,w.backend,'tools')===undefined).map(w=>w.id)
     for(const name of openCodeTools(config.work.network)){
       put('OpenCode harness',name,{kind:'tool',name,status:roles.length&&config.work.sandboxDriver!=='disabled'?'conditional':'disabled',roles,version:bundledCLI.cliVersion,facts:eligible.map(id=>config.backends[id]?.label??id)})
     }

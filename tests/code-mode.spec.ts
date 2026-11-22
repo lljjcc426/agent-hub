@@ -7,7 +7,7 @@ const spec=(name:string)=>({type:'function' as const,name,description:name,input
 }})
 const reply=(text:string)=>({success:true,contentItems:[{type:'inputText' as const,text}]})
 const request=(extra:Partial<ModelRequest>={}):ModelRequest=>({
-  cwd:process.cwd(),input:'fixture',instructions:'',schema:{},role:'router',managed:true,allowNativeTools:true,
+  cwd:process.cwd(),input:'fixture',instructions:'',schema:{},role:'router',managed:true,coordinationTurn:true,
   tools:[spec('router_read'),spec('write_marker'),spec('chat_opening')],
   onTool:async(_name,args)=>reply(JSON.stringify(args)),
   ...extra,

@@ -74,8 +74,9 @@ For an account with a dedicated external Chromium, the host configuration can se
 `browser.workspace` to an object containing the account's `owner` UUID and a
 loopback `cdpPort`. The external service owns the browser profile and must keep
 it on persistent storage. Restrict its debugging endpoint to the local host.
-The built-in Chat opens that browser for the account and exposes
-`workspace_browser` to its Router. Taking control suspends Router input.
+The built-in Chat lets the Router use this exact tab on request. Each Router
+turn can read one snapshot and perform one short action. Workers use their
+task browsers for longer browsing. Taking control suspends Router input.
 Returning control after a requested takeover continues the original conversation
 in the same tab. An AgentHub restart reconnects to the external browser.
 Before stopping the external service, close Chromium gracefully so it can flush

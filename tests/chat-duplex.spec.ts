@@ -1,4 +1,4 @@
-import {afterEach,expect,it} from 'vitest'
+import {afterEach,expect,it,vi} from 'vitest'
 import {mkdtempSync,rmSync,readFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -6,6 +6,7 @@ import {randomUUID} from 'node:crypto'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
+import {RouterHandoff} from '../src/router-handoff.ts'
 import type {ModelRequest} from '../src/model.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[]
@@ -15,7 +16,7 @@ async function settle(h:Runtime,done:()=>boolean){for(let i=0;i<500;i++){await h
 function fixture(run:(r:ModelRequest)=>Promise<unknown>,scoped=false){
  const root=mkdtempSync(join(tmpdir(),'chat-duplex-'));roots.push(root)
  const config=configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled'},execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'research',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]})
- const calls:ModelRequest[]=[],model={async run(r:ModelRequest){calls.push(r);const threadId=r.threadId??randomUUID();r.onThread?.(threadId);return {threadId,turnId:randomUUID(),text:JSON.stringify(await run(r))}}}
+ const calls:ModelRequest[]=[],model={async run(r:ModelRequest){calls.push(r);const threadId=r.threadId??randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId);return {threadId,turnId,text:JSON.stringify(await run(r))}}}
  const h=new Runtime(config,{model});hosts.push(h)
  if(scoped)h.scopes.command({action:'scope.put',operationId:'external',expectedRevision:0,scope:{id:'external',tenantId:'external',name:'External',managers:[JSON.stringify(['local','operator'])],workerIds:['research'],backendIds:['codex'],sourceIds:['local']}})
  const c=h.chat.create('local-operator')
@@ -82,6 +83,73 @@ it('keeps its Worker running during further conversation and reports completion 
  expect(f.view().workers[0]!.tasks[0]!.state).toBe('completed')
  expect(f.view().messages.filter(m=>m.role==='user')).toHaveLength(2)
  expect(f.h.store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state='failed'").get()!.n).toBe(0)
+})
+
+it('ends a stalled Router reply after a confirmed assignment and answers the next message while the Worker runs',async()=>{
+ const work=gate(),router=gate()
+ let assigned=false,worker:ModelRequest|undefined
+ const f=fixture(async request=>{
+  if(request.role==='worker'){
+   worker=request
+   await work.wait
+   return {state:'ready',summary:'Verified',reply:'Investigation complete',question:null,askedBy:null,handbacks:[]}
+  }
+  const input=JSON.parse(request.input)
+  if(input.kind==='worker_result')return {reply:'排查完成。'}
+  const call=(name:string,args:unknown)=>request.onTool!(name,args,randomUUID())
+  if(input.trigger.text==='你有在看吗'){
+   const receipt=await call('worker_manage',{action:'list'})
+   expect(JSON.parse(receipt.contentItems[0]!.text!).workers[0].status).toBe('running')
+   return {reply:'在，Worker 正在查。'}
+  }
+  const receipt=await call('worker_manage',{action:'assign',revision:0,requestId:'long-research',id:'research',text:'Investigate the issue'})
+  expect(JSON.parse(receipt.contentItems[0]!.text!)).toMatchObject({ticketId:expect.any(String),status:'queued'})
+  assigned=true
+  const signal=request.signal!
+  const stopped=new Promise<void>(resolve=>signal.addEventListener('abort',()=>resolve(),{once:true}))
+  await Promise.race([stopped,router.wait])
+  signal.throwIfAborted()
+  return {reply:'Late reply'}
+ },true)
+ const first=f.send('查一下这个问题')
+ try{
+  await settle(f.h,()=>assigned&&!!worker)
+  f.send('你有在看吗')
+  await settle(f.h,()=>f.view().messages.some(message=>message.text==='在，Worker 正在查。'))
+  expect(f.view().messages.filter(message=>!message.recipient).map(message=>message.text)).toEqual([
+   '查一下这个问题','你有在看吗','已交给 research 处理。','在，Worker 正在查。',
+  ])
+  expect(f.h.store.get('router-result','router:'+first.runId)).toMatchObject({reply:'已交给 research 处理。'})
+  expect(f.calls[0]!.signal!.aborted).toBe(true)
+  const followup=f.calls.find(request=>request.role==='router'&&JSON.parse(request.input).trigger?.text==='你有在看吗')!
+  expect(followup.threadId).toBeUndefined()
+  expect(JSON.parse(followup.input).continuity.history.map((event:{text:string})=>event.text)).toContain('已交给 research 处理。')
+  expect(worker!.signal!.aborted).toBe(false)
+  expect(f.view().workers[0]!.tasks.map(task=>task.state)).toEqual(['running'])
+ }finally{router.release();work.release()}
+ await settle(f.h,()=>f.view().messages.some(message=>message.text==='排查完成。'))
+ expect(f.calls.filter(request=>request.role==='worker')).toHaveLength(1)
+})
+
+it('finishes the active tool receipt before retiring the Router writer',async()=>{
+ vi.useFakeTimers()
+ const parent=new AbortController(),handoff=new RouterHandoff(parent.signal,false),effect=gate()
+ const receipt={success:true,contentItems:[]}
+ const admitted=handoff.tool(async()=>{await effect.wait;return receipt})
+ handoff.record('Research',false)
+ try{
+  await vi.advanceTimersByTimeAsync(6000)
+  expect(handoff.signal.aborted).toBe(false)
+  const next=vi.fn(async()=>receipt)
+  expect((await handoff.tool(next)).success).toBe(false)
+  expect(next).not.toHaveBeenCalled()
+  effect.release()
+  expect(await admitted).toEqual(receipt)
+  await vi.runAllTimersAsync()
+  expect(handoff.yielded).toBe(true)
+  expect(parent.signal.aborted).toBe(false)
+  expect(handoff.reply()).toBe('I sent your follow-up to Research.')
+ }finally{effect.release();handoff.dispose();vi.useRealTimers()}
 })
 
 it('accepts consecutive HTTP messages while preserving authentication and conversation ownership',async()=>{

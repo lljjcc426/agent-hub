@@ -40,6 +40,15 @@ export const githubReadSpec:ToolSpec={
  inputSchema:z.toJSONSchema(githubReadSchema,{target:'draft-07'}),
 }
 
+export const routerGithubReadSchema=githubReadSchema.pick({repository:true,ref:true,number:true,locale:true,query:true})
+ .extend({action:z.enum(['overview','pull','issue','checks','branch']).optional()})
+
+export const routerGithubReadSpec:ToolSpec={
+ type:'function',name:githubReadSpec.name,
+ description:'One quick GitHub overview or status check per Router turn. Use overview for a named repository, pull or issue by number, or checks or branch by ref. Delegate file reads, comparisons, research and follow-up checks to a Worker with worker_manage.',
+ inputSchema:z.toJSONSchema(routerGithubReadSchema,{target:'draft-07'}),
+}
+
 const api='https://api.github.com/'
 const web='https://github.com/'
 type Json=Record<string,any>

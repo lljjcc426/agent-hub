@@ -16,6 +16,7 @@ import type {WorkOwner} from './work.ts'
 import type {ToolContent} from './model.ts'
 import type {ToolConnection} from './connector-config.ts'
 import {officeAppKinds,type AppToolGrant,type OfficeMcp} from './office-mcp.ts'
+import {abortable} from './abortable.ts'
 
 interface Receipt {id:string;ticketId:string;agentId?:string;connection:string;tool:string;fingerprint:string;state:'running'|'complete'|'uncertain';result?:any;reason?:string}
 type ToolResult={success:boolean;contentItems:ToolContent[]}
@@ -26,14 +27,6 @@ const schemas:jsonSchemaValidator={getValidator<T>(schema:JsonSchemaType){
   const validate=validator.compile(schema)
   return (input:unknown)=>validate(input)?{valid:true as const,data:input as T,errorMessage:undefined}:{valid:false as const,data:undefined,errorMessage:validator.errorsText(validate.errors)}
 }}
-function abortable<T>(promise:Promise<T>,signal?:AbortSignal):Promise<T>{
-  if(!signal)return promise
-  signal.throwIfAborted()
-  return new Promise((resolve,reject)=>{
-    const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true})
-    promise.then(value=>{signal.removeEventListener('abort',abort);resolve(value)},error=>{signal.removeEventListener('abort',abort);reject(error)})
-  })
-}
 // Only host-owned types/status metadata are inspected. SDK messages may include
 // provider response bodies; never carry them (including as Error.cause) outward.
 function toolFailure(operation:Operation,error:unknown,signal?:AbortSignal){

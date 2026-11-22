@@ -1,4 +1,5 @@
 import {browserCapacity} from './execution-limits.ts'
+import {abortable} from './abortable.ts'
 import { randomUUID, createHash } from "node:crypto";
 import { mkdirSync, rmSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -747,31 +748,34 @@ export class BrowserManager {
       s.routerConversation = undefined;
     }
   }
-  async routerAction(user: string, conversation: string, turn: string, input: unknown, valid: () => void) {
+  async routerAction(user: string, conversation: string, turn: string, input: unknown, valid: () => void, deadline?:AbortSignal) {
     const action = workspaceAction(input);
+    deadline?.throwIfAborted();
     valid();
-    const s = await this.workspaceSession(user);
+    const s = await abortable(this.workspaceSession(user),deadline);
+    const signal = deadline ? AbortSignal.any([s.controller.signal,deadline]) : s.controller.signal;
     const epoch = s.epoch;
     const guard = () => {
+      signal.throwIfAborted();
       valid();
       if (s.closing || s.control !== "router" || s.epoch !== epoch)
         throw new BrowserError("browser_control_required", "The user has control. Wait for them to return the workspace browser.");
       if (s.routerTurn && s.routerTurn !== turn)
         throw new BrowserError("browser_control_busy", "Another Router turn is using this browser.");
     };
-    return this.enqueue(s, async () => {
+    return abortable(this.enqueue(s, async () => {
       guard();
       s.routerTurn = turn;
       s.routerConversation = conversation;
       s.conversationId = conversation;
       if (action.action === "request_takeover") this.pauseWorkspace(s);
-      await this.perform(s, action, guard);
+      await this.perform(s, action, guard, false, signal);
       if (action.action === "request_takeover") return this.view(s);
       guard();
-      const page = await this.snapshot(s);
+      const page = await this.snapshot(s,signal);
       guard();
       return page;
-    });
+    }),deadline);
   }
   async openDefault(user:string,client:string,conversationId:string) {
     if (this.workspaceEnabled(user)) {
@@ -1011,9 +1015,8 @@ export class BrowserManager {
     });
   }
 
-  private async perform(s: Session, input: BrowserAction, guard: () => void, download = false) {
+  private async perform(s: Session, input: BrowserAction, guard: () => void, download = false, signal = s.controller.signal) {
     guard();
-    const signal = s.controller.signal;
     const tab=s.tabs.find(item=>item.active)?.id,epoch=s.epoch
     let downloaded: {name:string} | undefined;
     if (
@@ -1104,11 +1107,11 @@ export class BrowserManager {
     await this.capture(s, signal);
     return downloaded;
   }
-  private async snapshot(s: Session) {
+  private async snapshot(s: Session, signal = s.controller.signal) {
     const result = await this.driverFor(s).run(
       s,
       ["snapshot"],
-      s.controller.signal,
+      signal,
     );
     s.revision++;
     let text = String(result.snapshot ?? "");

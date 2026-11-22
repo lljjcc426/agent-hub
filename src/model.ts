@@ -37,7 +37,9 @@ export interface ModelRequest {
   /** Host classification for calls whose failure cannot leave an unknown write. */
   isReadOnlyTool?:(name:string)=>boolean
   workerMcp?:{command:string;args:string[]}
-  /** Set only on foreground coordination and assigned Worker turns. */
+  /** A regular host Router turn can use the managed harness and compose authorized host tools. */
+  coordinationTurn?:boolean
+  /** Grants native tools only on assigned execution turns. */
   allowNativeTools?:boolean
   /** A human Chat turn presents a model-authored opening before its first tool effects. */
   requiresChatOpening?:boolean

@@ -24,7 +24,7 @@ export const codeModeTool = {
 
 /** Each cell receives only this activation's authorized tool descriptors and dispatcher. */
 export function withCodeMode(request: ModelRequest, maxToolCalls = request.options?.maxToolCalls ?? modelToolCalls.default): ModelRequest {
-  if(!request.managed || !request.allowNativeTools || request.ephemeral || request.role==='subagent' ||
+  if(!request.managed || !(request.coordinationTurn || request.allowNativeTools) || request.ephemeral || request.role==='subagent' ||
     !request.onTool || !request.tools?.length || request.options?.tools && !request.options.tools.includes(codeModeTool.name))return request
   const tools=request.tools.filter(t=>t.name!==codeModeTool.name&&t.name!=='chat_opening')
   const original=request.onTool

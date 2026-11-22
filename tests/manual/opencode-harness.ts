@@ -4,6 +4,7 @@ import {createServer} from 'node:http'
 import {constants,copyFileSync,mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,realpathSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
+import {randomUUID} from 'node:crypto'
 import {Runtime} from '../../src/runtime.ts'
 import {configSchema} from '../../src/config.ts'
 import {Store} from '../../src/store.ts'
@@ -17,6 +18,9 @@ const root=realpathSync(mkdtempSync(join(tmpdir(),'roppo-harness-')))
 const cwd=join(root,'task'),file=join(cwd,'endpoint.txt'),created=join(cwd,'native-result.txt')
 mkdirSync(cwd);writeFileSync(file,'old-address\n')
 let step=0,router=false,writes=0,runtimeTask=false,subscription=false,hostRouter=false,direct=false
+let stalledRouter=false,closedRouterRequest=false,waitingWorker=false
+let finishWorker!:()=>void
+const workerCompletion=new Promise<void>(resolve=>{finishWorker=resolve})
 const protocols=new Set<string>()
 const events:string[]=[],errors:string[]=[]
 const sequence=[['glob',{pattern:'*.txt'}],['grep',{pattern:'old-address'}],['read',{filePath:'endpoint.txt'}],['edit',{filePath:'endpoint.txt',oldString:'old-address',newString:'new-address'}],['write',{filePath:'native-result.txt',content:'native output\n'}],['bash',{command:'pwd',description:'Read the task directory'}],['roppo_superagent_shell',{command:'grep -Fx new-address endpoint.txt',requestId:'verify-endpoint'}]] as const
@@ -55,7 +59,10 @@ const server=createServer(async(req,res)=>{
    const anthropic=path.endsWith('/messages')
    if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
    else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
-   if(input.tools?.length){for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert(input.tools.some((t:any)=>t.name===name),name)}
+   if(input.tools?.length){
+    const names=input.tools.map((t:any)=>t.name)
+    for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert.equal(names.includes(name),!subscription,name)
+   }
    if(modelFailure&&input.tools?.length){
     const status=modelFailure==='auth_required'?401:429
     res.writeHead(status,{'content-type':'application/json',...(modelFailure==='rate_limited'?{'retry-after':'7'}:{})})
@@ -115,25 +122,63 @@ const server=createServer(async(req,res)=>{
    res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message}]}));return
   }
   const hasTools=names.length>0
+  if(hostRouter){
+   const previous=input.messages.at(-1)
+   const coordinator=names.includes('roppo_worker_manage')
+   const text=JSON.stringify(previous)
+   let reply:string|undefined,next:readonly [string,Record<string,unknown>]|undefined,callId:string|undefined
+   if(coordinator){
+    for(const tool of ['read','bash','grep','websearch','webfetch'])assert(!names.includes(tool),tool)
+    if(previous?.role==='tool'&&previous.tool_call_id==='router-handoff'){
+     assert(text.includes('queued'))
+     stalledRouter=true
+     res.writeHead(200,{'content-type':'text/event-stream'}).flushHeaders()
+     res.once('close',()=>{closedRouterRequest=true})
+     return
+    }
+    if(text.includes('worker_result'))reply='The endpoint check is complete.'
+    else if(text.includes('Are you looking?')){
+     assert(stalledRouter&&waitingWorker)
+     assert(text.includes('I assigned this to one.'))
+     reply='The Worker is still checking.'
+    }else{
+     assert(text.includes('Check endpoint.txt'))
+     next=['roppo_worker_manage',{action:'assign',revision:0,requestId:'endpoint-check',id:'one',text:'Read endpoint.txt and report what it contains.'}]
+     callId='router-handoff'
+    }
+   }else{
+    assert(names.includes('read'))
+    if(previous?.role!=='tool'){
+     next=['read',{filePath:'endpoint.txt'}];callId='worker-read'
+    }else{
+     assert(text.includes('new-address'))
+     waitingWorker=true
+     await workerCompletion
+    }
+   }
+   res.writeHead(200,{'content-type':'text/event-stream'})
+   const send=(delta:unknown,finish_reason:string|null)=>res.write('data: '+JSON.stringify({id:'chat-fixture',object:'chat.completion.chunk',created:1,model:input.model,choices:[{index:0,delta,finish_reason}]})+'\n\n')
+   if(next)send({role:'assistant',tool_calls:[{index:0,id:callId,type:'function',function:{name:next[0],arguments:JSON.stringify(next[1])}}]},null)
+   else send({role:'assistant',content:reply?JSON.stringify({reply}):report},null)
+   send({},next?'tool_calls':'stop');res.end('data: [DONE]\n\n');return
+  }
   if(hasTools){
    for(const name of ['read','write','edit','bash','task','websearch','webfetch','todowrite'])assert(names.includes(name),name)
    const previous=input.messages.at(-1)
    if(previous?.role==='tool'){
     if((previous.tool_call_id==='call-1'||previous.tool_call_id==='call-2')&&!router)assert(JSON.stringify(previous.content).includes('endpoint.txt'))
     if(previous.tool_call_id==='call-6'&&!router)assert(JSON.stringify(previous.content).includes(cwd))
-    if(hostRouter)assert(JSON.stringify(previous.content).includes('new-address'))
     assert(!/Tool unavailable|Outside the task|permission.*denied|file not found|Error:/i.test(JSON.stringify(previous.content)),JSON.stringify(previous.content))
    }
   }
   let next:readonly [string,Record<string,unknown>]|undefined
-  if(hasTools&&hostRouter&&step++===0)next=['read',{filePath:'endpoint.txt'}]
-  else if(hasTools&&!router)next=sequence[step++]
+  if(hasTools&&!router)next=sequence[step++]
   if(next)assert(names.includes(next[0]),next[0]+' missing from '+names)
   const id='answer-'+step
   res.writeHead(200,{'content-type':'text/event-stream'})
   const send=(delta:unknown,finish_reason:string|null)=>res.write('data: '+JSON.stringify({id,object:'chat.completion.chunk',created:1,model:input.model,choices:[{index:0,delta,finish_reason}]})+'\n\n')
   if(next)send({role:'assistant',tool_calls:[{index:0,id:'call-'+step,type:'function',function:{name:next[0],arguments:JSON.stringify(next[1])}}]},null)
-  else send({role:'assistant',content:hostRouter?JSON.stringify({reply:'The file contains new-address.'}):runtimeTask?report:answer},null)
+  else send({role:'assistant',content:runtimeTask?report:answer},null)
   send({},next?'tool_calls':'stop');res.end('data: [DONE]\n\n')
  }catch(error){errors.push(String(error));res.writeHead(400).end()}
 })
@@ -179,14 +224,14 @@ try{
  assert.equal(writes,0)
  await registry.purge(interrupted,cwd)
  router=true
- await registry.run({...request,role:'router',sandbox:'read-only',activity:{sourceId:'local'},input:'Inspect the result.'})
+ await registry.run({...request,sandbox:'read-only',input:'Inspect the result.'})
  await registry.purge(result.threadId,cwd)
  for(const kind of ['anthropic','openai-responses'] as const){
   const api=config.backends.api!;assert(api.kind==='openai-chat');config.backends[kind]={...api,kind}
   config.execution.router!.backend=kind
   checkParallelFetch=kind==='openai-responses'
   const batches:NativeToolBatch[]=[]
-  const response=await registry.run({...request,role:'router',sandbox:'read-only',backendId:kind,activity:{sourceId:'local'},input:'Respond with the requested JSON.',webEvidenceQuery:'Find evidence about conditional cache requests.',onNativeToolBatch:batch=>batches.push(batch)})
+  const response=await registry.run({...request,sandbox:'read-only',backendId:kind,input:'Respond with the requested JSON.',webEvidenceQuery:'Find evidence about conditional cache requests.',onNativeToolBatch:batch=>batches.push(batch)})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
   if(checkParallelFetch){
    const timings=[...webRequests.values()]
@@ -232,7 +277,7 @@ try{
  subscription=true
  globalThis.fetch=(target,options)=>originalFetch(String(target)==='https://api.openai.com/v1/responses'?url+'/responses':target,options)
  try{
-  const response=await registry.run({...request,role:'router',backendId:'plan',sandbox:'read-only',principal:{source:'local',actor:'alice'}})
+  const response=await registry.run({...request,role:'router',allowNativeTools:undefined,coordinationTurn:true,backendId:'plan',sandbox:'read-only',principal:{source:'local',actor:'alice'}})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
  }finally{globalThis.fetch=originalFetch;subscription=false}
  assert.deepEqual([...protocols].sort(),['/v1/chat/completions','/v1/messages','/v1/responses'])
@@ -263,16 +308,29 @@ try{
  }
  direct=false
  hostRouter=true;router=true;step=0
- const coordinator=await Runtime.create(configSchema.parse({...normalConfig,stateDir:join(root,'router-state'),execution:{...normalConfig.execution,router:{mode:'host',backend:'api',model:'sample'}}}))
+ const coordinator=await Runtime.create(configSchema.parse({...normalConfig,stateDir:join(root,'router-state'),execution:{...normalConfig.execution,router:{mode:'host',backend:'api',model:'sample'},management:{enabled:true}}}))
  try{
-  coordinator.receive('local','alice',{id:'inspect-endpoint',thread:'router-discussion',text:'Read endpoint.txt and tell me its contents.',addressed:true})
-  const deadline=Date.now()+60000
-  while(Date.now()<deadline&&!coordinator.store.deliveries().some(d=>d.status==='sent'&&JSON.stringify(d).includes('The file contains new-address.'))){await coordinator.tick();await new Promise(ok=>setTimeout(ok,100))}
-  const reply=coordinator.store.deliveries().find(d=>d.status==='sent'&&JSON.stringify(d).includes('The file contains new-address.'))
-  assert(reply,JSON.stringify(coordinator.store.deliveries()).slice(-1200));assert(JSON.stringify(reply).includes('router-discussion'))
-  assert(coordinator.activity.list().some(c=>c.name==='opencode/read'&&c.state==='completed'))
- }finally{await coordinator.close()}
- assert.deepEqual(errors,[]);console.log('PASS: native file tools, automatic engine selection, read-only Router, restart, interruption after edit, purge, three protocols, synthetic subscription, Runtime-managed shell and delivery')
+  const owner='alice',chat=coordinator.chat.create(owner)
+  const send=(text:string)=>coordinator.chat.send(chat.id,owner,{clientMessageId:randomUUID(),text,locale:'en'})
+  const view=()=>coordinator.chat.view(chat.id,owner)
+  const tickUntil=async(done:()=>boolean)=>{
+   const deadline=Date.now()+18000
+   while(!done()&&Date.now()<deadline){await coordinator.tick();await new Promise(ok=>setTimeout(ok,40))}
+   assert(done(),JSON.stringify({messages:view().messages.map(m=>m.text),errors}))
+  }
+  send('Check endpoint.txt')
+  await tickUntil(()=>stalledRouter&&waitingWorker)
+  const followupAt=Date.now()
+  send('Are you looking?')
+  await tickUntil(()=>view().messages.some(m=>m.text==='The Worker is still checking.'))
+  assert(closedRouterRequest)
+  assert.deepEqual(view().workers[0]!.tasks.map(t=>t.state),['running'])
+  console.log(JSON.stringify({scenario:'Router handoff with a stalled provider response',followupMs:Date.now()-followupAt,workerStillRunning:true}))
+  finishWorker()
+  await tickUntil(()=>view().messages.some(m=>m.text==='The endpoint check is complete.'))
+  assert(coordinator.activity.list().some(c=>c.name==='opencode/read'&&c.kind==='tool'&&c.state==='completed'&&c.workerId==='one'))
+ }finally{finishWorker();await coordinator.close()}
+ assert.deepEqual(errors,[]);console.log('PASS: native Worker tools, automatic engine selection, Router handoff, restart, interruption after edit, purge, three protocols, synthetic subscription, Runtime-managed shell and delivery')
 }catch(error){console.error({root,step,events,errors});throw error}
 finally{store.close();server.closeAllConnections();server.close();delete process.env.ROPPO_FIXTURE_HARNESS_KEY}
 rmSync(root,{recursive:true,force:true})

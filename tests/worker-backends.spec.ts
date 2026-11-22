@@ -33,7 +33,7 @@ it('uses separate Router and Worker models across all three API protocols and re
  }finally{await host.close();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));rmSync(root,{recursive:true,force:true})}
 })
 
-it('selects the live native grant for each managed role and drops it on revocation or auxiliary turns',async()=>{
+it('selects the native grant for the assigned Worker only',async()=>{
  const config=configSchema.parse({sources:[{id:'local',kind:'local',cwd:tmpdir(),allowedActors:['operator']}],execution:{
   router:{mode:'host',nativeTool:'cached-web-search'},workers:[{id:'one',backend:'codex',nativeTool:'cached-web-search'},{id:'two',backend:'codex'}]
  }})
@@ -46,13 +46,13 @@ it('selects the live native grant for each managed role and drops it on revocati
   return model.mock.lastCall![0].nativeTool
  }
  try{
-  expect(await selected({})).toBe('cached-web-search')
+  expect(await selected({})).toBeUndefined()
   expect(await selected({role:'worker',activity:{workerId:'one',sourceId:'group'}})).toBe('cached-web-search')
   expect(await selected({role:'worker',activity:{workerId:'two'},nativeTool:'cached-web-search'})).toBeUndefined()
   expect(await selected({role:'subagent',activity:{workerId:'one'}})).toBeUndefined()
   expect(await selected({ephemeral:true})).toBeUndefined()
   expect(await selected({allowNativeTools:false})).toBeUndefined()
-  delete config.execution.router!.nativeTool
-  expect(await selected({threadId:'existing'})).toBeUndefined()
+  delete config.execution.workers![0]!.nativeTool
+  expect(await selected({role:'worker',activity:{workerId:'one'},threadId:'existing'})).toBeUndefined()
  }finally{model.mockRestore()}
 })

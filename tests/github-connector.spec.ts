@@ -20,10 +20,11 @@ afterEach(async()=>{
  vi.unstubAllGlobals()
 })
 const json=(value:unknown,status=200)=>Response.json(value,{status})
-const hostFor=(model:Model)=>{
+const hostFor=(model:Model,withWorker=false)=>{
  const root=mkdtempSync(join(tmpdir(),'roppo-github-test-'))
  const host=new Runtime(configSchema.parse({stateDir:join(root,'state'),port:0,work:{sandboxDriver:'disabled',autoRecover:false},
-  execution:{router:{mode:'host'}},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]}),{model})
+  execution:{router:{mode:'host'},...(withWorker?{management:{enabled:true},workers:[{id:'research',backend:'codex'}]}:{})},
+  sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]}),{model})
  cleanups.push(async()=>{await host.close();rmSync(root,{recursive:true,force:true})})
  return host
 }
@@ -111,7 +112,7 @@ it('honors the later exhausted-quota reset and accepts an HTTP-date Retry-After'
  expect(githubRateLimitDelay(new Headers({'retry-after':retry,'x-ratelimit-remaining':'5','x-ratelimit-reset':reset}),now)).toBe(30)
 })
 
-it('uses a previously saved token across repositories and lets GitHub deny inaccessible ones',async()=>{
+it('delegates comparisons with the saved token and answers a new Chat message while the Worker runs',async()=>{
  const outbound:string[]=[]
  vi.stubGlobal('fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
   const url=new URL(String(input))
@@ -121,21 +122,50 @@ it('uses a previously saved token across repositories and lets GitHub deny inacc
   return json(comparison([comparedFile]))
  })
  const receipts:unknown[]=[]
+ let releaseWorker!:()=>void
+ const workerGate=new Promise<void>(resolve=>{releaseWorker=resolve})
+ let workerStarted=false
  const host=hostFor({async run(request){
   const threadId=request.threadId??randomUUID(),turnId=randomUUID()
   request.onThread?.(threadId);request.onTurn?.(turnId)
-  await request.onTool!('chat_opening',{text:'I will compare the two commits.'},randomUUID())
-  receipts.push(output(await request.onTool!('github_read',compare,randomUUID())))
-  receipts.push(output(await request.onTool!('github_read',{...compare,repository:'fixture/other'},randomUUID())))
-  receipts.push(output(await request.onTool!('github_read',{...compare,repository:'fixture/inaccessible'},randomUUID())))
-  return {threadId,turnId,text:'{"reply":"Compared."}'}
- }})
+  const call=(name:string,args:unknown)=>request.onTool!(name,args,randomUUID())
+  if(request.role==='worker'){
+   workerStarted=true
+   await workerGate
+   receipts.push(output(await call('github_read',compare)))
+   receipts.push(output(await call('github_read',{...compare,repository:'fixture/other'})))
+   receipts.push(output(await call('github_read',{...compare,repository:'fixture/inaccessible'})))
+   return {threadId,turnId,text:JSON.stringify({state:'ready',summary:'Compared commits',reply:'Compared.',question:null,askedBy:null,handbacks:[]})}
+  }
+  const input=JSON.parse(request.input)
+  if(input.kind!=='user_message')return {threadId,turnId,text:'{"reply":""}'}
+  if(input.trigger.text==='你有在看吗')return {threadId,turnId,text:'{"reply":"在，Worker 正在比较提交。"}'}
+  expect(request.coordinationTurn).toBe(true)
+  expect(request.allowNativeTools).toBeUndefined()
+  await call('chat_opening',{text:'I will ask the Worker to compare the two commits.'})
+  expect(output(await call('github_read',compare))).toMatchObject({code:'worker_required'})
+  const assignment=await call('worker_manage',{action:'assign',id:'research',revision:0,requestId:'comparison',text:'Compare the two fixture commits'})
+  expect(output(assignment)).toHaveProperty('ticketId')
+  return {threadId,turnId,text:'{"reply":"Assigned the comparison."}'}
+ }},true)
  legacyConnection(host)
  const outside=await host.github.read(compare,false,()=>{})
  expect(output(outside).status).toBe('access_denied')
  const chat=host.chat.create('owner')
- host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'Compare the commits.',openingLocale:'en'})
- for(let i=0;i<80&&receipts.length<3;i++){await host.tick();await delay(5)}
+ const view=()=>host.chat.view(chat.id,'owner')
+ const waitUntil=async(done:()=>boolean)=>{
+  for(let i=0;i<150;i++){await host.tick();if(done())return;await delay(5)}
+  throw Error('Chat did not settle')
+ }
+ try{
+  host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'Compare the commits.',openingLocale:'en'})
+  await waitUntil(()=>workerStarted&&view().messages.some(message=>message.text==='Assigned the comparison.'))
+  host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'你有在看吗',openingLocale:'zh-CN'})
+  await waitUntil(()=>view().messages.some(message=>message.text==='在，Worker 正在比较提交。'))
+  expect(view().workers[0]?.tasks[0]?.state).toBe('running')
+  expect(outbound).toEqual([])
+ }finally{releaseWorker()}
+ await waitUntil(()=>receipts.length===3)
  expect(receipts).toEqual([
   expect.objectContaining({repository,files:[expect.objectContaining({patch})]}),
   expect.objectContaining({repository:'fixture/other',files:[expect.objectContaining({patch})]}),
@@ -256,7 +286,6 @@ it('connects with a token alone, writes across repositories and never repeats an
    const path=url.pathname
    if(path==='/user')return json({login:'fixture-user'})
    if(path==='/repos/'+repository)return json({full_name:repository,default_branch:'main'})
-   if(path.endsWith('/contents/gone'))return json({},404)
    if(path.endsWith('/branches/main'))return json({name:'main',commit:{sha}})
    if(path.endsWith('/pulls/1/merge')){
     expect(JSON.parse(String(init?.body))).toMatchObject({sha,merge_method:'squash'})
@@ -293,10 +322,11 @@ it('connects with a token alone, writes across repositories and never repeats an
   await call('chat_opening',{text:'I will check the repository.'})
   const program=[
    'const a=await tools.github_read({repository:"fixture/project",action:"files",paths:["gone"]});',
-   'const b=await tools.github_read({repository:"fixture/project",action:"branch",ref:"main"});',
-   'return [a.success,b.success];',
+   'const [b,c]=await Promise.all(["main","another"].map(ref=>tools.github_read({repository:"fixture/project",action:"branch",ref})));',
+   'return [a.success,b.success,JSON.parse(c.contentItems[0].text).code];',
   ].join('')
   observed.push(output(await call('code_mode',{source:program})))
+  observed.push(output(await call('github_read',{repository,action:'pull',number:2})))
   const comment={repository,action:'comment',number:1,body:'test'}
   observed.push(output(await call('github_write',comment)))
   observed.push(output(await call('github_write',{...comment,repository:'https://github.com/Fixture/Project'})))
@@ -324,7 +354,7 @@ it('connects with a token alone, writes across repositories and never repeats an
  }
  expect(host.chat.view(chat.id,'owner').run?.state).toBe('completed')
  expect(observed).toEqual([
-  [false,true],expect.objectContaining({status:'uncertain'}),
+  [false,true,'worker_required'],expect.objectContaining({code:'worker_required'}),expect.objectContaining({status:'uncertain'}),
   expect.objectContaining({status:'uncertain'}),expect.objectContaining({repository:'fixture/other',status:'complete',sha:mergeSha}),
  ])
  expect(comments).toBe(1)

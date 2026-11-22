@@ -152,12 +152,13 @@ export class BackendRegistry implements Model {
   const options=boundedBackendOptions(id,definition,r.options??(role==='router'?this.config.execution.router:undefined),this.config.turnTimeoutMs)
   const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
   const profileBackend=profile?.backend??this.selected(role)
-  const {allowNativeTools,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
-  const managedNative=allowNativeTools===true&&r.managed===true&&!r.ephemeral
-  const hostedTurn=managedNative&&role!=='subagent'
-  const subagentWeb=managedNative&&role==='subagent'&&!r.operator&&this.config.work.network&&
+  const {allowNativeTools,coordinationTurn,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
+  const managed=r.managed===true&&!r.ephemeral
+  const coordinator=managed&&role==='router'&&coordinationTurn===true
+  const nativeWorker=managed&&role==='worker'&&allowNativeTools===true
+  const subagentWeb=managed&&role==='subagent'&&allowNativeTools===true&&!r.operator&&this.config.work.network&&
    options.tools===undefined&&!!r.onTool&&!!r.tools?.length
-  const interactive=hostedTurn&&r.onTool&&r.tools?.length
+  const interactive=nativeWorker&&r.onTool&&r.tools?.length
   const granted=profileBackend===id&&profile?.nativeTool===nativeToolFor(definition)?profile?.nativeTool:undefined
   r=interactive&&granted?{...activation,nativeTool:granted,instructions:r.instructions+'\nThe operator grants the native CLI '+granted+' tool for this task.'}:activation
   if(definition.kind!=='codex'&&definition.kind!=='plugin'&&definition.subscription){
@@ -166,10 +167,10 @@ export class BackendRegistry implements Model {
   }
   const previous=r.threadId?this.store.get<Binding>('backend-binding',r.threadId):undefined
   // The bundled text harness requires a managed sandbox. Vision connections retain the image-capable API executor.
-  const eligible=(hostedTurn||subagentWeb)&&bundledCLI&&isApiBackend(definition)&&!definition.images
+  const eligible=(coordinator||nativeWorker||subagentWeb)&&bundledCLI&&isApiBackend(definition)&&!definition.images
   let engineId=previous?.harness
   if(!r.threadId&&eligible&&await this.presetSandboxAvailable())engineId=bundledEngineId
-  if((hostedTurn||subagentWeb)&&(engineId||definition.kind==='plugin'&&definition.plugin==='opencode-cli'))r={...r,allowNativeTools:true}
+  if((nativeWorker||subagentWeb)&&(engineId||definition.kind==='plugin'&&definition.plugin==='opencode-cli'))r={...r,allowNativeTools:true}
   if(r.threadId&&this.writers.has(r.threadId))throw Error('Backend thread already has an active writer')
   let locked=r.threadId;if(locked)this.writers.add(locked)
   const binding=this.binding(id)
@@ -190,7 +191,7 @@ export class BackendRegistry implements Model {
     if(authorization)binding.harnessAccount=authorization.account
     harnessProvider=await openHarnessProvider(d,model,r,authorization?.credential)
     // Only ordinary assigned work can access task files. The task sandbox and tool grant still apply.
-    const canRead=interactive&&r.tools?.some(t=>t.name===(role==='router'?'router_read':'superagent_read'))
+    const canRead=interactive&&r.tools?.some(t=>t.name==='superagent_read')
     const canEdit=role==='worker'&&r.sandbox==='workspace-write'&&r.tools?.some(t=>t.name==='superagent_shell')
     const workspace=canRead?(canEdit?'edit':'read'):undefined
     const configuration=r.onConfiguration

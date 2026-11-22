@@ -141,11 +141,13 @@ const resultLabel = (result: ApprovalResult, L: Localize) => ({
   approved: L('Approved', '已批准'), denied: L('Denied', '已拒绝'),
   answered: L('Answered', '已回答'), closed: L('Closed', '已结束'),
 })[result]
+const expiredApprovalLabel=(request:Request,L:Localize)=>
+  request.expiresAt===null?L('Closed','已结束'):L('Expired','已过期')
 
 function approvalOutcome(a:Request,L:Localize) {
   if(a.state==='denied')return L('Denied','已拒绝')
   if('executionState' in a && a.executionState==='cancelled')return L('Cancelled','已取消')
-  if(a.state==='expired')return L('Expired','已过期')
+  if(a.state==='expired')return expiredApprovalLabel(a,L)
   if(a.state==='answered')return ['answerText' in a && a.answerText,L('Answered','已回答')].filter(Boolean).join(' · ')
   if('executionState' in a){
     switch(a.executionState){
@@ -237,7 +239,7 @@ function NativeQuestions({request, archived}: {request:Request & {questions:Nati
   const title = questions.length === 1 ? questions[0]!.question : questions.map(q=>q.question).join(' · ')
   const ready = questions.length > 0 && questions.every(q=>answers[q.id]?.trim())
   return <ApprovalFrame L={L} id={request.id} kind="choice" title={title} notice={request.notice}
-    status={pending ? L('Awaiting answer','待答复') : request.state==='expired' ? L('Expired','已过期') : resultLabel(approvalResult(request.state),L)}
+    status={pending ? L('Awaiting answer','待答复') : request.state==='expired' ? expiredApprovalLabel(request,L) : resultLabel(approvalResult(request.state),L)}
     result={pending ? undefined : approvalResult(request.state)}>
     {pending ? <form className="chat-approval-form" onSubmit={event => {
       event.preventDefault()

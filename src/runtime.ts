@@ -15,7 +15,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {RouterHandoff} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
-import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
+import {captureBusinessDecision,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
@@ -436,12 +436,17 @@ export class Runtime {
       if(value.state==='ready')this.delegation.captureExecution(ticketId)
       if(!accepted&&this.verification.capture(ticketId,value,reply,files))return
       const publishedFiles=files?.length && this.chat.publishFiles(ticketId,files)
-      const previous=this.store.tickets.get(ticketId)?.attention
-      // The core keeps an unchanged question; a different asker needs a fresh routed attention.
-      if(value.question&&previous?.question===value.question&&previous.triggerId!==value.askedBy)this.engine.report(ticketId,{state:value.state,summary:value.summary,question:null})
+      const before=this.store.tickets.get(ticketId),previous=before?.attention
+      // A new asker or materially different terms need a separate decision.
+      const changedTerms=!!(value.question&&before&&this.isChatTask(before)&&changedDecisionTerms(this,before,value.decision))
+      const repeatedAnswer=!!(value.question&&before&&previous?.question===value.question&&!changedTerms&&repeatsChatAnswer(this,before,value.askedBy))
+      if(value.question&&previous?.question===value.question&&!repeatedAnswer&&(previous.triggerId!==value.askedBy||changedTerms))
+        this.engine.report(ticketId,{state:value.state,summary:value.summary,question:null})
       const {decision:decisionDetails,...coreReport}=value
-      const ticket=this.engine.report(ticketId,coreReport)
-      if(value.question)this.engine.reply({purpose:'attention',ticketId,question:value.question,text:value.question})
+      const ticket=this.engine.report(ticketId,repeatedAnswer?{...coreReport,question:undefined,askedBy:undefined}:coreReport)
+      if(value.question){
+        if(!repeatedAnswer)this.engine.reply({purpose:'attention',ticketId,question:value.question,text:value.question})
+      }
       else if(reply&&value.state==='ready'){
         const result=this.engine.reply({purpose:value.answers?'answer':'result',ticketId,...(value.answers?{triggerId:value.answers}:{}),text:reply})
         // A published file already carries this handoff. Text results count only on delivery to the Router inbox.
@@ -475,16 +480,6 @@ export class Runtime {
     const event=this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId),task=ticketId?this.store.tickets.get(ticketId):undefined
     if(ref.ticketId!==ticketId||!task||event?.ticketId!==ticketId||event.attemptId!==ref.attemptId||!deliverableWorkerEvent(this,event)||task.ended?.by==='human'||task.assignments.at(-1)?.id!==event.assignmentId||this.store.get<{attemptId:string}>('async-worker-current',ticketId!)?.attemptId!==ref.attemptId)return false
     return {eventId:ref.eventId,attemptId:ref.attemptId}
-  }
-  renewBusinessQuestion(ticketId:string){
-    return this.store.atomic(()=>{
-      const ticket=this.store.tickets.get(ticketId),report=ticket?.assignments.at(-1)?.report
-      if(!ticket?.attention||ticket.ended||!report)throw Error('decision_unavailable')
-      const question=ticket.attention,terms=decisionTerms(this,ticketId)
-      this.engine.report(ticketId,{state:report.state,summary:report.summary,question:null})
-      this.reportWork(ticketId,{state:report.state,summary:report.summary,question:question.question,...(question.triggerId?{askedBy:question.triggerId}:{}),decision:terms})
-      return this.store.tickets.get(ticketId)!.attention!.id
-    })
   }
   previewPrompt(input:import('./execution-prompts.ts').PromptPreviewInput,config=this.config){return previewInstructions(config,input,this.scopes.enabled())}
   acceptGoalDelivery(delivery:GoalDelivery){this.store.atomic(()=>{if(this.store.get('goal-release',delivery.id))return;const before=new Set(this.store.deliveries().map(d=>d.id));this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true,delivery.files);const ref=this.store.get<{eventId:string}>('async-worker-delivery',delivery.id),event=ref?this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId):undefined;if(event?.ticketId===delivery.ticketId&&event.assignmentId===delivery.assignmentId)this.bindWorkerEventMessages(event,before);this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})})}
@@ -1084,6 +1079,11 @@ export class Runtime {
     const discussion=candidates?.batch.discussion??(job.payload as any).discussion as string
     const triggerId=candidates?.batch.primary??followups?.trigger.id??(job.payload as any).triggerId as string
     if(this.store.get('router-result',job.id)||messageId&&this.store.get('router-read',messageId))return
+    const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
+    if(reportMessage&&chatDecisionDelivery(this,reportMessage)){
+      this.store.put('router-read',reportMessage.id,{discussion,reason:'chat_decision'})
+      return
+    }
     const trigger=this.store.triggers.get(triggerId);if(!trigger)throw Error('Router input missing')
     const source=this.sources.get(trigger.source)!.config
     // Upgrade old queued human turns through the current policy; never infer permission from session existence.
@@ -1093,7 +1093,6 @@ export class Runtime {
     this.goals.beforeTurn(triggerId,!!messageId)
     const batchInputs=batchId?this.proactive.batchInputs(batchId):undefined
     const mandate=batchInputs&&admittedMandate?.strength==='explicit'?{...admittedMandate,scope:batchInputs.map(t=>t.text).join('\n\n')}:admittedMandate
-    const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
     const scoped=reportMessage?.ticketId?this.scopes.contextForTask(trigger,discussion,reportMessage.ticketId):this.scopes.context(trigger,discussion),profile=scoped?this.scopes.scope(scoped.route.scopeId).router:undefined
     const chatBinding=this.chat.binding(triggerId)
     const permissionActor=()=>this.chat.permissionActor(triggerId)
@@ -1127,7 +1126,8 @@ export class Runtime {
       if(!owner?.parentTrigger||owner.discussion!==discussion||!scoped&&this.store.get<{actor:string}>('worker-assignment',m.ticketId)?.actor!==trigger.actor.id)return false
       try{this.routerIngress.authority(owner.parentTrigger,discussion);if(scoped){this.scopes.checkTask(m.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(m.ticketId)!,scoped.route.entryId,'result')}return true}catch{return false}
     }
-    const pendingMessages=messageId?this.store.list<any>('router-inbox').filter(m=>m.channel.address.routerInbox===discussion&&!this.store.get('router-read',m.id)&&authorizedMessage(m)):[]
+    const pendingMessages=messageId?this.store.list<any>('router-inbox').filter(m=>
+      m.channel.address.routerInbox===discussion&&!this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
     if(messageId&&!pendingMessages.some(m=>m.id===messageId))throw Error('Worker result authorization withdrawn')
     const readMessages=new Set<string>(pendingMessages.map(m=>m.id)),readReports=new Map<string,string>()
     const authorityInputs=new Set([...(candidates||followups?[]:[triggerId]),...(batchInputs??[]).map(t=>t.id),...pendingMessages.map(m=>this.taskAuthority(m.ticketId)!.parentTrigger!)])
@@ -1877,9 +1877,11 @@ export class Runtime {
         // outbox acknowledgement commit together, or the pending message remains retryable.
         try{this.store.atomic(()=>{
           if(!this.store.deliveryStarted(message.id))return
-          this.store.put('router-inbox',message.id,{...message,...(workerEvent?{workerEvent}:{})})
-          const delegated=message.ticketId&&(this.store.get<any>('task-routing',message.ticketId)??this.store.get<any>('worker-assignment',message.ticketId))
-          if(delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at)this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
+          if(!chatDecisionDelivery(this,message)){
+            this.store.put('router-inbox',message.id,{...message,...(workerEvent?{workerEvent}:{})})
+            const delegated=message.ticketId&&(this.store.get<any>('task-routing',message.ticketId)??this.store.get<any>('worker-assignment',message.ticketId))
+            if(delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at)this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
+          }
           this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)
         });blocked.delete(channel)}catch{this.store.audit({type:'router.inbox-retry',id:message.id})}
         continue

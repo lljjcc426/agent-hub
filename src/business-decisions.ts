@@ -5,7 +5,7 @@ import {approvedFilePaths,fileHandoffOutcome,rememberFileHandoff,type FileHandof
 import type {Runtime} from './runtime.ts'
 import type {Run,Store} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
-import type {ActorRef,Ticket,Trigger} from './vendor/dsh-core/index.ts'
+import {key,type ActorRef,type Ticket,type Trigger} from './vendor/dsh-core/index.ts'
 
 export const decisionTermsSchema=z.object({
  target:z.object({label:z.string().trim().min(1).max(2000),version:z.string().trim().min(1).max(500)}).strict(),
@@ -15,13 +15,13 @@ export const decisionTermsSchema=z.object({
 }).strict()
 export type DecisionTerms=z.infer<typeof decisionTermsSchema>
 export interface BusinessDecisionView {
- id:string;ticketId:string;question:string;summary:string;version:string;createdAt:number;expiresAt:number;
+ id:string;ticketId:string;question:string;summary:string;version:string;createdAt:number;expiresAt:number|null;
  status:'pending'|'answered'|'expired'|'stale'|'withdrawn'|'unavailable';reason:string|null;
  target:{label:string;version:string;amount:DecisionTerms['amount'];recipient:DecisionTerms['recipient']};
  answer:{text:string;at:number}|null
  fileHandoff?:FileHandoffOutcome
 }
-interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
+interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;basisPolicy?:'chat';terms:DecisionTerms|null;admissionSeq:number}
 export const legacyExecutionQuestion='Execution could not be confirmed. Review task records and the actual outcome before continuing.'
 export const interruptedExecutionQuestion='Inspect the native thread and workspace, then retry or take over.'
 export const failedStartupQuestion='Work could not start. Inspect the task and retry.'
@@ -33,7 +33,8 @@ const fail=(code:string)=>new ChatError(code,code,code==='decision_identity'?403
 type DecisionStore=Pick<Store,'db'|'get'>
 function readDecision({store}:{store:DecisionStore},id:string):DecisionRecord|undefined {
  const d=store.get<DecisionRecord>('business-decision',id),time=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0&&v<=8.64e15
- if(!d||d.schema!==1||d.id!==id||typeof d.ticketId!=='string'||!d.ticketId||typeof d.question!=='string'||!d.question||typeof d.summary!=='string'||!/^[a-f0-9]{64}$/.test(d.version)||d.basis!==d.version||!time(d.createdAt)||!time(d.expiresAt)||d.expiresAt<d.createdAt||!Number.isSafeInteger(d.admissionSeq)||d.admissionSeq<0||!d.actor?.source||!d.actor.id||!['pending','answered'].includes(d.status)||d.terms!==null&&!decisionTermsSchema.safeParse(d.terms).success||!d.target||typeof d.target.label!=='string'||typeof d.target.version!=='string')return
+ if(!d||d.schema!==1||d.id!==id||typeof d.ticketId!=='string'||!d.ticketId||typeof d.question!=='string'||!d.question||typeof d.summary!=='string'||!/^[a-f0-9]{64}$/.test(d.version)||d.basis!==d.version||!time(d.createdAt)||!Number.isSafeInteger(d.admissionSeq)||d.admissionSeq<0||!d.actor?.source||!d.actor.id||!['pending','answered'].includes(d.status)||d.terms!==null&&!decisionTermsSchema.safeParse(d.terms).success||!d.target||typeof d.target.label!=='string'||typeof d.target.version!=='string')return
+ if(d.basisPolicy==='chat'?d.expiresAt!==null:d.basisPolicy!==undefined||d.expiresAt===null||!time(d.expiresAt)||d.expiresAt<d.createdAt)return
  if(d.status==='answered'&&(!d.answer||typeof d.answer.text!=='string'||!time(d.answer.at)))return
  return d
 }
@@ -43,12 +44,22 @@ export function decisionAsker({store}:{store:DecisionStore},ticket:Ticket):Trigg
  if(t?.meta.delegatedBy==='router'&&typeof t.meta.parentTrigger==='string')t=store.get<Trigger>('trigger',t.meta.parentTrigger)
  return t?.human?t:undefined
 }
-function basis(host:Runtime,ticket:Ticket,terms:DecisionTerms|null):string {
+function basis(host:Runtime,ticket:Ticket,terms:DecisionTerms|null,policy?:DecisionRecord['basisPolicy']):string {
  const assignment=ticket.assignments.at(-1),owner=host.scopes.ownership(ticket.id)
- const goals=host.store.list<any>('router-goal').filter(g=>g.taskIds?.includes(ticket.id)).map(g=>({id:g.id,revision:g.revision,contract:g.contract,objective:g.objective,criteria:g.criteria,project:g.project?.policy}))
- // Only a digest is retained. Any relevant task/recipient/amount/goal/permission
- // change invalidates the business choice; this never grants execution authority.
- return bodyDigest({assignment:assignment?.id,report:assignment?.report?{state:assignment.report.state,summary:assignment.report.summary}:null,mandate:ticket.mandate,attention:ticket.attention,channels:ticket.channels,owner,goals,terms,continuation:host.store.get('task-continuation',ticket.id)??null})
+ const goals=host.store.list<any>('router-goal').filter(g=>g.taskIds?.includes(ticket.id)).map(g=>({
+  id:g.id,revision:policy==='chat'?undefined:g.revision,contract:g.contract,objective:g.objective,criteria:g.criteria,project:g.project?.policy,
+ }))
+ const report=policy==='chat'?undefined:assignment?.report?{state:assignment.report.state,summary:assignment.report.summary}:null
+ // Progress updates do not change a Chat decision. The assignment, authority,
+ // reviewed terms, question, and goal contract still fence the answer.
+ return bodyDigest({assignment:assignment?.id,report,mandate:ticket.mandate,attention:ticket.attention,channels:ticket.channels,owner,goals,
+  terms:policy==='chat'?chatTerms(terms):terms,continuation:host.store.get('task-continuation',ticket.id)??null})
+}
+function chatTerms(terms:DecisionTerms|null){
+ return terms&&{target:terms.target,amount:terms.amount,recipient:terms.recipient}
+}
+function inChat(host:Runtime,d:{ticketId:string;originTriggerId?:string}){
+ return host.chat.hasContext({ticketId:d.ticketId,triggerId:d.originTriggerId})
 }
 export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:DecisionTerms|null):void {
  if(!ticket.attention)return
@@ -58,18 +69,21 @@ export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:Decisi
  const currentTerms=savedTerms?.questionId===id?savedTerms.terms:null
  if(host.store.get('business-decision',id))return
  const asker=decisionAsker(host,ticket);if(!asker)return
- const createdAt=Date.now(),version=basis(host,ticket,currentTerms),summary=ticket.assignments.at(-1)?.report?.summary??''
- const record:DecisionRecord={schema:1,originTriggerId:asker.id,id,ticketId:ticket.id,question:ticket.attention.question,summary,version,basis:version,actor:asker.actor,terms:currentTerms,createdAt,expiresAt:createdAt+(currentTerms?.validForSeconds??86400)*1000,status:'pending',reason:null,target:{label:currentTerms?.target.label??ticket.title,version:currentTerms?.target.version??version,amount:currentTerms?.amount??null,recipient:currentTerms?.recipient??null},answer:null,admissionSeq:Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
+ const basisPolicy=inChat(host,{ticketId:ticket.id,originTriggerId:asker.id})?'chat':undefined
+ const createdAt=Date.now(),version=basis(host,ticket,currentTerms,basisPolicy),summary=ticket.assignments.at(-1)?.report?.summary??''
+ const record:DecisionRecord={schema:1,originTriggerId:asker.id,id,ticketId:ticket.id,question:ticket.attention.question,summary,version,basis:version,basisPolicy,actor:asker.actor,terms:currentTerms,createdAt,expiresAt:basisPolicy==='chat'?null:createdAt+(currentTerms?.validForSeconds??86400)*1000,status:'pending',reason:null,target:{label:currentTerms?.target.label??ticket.title,version:currentTerms?.target.version??version,amount:currentTerms?.amount??null,recipient:currentTerms?.recipient??null},answer:null,admissionSeq:Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
  host.store.put('business-decision',id,record)
 }
 export function businessDecision(host:Runtime,id:string,now=Date.now()):BusinessDecisionView|undefined {
  const d=readDecision(host,id);if(!d)return
+ const chat=inChat(host,d)
  if(!d.terms&&isRuntimeRecoveryQuestion(d.question)){
-  if(host.chat.hasContext({ticketId:d.ticketId,triggerId:d.originTriggerId}))return
+  if(chat)return
   const replied=d.originTriggerId&&host.store.get<{decisionTicketId?:string}>('chat-run',d.originTriggerId)
   if(d.question===legacyExecutionQuestion&&(d.summary==='Error: async_worker_goal_unavailable'||replied&&replied.decisionTicketId===d.ticketId))return
  }
- const {schema,originTriggerId,actor,basis:expected,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
+ const {schema,originTriggerId,actor,basis:expected,basisPolicy,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
+ if(chat)view.expiresAt=null
  if(/^\s*\{\s*"/.test(view.target.label)){
   const goal=host.goals.forTask(d.ticketId)
   view.target={...view.target,label:goal?.nodes?.find(node=>node.ticketId===d.ticketId)?.title??goal?.title??''}
@@ -78,10 +92,11 @@ export function businessDecision(host:Runtime,id:string,now=Date.now()):Business
  if(handoff)view.fileHandoff=handoff
  if(d.status==='answered')return view
  if(!t||t.ended||!t.attention||t.attention.id!==id)return {...view,status:'withdrawn',reason:'question_replaced_or_task_closed'}
+ if(chat&&d.reason==='legacy_question_requires_renewal')return {...view,status:'unavailable',reason:'legacy_question_unverified'}
  const latest=host.store.get<{questionId:string;terms:DecisionTerms|null}>('business-decision-terms',t.id)
- if(basis(host,t,latest?.questionId===id?latest.terms:null)!==expected)return {...view,status:'stale',reason:'target_changed'}
+ if(basis(host,t,latest?.questionId===id?latest.terms:null,basisPolicy)!==expected)return {...view,status:'stale',reason:'target_changed'}
  if(!Number.isFinite(now)||now<d.createdAt)return {...view,status:'unavailable',reason:'clock_unavailable'}
- if(now>=d.expiresAt)return {...view,status:'expired',reason:d.reason??'deadline_passed'}
+ if(view.expiresAt!==null&&now>=view.expiresAt)return {...view,status:'expired',reason:d.reason??'deadline_passed'}
  return view
 }
 export function assertBusinessDecision(host:Runtime,id:string,version:string|undefined,actor:ActorRef):BusinessDecisionView {
@@ -102,13 +117,34 @@ export function decisionActorMatches(host:Runtime,id:string,actor:ActorRef):bool
  const d=readDecision(host,id);return !!d&&d.actor.source===actor.source&&d.actor.id===actor.id
 }
 export function decisionTerms(host:Runtime,ticketId:string):DecisionTerms|null {return host.store.get<{terms:DecisionTerms|null}>('business-decision-terms',ticketId)?.terms??null}
+export function changedDecisionTerms(host:Runtime,ticket:Ticket,terms:DecisionTerms|null|undefined){
+ if(terms===undefined)return false
+ const earlier=decisionTerms(host,ticket.id)
+ const stored=ticket.attention&&readDecision(host,ticket.attention.id)
+ return stored?.basisPolicy==='chat'?bodyDigest(chatTerms(earlier))!==bodyDigest(chatTerms(terms)):bodyDigest(earlier)!==bodyDigest(terms)
+}
 
-/** Old pending questions lack a reviewed snapshot: expose them as expired, never approve them retroactively. */
+/** Only the core attention reply for a stored Chat decision is already shown by its card. */
+export function chatDecisionDelivery(host:Runtime,message:{id:string;ticketId?:string}){
+ if(!message.ticketId||!host.chat.hasContext({ticketId:message.ticketId}))return false
+ const rows=host.store.db.prepare("SELECT id FROM records WHERE kind='business-decision' AND json_extract(body,'$.ticketId')=?").all(message.ticketId)
+ return rows.some(({id})=>key('attention-reply',String(id))===message.id&&!!readDecision(host,String(id)))
+}
+
+export function repeatsChatAnswer(host:Runtime,ticket:Ticket,askedBy:string|undefined){
+ if(!askedBy||!ticket.attention||!host.chat.hasContext({ticketId:ticket.id}))return false
+ const reply=host.store.get<{triggerId:string;assignmentId:string}>('question-answer',bodyDigest([ticket.id,ticket.attention.id]))
+ const trigger=host.store.triggers.get(askedBy)
+ const sourceTrigger=trigger?.meta.delegatedBy==='router'?trigger.meta.parentTrigger:trigger?.id
+ return !!reply&&reply.assignmentId===ticket.assignments.at(-1)?.id&&sourceTrigger===reply.triggerId
+}
+
+/** Old pending questions without a reviewed snapshot cannot acquire authority on restart. */
 export function migrateBusinessDecisions(host:Runtime):void {
  host.store.atomic(()=>{for(const t of host.store.tickets.open())if(t.attention&&!host.store.get('business-decision',t.attention.id)){
   captureBusinessDecision(host,t)
   const d=host.store.get<DecisionRecord>('business-decision',t.attention.id)
-  if(d)host.store.put('business-decision',d.id,{...d,expiresAt:d.createdAt,reason:'legacy_question_requires_renewal'})
+  if(d)host.store.put('business-decision',d.id,{...d,expiresAt:d.basisPolicy==='chat'?null:d.createdAt,reason:'legacy_question_requires_renewal'})
  }})
 }
 

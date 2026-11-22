@@ -25,7 +25,7 @@ export function ApprovalFrame({kind, title, id, notice, status, result, children
       <ApprovalStatus label={status} state={result}/>
     </header>
     <h3 id={label}>{title}</h3>
-    {notice && notice !== title && <p className="chat-approval-note">{notice}</p>}
+    {kind !== 'choice' && notice && notice !== title && <p className="chat-approval-note">{notice}</p>}
     {children}
   </section>
 }

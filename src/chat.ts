@@ -977,6 +977,7 @@ export class ChatSessions {
     }))
   }
   decide(id:string,owner:string,input:{action:'answer'|'renew';id:string;version:string;requestId:string;text?:string}){
+    if(input.action!=='answer')throw new ChatError('decision_action_unsupported','This question can only be answered.',400)
     return this.host.store.atomic(()=>{
       const c=this.get(id,owner),h=this.host,actor={source:c.sourceId,id:c.actor},text=input.text?.trim()??'',fingerprint=stableDigest({...input,text}),key=stableDigest([owner,id,input.requestId])
       const d=this.businessDecisions(id,owner,{questionId:input.id})[0]
@@ -998,29 +999,26 @@ export class ChatSessions {
       const active=this.view(id,owner).run
       if(active&&['queued','running','cancel_requested'].includes(active.state))throw new ChatError('conversation_busy','Wait for the current run or stop it first.')
       if(d.version!==input.version)throw new ChatError('decision_stale','The question changed. Refresh before answering.')
-      if(input.action==='answer'){
-        if(!text||text.length>10000)throw new ChatError('decision_invalid','Enter an answer up to 10000 characters.',400)
-        assertBusinessDecision(h,input.id,input.version,actor)
-      }else if(!['expired','stale'].includes(d.status)||h.store.tickets.get(d.ticketId)?.attention?.id!==d.id)throw new ChatError('decision_stale','This question cannot be renewed.')
+      if(!text||text.length>10000)throw new ChatError('decision_invalid','Enter an answer up to 10000 characters.',400)
+      assertBusinessDecision(h,input.id,input.version,actor)
       const source=h.sources.get(c.sourceId),ready=this.readiness()
       if(!ready.ready||!source?.config.enabled||source.config.kind!=='local'||!source.config.allowedActors.includes(c.actor))throw new ChatError('decision_unavailable','This conversation is unavailable.')
       this.bindEntry(c)
-      const trigger=source.trigger({id:'chat-decision:'+id+':'+input.requestId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text:input.action==='answer'?text:'Please show the current question again before I decide.',addressed:true},c.actor)
+      const trigger=source.trigger({id:'chat-decision:'+id+':'+input.requestId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text,addressed:true},c.actor)
       const admission=h.routerIngress.admitDecision(trigger)
       if(admission.state!=='accepted')throw new ChatError('decision_unavailable','This reply is not admitted by current policy.')
       const context=authorize(trigger.id)
-      let nextId=input.id
-      if(input.action==='answer'){
-        h.manager.sendImmediate({action:'send',ticketId:d.ticketId,questionId:d.id,decisionVersion:input.version,text,requestId:'chat-decision:'+key,revision:h.settings.current().revision},context)
-        const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now()}
-        h.store.put('chat-run',run.id,run)
-        rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
-        if(context.scoped)h.goals.resumeAnsweredQuestion(d.ticketId,d.summary,context.scoped)
-        this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.requestId})
-      }else nextId=h.renewBusinessQuestion(d.ticketId)
-      h.store.put('business-decision-action',key,{fingerprint,triggerId:trigger.id,decisionId:nextId})
+      h.manager.sendImmediate({action:'send',ticketId:d.ticketId,questionId:d.id,decisionVersion:input.version,text,requestId:'chat-decision:'+key,revision:h.settings.current().revision},context)
+      const client=this.clientContext(d.runId)
+      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now(),
+        locale:client?.locale??(/\p{Script=Han}/u.test(text)?'zh-CN':undefined),timeZone:client?.clientTimeZone}
+      h.store.put('chat-run',run.id,run)
+      rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
+      if(context.scoped)h.goals.resumeAnsweredQuestion(d.ticketId,d.summary,context.scoped)
+      this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.requestId})
+      h.store.put('business-decision-action',key,{fingerprint,triggerId:trigger.id,decisionId:input.id})
       this.changed(id)
-      return {decision:businessDecision(h,nextId)!,duplicate:false}
+      return {decision:businessDecision(h,input.id)!,duplicate:false}
     })
   }
   private tasks(c:Conversation,run?:ChatRun,routerPlanIds?:ReadonlySet<string>):ChatTask[]{
@@ -1191,7 +1189,7 @@ export class ChatSessions {
     for(const request of approvals)if(!closedRuns.has(request.runId))
       cards.push({kind:'approval',id:request.id,messageId:messageFor(request),createdAt:request.createdAt,request})
     for(const question of this.businessDecisions(c.id,c.owner,{currentOnly:true})){
-      if(!closedRuns.has(question.runId)&&['pending','expired','stale'].includes(question.status))
+      if(!closedRuns.has(question.runId)&&question.status==='pending')
         cards.push({kind:'question',id:question.id,messageId:messageFor(question),createdAt:question.createdAt,question})
     }
     return cards.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))

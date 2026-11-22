@@ -445,10 +445,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/connectors/github/setup'&&req.method==='GET'){send(res,200,runtime.github.snapshot());return}
       if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
       const input=await operatorBody(req)
-      if(path==='/api/connectors/github/setup'||path==='/api/connectors/github/disconnect'){
+      if(path==='/api/connectors/github/setup'||path==='/api/connectors/github/disconnect'||path==='/api/connectors/github/permissions'){
         if(options.configurationPreview){send(res,403,{code:'preview_restricted'});return}
         const authorize=()=>requireCurrentOperator(req)
         if(path.endsWith('/setup'))send(res,200,await runtime.github.connect(input,authorize))
+        else if(path.endsWith('/permissions'))send(res,200,await runtime.github.permissions(input,authorize))
         else{z.object({}).strict().parse(input);send(res,200,runtime.github.disconnect(authorize))}
         return
       }

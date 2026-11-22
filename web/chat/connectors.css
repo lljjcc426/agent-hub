@@ -161,6 +161,33 @@
   gap: 4px;
   margin-inline-end: 14px;
 }
+.connector-github-hint {
+  color: var(--rp-muted);
+  font-size: 13px;
+}
+.connector-github-permissions {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--rp-line);
+  padding-top: 12px;
+}
+.connector-github-permissions > label { font-weight: 600; }
+.connector-github-permission-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.connector-github-permissions dl {
+  margin: 0 0 8px;
+  display: grid;
+  gap: 3px;
+}
+.connector-github-permissions dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.connector-github-permissions dd { margin: 0; text-align: end; }
 
 .connector-group-picker > p {
   margin: 0;

@@ -45,7 +45,7 @@ import {ToolConnections} from './tool-connections.ts'
 import {OfficeMcp} from './office-mcp.ts'
 import {pairedOfficeBot} from './office-groups.ts'
 import {GithubConnector,githubWriteSpec} from './github-connector.ts'
-import {routerGithubReadSchema,routerGithubReadSpec} from './github-read.ts'
+import {githubReadSchema,githubReadSpec} from './github-read.ts'
 import {GithubError,githubFailure} from './github-errors.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
@@ -754,7 +754,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.work.network?[routerGithubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs(){return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&(s.name!=='superagent_artifact'||this.delegation.enabled)&&(!s.name.startsWith('github_')||this.config.work.network))}
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}
@@ -1090,7 +1090,7 @@ export class Runtime {
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
-    const githubTools=browserRun&&this.config.work.network?[routerGithubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
+    const githubTools=browserRun&&this.config.work.network?[githubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
     const officeApps=browserRun&&this.config.work.network&&this.chat.permissionActor(triggerId)
       ?this.officeMcp.inventory().filter(app=>app.status==='connected').map(app=>app.label):[]
     const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(officeApps.length?[officeApps]:[]),...(chatBinding?[decisionTool,publicPlanTool]:[]),...(fullAccess?[{operationApprovalNotices:false}]:[])])
@@ -1175,7 +1175,7 @@ export class Runtime {
         ...(chatBinding&&(!threadId||recovery)?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{}),
         ...(recovery?{continuity:{mode:'rebuild',recovery:recoveredRouterEvidence(recovery.evidence)}}:{}),
       })
-      let directGithubReadUsed=false,browserSnapshotUsed=false,browserActionUsed=false
+      let browserSnapshotUsed=false,browserActionUsed=false
       const workerRequired=(message:string):ToolResult=>({success:false,contentItems:[{type:'inputText',text:JSON.stringify({
         code:'worker_required',message,
       })}]})
@@ -1198,12 +1198,10 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
-            if(name==='github_read'&&githubTools.includes(routerGithubReadSpec)){
-              const read=routerGithubReadSchema.safeParse(args)
-              if(directGithubReadUsed||!read.success)return workerRequired('Assign detailed GitHub reads and further checks to a Worker and finish the Router turn after handoff.')
-              directGithubReadUsed=true
-              const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(6000)])
-              return await this.github.read({locale:chinese?'zh-CN':'en',...read.data},!!this.chat.permissionActor(triggerId),validateReplyContext,signal)
+            if(name==='github_read'&&githubTools.includes(githubReadSpec)){
+              const read=githubReadSchema.safeParse(args)
+              if(!read.success)return githubFailure(new GithubError('invalid_request'))
+              return await this.github.read({locale:chinese?'zh-CN':'en',...read.data},!!this.chat.permissionActor(triggerId),validateReplyContext,controller.signal)
             }
             if(name==='workspace_browser' && workspaceTool && browserRun && browserOwner){
               const action=workspaceAction(args),snapshot=action.action==='snapshot'
@@ -1338,7 +1336,6 @@ export class Runtime {
         validateReplyContext()
         recovery=requireReadOnly(inspectRecovery())
         if(!recovery)throw error
-        directGithubReadUsed=recovery.reads.some(call=>call.name==='github_read'&&call.receipt.result?.success===true)
         browserSnapshotUsed=recovery.reads.some(call=>call.name==='workspace_browser'&&call.receipt.result?.success===true)
         if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence)
         result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})

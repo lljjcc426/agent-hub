@@ -3,7 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {z} from 'zod'
 import type {Tool} from '@modelcontextprotocol/sdk/types.js'
 import {GithubError,githubFailure,githubResult} from './github-errors.ts'
-import {GithubReader,githubRefSchema,githubRepository,githubRepositorySchema,githubReadSpec} from './github-read.ts'
+import {GithubReader,githubRefSchema,githubRepository,githubRepositorySchema,githubReadSchema,githubReadSpec} from './github-read.ts'
 import {githubGit,githubGitRevision,githubGitSchema,githubGitSpec,type GitRevision} from './github-git.ts'
 import {managedConnections,managedSecrets,prepareManagedConfig} from './managed-config.ts'
 import {OperationError} from './operation-errors.ts'
@@ -13,6 +13,11 @@ import type {ToolConnection} from './connector-config.ts'
 import type {ToolSpec} from './model.ts'
 import type {ToolResult} from './chat-permissions.ts'
 import {remoteCommitHistory,type CommitHistory} from './chat-commit-trail.ts'
+import {githubCliToken} from './github-cli.ts'
+import {githubApiPath,githubArguments,githubEvidence,githubRestVerb,githubToolArguments,githubToolConnection,
+ githubToolHeaders,githubToolName,githubToolOutput,githubWritePath,githubReadTools,githubWriteTools} from './github-tools.ts'
+import {githubChangePull,githubCheckReviewThread,githubNodeId,githubPullControl,githubReviewThreads} from './github-review.ts'
+import {githubPushAccess} from './github-git.ts'
 
 const mcpName={
  create_pull:'create_pull_request',update_pull:'update_pull_request',review_pull:'pull_request_review_write',
@@ -26,32 +31,43 @@ const title=z.string().trim().min(1).max(256)
 const text=z.string().max(32_000)
 const label=z.string().trim().min(1).max(100)
 const target={repository:githubRepositorySchema}
+const mergeMethod=z.enum(['merge','squash','rebase'])
 export const githubWriteSchema=z.discriminatedUnion('action',[
  z.object({...target,action:z.literal('create_pull'),title,body:text.optional(),head:githubRefSchema,base:githubRefSchema,draft:z.boolean().optional()}).strict(),
  z.object({...target,action:z.literal('update_pull'),number,title:title.optional(),body:text.optional(),base:githubRefSchema.optional(),state:z.enum(['open','closed']).optional()}).strict(),
  z.object({...target,action:z.literal('review_pull'),number,body:text.optional(),event:z.enum(['APPROVE','REQUEST_CHANGES','COMMENT'])}).strict(),
- z.object({...target,action:z.literal('merge_pull'),number,expectedHead:sha,method:z.enum(['merge','squash','rebase']).optional()}).strict(),
+ z.object({...target,action:z.literal('merge_pull'),number,expectedHead:sha,method:mergeMethod.optional()}).strict(),
  z.object({...target,action:z.literal('create_issue'),title,body:text.optional(),labels:z.array(label).max(30).optional()}).strict(),
  z.object({...target,action:z.literal('update_issue'),number,title:title.optional(),body:text.optional(),state:z.enum(['open','closed']).optional(),labels:z.array(label).max(30).optional()}).strict(),
  z.object({...target,action:z.literal('comment'),number,body:text.trim().min(1)}).strict(),
+ z.object({...target,action:z.literal('tool'),tool:githubToolName,arguments:githubArguments.optional()}).strict(),
+ z.object({...target,action:z.literal('api'),verb:githubRestVerb,apiPath:githubApiPath,arguments:githubArguments.optional()}).strict(),
+ z.object({...target,action:z.literal('pull_control'),number,control:githubPullControl,threadId:githubNodeId.optional(),method:mergeMethod.optional()}).strict(),
 ])
 // Older model and MCP transports expect an object at the schema root.
 // prepare() applies the exact schema for the selected action before approval.
 export const githubWriteInputSchema=z.object({...target,
- action:z.enum(['create_pull','update_pull','review_pull','merge_pull','create_issue','update_issue','comment']),
+ action:z.enum(['create_pull','update_pull','review_pull','merge_pull','create_issue','update_issue','comment','tool','api','pull_control']),
  number:number.optional(),title:title.optional(),body:text.optional(),head:githubRefSchema.optional(),base:githubRefSchema.optional(),
  draft:z.boolean().optional(),state:z.enum(['open','closed']).optional(),labels:z.array(label).max(30).optional(),
  event:z.enum(['APPROVE','REQUEST_CHANGES','COMMENT']).optional(),
- expectedHead:sha.optional(),method:z.enum(['merge','squash','rebase']).optional(),
+ expectedHead:sha.optional(),method:mergeMethod.optional(),
+ tool:githubToolName.optional(),arguments:githubArguments.optional(),verb:githubRestVerb.optional(),apiPath:githubApiPath.optional(),
+ control:githubPullControl.optional(),threadId:githubNodeId.optional(),
 }).strict()
 export const githubWriteSpec:ToolSpec={type:'function',name:'github_write',inputSchema:z.toJSONSchema(githubWriteInputSchema,{target:'draft-07'}),
- description:'Make a requested write in a GitHub repository using the connected token. create_pull needs title, head and base; update_pull, review_pull, merge_pull, update_issue and comment need number; review_pull needs event; merge_pull needs the current expectedHead SHA; create_issue needs title; comment needs body. Supply only fields for the selected action. A result with status uncertain requires remote readback before any retry.',
+ description:'Perform a requested GitHub write with the connected account. Use create_pull, update_pull, review_pull, merge_pull, create_issue, update_issue or comment for common writes. merge_pull requires number and the current expectedHead SHA. action tool calls a native GitHub operation by its tool name and arguments (see github_read action catalog); repository supplies owner and repo. action api supports repository-relative REST write routes with verb, apiPath and JSON arguments for issues, PRs, files, git objects, labels, reactions and Actions reruns. action pull_control supports ready, draft, auto_merge, resolve_thread and unresolve_thread by PR number. An uncertain result requires readback before retrying.',
 }
 export {githubReadSpec,githubGitSpec}
 // Cached clients may still send the old repository field.
-const setupSchema=z.object({token:z.string().trim().min(1).max(500).regex(/^[a-zA-Z0-9_]+$/),repositories:z.array(z.string()).optional()}).strict()
+const setupSchema=z.union([
+ z.object({source:z.literal('token').optional(),token:z.string().trim().min(1).max(500).regex(/^[a-zA-Z0-9_]+$/),repositories:z.array(z.string()).optional()}).strict(),
+ z.object({source:z.literal('cli'),account:z.string().trim().regex(/^[a-zA-Z\d][a-zA-Z\d-]{0,38}$/)}).strict(),
+])
 type Write=z.output<typeof githubWriteSchema>
-type Connection={id:string;account:string;tools:string[];checkedAt:number}
+type NativeWrite=Extract<Write,{action:'tool'|'api'|'pull_control'}>
+type CommonWrite=Exclude<Write,NativeWrite>
+type Connection={id:string;account:string;tools:string[];checkedAt:number;source?:'token'|'cli'}
 const namespace='github-access',current='current'
 const secretName=(id:string)=>'AGENTHUB_SETUP_GITHUB_ACCESS_'+id.replaceAll('-','').toUpperCase()
 const headers=(token:string)=>({Authorization:'Bearer '+token,'X-MCP-Toolsets':'issues,pull_requests'})
@@ -63,7 +79,8 @@ type Plan=WritePlan|GitPlan
 
 export class GithubConnector {
  private readonly reader=new GithubReader()
- private catalog?:{id:string;tools:Tool[]}
+ private catalog?:{key:string;tools:Tool[]}
+ private readonly nativeCatalogs=new Map<boolean,{key:string;tools:Tool[]}>()
  private repositoryChoices?:{id:string;at:number;names:string[]}
  private authFailure?:{id:string;status:GithubError['code']}
  constructor(private readonly host:Runtime){}
@@ -73,16 +90,25 @@ export class GithubConnector {
   if(!connection)return {status:'disconnected' as const}
   const {account,tools,checkedAt}=connection
   const failure=this.authFailure?.id===connection.id?this.authFailure.status:undefined
-  const status=failure??(managedSecrets(this.host.config.stateDir)[secretName(connection.id)]?'connected':'auth_required')
-  return {status,account,tools,checkedAt}
+  const status=failure??(connection.source==='cli'||managedSecrets(this.host.config.stateDir)[secretName(connection.id)]?'connected':'auth_required')
+  return {status,account,tools,checkedAt,source:connection.source??'token'}
  }
  connected(){return !!this.current()}
- private access():Access{
+ private async access(signal?:AbortSignal):Promise<Access>{
   const connection=this.current()
   if(!connection)throw new GithubError('unconfigured')
-  const token=managedSecrets(this.host.config.stateDir)[secretName(connection.id)]
-  if(!token)throw new GithubError('auth_required')
-  return {connection,token}
+  try{
+   const token=connection.source==='cli'?await githubCliToken(connection.account,signal)
+    :managedSecrets(this.host.config.stateDir)[secretName(connection.id)]
+   if(!token)throw new GithubError('auth_required')
+   const access={connection,token}
+   this.live(access)
+   return access
+  }catch(error){
+   if(error instanceof GithubError&&['auth_required','cli_unavailable'].includes(error.code)&&this.current()?.id===connection.id)
+    this.authFailure={id:connection.id,status:error.code}
+   throw error
+  }
  }
  private live(access:Access){
   if(this.current()?.id!==access.connection.id)throw new GithubError('conflict')
@@ -91,35 +117,48 @@ export class GithubConnector {
   authorize()
   const parsed=setupSchema.safeParse(input)
   if(!parsed.success)throw new GithubError('invalid_request')
-  const {token}=parsed.data
   const previous=this.current(),id=randomUUID(),signal=AbortSignal.timeout(24_000)
+  const source=parsed.data.source??'token'
+  const token=parsed.data.source==='cli'?await githubCliToken(parsed.data.account,signal):parsed.data.token
+  const key=this.managedKey({id,source},token)
   let identity:{login:string},tools:Tool[]
   try{
    const [account,discovered]=await Promise.all([
     this.probe(()=>this.reader.get('user',token,signal),signal),
-    this.probe(()=>this.host.toolConnections.inspectManaged(id,remote,headers(token),signal),signal),
+    this.probe(()=>this.host.toolConnections.inspectManaged(key,remote,headers(token),signal),signal),
    ])
    if(typeof account?.login!=='string'||!account.login)throw new GithubError('auth_required')
+   if(parsed.data.source==='cli'&&account.login.toLowerCase()!==parsed.data.account.toLowerCase())throw new GithubError('auth_required')
    if(!discovered.some(tool=>remote.allowedTools.includes(tool.name)&&tool.annotations?.readOnlyHint!==true))throw new GithubError('unsupported')
    identity=account;tools=discovered
   }catch(error){
-   void this.host.toolConnections.closeManaged(id)
+   void this.host.toolConnections.closeManaged(key)
    if(error instanceof GithubError)throw error
    throw connectionFailure(error)
   }
   try{
    authorize()
    if(this.current()?.id!==previous?.id)throw new GithubError('conflict')
-   this.persist(id,{id,account:identity.login,tools:tools.map(tool=>tool.name),checkedAt:Date.now()},token)
-   this.catalog={id,tools}
+   this.closeCatalogs()
+   this.persist(id,{id,account:identity.login,tools:tools.map(tool=>tool.name),checkedAt:Date.now(),source},source==='token'?token:undefined)
+   this.catalog={key,tools}
    this.repositoryChoices=undefined
    this.authFailure=undefined
   }catch(error){
-   void this.host.toolConnections.closeManaged(id)
+   void this.host.toolConnections.closeManaged(key)
    throw error
   }
-  if(previous)void this.host.toolConnections.closeManaged(previous.id)
   return this.snapshot()
+ }
+ private managedKey(connection:Pick<Connection,'id'|'source'>,token:string){
+  return connection.id+(connection.source==='cli'?':'+stableDigest(token):'')
+ }
+ private closeCatalogs(){
+  for(const entry of [this.catalog,...this.nativeCatalogs.values()]){
+   if(entry)void this.host.toolConnections.closeManaged(entry.key)
+  }
+  this.catalog=undefined
+  this.nativeCatalogs.clear()
  }
  private async probe<T>(read:()=>Promise<T>,signal:AbortSignal):Promise<T>{
   try{return await read()}catch(error){
@@ -133,8 +172,7 @@ export class GithubConnector {
   const previous=this.current()
   if(previous){
    this.persist(randomUUID())
-   this.catalog=undefined;this.authFailure=undefined;this.repositoryChoices=undefined
-   void this.host.toolConnections.closeManaged(previous.id)
+   this.closeCatalogs();this.authFailure=undefined;this.repositoryChoices=undefined
   }
   return this.snapshot()
  }
@@ -154,11 +192,35 @@ export class GithubConnector {
  }
  async read(input:unknown,allowPrivate:boolean,check:()=>void,signal?:AbortSignal){
   check()
+  const parsed=githubReadSchema.safeParse(input)
+  if(!parsed.success)return githubFailure(new GithubError('invalid_request'))
+  const {action}=parsed.data
+  if(action&&['catalog','tool','api','review_threads'].includes(action)){
+   if(!allowPrivate)return githubFailure(new GithubError('access_denied'))
+   let access:Access|undefined
+   try{
+    access=await this.access(signal)
+    const authorized=()=>{check();this.live(access!)}
+    authorized()
+    const result=await this.readConnected(parsed.data,access,authorized,signal)
+    authorized()
+    this.authFailure=undefined
+    return result
+   }catch(error){
+    signal?.throwIfAborted()
+    check()
+    if(access&&this.current()?.id!==access.connection.id)return githubFailure(new GithubError('conflict'))
+    if(access&&error instanceof GithubError&&error.code==='auth_required')
+     this.authFailure={id:access.connection.id,status:'auth_required'}
+    return githubFailure(error instanceof GithubError?error:connectionFailure(error))
+   }
+  }
   let used:Connection|undefined
-  const result=await this.reader.read(input,(_,action)=>{
+  const result=await this.reader.read(parsed.data,async(_,action)=>{
    if(action==='compare'&&!allowPrivate)throw new GithubError('access_denied')
    if(action!=='compare'&&(!allowPrivate||!this.current()))return
-   const access=this.access()
+   const access=await this.access(signal)
+   check()
    used=access.connection
    return access.token
   },signal)
@@ -167,13 +229,92 @@ export class GithubConnector {
   if(used){
    const statuses=result.contentItems.map(item=>item.type==='inputText'?item.text:'').join('')
    if(statuses.includes('"status":"auth_required"'))this.authFailure={id:used.id,status:'auth_required'}
+   else if(result.success)this.authFailure=undefined
   }
   return result
+ }
+ private async getNativeTools(access:Access,readOnly:boolean,signal?:AbortSignal){
+  const key=this.managedKey(access.connection,access.token)+(readOnly?':read':':write')
+  const config=githubToolConnection(readOnly),headers=githubToolHeaders(access.token,readOnly)
+  let entry=this.nativeCatalogs.get(readOnly)
+  if(entry?.key!==key){
+   if(entry)void this.host.toolConnections.closeManaged(entry.key)
+   try{
+    const tools=await this.host.toolConnections.inspectManaged(key,config,headers,signal)
+    this.live(access)
+    entry={key,tools:tools.filter(tool=>readOnly?tool.annotations?.readOnlyHint===true:
+     tool.annotations?.readOnlyHint!==true&&Object.hasOwn(tool.inputSchema.properties??{},'owner')&&Object.hasOwn(tool.inputSchema.properties??{},'repo'))}
+    this.nativeCatalogs.set(readOnly,entry)
+   }catch(error){
+    if(this.current()?.id!==access.connection.id)void this.host.toolConnections.closeManaged(key)
+    throw error
+   }
+  }
+  return {...entry,config,headers}
+ }
+ private async readConnected(input:z.output<typeof githubReadSchema>,access:Access,check:()=>void,signal?:AbortSignal){
+  const {action,tool,offset,number}=input,repository=githubRepository(input.repository)!
+  if(action==='catalog'){
+   if(tool){
+    const readOnly=githubReadTools.includes(tool)
+    if(!readOnly&&!githubWriteTools.includes(tool))throw new GithubError('unsupported')
+    const catalog=await this.getNativeTools(access,readOnly,signal)
+    const match=catalog.tools.find(item=>item.name===tool)
+    if(!match)throw new GithubError('unsupported')
+    return githubEvidence({repository,tool,readOnly},{description:match.description,inputSchema:match.inputSchema},offset)
+   }
+   const [reads,writes]=await Promise.allSettled([this.getNativeTools(access,true,signal),this.getNativeTools(access,false,signal)])
+   if(reads.status==='rejected'&&writes.status==='rejected')throw reads.reason
+   const names=(result:typeof reads)=>result.status==='fulfilled'?result.value.tools.map(tool=>tool.name).sort():null
+   return githubResult({repository,read:names(reads),write:names(writes)})
+  }
+  if(action==='api'){
+   if(!input.apiPath)throw new GithubError('invalid_request')
+   const path=input.apiPath.replace(/^\//,'')
+   const match=/^repos\/([^/]+\/[^/?]+)(?:[/?]|$)/.exec(path)
+   if(match&&githubRepository(match[1]!)!==repository)throw new GithubError('invalid_request')
+   const data=await this.reader.api(path,access.token,{format:input.format,beforeSend:check},signal)
+   return githubEvidence({repository,path},data,offset)
+  }
+  if(action==='review_threads'){
+   if(!number)throw new GithubError('invalid_request')
+   const data=await githubReviewThreads(this.reader,access.token,repository,number,input.cursor,signal)
+   return githubEvidence({repository,number,cursor:data.pageInfo?.endCursor,hasNextPage:!!data.pageInfo?.hasNextPage},data.nodes,offset)
+  }
+  if(!tool)throw new GithubError('invalid_request')
+  const catalog=await this.getNativeTools(access,true,signal)
+  const match=catalog.tools.find(item=>item.name===tool)
+  if(!match)throw new GithubError('unsupported')
+  const response=await this.host.toolConnections.invokeManaged(catalog.key,catalog.config,catalog.headers,match,
+   githubToolArguments(match,repository,input.arguments??{}),check,signal)
+  if(response.invalid)throw new GithubError('invalid_request')
+  return githubEvidence({repository,tool},githubToolOutput(response.result),offset)
+ }
+ async permissions(input:unknown,check:()=>void){
+  check()
+  const parsed=z.object({repository:githubRepositorySchema}).strict().safeParse(input)
+  if(!parsed.success)throw new GithubError('invalid_request')
+  const repository=githubRepository(parsed.data.repository)!,signal=AbortSignal.timeout(26_000)
+  const access=await this.access(signal)
+  const root='repos/'+repository
+  const read=async(path:string)=>{
+   try{await this.reader.get(root+path,access.token,signal);return {status:'allowed'}}
+   catch(error){return {status:error instanceof GithubError?error.code:'unavailable',httpStatus:error instanceof GithubError?error.httpStatus:undefined}}
+  }
+  const [contents,pullRequests,issues,actions,push]=await Promise.all([
+   read('/contents'),read('/pulls?per_page=1'),read('/issues?per_page=1'),read('/actions/runs?per_page=1'),
+   githubPushAccess(repository,access.connection.account,access.token,signal),
+  ])
+  check()
+  this.live(access)
+  if(contents.status==='allowed')this.authFailure=undefined
+  return {repository,account:access.connection.account,source:access.connection.source??'token',
+   checkedAt:Date.now(),read:{contents,pullRequests,issues,actions},push}
  }
  async visibleRepositories(check:()=>void,signal:AbortSignal):Promise<string[]>{
   signal.throwIfAborted()
   check()
-  const access=this.access(),id=access.connection.id,cached=this.repositoryChoices
+  const access=await this.access(signal),id=this.managedKey(access.connection,access.token),cached=this.repositoryChoices
   if(cached?.id===id&&Date.now()-cached.at<60_000)return cached.names
   const rows=await this.reader.get('user/repos?per_page=100&sort=pushed&direction=desc',access.token,signal)
   check()
@@ -190,7 +331,7 @@ export class GithubConnector {
   check()
   const target=githubRepository(repository)
   if(!target)throw new GithubError('invalid_request')
-  const access=this.access()
+  const access=await this.access(signal)
   const root='repos/'+target
   const get=(path:string)=>this.reader.get(root+path,access.token,signal)
   const [metadata,rawBranches]=await Promise.all([get(''),get('/branches?per_page=60')])
@@ -214,7 +355,7 @@ export class GithubConnector {
    const parsed=githubGitSchema.safeParse(input)
    if(!parsed.success||!workspace)throw new GithubError('invalid_request')
    const args={...parsed.data,repository:githubRepository(parsed.data.repository)!}
-   const access=this.access()
+   const access=await this.access(signal)
    const revision=await githubGitRevision(workspace,args,signal)
    this.live(access)
    return {name,args,access,revision}
@@ -224,13 +365,25 @@ export class GithubConnector {
   const args={...parsed.data,repository:githubRepository(parsed.data.repository)!}
   if('labels'in args&&args.labels)args.labels=[...new Set(args.labels)].sort()
   if(args.action==='merge_pull')args.method??='squash'
-  const access=this.access()
-  if(args.action!=='merge_pull'&&!access.connection.tools.includes(mcpName[args.action]))throw new GithubError('unsupported')
+  if(args.action==='api'){
+   args.apiPath=githubWritePath(args.verb,args.apiPath)
+   if(args.apiPath.startsWith('git/refs/')&&args.arguments?.force!==undefined&&args.arguments.force!==false)
+    throw new GithubError('unsupported')
+  }
+  if(args.action==='tool'&&!githubWriteTools.includes(args.tool))throw new GithubError('unsupported')
+  if(args.action==='pull_control'&&(
+   ['resolve_thread','unresolve_thread'].includes(args.control)!==!!args.threadId||args.method!==undefined&&args.control!=='auto_merge'))
+   throw new GithubError('invalid_request')
+  const access=await this.access(signal)
+  if(args.action in mcpName&&!access.connection.tools.includes(mcpName[args.action as keyof typeof mcpName]))throw new GithubError('unsupported')
   return {name,args,access}
  }
  facts(plan:Plan){
-  return {tool:plan.name,action:plan.args.action,target:plan.args.repository,account:plan.access.connection.account,
-   version:stableDigest([plan.access.connection.id,plan.name==='github_git'?plan.revision:null]),
+  const {args,access}=plan
+  const action=args.action==='tool'?args.tool:args.action==='api'?args.verb+' '+args.apiPath:args.action==='pull_control'?args.control:args.action
+  const key=this.managedKey(access.connection,access.token)
+  return {tool:plan.name,action,target:args.repository,account:access.connection.account,
+   version:stableDigest([key,plan.name==='github_git'?plan.revision:null]),
    ...(plan.name==='github_git'&&plan.revision.sha?{sha:plan.revision.sha,branch:plan.revision.branch!}:{})}
  }
  enqueueReadbacks(){
@@ -297,6 +450,16 @@ export class GithubConnector {
  const {access}=plan
   const current=()=>{signal?.throwIfAborted();check();this.live(access)}
   current()
+  if(access.connection.source==='cli'){
+   try{
+    const currentAccess=await this.access(signal)
+    current()
+    if(currentAccess.token!==access.token)return githubFailure(new GithubError('conflict'))
+   }catch(error){
+    if(error instanceof GithubError)return githubFailure(error)
+    throw error
+   }
+  }
   if(plan.name==='github_git'){
    try{
     const result=await githubGit(plan.args,plan.revision,access.connection.account,access.token,current,signal)
@@ -310,6 +473,7 @@ export class GithubConnector {
  }
  private async write(plan:WritePlan,check:()=>void,signal?:AbortSignal):Promise<ToolResult>{
   const {args,access}=plan,{connection,token}=access
+  if(args.action==='api'||args.action==='pull_control'||args.action==='tool')return this.writeConnected(args,access,check,signal)
   const root='repos/'+args.repository
   const get=(path:string)=>{check();return this.reader.get(root+path,token,signal)}
   let sent=false
@@ -327,18 +491,25 @@ export class GithubConnector {
     check()
     return githubResult({...receipt(args),status:'complete',sha:out.sha})
    }
-   if(this.catalog?.id!==connection.id){
-    const tools=await this.host.toolConnections.inspectManaged(connection.id,remote,headers(token),signal)
+   const key=this.managedKey(connection,token)
+   if(this.catalog?.key!==key){
+    if(this.catalog)void this.host.toolConnections.closeManaged(this.catalog.key)
+    const tools=await this.host.toolConnections.inspectManaged(key,remote,headers(token),signal)
     check()
-    this.catalog={id:connection.id,tools}
+    this.catalog={key,tools}
    }
    const tool=this.catalog.tools.find(tool=>tool.name===mcpName[args.action])
    if(!tool)throw new GithubError('unsupported')
    const started=Date.now()
-   const response=await this.host.toolConnections.invokeManaged(connection.id,remote,headers(token),tool,mcpArguments(args),beforeSend,signal)
+   const response=await this.host.toolConnections.invokeManaged(key,remote,headers(token),tool,mcpArguments(args),beforeSend,signal)
    if(response.invalid)return githubFailure(new GithubError('unsupported'))
    const result=response.result
-   if(result.isError)throw new GithubError('unavailable')
+   if(result.isError){
+    try{githubToolOutput(result)}catch(error){
+     if(error instanceof GithubError&&error.httpStatus!==undefined)sent=false
+     throw error
+    }
+   }
    const data=resultData(result)
    const output=await this.confirm(args,data,get,connection.account,started)
    check()
@@ -357,6 +528,41 @@ export class GithubConnector {
     }
    }
    return uncertain(receipt(args))
+  }
+ }
+ private async writeConnected(args:NativeWrite,access:Access,check:()=>void,signal?:AbortSignal):Promise<ToolResult>{
+  const {repository}=args,{token}=access
+  let sent=false
+  const beforeSend=()=>{check();sent=true}
+  const operation=args.action==='tool'?args.tool:args.action==='api'?args.verb+' '+args.apiPath:args.control
+  try{
+   let data:unknown
+   if(args.action==='api'){
+    data=await this.reader.api('repos/'+repository+'/'+args.apiPath,token,
+     {method:args.verb,body:args.arguments,beforeSend},signal)
+   }else if(args.action==='pull_control'){
+    data=await githubChangePull(this.reader,token,repository,args.number,args.control,args.threadId,args.method,beforeSend,signal)
+   }else{
+    const catalog=await this.getNativeTools(access,false,signal)
+    const tool=catalog.tools.find(item=>item.name===args.tool)
+    if(!tool)throw new GithubError('unsupported')
+    const input=githubToolArguments(tool,repository,args.arguments??{})
+    if(args.tool==='pull_request_review_write'&&input.threadId!==undefined){
+     const id=githubNodeId.safeParse(input.threadId),pull=number.safeParse(input.pullNumber)
+     if(!id.success||!pull.success)throw new GithubError('invalid_request')
+     await githubCheckReviewThread(this.reader,token,repository,pull.data,id.data,signal)
+    }
+    const response=await this.host.toolConnections.invokeManaged(catalog.key,catalog.config,catalog.headers,tool,input,beforeSend,signal)
+    if(response.invalid)throw new GithubError('invalid_request')
+    data=githubToolOutput(response.result)
+   }
+   check()
+   return githubEvidence({repository,operation,status:'complete'},data)
+  }catch(error){
+   if(sent&&(!(error instanceof GithubError)||error.httpStatus===undefined))
+    return uncertain({repository,operation})
+   signal?.throwIfAborted()
+   return githubFailure(error instanceof GithubError?error:connectionFailure(error))
   }
  }
  private async confirm(args:Write,data:Record<string,any>,get:(path:string)=>Promise<any>,account:string,started:number){
@@ -413,7 +619,7 @@ function connectionFailure(error:unknown){
  }
  return new GithubError('unavailable')
 }
-function mcpArguments(input:Exclude<Write,{action:'merge_pull'}>){
+function mcpArguments(input:Exclude<CommonWrite,{action:'merge_pull'}>){
  const {repository,action,...args}=input,[owner,repo]=repository.split('/')
  const destination={owner,repo}
  switch(action){

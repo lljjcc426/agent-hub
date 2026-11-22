@@ -10,6 +10,8 @@ import {GithubReader} from '../src/github-read.ts'
 import {githubRateLimitDelay} from '../src/github-errors.ts'
 import {loadManagedConfig,managedConnections,managedSecrets,prepareManagedConfig,recoverManagedFiles} from '../src/managed-config.ts'
 import {serve} from '../src/server.ts'
+import * as githubCli from '../src/github-cli.ts'
+import type {Tool} from '@modelcontextprotocol/sdk/types.js'
 import type {Model} from '../src/model.ts'
 
 const repository='fixture/project',token='ghp_TEST_FIXTURE'
@@ -143,7 +145,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   expect(request.coordinationTurn).toBe(true)
   expect(request.allowNativeTools).toBeUndefined()
   await call('chat_opening',{text:'I will ask the Worker to compare the two commits.'})
-  expect(output(await call('github_read',compare))).toMatchObject({code:'worker_required'})
+  expect(output(await call('github_read',compare))).toMatchObject({repository,files:[{patch}]})
   const assignment=await call('worker_manage',{action:'assign',id:'research',revision:0,requestId:'comparison',text:'Compare the two fixture commits'})
   expect(output(assignment)).toHaveProperty('ticketId')
   return {threadId,turnId,text:'{"reply":"Assigned the comparison."}'}
@@ -163,7 +165,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'你有在看吗',openingLocale:'zh-CN'})
   await waitUntil(()=>view().messages.some(message=>message.text==='在，Worker 正在比较提交。'))
   expect(view().workers[0]?.tasks[0]?.state).toBe('running')
-  expect(outbound).toEqual([])
+  expect(outbound).toEqual(['/repos/'+repository+'/compare/'+sha+'...'+mergeSha])
  }finally{releaseWorker()}
  await waitUntil(()=>receipts.length===3)
  expect(receipts).toEqual([
@@ -171,7 +173,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   expect.objectContaining({repository:'fixture/other',files:[expect.objectContaining({patch})]}),
   expect.objectContaining({status:'not_found'}),
  ])
- expect(outbound).toEqual([repository,'fixture/other','fixture/inaccessible'].map(repo=>'/repos/'+repo+'/compare/'+sha+'...'+mergeSha))
+ expect(outbound).toEqual([repository,repository,'fixture/other','fixture/inaccessible'].map(repo=>'/repos/'+repo+'/compare/'+sha+'...'+mergeSha))
 })
 
 it('uses GitHub repository discovery for commit history and accepts a repository outside the picker',async()=>{
@@ -287,6 +289,8 @@ it('connects with a token alone, writes across repositories and never repeats an
    if(path==='/user')return json({login:'fixture-user'})
    if(path==='/repos/'+repository)return json({full_name:repository,default_branch:'main'})
    if(path.endsWith('/branches/main'))return json({name:'main',commit:{sha}})
+   if(path.endsWith('/branches/another'))return json({name:'another',commit:{sha}})
+   if(path.endsWith('/pulls/2'))return json({number:2,title:'Fixture pull',head:{sha},base:{ref:'main'}})
    if(path.endsWith('/pulls/1/merge')){
     expect(JSON.parse(String(init?.body))).toMatchObject({sha,merge_method:'squash'})
     merges++
@@ -323,7 +327,7 @@ it('connects with a token alone, writes across repositories and never repeats an
   const program=[
    'const a=await tools.github_read({repository:"fixture/project",action:"files",paths:["gone"]});',
    'const [b,c]=await Promise.all(["main","another"].map(ref=>tools.github_read({repository:"fixture/project",action:"branch",ref})));',
-   'return [a.success,b.success,JSON.parse(c.contentItems[0].text).code];',
+   'return [a.success,b.success,c.success];',
   ].join('')
   observed.push(output(await call('code_mode',{source:program})))
   observed.push(output(await call('github_read',{repository,action:'pull',number:2})))
@@ -354,7 +358,7 @@ it('connects with a token alone, writes across repositories and never repeats an
  }
  expect(host.chat.view(chat.id,'owner').run?.state).toBe('completed')
  expect(observed).toEqual([
-  [false,true,'worker_required'],expect.objectContaining({code:'worker_required'}),expect.objectContaining({status:'uncertain'}),
+  [false,true,true],expect.objectContaining({repository,item:expect.objectContaining({number:2})}),expect.objectContaining({status:'uncertain'}),
   expect.objectContaining({status:'uncertain'}),expect.objectContaining({repository:'fixture/other',status:'complete',sha:mergeSha}),
  ])
  expect(comments).toBe(1)
@@ -363,4 +367,108 @@ it('connects with a token alone, writes across repositories and never repeats an
  expect((await post(endpoint+'disconnect',headers,{})).status).toBe(200)
  expect(host.github.snapshot()).toEqual({status:'disconnected'})
  expect(Object.values(managedSecrets(host.config.stateDir))).not.toContain(token)
+})
+
+it('uses the selected CLI login without saving its token and probes repository write access without writing',async()=>{
+ const getToken=vi.spyOn(githubCli,'githubCliToken').mockResolvedValue(token)
+ cleanups.push(async()=>{getToken.mockRestore()})
+ let denied=true
+ vi.stubGlobal('fetch',async(input:URL|string,init?:RequestInit)=>{
+  const url=new URL(input)
+  expect(init?.method??'GET').toBe('GET')
+  if(url.origin==='https://github.com'){
+   expect(url.searchParams.get('service')).toBe('git-receive-pack')
+   expect(new Headers(init?.headers).get('authorization')).toBe('Basic '+Buffer.from('fixture-user:'+token).toString('base64'))
+   return new Response(null,denied?{status:403}:{status:200,headers:{'content-type':'application/x-git-receive-pack-advertisement'}})
+  }
+  expect(url.origin).toBe('https://api.github.com')
+  expect(new Headers(init?.headers).get('authorization')).toBe('Bearer '+token)
+  return url.pathname==='/user'?json({login:'fixture-user'}):json([])
+ })
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ vi.spyOn(host.toolConnections,'inspectManaged').mockResolvedValue([{name:'add_issue_comment',inputSchema:{type:'object'}}])
+ const authorize=()=>{}
+ await expect(host.github.connect({source:'cli',account:'another-user'},authorize)).rejects.toMatchObject({code:'auth_required'})
+ expect(host.github.snapshot()).toEqual({status:'disconnected'})
+ expect(await host.github.connect({source:'cli',account:'fixture-user'},authorize)).toMatchObject({source:'cli',account:'fixture-user',status:'connected'})
+ expect(getToken).toHaveBeenLastCalledWith('fixture-user',expect.any(AbortSignal))
+ expect(Object.values(managedSecrets(host.config.stateDir))).not.toContain(token)
+ expect(await host.github.permissions({repository},authorize)).toMatchObject({
+  read:{contents:{status:'allowed'},pullRequests:{status:'allowed'},issues:{status:'allowed'},actions:{status:'allowed'}},
+  push:{status:'denied',httpStatus:403},
+ })
+ denied=false
+ expect(await host.github.permissions({repository},authorize)).toMatchObject({push:{status:'allowed',httpStatus:200}})
+ expect(host.github.disconnect(authorize)).toEqual({status:'disconnected'})
+})
+
+it('keeps a successful merge uncertain when GitHub refuses the subsequent confirmation read',async()=>{
+ let mutations=0
+ vi.stubGlobal('fetch',async(_input:URL|string,init?:RequestInit)=>{
+  if(init?.method==='PUT'){
+   mutations++
+   return json({merged:true,sha:mergeSha})
+  }
+  return json({message:'Resource not accessible'},403)
+ })
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ legacyConnection(host)
+ const plan=await host.github.prepare('github_write',{repository,action:'merge_pull',number:1,expectedHead:sha})
+ const result=await host.github.execute(plan,()=>{})
+ expect(result.permission).toBe('uncertain')
+ expect(output(result)).toMatchObject({status:'uncertain',operation:'merge_pull'})
+ expect(mutations).toBe(1)
+})
+
+it('separates GitHub tool reads from writes and returns real provider errors for approved repository operations',async()=>{
+ const calls:string[]=[]
+ vi.stubGlobal('fetch',async(input:URL|string,init?:RequestInit)=>{
+  const url=new URL(input)
+  expect(url.hostname).toBe('api.github.com')
+  expect(new Headers(init?.headers).get('authorization')).toBe('Bearer '+token)
+  calls.push((init?.method??'GET')+' '+url.pathname)
+  if(url.pathname.endsWith('/files'))return json([{filename:'src/main.ts'}])
+  return json({message:'Resource not accessible'},403)
+ })
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ legacyConnection(host)
+ const target={type:'object' as const,properties:{owner:{type:'string'},repo:{type:'string'}}}
+ const tools:Tool[]=[
+  {name:'pull_request_read',annotations:{readOnlyHint:true},inputSchema:target},
+  {name:'actions_run_trigger',annotations:{readOnlyHint:false},inputSchema:target},
+ ]
+ const inspect=vi.spyOn(host.toolConnections,'inspectManaged').mockResolvedValue(tools)
+ const invoke=vi.spyOn(host.toolConnections,'invokeManaged').mockImplementation(async(_id,_config,_headers,_tool,args,beforeSend)=>{
+  expect(args).toMatchObject({owner:'fixture',repo:'project',method:'get_files',pullNumber:1})
+  beforeSend()
+  return {result:{content:[{type:'text',text:'[{"filename":"src/main.ts"}]'}]}}
+ })
+ const check=()=>{}
+ const read=(args:object,authorized=true)=>host.github.read({repository,...args},authorized,check).then(output)
+ expect(await read({action:'catalog'})).toMatchObject({read:['pull_request_read'],write:['actions_run_trigger']})
+ expect(inspect.mock.calls.some(([, ,headers])=>headers['X-MCP-Readonly']==='true')).toBe(true)
+ expect(await read({action:'tool',tool:'actions_run_trigger'})).toMatchObject({status:'unsupported'})
+ expect(await read({action:'tool',tool:'pull_request_read',arguments:{owner:'other'}})).toMatchObject({status:'invalid_request'})
+ expect(invoke).not.toHaveBeenCalled()
+ expect(await read({action:'tool',tool:'pull_request_read',arguments:{method:'get_files',pullNumber:1}})).toMatchObject({data:[{filename:'src/main.ts'}]})
+ expect(await read({action:'api',apiPath:'repos/fixture/project/pulls/1/files'},false)).toMatchObject({status:'access_denied'})
+ expect(await read({action:'api',apiPath:'repos/fixture/other/pulls/1/files'})).toMatchObject({status:'invalid_request'})
+ expect(await read({action:'api',apiPath:'repos/fixture/project/pulls/1/files'})).toMatchObject({data:[{filename:'src/main.ts'}]})
+ const api={repository,action:'api',verb:'PATCH',apiPath:'pulls/1',arguments:{title:'Updated'}}
+ await expect(host.github.prepare('github_write',{...api,verb:'DELETE',apiPath:'../outside'})).rejects.toMatchObject({code:'invalid_request'})
+ await expect(host.github.prepare('github_write',{...api,verb:'PUT',apiPath:'pulls/1/merge'})).rejects.toMatchObject({code:'unsupported'})
+ await expect(host.github.prepare('github_write',{...api,apiPath:'git/refs/heads/main',arguments:{force:true}})).rejects.toMatchObject({code:'unsupported'})
+ const connected=await host.github.prepare('github_write',api)
+ const chat=host.chat.create('owner')
+ const turn=host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'Update the PR title.'})
+ const actor=host.chat.permissionActor(turn.runId)!
+ expect(actor).toBeDefined()
+ const run=()=>host.permissions.run(actor,'github_write',connected.args,host.github.facts(connected),()=>host.github.execute(connected,check))
+ const pending=output(await run())
+ expect(pending.permission).toBe('pending')
+ expect(calls).toEqual(['GET /repos/fixture/project/pulls/1/files'])
+ host.permissions.decide(pending.id,true,()=>{})
+ expect(output(await run())).toMatchObject({status:'access_denied',source:'github',httpStatus:403})
+ expect(output(await run())).toMatchObject({status:'access_denied'})
+ expect(calls).toEqual(['GET /repos/fixture/project/pulls/1/files','PATCH /repos/fixture/project/pulls/1'])
 })

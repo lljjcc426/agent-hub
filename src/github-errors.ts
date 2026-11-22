@@ -18,13 +18,21 @@ export class GithubError extends Error {
  }
 }
 
-export function githubHttpError(status: number, headers: Headers) {
+export function githubRateLimitDelay(headers: Headers,now=Date.now()){
+ const retry=headers.get('retry-after')
+ const retrySeconds=retry===null?NaN:/^\d+$/.test(retry)?Number(retry):(Date.parse(retry)-now)/1000
+ const reset=headers.get('x-ratelimit-reset')
+ const resetSeconds=reset&&headers.get('x-ratelimit-remaining')==='0'?Number(reset)-now/1000:NaN
+ const waits=[retrySeconds,resetSeconds].filter(Number.isFinite)
+ return waits.length?Math.max(1,Math.ceil(Math.max(...waits))):60
+}
+
+export function githubHttpError(status: number, headers: Headers, message?:string) {
  if(status===401)return new GithubError('auth_required')
  if(status===404)return new GithubError('not_found')
- const retry=headers.get('retry-after'),reset=headers.get('x-ratelimit-reset')
- if(status===429||status===403&&(headers.get('x-ratelimit-remaining')==='0'||retry)){
-  const wait=retry?Number(retry):reset?Number(reset)-Date.now()/1000:NaN
-  return new GithubError('rate_limited',Number.isFinite(wait)?Math.max(1,Math.ceil(wait)):undefined)
+ const retry=headers.get('retry-after')
+ if(status===429||status===403&&(headers.get('x-ratelimit-remaining')==='0'||retry||/api rate limit exceeded|secondary rate limit/i.test(message??''))){
+  return new GithubError('rate_limited',githubRateLimitDelay(headers))
  }
  if(status===403)return new GithubError('access_denied')
  if(status===405||status===409||status===422)return new GithubError('conflict')

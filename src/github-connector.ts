@@ -45,12 +45,13 @@ export const githubWriteInputSchema=z.object({...target,
  expectedHead:sha.optional(),method:z.enum(['merge','squash','rebase']).optional(),
 }).strict()
 export const githubWriteSpec:ToolSpec={type:'function',name:'github_write',inputSchema:z.toJSONSchema(githubWriteInputSchema,{target:'draft-07'}),
- description:'Make a requested write in a granted GitHub repository. create_pull needs title, head and base; update_pull, review_pull, merge_pull, update_issue and comment need number; review_pull needs event; merge_pull needs the current expectedHead SHA; create_issue needs title; comment needs body. Supply only fields for the selected action. A result with status uncertain requires remote readback before any retry.',
+ description:'Make a requested write in a GitHub repository using the connected token. create_pull needs title, head and base; update_pull, review_pull, merge_pull, update_issue and comment need number; review_pull needs event; merge_pull needs the current expectedHead SHA; create_issue needs title; comment needs body. Supply only fields for the selected action. A result with status uncertain requires remote readback before any retry.',
 }
 export {githubReadSpec,githubGitSpec}
-const setupSchema=z.object({token:z.string().trim().min(1).max(500).regex(/^[a-zA-Z0-9_]+$/),repositories:z.array(githubRepositorySchema).min(1).max(12)}).strict()
+// Cached clients may still send the old repository field.
+const setupSchema=z.object({token:z.string().trim().min(1).max(500).regex(/^[a-zA-Z0-9_]+$/),repositories:z.array(z.string()).optional()}).strict()
 type Write=z.output<typeof githubWriteSchema>
-type Connection={id:string;account:string;repositories:string[];tools:string[];checkedAt:number}
+type Connection={id:string;account:string;tools:string[];checkedAt:number}
 const namespace='github-access',current='current'
 const secretName=(id:string)=>'AGENTHUB_SETUP_GITHUB_ACCESS_'+id.replaceAll('-','').toUpperCase()
 const headers=(token:string)=>({Authorization:'Bearer '+token,'X-MCP-Toolsets':'issues,pull_requests'})
@@ -63,22 +64,22 @@ type Plan=WritePlan|GitPlan
 export class GithubConnector {
  private readonly reader=new GithubReader()
  private catalog?:{id:string;tools:Tool[]}
+ private repositoryChoices?:{id:string;at:number;names:string[]}
  private authFailure?:{id:string;status:GithubError['code']}
  constructor(private readonly host:Runtime){}
  private current(){return this.host.store.get<Connection>(namespace,current)}
  snapshot(){
   const connection=this.current()
   if(!connection)return {status:'disconnected' as const}
-  const {account,repositories,tools,checkedAt}=connection
+  const {account,tools,checkedAt}=connection
   const failure=this.authFailure?.id===connection.id?this.authFailure.status:undefined
   const status=failure??(managedSecrets(this.host.config.stateDir)[secretName(connection.id)]?'connected':'auth_required')
-  return {status,account,repositories,tools,checkedAt}
+  return {status,account,tools,checkedAt}
  }
  connected(){return !!this.current()}
- private access(repository:string):Access{
+ private access():Access{
   const connection=this.current()
   if(!connection)throw new GithubError('unconfigured')
-  if(!connection.repositories.includes(repository))throw new GithubError('access_denied')
   const token=managedSecrets(this.host.config.stateDir)[secretName(connection.id)]
   if(!token)throw new GithubError('auth_required')
   return {connection,token}
@@ -90,17 +91,15 @@ export class GithubConnector {
   authorize()
   const parsed=setupSchema.safeParse(input)
   if(!parsed.success)throw new GithubError('invalid_request')
-  const {token}=parsed.data,repositories=[...new Set(parsed.data.repositories.map(repository=>githubRepository(repository)!))].sort()
+  const {token}=parsed.data
   const previous=this.current(),id=randomUUID(),signal=AbortSignal.timeout(24_000)
   let identity:{login:string},tools:Tool[]
   try{
-   const [account,discovered,...repos]=await Promise.all([
+   const [account,discovered]=await Promise.all([
     this.probe(()=>this.reader.get('user',token,signal),signal),
     this.probe(()=>this.host.toolConnections.inspectManaged(id,remote,headers(token),signal),signal),
-    ...repositories.map(repo=>this.probe(()=>this.reader.get('repos/'+repo,token,signal),signal)),
    ])
    if(typeof account?.login!=='string'||!account.login)throw new GithubError('auth_required')
-   if(repos.some((data,index)=>data.full_name?.toLowerCase()!==repositories[index]))throw new GithubError('access_denied')
    if(!discovered.some(tool=>remote.allowedTools.includes(tool.name)&&tool.annotations?.readOnlyHint!==true))throw new GithubError('unsupported')
    identity=account;tools=discovered
   }catch(error){
@@ -111,8 +110,9 @@ export class GithubConnector {
   try{
    authorize()
    if(this.current()?.id!==previous?.id)throw new GithubError('conflict')
-   this.persist(id,{id,account:identity.login,repositories,tools:tools.map(tool=>tool.name),checkedAt:Date.now()},token)
+   this.persist(id,{id,account:identity.login,tools:tools.map(tool=>tool.name),checkedAt:Date.now()},token)
    this.catalog={id,tools}
+   this.repositoryChoices=undefined
    this.authFailure=undefined
   }catch(error){
    void this.host.toolConnections.closeManaged(id)
@@ -133,7 +133,7 @@ export class GithubConnector {
   const previous=this.current()
   if(previous){
    this.persist(randomUUID())
-   this.catalog=undefined;this.authFailure=undefined
+   this.catalog=undefined;this.authFailure=undefined;this.repositoryChoices=undefined
    void this.host.toolConnections.closeManaged(previous.id)
   }
   return this.snapshot()
@@ -145,7 +145,8 @@ export class GithubConnector {
   const files=prepareManagedConfig(state,id,managedConnections(state),secrets,true)
   try{
    this.host.store.atomic(()=>{
-    this.host.store.put(namespace,current,next??null)
+    // An older release expects this array and must fail closed if rolled back.
+    this.host.store.put(namespace,current,next?{...next,repositories:[]}:null)
     this.host.store.put(configKey,id,{at:Date.now(),action:next?'connect':'disconnect'})
    })
   }catch(error){files.rollback();throw error}
@@ -154,9 +155,10 @@ export class GithubConnector {
  async read(input:unknown,allowPrivate:boolean,check:()=>void,signal?:AbortSignal){
   check()
   let used:Connection|undefined
-  const result=await this.reader.read(input,repository=>{
-   if(!allowPrivate||!this.current()?.repositories.includes(repository))return
-   const access=this.access(repository)
+  const result=await this.reader.read(input,(_,action)=>{
+   if(action==='compare'&&!allowPrivate)throw new GithubError('access_denied')
+   if(action!=='compare'&&(!allowPrivate||!this.current()))return
+   const access=this.access()
    used=access.connection
    return access.token
   },signal)
@@ -168,10 +170,28 @@ export class GithubConnector {
   }
   return result
  }
+ async visibleRepositories(check:()=>void,signal:AbortSignal):Promise<string[]>{
+  signal.throwIfAborted()
+  check()
+  const access=this.access(),id=access.connection.id,cached=this.repositoryChoices
+  if(cached?.id===id&&Date.now()-cached.at<60_000)return cached.names
+  const rows=await this.reader.get('user/repos?per_page=100&sort=pushed&direction=desc',access.token,signal)
+  check()
+  this.live(access)
+  if(!Array.isArray(rows))throw new GithubError('unavailable')
+  const names=[...new Set<string>(rows.flatMap(row=>{
+   const repo=typeof row?.full_name==='string'?githubRepository(row.full_name):undefined
+   return repo?[repo]:[]
+  }))]
+  this.repositoryChoices={id,at:Date.now(),names}
+  return names
+ }
  async commitHistory(repository:string,requested:string|undefined,check:()=>void,signal:AbortSignal):Promise<CommitHistory>{
   check()
-  const access=this.access(repository)
-  const root='repos/'+repository
+  const target=githubRepository(repository)
+  if(!target)throw new GithubError('invalid_request')
+  const access=this.access()
+  const root='repos/'+target
   const get=(path:string)=>this.reader.get(root+path,access.token,signal)
   const [metadata,rawBranches]=await Promise.all([get(''),get('/branches?per_page=60')])
   if(typeof metadata?.default_branch!=='string'||!Array.isArray(rawBranches))throw new GithubError('unavailable')
@@ -194,7 +214,7 @@ export class GithubConnector {
    const parsed=githubGitSchema.safeParse(input)
    if(!parsed.success||!workspace)throw new GithubError('invalid_request')
    const args={...parsed.data,repository:githubRepository(parsed.data.repository)!}
-   const access=this.access(args.repository)
+   const access=this.access()
    const revision=await githubGitRevision(workspace,args,signal)
    this.live(access)
    return {name,args,access,revision}
@@ -204,7 +224,7 @@ export class GithubConnector {
   const args={...parsed.data,repository:githubRepository(parsed.data.repository)!}
   if('labels'in args&&args.labels)args.labels=[...new Set(args.labels)].sort()
   if(args.action==='merge_pull')args.method??='squash'
-  const access=this.access(args.repository)
+  const access=this.access()
   if(args.action!=='merge_pull'&&!access.connection.tools.includes(mcpName[args.action]))throw new GithubError('unsupported')
   return {name,args,access}
  }

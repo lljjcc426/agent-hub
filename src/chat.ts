@@ -28,6 +28,8 @@ import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attac
 import {ChatDeliveries,routerFileInput,type ChatDelivery} from './chat-deliveries.ts'
 import {decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecision,type ChatPlan} from './chat-workflow.ts'
 import type {Approval} from './approvals.ts'
+import {githubRepository} from './github-read.ts'
+import {GithubError} from './github-errors.ts'
 import {approvalHistory,approvalHistoryItem,pendingChatApprovals,transcriptApprovals,type HistoryCursor} from './chat-approval-history.ts'
 import type {UsageRecord} from './usage-ledger.ts'
 import type {BudgetReceipt} from './context-budget.ts'
@@ -980,15 +982,23 @@ export class ChatSessions {
       ? this.host.config.sources.find(s=>s.id===conversation.sourceId&&s.enabled&&s.kind==='local'&&s.allowedActors.includes(conversation.actor))
       : this.source()?.source
     const local=source && await commitRepository(source.cwd,signal)
-    const github=this.host.github.snapshot()
-    const remote=this.host.config.work.network && 'repositories' in github && github.status==='connected' ? github.repositories : []
+    const github=this.host.github
+    const canUseGithub=this.host.config.work.network && github.snapshot().status==='connected'
+    const named=input.repository?.startsWith('github:')?githubRepository(input.repository.slice('github:'.length)):undefined
+    if(input.repository&&(input.repository==='local'?!local:!canUseGithub||!named))
+      throw new ChatError('commit_repository_missing','Repository not available in this conversation.',404)
+    const remote=canUseGithub?await github.visibleRepositories(authorize,signal).catch(error=>{
+      signal.throwIfAborted()
+      if(!(error instanceof GithubError)||error.code==='conflict')throw error
+      return []
+    }):[]
+    const visible=named&&!remote.includes(named)?[...remote,named]:remote
     const repositories=[
       ...(local ? [{id:'local',label:source?.label || basename(local)}] : []),
-      ...remote.map(name=>({id:'github:'+name,label:name})),
+      ...visible.map(name=>({id:'github:'+name,label:name})),
     ]
-    const repository=input.repository ?? repositories[0]?.id
+    const repository=named?'github:'+named:input.repository??repositories[0]?.id
     if(!repository)return {repositories}
-    if(!repositories.some(item=>item.id===repository))throw new ChatError('commit_repository_missing','Repository not available in this conversation.',404)
     const history=repository==='local'
       ? await localCommitHistory(local!,input.branch,signal)
       : await this.host.github.commitHistory(repository.slice('github:'.length),input.branch,authorize,signal)

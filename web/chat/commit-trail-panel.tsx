@@ -88,7 +88,7 @@ export default function CommitTrailPanel({load, active, L, locale}: {
           branches={data.branches??[]} commits={commits} hasMore={data.hasMore} L={L}
           onBranchChange={branch=>select({repository:data.repository,branch})}/>
       </> : <p className="pending-empty" role="status">
-        {L('Open a Git project conversation or connect an authorized GitHub repository.','打开关联 Git 项目的会话，或连接已授权的 GitHub 仓库。')}
+        {L('Open a Git project conversation or connect your GitHub account.','打开关联 Git 项目的会话，或连接 GitHub 账号。')}
         {' '}<a href="/configure#connectors">{L('Connectors','连接器')}</a>
       </p>}
   </div>

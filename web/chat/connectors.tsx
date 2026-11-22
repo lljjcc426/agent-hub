@@ -14,7 +14,7 @@ type Translate = (en: string, zh: string) => string
 type Tab = 'available' | 'connected'
 type Definition = { kind: string; label: string; pluginId?: string; setupAvailable: boolean }
 type Connection = { id: string; kind: string; label: string; enabled: boolean; scopeCount: number; officeManaged?: boolean; liveStatus?: string; observedGroups?: number }
-type GithubAccess = { status: string; account?: string; repositories?: string[]; tools?: string[] }
+type GithubAccess = { status: string; account?: string; tools?: string[] }
 type OfficeApp = { kind: OfficeAppKind; label: string } & OfficeAppView
 type Inventory = { definitions: Definition[]; instances: Connection[]; github?: GithubAccess; officeApps?: OfficeApp[] }
 type OfficeBotDialogInput = { kind: OfficeBotKind; sourceId?: string }
@@ -101,7 +101,7 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
   const connected = instances.filter(item => matches(item.kind, item.label, nameFor(item.kind, item.label, L)))
   const github = data?.github
   const githubConnected = !!github?.account
-  const showGithub = githubConnected && matches('GitHub', github.account ?? '', ...(github.repositories ?? []))
+  const showGithub = githubConnected && matches('GitHub', github.account ?? '')
   const startFeishu = () => { setOfficeNotice(''); setNotice(undefined); setPairing(true) }
   const openBot = (kind: OfficeBotKind, sourceId?: string) => {
     setOfficeNotice('')
@@ -179,10 +179,10 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
           <ConnectorMark kind="github" />
           <div className="connector-identity">
             <strong>GitHub</strong>
-            <span>{github.status === 'connected' ? '@' + github.account + ' · ' + (github.repositories?.length ?? 0) + L(' repositories', ' 个仓库')
+            <span>{github.status === 'connected' ? '@' + github.account
               : L('Reconnect required', '需要重新连接')}</span>
           </div>
-          <Button tone="quiet" aria-label={L('Manage GitHub repository access', '管理 GitHub 仓库权限')}
+          <Button tone="quiet" aria-label={L('Manage GitHub connection', '管理 GitHub 连接')}
             onClick={() => setGithubDialog(true)}>{L('Manage', '管理')}<ChevronRight size={16} /></Button>
         </li>}
         {connected.map(item => {
@@ -230,20 +230,16 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
 
 function GithubDialog({ github, L, close, finish }: { github?: GithubAccess; L: Translate; close: () => void; finish: (result: GithubAccess) => void }) {
   const tokenId = useId()
-  const reposId = useId()
   const tokenLabel = L('GitHub access token', 'GitHub 访问令牌')
-  const reposLabel = L('Repositories', '仓库')
   const [token, setToken] = useState('')
-  const [repos, setRepos] = useState(github?.repositories?.join(', ') ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const repositories = repos.trim().split(/[\s,，]+/).filter(Boolean)
   const save = async (disconnect = false) => {
     setBusy(true)
     setError('')
     try {
       const result = await request<GithubAccess>(disconnect ? '/api/connectors/github/disconnect' : githubSetup,
-        disconnect ? {} : { token: token.trim(), repositories })
+        disconnect ? {} : { token: token.trim() })
       setToken('')
       finish(result)
     } catch (problem) {
@@ -251,11 +247,11 @@ function GithubDialog({ github, L, close, finish }: { github?: GithubAccess; L: 
       setError(githubSetupError(code, L))
     } finally { setBusy(false) }
   }
-  return <Dialog open title={github?.account ? L('GitHub repository access', 'GitHub 仓库权限') : L('Connect GitHub', '连接 GitHub')}
+  return <Dialog open title={github?.account ? L('GitHub connection', 'GitHub 连接') : L('Connect GitHub', '连接 GitHub')}
     closeLabel={L('Close', '关闭')} onClose={() => { if (!busy) close() }}
     footer={<>
       {github?.account && <Button tone="quiet" disabled={busy} onClick={() => void save(true)}>{L('Disconnect', '断开连接')}</Button>}
-      <Button tone="primary" busy={busy} disabled={!token.trim() || !repositories.length}
+      <Button tone="primary" busy={busy} disabled={!token.trim()}
         onClick={() => void save()}>{github?.account ? L('Update connection', '更新连接') : L('Verify and connect', '验证并连接')}</Button>
     </>}>
     <div className="connector-github-fields">
@@ -265,13 +261,8 @@ function GithubDialog({ github, L, close, finish }: { github?: GithubAccess; L: 
         <TextField id={tokenId} label={tokenLabel} type="password" value={token}
           autoComplete="off" disabled={busy} onChange={event => setToken(event.target.value)} />
       </div>
-      <div className="connector-github-field">
-        <label htmlFor={reposId}>{reposLabel}</label>
-        <TextField id={reposId} label={reposLabel} value={repos} placeholder="owner/repo, owner/another-repo" autoComplete="off" spellCheck={false}
-          disabled={busy} onChange={event => setRepos(event.target.value)} />
-      </div>
-      <p>{L('Select the same repositories when creating the token. Enable Contents, Issues and Pull requests write access for the actions you want to use.',
-        '创建令牌时选择相同的仓库，并按需要开启 Contents、Issues 和 Pull requests 的读写权限。')}</p>
+      <p>{L('GitHub uses the token to determine repository access and operation permissions.',
+        '仓库访问和操作权限由 GitHub 根据令牌决定。')}</p>
       <p><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">
         {L('Create a GitHub token', '创建 GitHub 令牌')}<ArrowUpRight size={14} />
       </a><a href={manageLink('github')}>{L('Configure GitHub events', '配置 GitHub 事件')}</a></p>
@@ -283,10 +274,10 @@ function GithubDialog({ github, L, close, finish }: { github?: GithubAccess; L: 
 function githubSetupError(code: string, L: Translate) {
   switch (code) {
     case 'auth_required': return L('GitHub rejected the token. Check that it is active.', 'GitHub 拒绝了这个令牌，请确认令牌仍有效。')
-    case 'access_denied': case 'not_found': return L('A selected repository could not be accessed. Check its name and token permissions.', '无法访问所选仓库，请检查仓库名和令牌权限。')
+    case 'access_denied': case 'not_found': return L('GitHub could not verify this connection. Check the token permissions.', 'GitHub 无法验证此连接，请检查令牌权限。')
     case 'unsupported': return L('GitHub did not expose write tools for this credential.', 'GitHub 未向这个令牌提供写入工具。')
     case 'conflict': return L('The connection changed. Refresh and try again.', '连接已变化，请刷新后重试。')
-    case 'invalid_request': return L('Enter a token and up to 12 GitHub repositories.', '请填写有效令牌和最多 12 个 GitHub 仓库。')
+    case 'invalid_request': return L('Enter a valid GitHub token.', '请填写有效的 GitHub 令牌。')
     case 'rate_limited': return L('GitHub is rate limiting requests. Try again later.', 'GitHub 正在限流，请稍后重试。')
     case 'preview_restricted': return L('Open your Roppo workspace to connect GitHub.', '请在正式工作区连接 GitHub。')
     default: return L('Couldn’t connect to GitHub. Try again.', 'GitHub 暂未连接，请重试。')

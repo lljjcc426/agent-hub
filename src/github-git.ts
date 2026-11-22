@@ -16,7 +16,7 @@ export const githubGitSchema=z.object({
 }).strict()
 export type GithubGitInput=z.output<typeof githubGitSchema>
 export const githubGitSpec:ToolSpec={type:'function',name:'github_git',inputSchema:z.toJSONSchema(githubGitSchema,{target:'draft-07'}),
- description:'For a granted GitHub repository, clone into a new task subdirectory or push the current committed HEAD to the named branch. Clone returns the task-relative directory. Push expects an existing task repository with matching GitHub origin; set directory to its task-relative folder or ".". Uses the connection identity without disclosing credentials. To edit and commit, use the usual Worker workspace tools first. Push requires branch and verifies the remote SHA. No force push.',
+ description:'Using the connected GitHub token, clone into a new task subdirectory or push the current committed HEAD to the named branch. Clone returns the task-relative directory. Push expects an existing task repository with matching GitHub origin; set directory to its task-relative folder or ".". Uses the connection identity without disclosing credentials. To edit and commit, use the usual Worker workspace tools first. Push requires branch and verifies the remote SHA. No force push.',
 }
 
 const exec=promisify(execFile)

@@ -23,10 +23,17 @@ export function WorkerQuestion({item,L,send,refresh,readonly,footer}:Props){
   catch{setError(L('Could not confirm. Retry the same response.','未确认保存，可重试这次答复。'))}
   finally{setBusy(false)}
  }
- const target=[item.target.label,item.target.version,item.target.amount&&item.target.amount.value+' '+item.target.amount.currency,item.target.recipient?.label].filter(Boolean).join(' · ')
+ const label=/^\s*\{\s*"/.test(item.target.label)?'':item.target.label
+ const version=item.target.version!==item.version&&!/^[a-f\d]{32,64}$/i.test(item.target.version)?item.target.version:''
+ const target=[label,version,item.target.amount&&item.target.amount.value+' '+item.target.amount.currency,item.target.recipient?.label].filter(Boolean).join(' · ')
+ const missing=item.fileHandoff?.state==='missing'?item.fileHandoff.missing:[]
  return <section className="review-question" aria-label={L('Worker question','Worker 提问')}>
   {status==='pending'||status==='answered'?<QuestionCard L={L} id={item.id} question={item.question} notice={target} options={[]} custom maxLength={10000}
-    answer={item.answer?.text} disabled={busy||readonly} onAnswer={v=>void submit('answer',v)} footer={footer}/>:
+    answer={item.answer?.text} disabled={busy||readonly} onAnswer={v=>void submit('answer',v)} footer={footer}
+    outcome={missing.length>0&&<div className="chat-approval-outcome" role="status">
+      <strong>{L('Missing original files','缺少原始文件')}</strong>
+      <ul>{missing.map(path=><li key={path}>{path}</li>)}</ul>
+    </div>}/>:
    <ApprovalFrame L={L} kind="choice" id={item.id} title={item.question} notice={target} result="closed"
       status={({expired:L('Question expired','问题已过期'),stale:L('The task changed','任务已变更'),unavailable:L('Question unavailable','问题暂不可用'),withdrawn:L('Question withdrawn','问题已撤回')})[status]}>
     {(status==='expired'||status==='stale')&&<Button disabled={busy||readonly} onClick={()=>void submit('renew')}>{L('Request a new question','重新提问')}</Button>}

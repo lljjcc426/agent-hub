@@ -1,7 +1,10 @@
 import {z} from 'zod'
 import {bodyDigest} from './sources.ts'
 import {ChatError} from './chat-errors.ts'
+import {fileHandoffOutcome,rememberFileHandoff,type FileHandoffOutcome} from './chat-file-handoff.ts'
 import type {Runtime} from './runtime.ts'
+import type {Run} from './store.ts'
+import {allowNewTaskInputs} from './task-context.ts'
 import type {ActorRef,Ticket,Trigger} from './vendor/dsh-core/index.ts'
 
 export const decisionTermsSchema=z.object({
@@ -16,8 +19,10 @@ export interface BusinessDecisionView {
  status:'pending'|'answered'|'expired'|'stale'|'withdrawn'|'unavailable';reason:string|null;
  target:{label:string;version:string;amount:DecisionTerms['amount'];recipient:DecisionTerms['recipient']};
  answer:{text:string;at:number}|null
+ fileHandoff?:FileHandoffOutcome
 }
 interface DecisionRecord extends BusinessDecisionView {schema:1;originTriggerId?:string;actor:ActorRef;basis:string;terms:DecisionTerms|null;admissionSeq:number}
+export const legacyExecutionQuestion='Execution could not be confirmed. Review task records and the actual outcome before continuing.'
 const fail=(code:string)=>new ChatError(code,code,code==='decision_identity'?403:409)
 function readDecision(host:Runtime,id:string):DecisionRecord|undefined {
  const d=host.store.get<DecisionRecord>('business-decision',id),time=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0&&v<=8.64e15
@@ -52,7 +57,17 @@ export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:Decisi
 }
 export function businessDecision(host:Runtime,id:string,now=Date.now()):BusinessDecisionView|undefined {
  const d=readDecision(host,id);if(!d)return
+ if(d.question===legacyExecutionQuestion&&!d.terms){
+  const replied=d.originTriggerId&&host.store.get<{decisionTicketId?:string}>('chat-run',d.originTriggerId)
+  if(d.summary==='Error: async_worker_goal_unavailable'||replied&&replied.decisionTicketId===d.ticketId)return
+ }
  const {schema,originTriggerId,actor,basis:expected,terms,admissionSeq,...view}=d,t=host.store.tickets.get(d.ticketId)
+ if(/^\s*\{\s*"/.test(view.target.label)){
+  const goal=host.goals.forTask(d.ticketId)
+  view.target={...view.target,label:goal?.nodes?.find(node=>node.ticketId===d.ticketId)?.title??goal?.title??''}
+ }
+ const handoff=fileHandoffOutcome(host,id)
+ if(handoff)view.fileHandoff=handoff
  if(d.status==='answered')return view
  if(!t||t.ended||!t.attention||t.attention.id!==id)return {...view,status:'withdrawn',reason:'question_replaced_or_task_closed'}
  const latest=host.store.get<{questionId:string;terms:DecisionTerms|null}>('business-decision-terms',t.id)
@@ -87,4 +102,37 @@ export function migrateBusinessDecisions(host:Runtime):void {
   const d=host.store.get<DecisionRecord>('business-decision',t.attention.id)
   if(d)host.store.put('business-decision',d.id,{...d,expiresAt:d.createdAt,reason:'legacy_question_requires_renewal'})
  }})
+}
+
+/** The old scheduler could reject this saved reply before starting any new model turn. */
+export function recoverAnsweredGoalQuestions(host:Runtime):void {
+ const {store}=host
+ for(const run of store.list<Run>('run')){
+  if(run.phase!=='uncertain'||run.error!=='Error: async_worker_goal_unavailable')continue
+  const ticket=store.tickets.get(run.ticketId)
+  if(!ticket||ticket.ended||ticket.attention?.question!==legacyExecutionQuestion)continue
+  const trigger=decisionAsker(host,ticket)
+  const answer=trigger&&store.db.prepare(`SELECT body FROM records WHERE kind='question-answer'
+   AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.assignmentId')=?`)
+   .get(ticket.id,trigger.id,run.assignmentId)
+  if(!trigger||!answer)continue
+  const {questionId}=JSON.parse(String(answer.body)) as {questionId:string}
+  const saved=readDecision(host,questionId),chat=store.get<{conversationId:string;decisionTicketId?:string}>('chat-run',trigger.id)
+  if(!saved?.answer||saved.ticketId!==ticket.id||chat?.decisionTicketId!==ticket.id||
+     !ticket.inputs.some(input=>input.kind==='trigger'&&ticket.undelivered.includes(input.id)&&
+       store.triggers.get(input.triggerId)?.meta.parentTrigger===trigger.id))continue
+  try{
+   store.atomic(()=>{
+    const authority=host.taskAuthority(ticket.id)
+    const context=authority&&host.scopes.context(trigger,authority.discussion)
+    if(!context||!host.goals.resumeAnsweredQuestion(ticket.id,saved.summary,context,true))return
+    rememberFileHandoff(host,questionId,{ticketId:ticket.id,conversationId:chat.conversationId,triggerId:trigger.id,question:saved.question},saved.answer!.text)
+    store.put('run',ticket.id,{...run,phase:'idle',error:undefined,failure:undefined})
+    host.engine.report(ticket.id,{state:'waiting',summary:saved.summary,question:null})
+    const prior=ticket.inputs.map(item=>item.id)
+    host.engine.note(ticket.id,'Continue the previously authorized task using the saved answer to its file handoff question.')
+    allowNewTaskInputs(store,ticket.id,prior)
+   })
+  }catch{ /* Leave the retained task held if its current authority or effects require reconciliation. */ }
+ }
 }

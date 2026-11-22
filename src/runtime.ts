@@ -14,7 +14,8 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {RouterHandoff} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
-import {captureBusinessDecision,migrateBusinessDecisions,decisionTerms,type DecisionTerms} from './business-decisions.ts'
+import {captureBusinessDecision,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyExecutionQuestion,decisionTerms,type DecisionTerms} from './business-decisions.ts'
+import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
@@ -314,6 +315,7 @@ export class Runtime {
     this.manager.restoreSubscriptions()
     this.store.recoverJobs()
     this.store.recoverDeliveries()
+    recoverAnsweredGoalQuestions(this)
     // Recover the commit-to-interrupt crash window before any task can auto-resume.
     for(const g of this.store.list<RouterGoal>('router-goal'))if(g.supersededBy)for(const id of this.goals.taskIdsForGoal(g)){
       this.interruptForAutomation(id)
@@ -335,6 +337,9 @@ export class Runtime {
         if (ticket && !ticket.ended && runningAssignment(ticket)) {
           if(unconfirmed)this.engine.report(ticket.id,{state:'blocked',summary:unconfirmedEffectMessage,question:null})
           else if(recover||managedOpenCode)this.engine.report(ticket.id,{state:'blocked',summary:'Execution interrupted; checking retained history for safe recovery',question:null})
+          else if(this.isChatDecisionFollowup(ticket.id)&&(!ticket.attention||ticket.attention.question===legacyExecutionQuestion||
+            this.store.get<{status:string}>('business-decision',ticket.attention.id)?.status==='answered'))
+            this.engine.report(ticket.id,{state:'blocked',summary:run.error??'Execution interrupted; reconciliation required',question:null})
           else this.reportWork(ticket.id, { state: 'blocked', summary: 'Execution interrupted; reconciliation required', question: ticket.attention?.question??'Inspect the native thread and workspace, then retry or take over.',...(ticket.attention?.triggerId?{askedBy:ticket.attention.triggerId}:{}) })
         }
         if(recover){
@@ -348,6 +353,10 @@ export class Runtime {
   private queueInputs(ticket: Ticket, assignment: Assignment): void {
     ticket=taskView(this.store,ticket)
     if (ticket.undelivered.length) this.store.enqueue('execute:' + assignment.id + ':' + bodyDigest(ticket.undelivered), 'execute', { ticketId: ticket.id, assignmentId: assignment.id })
+  }
+  private isChatDecisionFollowup(ticketId:string){
+    const parent=this.taskAuthority(ticketId)?.parentTrigger
+    return !!parent&&this.store.get<{decisionTicketId?:string}>('chat-run',parent)?.decisionTicketId===ticketId
   }
   /** Offer source inputs to the current turn. Only the backend's history receipt consumes them. */
   async deliverLiveInputs(ticketId:string):Promise<void> {
@@ -913,7 +922,7 @@ export class Runtime {
         const payload = job.payload as any
         if(['start','execute'].includes(job.kind)){
           const g=this.goals.forTask(payload.ticketId)
-          if(g?.project&&!['active','waiting'].includes(g.state))continue
+          if(g&&(!['active','waiting'].includes(g.state)||g.nodes?.some(node=>node.ticketId===payload.ticketId&&node.state==='held')))continue
           if(!this.webhooks.taskExecutionAllowed(payload.ticketId))continue
         }
         if(['start','execute'].includes(job.kind)&&this.watchdog.recovering(payload.ticketId))continue
@@ -956,7 +965,8 @@ export class Runtime {
           if(job.kind==='router')this.goals.finishTurn(payload.triggerId,error)
           if (payload.ticketId) {
             const ticket = this.store.tickets.get(payload.ticketId)
-            if (ticket && !ticket.ended) this.reportWork(ticket.id, { state: 'blocked', summary: String(error).slice(0,500),question:'Work could not start. Inspect the task and retry.' })
+            if (ticket && !ticket.ended) this.reportWork(ticket.id, {state:'blocked',summary:String(error).slice(0,500),
+              question:this.isChatDecisionFollowup(ticket.id)?null:'Work could not start. Inspect the task and retry.'})
           }
         }).finally(() => { this.runningJobs.delete(job.id);if(serialRouter)this.routingDiscussions.delete(routerDiscussion!) })
         this.runningJobs.set(job.id, task)
@@ -1510,7 +1520,6 @@ export class Runtime {
       run.agentOptions=agentOptions
       const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
-      const chatFiles=builtInChat?this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])):[]
       const schema=builtInChat?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const specs=this.availableWorkerSpecs().filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
@@ -1519,6 +1528,24 @@ export class Runtime {
         && (!['github_write','github_git'].includes(s.name)||this.github.connected())),toolsDigest=digest(JSON.stringify(specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')
+      const fileHandoff=builtInChat?await prepareFileHandoff(this,ticket.id,controller.signal):undefined
+      if(fileHandoff?.state==='missing'){
+        const parent=this.taskAuthority(ticket.id)?.parentTrigger
+        const trigger=parent?this.store.triggers.get(parent):undefined
+        const chinese=/\p{Script=Han}/u.test(trigger?.text??'')||this.chat.locale(parent??'')?.startsWith('zh')
+        const summary=(chinese?'缺少原始文件：':'Missing original files: ')+fileHandoff.missing.join(chinese?'、':', ')
+        this.store.atomic(()=>{
+          this.engine.inputsDelivered(ticket.id,assignmentId,inputs.map(input=>input.id))
+          this.engine.turnEnded(ticket.id,assignmentId)
+          this.reportWork(ticket.id,{state:'blocked',summary,question:null})
+          run.phase='idle';persist(true)
+        })
+        return
+      }
+      controller.signal.throwIfAborted()
+      if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')
+      const handoffFiles=builtInChat?handedOffFiles(this,ticket.id):[]
+      const chatFiles=builtInChat?[...this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])),...handoffFiles]:[]
       this.work.turnStarted(ticket.id,assignmentId)
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
       const permissionReceipts:ToolResult[]=[]
@@ -1534,8 +1561,8 @@ export class Runtime {
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
         webFetchReplay:saved?.webFetchReplay,
-        instructions:builtInChat?instructions+'\n'+permissionInstructions+' Effective mode: '+(this.chat.permissionActor(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId,ticket.id)?.mode??'ask')+'. Native permission requests defer the current attempt while the request is in Pending items; the provider withholds that attempt. Continue independent work. On a native_permission_decision input, repeat the exact native operation once if approved, or leave it undone if declined. Native questions likewise return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Only a recorded decline is a user refusal. Never retry a declined action.\nFor a requested file delivery, read the provided chatFiles paths for uploaded originals. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
-        managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),tools:specs,onTool:(name,args)=>{
+        instructions:builtInChat?instructions+'\n'+permissionInstructions+' Effective mode: '+(this.chat.permissionActor(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId,ticket.id)?.mode??'ask')+'. Native permission requests defer the current attempt while the request is in Pending items; the provider withholds that attempt. Continue independent work. On a native_permission_decision input, repeat the exact native operation once if approved, or leave it undone if declined. Native questions likewise return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Only a recorded decline is a user refusal. Never retry a declined action.\nUse chatFiles for uploaded originals and any confirmed read-only handoff. Each handed-off file has its original relative path and a host-provided read-only copy. Use superagent_shell for binary inputs. When requesting read-only handoff from a previous task, list exact relative file paths in backticks. A saved answer settles that question. Report concrete missing filenames or paths when input is unavailable. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
+        managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path)],tools:specs,onTool:(name,args)=>{
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
@@ -1684,8 +1711,8 @@ export class Runtime {
         const apply=(receipt?:WorkerEventReceipt)=>{
           const previousMessages=new Set(this.store.deliveries().map(d=>d.id))
           if(run.failure)this.engine.inputsDelivered(ticket.id,assignmentId,inputs.map(i=>i.id))
-          const attention=run.failure||this.goals.awaitingReadRecovery(run)?{}:{
-            question:'Execution could not be confirmed. Review task records and the actual outcome before continuing.',
+          const attention=this.isChatDecisionFollowup(ticket.id)?{question:null}:run.failure||this.goals.awaitingReadRecovery(run)?{}:{
+            question:legacyExecutionQuestion,
             ...(humanInputs.length===1?{askedBy:humanInputs[0]!.triggerId}:{})
           }
           this.reportWork(ticket.id,{state:'blocked',summary:run.error!,...attention})

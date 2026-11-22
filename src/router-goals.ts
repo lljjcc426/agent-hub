@@ -268,6 +268,25 @@ export class RouterGoals {
  effectsSettled(ticketId:string){
   return this.effectsSettledAtPhase(ticketId,'idle')
  }
+ /** Resume the one node held by this answered report, preserving its assignment and contract. */
+ resumeAnsweredQuestion(ticketId:string,summary:string,context:ScopeContext,recoverStartup=false){
+  const goal=this.forTask(ticketId)
+  const node=goal?.nodes?.find(item=>item.ticketId===ticketId)
+  if(!goal||!node||!['active','waiting','held'].includes(goal.state)||node.state!=='held'||goal.supersededBy||
+     goal.replanId||goal.acceptanceOverflow||goal.project?.review?.state==='pending')return false
+  if(goal.state==='held'&&goal.reason!==heldReason(goal.nodes!))return false
+  if(node.reason!==summary.slice(0,1000)||!['quality','environment'].includes(node.failure?.kind??'')||
+     node.dependsOn.some(id=>goal.nodes!.find(item=>item.id===id)?.state!=='passed'))return false
+  try{
+   this.host.scopes.checkTask(ticketId,context,true)
+   this.host.routerIngress.authority(goal.triggerId)
+  }catch{return false}
+  if(!this.effectsSettledAtPhase(ticketId,recoverStartup?'uncertain':'idle'))return false
+  const next={...node,state:'running' as const,reason:undefined,failure:undefined,retryAt:undefined}
+  this.save({...goal,nodes:goal.nodes!.map(item=>item.id===node.id?next:item),state:'active',
+    reason:undefined,nextAt:undefined,revision:goal.revision+1})
+  return true
+ }
  private effectsSettledAtPhase(ticketId:string,phase:'idle'|'uncertain'){
   if(this.host.permissions.hasUnconfirmedEffect(ticketId)||!repositoryEffectsSettled(this.host.store,ticketId)||this.host.workflows.unsettled(ticketId))return false
   const run=this.host.store.get<Run>('run',ticketId)

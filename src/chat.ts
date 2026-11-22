@@ -2,7 +2,8 @@ import {resourcePage} from './execution-limits.ts'
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
-import {businessDecision,assertBusinessDecision,decisionActorMatches,type BusinessDecisionView} from './business-decisions.ts'
+import {businessDecision,assertBusinessDecision,decisionActorMatches,legacyExecutionQuestion,type BusinessDecisionView} from './business-decisions.ts'
+import {rememberFileHandoff} from './chat-file-handoff.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import {isApiBackend} from './backend-config.ts'
@@ -942,6 +943,8 @@ export class ChatSessions {
         h.manager.sendImmediate({action:'send',ticketId:d.ticketId,questionId:d.id,decisionVersion:input.version,text,requestId:'chat-decision:'+key,revision:h.settings.current().revision},context)
         const run:ChatRun={decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now()}
         h.store.put('chat-run',run.id,run)
+        rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
+        if(context.scoped)h.goals.resumeAnsweredQuestion(d.ticketId,d.summary,context.scoped)
         this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.requestId})
       }else nextId=h.renewBusinessQuestion(d.ticketId)
       h.store.put('business-decision-action',key,{fingerprint,triggerId:trigger.id,decisionId:nextId})
@@ -963,7 +966,7 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question??undefined,summary:report?.summary??undefined}
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:t?.attention?.question===legacyExecutionQuestion?undefined:t?.attention?.question??undefined,summary:report?.summary??undefined}
     })
   }
   private conversationTasks(c:Conversation){

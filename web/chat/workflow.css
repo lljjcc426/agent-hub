@@ -153,6 +153,14 @@
   padding-top: 7px;
   border-top: 1px solid var(--rp-line);
 }
+.chat-approval-outcome {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-approval-outcome ul {
+  margin: 4px 0 0;
+  padding-inline-start: 1.25em;
+}
 .chat-record-link {
   display: inline-flex;
   align-items: center;

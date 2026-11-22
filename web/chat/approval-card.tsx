@@ -62,15 +62,15 @@ export function AnswerFields({label, options, value, change, disabled, custom = 
   </fieldset>
 }
 
-export function QuestionCard({id, question, notice, options, answer, custom, disabled, maxLength, onAnswer, footer, L}: {
+export function QuestionCard({id, question, notice, options, answer, custom, disabled, maxLength, onAnswer, footer, outcome, L}: {
   id?: string; question: string; notice?: string; options: AnswerOption[]; answer?: string | null
-  custom?: boolean; disabled?: boolean; maxLength?: number; onAnswer: (answer: string) => void; footer?: ReactNode; L: Localize
+  custom?: boolean; disabled?: boolean; maxLength?: number; onAnswer: (answer: string) => void; footer?: ReactNode; outcome?: ReactNode; L: Localize
 }) {
   const [value, setValue] = useState('')
   return <ApprovalFrame id={id} kind="choice" title={question} notice={notice} L={L}
     status={answer ? L('Answered', '已回答') : options.length ? L('Awaiting selection', '待选择') : L('Awaiting answer', '待答复')}
     result={answer ? 'answered' : undefined}>
-    {answer ? <div className="chat-approval-receipt"><span>{answer}</span>{footer}</div> :
+    {answer ? <><div className="chat-approval-receipt"><span>{answer}</span>{footer}</div>{outcome}</> :
       <form className="chat-approval-form" onSubmit={event => {
         event.preventDefault()
         if (!disabled && value.trim()) onAnswer(value.trim())

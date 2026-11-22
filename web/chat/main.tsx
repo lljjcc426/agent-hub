@@ -84,6 +84,7 @@ const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDe
 const FirstChatWelcome=lazy(()=>import("./chat-personalization.tsx").then(m=>({default:m.FirstChatWelcome})));
 const ChatPersonalizationDialog=lazy(()=>import("./chat-personalization.tsx").then(m=>({default:m.ChatPersonalizationDialog})));
 import {spaceRequest,clearChatDrafts,type ChatSpace} from './chat-settings.tsx';
+import {parseSendShortcut,sendShortcutStorageKey,type SendShortcut} from './send-shortcut.ts';
 import { Configuration } from "./configuration.tsx";
 import {WorkspaceView,useWorkspaceViews} from './workspace-view.tsx';
 import { AgentAvatar, RoppoAppearanceContext } from "./agent-avatar.tsx";
@@ -479,6 +480,11 @@ function App() {
   const [lang, setLang] = useState<Language>(
       read("agenthub.configuration.language") === "en" ? "en" : "zh-CN",
     );
+  const [sendShortcut, setSendShortcut] = useState(() => parseSendShortcut(read(sendShortcutStorageKey)));
+  const saveSendShortcut = (value: SendShortcut) => {
+    write(sendShortcutStorageKey, value);
+    setSendShortcut(value);
+  };
   const dark = useAppearanceMode() === "dark";
   const L = useCallback(
     (en: string, zh: string) => (lang === "zh-CN" ? zh : en),
@@ -640,6 +646,8 @@ function App() {
     const storage = (e: StorageEvent) => {
       if (e.key === "agenthub.configuration.language")
         setLang(e.newValue === "zh-CN" ? "zh-CN" : "en");
+      if (e.key === sendShortcutStorageKey || e.key === null)
+        setSendShortcut(parseSendShortcut(e.newValue));
     };
     window.addEventListener("storage", storage);
     return () => window.removeEventListener("storage", storage);
@@ -671,6 +679,8 @@ function App() {
           navigate,
           refreshList,
           setLang,
+          sendShortcut,
+          saveSendShortcut,
           route,
           navExpanded,
           setNavExpanded,
@@ -715,6 +725,8 @@ type ChatProps = {
   refreshList: () => Promise<void>;
   refreshReady: () => Promise<void>;
   setLang: (v: Language) => void;
+  sendShortcut: SendShortcut;
+  saveSendShortcut: (value: SendShortcut) => void;
 };
 const emptySidebarCards: { items: "context"[]; revealing: boolean } = { items: [], revealing: false };
 function Chat(p: ChatProps) {
@@ -1539,6 +1551,7 @@ function Chat(p: ChatProps) {
             <SwitchView scope="page"><div className="workspace-page-stage" data-route={route}>
             {workspaceIndex && <WorkspaceSettings L={L}/>}
             {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} lang={lang} setLang={setLang} display={display} L={L}
+              sendShortcut={p.sendShortcut} onSendShortcutChange={p.saveSendShortcut}
               onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
             {appearance && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading appearance…", "正在读取外观设置…")}</div>}><AppearanceSettings L={L}/></Suspense>}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
@@ -1683,7 +1696,7 @@ function Chat(p: ChatProps) {
                     {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                       <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                       <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
-                      <ComposerControls visible={!configuring} L={L} sending={outstanding?.stage==='sending'} router={currentRouter.label}
+                      <ComposerControls visible={!configuring} L={L} sendShortcut={p.sendShortcut} sending={outstanding?.stage==='sending'} router={currentRouter.label}
                         model={ready?.model || ready?.backend} modelBackend={ready?.backend} mode={p.approvalMode} usage={usage}
                         loadSkills={loadSkills} skill={skill} onSkillChange={saveSkill}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}

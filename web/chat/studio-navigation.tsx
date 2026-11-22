@@ -25,11 +25,12 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { Brand, ChoiceGroup, IconButton, NavLink, Popover, SelectionIndicator, SwitchView } from '../ui';
+import { Brand, ChoiceGroup, IconButton, NavLink, Popover, SelectField, SelectionIndicator, SwitchView } from '../ui';
 import { AgentAvatar } from './agent-avatar.tsx';
 import { SidebarSeparator } from './sidebar-separator.tsx';
 import { workspaceGroups } from './workspace-settings.tsx';
 import { spaceRequest } from './chat-settings.tsx';
+import { modifierEnterLabel, parseSendShortcut, type SendShortcut } from './send-shortcut.ts';
 
 type L = (en: string, zh: string) => string;
 type Agent = { id: string; label: string; kind: 'worker' | 'router' };
@@ -45,7 +46,8 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
   const workspaceItems = workspaceGroups(L).flatMap(group => group.items);
   return [
     { name: L('Preferences', '偏好'), rows: [
-      row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat'),
+      row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat',
+        L('Send message keyboard shortcut Enter', '发送消息 快捷键 回车 Enter')),
       row('appearance', L('Appearance', '外观'), Sun, undefined, L('Theme colors fonts motion', '主题 颜色 字体 动效')),
       row('advanced/memory', L('Memory', '记忆'), Brain),
       ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
@@ -248,6 +250,8 @@ export function General({
   onDisplayChange,
   openWorkspaces,
   onPersonalize,
+  sendShortcut,
+  onSendShortcutChange,
 }: {
   onDisplayChange: (value: 'group' | 'agents') => void;
   openWorkspaces: () => void;
@@ -255,10 +259,13 @@ export function General({
   lang: string;
   setLang: (lang: 'en' | 'zh-CN') => void;
   display: 'group' | 'agents';
+  sendShortcut: SendShortcut;
+  onSendShortcutChange: (value: SendShortcut) => void;
   L: L;
 }) {
   const [saving, setSaving] = useState(false),
     [error, setError] = useState('');
+  const shortcutLabel = L('Send message shortcut', '发送消息快捷键');
   async function changeDisplay(value: 'group' | 'agents') {
     if (saving || display === value) return;
     const previous = display;
@@ -296,6 +303,14 @@ export function General({
               { value: 'en', label: 'English' },
             ]}
           />
+        </section>
+        <section className="language-row">
+          <h2>{shortcutLabel}</h2>
+          <SelectField label={shortcutLabel} value={sendShortcut}
+            onChange={event => onSendShortcutChange(parseSendShortcut(event.currentTarget.value))}>
+            <option value="enter">Enter</option>
+            <option value="modifier-enter">{modifierEnterLabel}</option>
+          </SelectField>
         </section>
         <section>
           <h2>{L('Chat layout', '对话布局')}</h2>

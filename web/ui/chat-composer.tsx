@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type ComponentType, type KeyboardEvent } from 'react'
 import { smartPunctuation } from '../chat/smart-punctuation.ts'
+import { modifierEnterLabel, sendModifier, type SendShortcut } from '../chat/send-shortcut.ts'
 import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowUp, Box, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
 import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
@@ -14,9 +15,13 @@ type Subpage = Exclude<ChatCommand, 'attach' | 'commits'>
 type Source = Subpage | 'slash' | 'plus'
 type Menu = { source: Source; page: Subpage | 'commands'; query: string }
 
-function SendMessage({ canSend, sending, L, onClick }: { canSend: boolean; sending: boolean; L: Localize; onClick: () => void }) {
+function SendMessage({ canSend, sending, shortcut, L, onClick }: {
+  canSend: boolean; sending: boolean; shortcut: SendShortcut; L: Localize; onClick: () => void
+}) {
+  const label = L('Send message', '发送消息')
   return <button type="button" className="send-button" disabled={!canSend}
-    aria-label={L('Send message', '发送消息')} onClick={onClick}>
+    aria-label={label} aria-keyshortcuts={shortcut === 'enter' ? 'Enter' : sendModifier.name + '+Enter'}
+    title={label + ' · ' + (shortcut === 'enter' ? 'Enter' : modifierEnterLabel)} onClick={onClick}>
     {sending ? <LoaderCircle size={18} className="spin"/> : <ArrowUp size={20}/>}
   </button>
 }
@@ -28,6 +33,7 @@ export type ComposerActionsProps = {
   onUsageOpen?: () => void
   onCommitTrail?: (opener: HTMLElement | null) => void
   onEnter: (text: string) => void
+  sendShortcut?: SendShortcut
   loadSkills?: (signal: AbortSignal) => Promise<ChatSkillCatalog>
   skill?: ChatSkillRef | null
   onSkillChange?: (skill: ChatSkillRef | null) => void
@@ -36,7 +42,7 @@ export type TextInputProps = Omit<ComponentPropsWithRef<'textarea'>, 'style'>
 
 export function ChatComposer({ L, visible, sending, mode, usage, router, model, modelBackend, uploadDisabled,
   onContext, onUsageOpen, saveMode, onModelSaved, onCommitTrail, onEnter, loadSkills, skill, onSkillChange,
-  Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
+  sendShortcut = 'enter', Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
   Input?: ComponentType<TextInputProps> | 'textarea'; value?: string; canSend: boolean
   setText: (text: string) => void; onAttach: () => void; onSend: () => void; modelStore?: ModelConnectionStore
 }) {
@@ -291,8 +297,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
             return
           }
           if (event.key !== 'Enter' || event.shiftKey) return
+          if (chooseActive()) { event.preventDefault(); return }
+          if (sendShortcut === 'modifier-enter' && (!event[sendModifier.eventKey] || event.altKey)) return
           event.preventDefault()
-          if (chooseActive()) return
           if (slash) close()
           if (!modelWrites) onEnter(event.currentTarget.value)
         }}/>
@@ -317,7 +324,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           title={[contextTitle, readout.tokens].filter(Boolean).join(' · ')}
           aria-haspopup="dialog" aria-expanded={!closing && source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
           onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>
-        <SendMessage canSend={canSend && !modelWrites} sending={sending} L={L} onClick={() => {
+        <SendMessage canSend={canSend && !modelWrites} sending={sending} shortcut={sendShortcut} L={L} onClick={() => {
           if (chooseActive()) return
           if (slash) close()
           onSend()

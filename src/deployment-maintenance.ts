@@ -15,10 +15,14 @@ import type {ReplanRound} from './goal-replanning.ts'
 import type {VerificationRound} from './goal-verification.ts'
 import type {TaskOwnership} from './router-scope.ts'
 import {bodyDigest} from './sources.ts'
+import {restoreRetainedFiles,retainedFileHandoffSchema} from './chat-file-handoff.ts'
 
 export class DeploymentError extends Error {constructor(readonly code:string,message:string,readonly status=409){super(message)}}
-const command=z.object({action:z.enum(['prepare','finish','abort']),operationId:z.string().uuid(),
- expectedRevision:z.number().int().nonnegative().optional(),legacyPauseSeq:z.number().int().positive().safe().optional()}).strict()
+const command=z.discriminatedUnion('action',[
+ z.object({action:z.enum(['prepare','finish','abort']),operationId:z.string().uuid(),
+  expectedRevision:z.number().int().nonnegative().optional(),legacyPauseSeq:z.number().int().positive().safe().optional()}).strict(),
+ z.object({action:z.literal('restore-files'),operationId:z.string().uuid(),handoff:retainedFileHandoffSchema}).strict(),
+])
 interface Maintenance {id:string;state:'preparing'|'prepared'|'finished'|'aborted'|'failed';wasPaused:boolean;pauseSeq?:number;at:number;resumed?:boolean;reason?:string}
 export function pauseControl(host:Runtime){
  const row=host.store.db.prepare("SELECT seq,body FROM audit WHERE json_extract(body,'$.type')='pause' ORDER BY seq DESC LIMIT 1").get()
@@ -158,8 +162,19 @@ export function inspectDeployment(store:DeploymentStore,activeExecutions=0,state
 export function deploymentBlockers(store:DeploymentStore,activeExecutions=0,stateDir?:string){
  return inspectDeployment(store,activeExecutions,stateDir).blockers
 }
-export async function deploymentMaintenance(host:Runtime,input:unknown){
+export async function deploymentMaintenance(host:Runtime,input:unknown,signal?:AbortSignal){
  const x=command.parse(input),store=host.store,old=store.get<Maintenance>('deployment-maintenance',x.operationId)
+ if(x.action==='restore-files'){
+  const authorize=()=>{
+   const maintenance=store.get<Maintenance>('deployment-maintenance',x.operationId),control=pauseControl(host)
+   if(!host.schedulingPaused||maintenance?.state!=='prepared'||control?.seq!==maintenance.pauseSeq||control?.controlId!==maintenance.id)
+    throw new DeploymentError('maintenance_not_prepared','A current maintenance pause is required')
+   const retained=inspectDeployment(store,host.activeExecutions,host.config.stateDir)
+   if(retained.blockers.length||!retained.heldGoals.some(goal=>goal.taskIds.includes(x.handoff.ticketId)))
+    throw new DeploymentError('maintenance_task_unavailable','The Chat task must be at its retained checkpoint')
+  }
+  return restoreRetainedFiles(host,x.handoff,authorize,signal??new AbortController().signal)
+ }
  if(x.action!=='prepare'){
   if(!old){if(x.action==='abort')return {operationId:x.operationId,state:'not_found',resumed:false};throw new DeploymentError('maintenance_not_found','Known maintenance operation required')}
   if(old.state==='failed'&&x.action==='abort'){store.put('deployment-maintenance',old.id,{...old,state:'aborted'});return {operationId:old.id,state:'aborted',resumed:false}}

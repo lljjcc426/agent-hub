@@ -501,7 +501,18 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     }
     if(req.method==='GET'&&path==='/api-usage'){send(res,200,runtime.apiUsage.snapshot());return}
     if(req.method==='GET'&&path==='/api-usage/view'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(apiUsagePage(runtime.apiUsage.snapshot()));return}
-    if(path==='/deployment/maintenance'&&req.method==='POST'){send(res,200,await deploymentMaintenance(runtime,await body(req)));return}
+    if(path==='/deployment/maintenance'&&req.method==='POST'){
+      const input=await body(req)
+      if(input?.action==='restore-files'){
+        if(!local||!authorized(req)||req.headers.forwarded||req.headers['x-forwarded-for']||req.headers['x-real-ip']){
+          send(res,403,{code:'local_host_required'});return
+        }
+        const controller=new AbortController()
+        res.once('close',()=>controller.abort())
+        send(res,200,await deploymentMaintenance(runtime,input,controller.signal));return
+      }
+      send(res,200,await deploymentMaintenance(runtime,input));return
+    }
     if(path==='/webhooks'&&req.method==='GET'){send(res,200,runtime.webhooks.snapshot());return}
     if(path==='/webhooks/detail'&&req.method==='GET'){send(res,200,runtime.webhooks.detail(new URL(req.url??'/',requestOrigin).searchParams.get('id')??''));return}
     if(path==='/webhooks/goal'&&req.method==='POST'){send(res,200,runtime.webhooks.goalControl(await body(req)));return}

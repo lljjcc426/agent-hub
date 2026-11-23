@@ -92,15 +92,26 @@ export class ProcessBackend implements Model {
    if(record.accountIdentity&&record.accountIdentity!==health.accountIdentity)throw new BackendPluginError('auth_required',this.id)
    record.accountIdentity=health.accountIdentity;record.state='running';this.save(record)
    const callbacks=['onThread','onTurn','onConfiguration','onBudget','onActive',...Object.keys(request).filter(k=>k.startsWith('on')&&typeof (request as any)[k]==='function'),...(request.retainToolResult?['retainToolResult']:[])]
-   const input=Object.fromEntries(Object.entries(request).filter(([k,v])=>typeof v!=='function'&&!['signal','threadId','activity'].includes(k)))
+   const input=Object.fromEntries(Object.entries(request).filter(([k,v])=>typeof v!=='function'&&!['signal','threadId','activity','allowPlainTextReply'].includes(k)))
    // Keep activity private except the bounded task ID needed to match the full Worker input.
    const activity=request.managed===true&&!request.operator&&request.role==='worker'?backendWorkerActivitySchema.safeParse({ticketId:request.activity?.ticketId}):undefined
    const result=backendResult.parse(await transport.call('run',{...input,...(activity?.success?{activity:activity.data}:{}),model:request.model??this.definition.model,threadId:record.nativeId,callbacks}))
    if(record.effectIds.some(id=>this.store.get<PluginToolEffect>('backend-plugin-tool',id)?.state==='running'))throw new BackendPluginError('outcome_unknown',this.id)
    if(!record.nativeId||result.threadId!==record.nativeId||result.turnId!==record.turnId)throw new BackendPluginError('invalid_output',this.id)
-   if(Object.keys(request.schema).length){let output:unknown;try{output=JSON.parse(result.text)}catch{throw new BackendPluginError('invalid_output',this.id)}if(!ajv.compile(request.schema)(output))throw new BackendPluginError('invalid_output',this.id)}
+   let text=result.text
+   if(Object.keys(request.schema).length){
+    let output:unknown
+    try{output=JSON.parse(text)}catch{
+     // The managed CLI may complete an ordinary answer without the outer reply object.
+     // Leave malformed reply envelopes to validation instead of displaying their raw contents.
+     if(!this.hostHarness||!request.allowPlainTextReply||!text.trim()||/^\s*\{\s*"reply"/.test(text))throw new BackendPluginError('invalid_output',this.id)
+     output={reply:text}
+     text=JSON.stringify(output)
+    }
+    if(!ajv.compile(request.schema)(output))throw new BackendPluginError('invalid_output',this.id)
+   }
    record.state='completed';this.save(record)
-   return {threadId:record.id,turnId:result.turnId,text:result.text}
+   return {threadId:record.id,turnId:result.turnId,text}
   }catch(error){record.state=request.signal?.aborted?'interrupted':'failed';record.lastFailure={at:Date.now(),code:error instanceof BackendPluginError?error.code:'process_failed',...(error instanceof BackendPluginError&&error.diagnostic?{diagnostic:error.diagnostic}:{})};this.save(record);throw error}
   finally{await transport?.close()}
  }

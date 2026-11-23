@@ -39,6 +39,8 @@ export interface ModelRequest {
   workerMcp?:{command:string;args:string[]}
   /** A regular host Router turn can use the managed harness and compose authorized host tools. */
   coordinationTurn?:boolean
+  /** An OpenCode Chat reply can arrive as plain text even with a structured reply schema. */
+  allowPlainTextReply?:boolean
   /** Grants native tools only on assigned execution turns. */
   allowNativeTools?:boolean
   /** A human Chat turn presents a model-authored opening before its first tool effects. */

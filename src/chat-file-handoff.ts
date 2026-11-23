@@ -1,12 +1,13 @@
 import {createHash} from 'node:crypto'
-import {constants,createWriteStream} from 'node:fs'
-import {mkdir,open,realpath,rm,stat,writeFile} from 'node:fs/promises'
+import {constants,createWriteStream,realpathSync} from 'node:fs'
+import {mkdir,mkdtemp,open,realpath,rm,stat,writeFile} from 'node:fs/promises'
 import {basename,dirname,join,resolve} from 'node:path'
 import {pipeline} from 'node:stream/promises'
+import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
 import type {Run} from './store.ts'
 import {stableDigest} from './sources.ts'
-import {managedWorkspacePath} from './workspace.ts'
+import {managedWorkspacePath,retainedWorkspace} from './workspace.ts'
 import {projectWorkspace} from './project-code.ts'
 import {isHostPrivateFile} from './private-files.ts'
 
@@ -19,12 +20,19 @@ interface Request {
   ticketId:string;conversationId:string;triggerId:string;question:string;paths:string[]
   outcome?:FileHandoffOutcome
 }
-interface Material {id:string;kind:'task-handoff';ticketId:string;sourceTicketId:string;name:string;relativePath:string;path:string;bytes:number}
+interface Material {id:string;kind:'task-handoff';ticketId:string;sourceTicketId:string;name:string;relativePath:string;path:string;bytes:number;sha256?:string}
 interface Delivery {id:string;ticketId:string;name:string}
 
 export const validRetainedPath=(path:string)=>path.length<=1000&&path.split('/').every(
   part=>part!==''&&part!=='.'&&part!=='..'&&!/[\\:\x00-\x1f\x7f]/.test(part)&&!/^\.(git|env(?:\..*)?|ssh|aws|superagent(?:-.*)?)$/i.test(part)
 )
+export const retainedFileHandoffSchema=z.object({
+  ticketId:z.string().min(1).max(200),sourceTicketId:z.string().min(1).max(200),
+  files:z.array(z.object({
+    path:z.string().refine(validRetainedPath),bytes:z.number().int().nonnegative().safe(),sha256:z.string().regex(/^[a-f\d]{64}$/),
+  }).strict()).min(1).max(128).refine(files=>new Set(files.map(file=>file.path)).size===files.length,'Duplicate file path'),
+}).strict()
+type RetainedFileHandoff=z.infer<typeof retainedFileHandoffSchema>
 const quotedPaths=(text:string)=>[...text.matchAll(/`([^`\r\n]+)`/g)].map(match=>match[1]!).filter(path=>/\.[a-z\d]+$/i.test(path))
 const accepted=(text:string)=>/^(可以|同意|允许|确认|yes|ok(?:ay)?|approved?|go ahead)[。！.!]?$/i.test(text.trim())
 
@@ -117,7 +125,7 @@ async function copyOriginal(root:string,file:ExpectedFile,destination:string,sig
   const descriptor=await open(source,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK)
   try{
     const before=await descriptor.stat()
-    if(!before.isFile()||file.bytes!==undefined&&before.size!==file.bytes)throw Error('Original file size changed')
+    if(!before.isFile()||before.nlink!==1||file.bytes!==undefined&&before.size!==file.bytes)throw Error('Original file changed')
     const hash=createHash('sha256')
     await pipeline(descriptor.createReadStream({autoClose:false}),async function*(chunks){
       for await(const chunk of chunks){hash.update(chunk);yield chunk}
@@ -127,6 +135,68 @@ async function copyOriginal(root:string,file:ExpectedFile,destination:string,sig
        await realpath(source)!==source||file.sha256&&hash.digest('hex')!==file.sha256)throw Error('Original file changed')
     return before.size
   }finally{await descriptor.close()}
+}
+
+/** Recover explicitly identified inputs for a held Chat task without reopening its source task. */
+export async function restoreRetainedFiles(host:Runtime,input:RetainedFileHandoff,authorize:()=>void,signal:AbortSignal){
+  const {ticketId,sourceTicketId,files}=input,{store}=host
+  const locate=()=>{
+    authorize()
+    const goal=host.goals.forTask(ticketId),target=store.tickets.get(ticketId),source=host.scopes.ownership(sourceTicketId)
+    const targetRoute=host.taskAuthority(ticketId),sourceRoute=host.taskAuthority(sourceTicketId)
+    const triggerId=targetRoute?.parentTrigger
+    const chatRun=triggerId&&store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',triggerId)
+    const sourceRun=sourceRoute?.parentTrigger&&store.get<{conversationId:string}>('chat-run',sourceRoute.parentTrigger)
+    if(!goal||goal.state!=='held'||!target||target.ended||!source||!triggerId||!chatRun||
+       chatRun.cancelled||chatRun.cancelRequested||!sourceRun||sourceRun.conversationId!==chatRun.conversationId||
+       targetRoute.discussion!==goal.discussion||sourceRoute.discussion!==goal.discussion)
+      throw Error('Retained files require a held task and an original task in the same Chat')
+    const scoped=host.goals.context(goal)
+    if(host.sources.get(scoped.trigger.source)?.config.kind!=='local')throw Error('Retained files require a local Chat')
+    host.routerIngress.authority(triggerId,goal.discussion)
+    host.routerIngress.authority(sourceRoute.parentTrigger!,goal.discussion)
+    host.scopes.checkTask(ticketId,scoped,true)
+    const reference={ticketId:sourceTicketId,ownerEpoch:source.ownerEpoch,dataRevision:source.dataRevision??1}
+    host.goals.checkWorkspaceSource(reference,scoped)
+    const run=store.get<Run>('run',sourceTicketId)
+    if(!run?.prepared||run.phase!=='idle'||host.memory.cleanup.blocked('run',sourceTicketId,run)||
+       host.executionActive(sourceTicketId)||host.work.active(sourceTicketId,run.assignmentId).length)
+      throw Error('Original workspace is unavailable')
+    if(run.workspaceSource)host.goals.checkWorkspaceSource(run.workspaceSource,scoped)
+    const root=retainedWorkspace(host.config.stateDir,run.workspaceId??sourceTicketId)
+    if(run.cwd!==root)throw Error('Original workspace does not match the task')
+    return {root:realpathSync(root),conversationId:chatRun.conversationId,triggerId,reference,revision:goal.revision}
+  }
+  const location=locate()
+  const id=stableDigest(['retained-files',location.conversationId,input])
+  const existing=()=>store.get<{outcome:FileHandoffOutcome}>('chat-file-handoff',id)?.outcome.state==='ready'
+  const result={id,ticketId,sourceTicketId,files:files.map(file=>({...file,id:stableDigest(['task-handoff',id,file.path])}))}
+  if(existing())return result
+  const assets=join(host.config.stateDir,'assets')
+  await mkdir(assets,{recursive:true,mode:0o700})
+  const directory=await mkdtemp(join(assets,'retained-'))
+  let committed=false
+  try{
+    const materials:Material[]=[]
+    for(const file of result.files){
+      signal.throwIfAborted()
+      const destination=join(directory,file.path)
+      await mkdir(dirname(destination),{recursive:true,mode:0o700})
+      await copyOriginal(location.root,file,destination,signal)
+      materials.push({id:file.id,kind:'task-handoff',ticketId,sourceTicketId,name:basename(file.path),
+        relativePath:file.path,path:destination,bytes:file.bytes,sha256:file.sha256})
+    }
+    signal.throwIfAborted()
+    committed=store.atomic(()=>{
+      if(stableDigest(locate())!==stableDigest(location))throw Error('Retained file authority changed')
+      if(existing())return false
+      for(const material of materials)store.put('asset',material.id,material)
+      store.put('chat-file-handoff',id,{...input,conversationId:location.conversationId,triggerId:location.triggerId,
+        outcome:{state:'ready',missing:[]} satisfies FileHandoffOutcome})
+      return true
+    })
+    return result
+  }finally{if(!committed)await rm(directory,{force:true,recursive:true})}
 }
 
 export async function prepareFileHandoff(host:Runtime,ticketId:string,signal:AbortSignal){
@@ -197,5 +267,6 @@ export function handedOffFiles(host:Runtime,ticketId:string){
   return host.store.list<Material>('asset').filter(item=>item.kind==='task-handoff'&&item.ticketId===ticketId&&
     !host.memory.cleanup.blocked('asset',item.id,item)).map(item=>({
       name:item.name,path:item.path,relativePath:item.relativePath,resource:'asset/'+item.id,
+      ...(item.sha256?{bytes:item.bytes,sha256:item.sha256}:{}),
     }))
 }

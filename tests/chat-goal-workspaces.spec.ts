@@ -10,6 +10,8 @@ import type {RouterGoal} from '../src/router-goals.ts'
 import {Runtime} from '../src/runtime.ts'
 import type {Run} from '../src/store.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
+import {deploymentMaintenance,deploymentBlockers} from '../src/deployment-maintenance.ts'
+import {handedOffFiles} from '../src/chat-file-handoff.ts'
 
 const roots:string[]=[],hosts=new Set<Runtime>()
 const owner='owner'
@@ -107,6 +109,73 @@ function stageInstaller(cwd:string,archiveRoot:string|undefined){
  }
  return JSON.parse(readFileSync(join(cwd,manifest),'utf8')) as {source:{sha:string};platforms:{macos:{sha256:string}}}
 }
+
+it('restores exact installer inputs across an upgrade without reopening the original task',async()=>{
+ let workerRuns=0
+ const shell=process.platform==='darwin'
+ const f=fixture(async r=>{
+  if(r.role==='router')return {reply:'The installer work is retained.'}
+  workerRuns++
+  const files=JSON.parse(r.input).chatFiles as {relativePath:string;path:string;resource:string;sha256:string}[]|undefined
+  if(!files)return {...ready('Waiting for the original installer inputs'),state:'blocked'}
+  expect(files.map(file=>file.relativePath)).toEqual(installerFiles)
+  for(const file of files){
+   expect(r.attachments).toContain(file.path)
+   expect(createHash('sha256').update(readFileSync(file.path)).digest('hex')).toBe(file.sha256)
+   if(file.relativePath.endsWith('.md'))expect(await tool(r,'superagent_read',{resource:file.resource})).toBeTruthy()
+   if(shell&&file.relativePath===installer){
+    const result=await tool(r,'superagent_shell',{command:"/usr/bin/shasum -a 256 '"+file.path+"'",requestId:'read-restored-original'})
+    expect(JSON.stringify(result)).toContain(file.sha256)
+   }
+  }
+  return ready('The original files are available')
+ },{shell})
+ const old=f.start('Original installer build')
+ f.host.store.put('router-goal',old.id,{...old,workspace:undefined})
+ await f.host.goals.advance()
+ const oldTicket=f.host.goals.get(old.id)!.taskIds[0]!
+ const cwd=managedWorkspacePath(f.config.stateDir,oldTicket)
+ stageInstaller(cwd,undefined)
+ const assignmentId=f.host.store.tickets.get(oldTicket)!.assignments.at(-1)!.id
+ f.host.store.put('run',oldTicket,{ticketId:oldTicket,assignmentId,cwd,phase:'idle',prepared:true} satisfies Run)
+ const stopped=f.host.goals.command({action:'cancel',id:old.id,expectedRevision:old.revision,operationId:'retain-build'},
+  f.context(f.send('Stop the original build and keep its files'))) as RouterGoal
+ const next=f.start('Continue the verification',{maxReplans:0})
+ f.host.store.put('router-goal',next.id,{...next,workspace:undefined})
+ await f.until(()=>f.host.goals.get(next.id)?.state==='held'&&!f.host.activeExecutions&&
+  !f.host.store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('pending','running') LIMIT 1").get())
+ expect(deploymentBlockers(f.host.store,0,f.config.stateDir)).toEqual([])
+ const held=f.host.goals.get(next.id)!,ticketId=held.taskIds[0]!
+ const checkpoint=f.host.store.get<Run>('run',ticketId)!
+ const files=installerFiles.map(path=>{
+  const bytes=readFileSync(join(cwd,path))
+  return {path,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}
+ })
+ const operationId=randomUUID(),handoff={ticketId,sourceTicketId:oldTicket,files}
+ const recover={action:'restore-files',operationId,handoff}
+ await expect(deploymentMaintenance(f.host,recover)).rejects.toMatchObject({code:'maintenance_not_prepared'})
+ await deploymentMaintenance(f.host,{action:'prepare',operationId,expectedRevision:f.host.settings.current().revision})
+ const wrong=[...files.slice(0,-1),{...files.at(-1)!,sha256:'0'.repeat(64)}]
+ await expect(deploymentMaintenance(f.host,{...recover,handoff:{...handoff,files:wrong}})).rejects.toThrow('Original file changed')
+ expect(handedOffFiles(f.host,ticketId)).toEqual([])
+ const receipt=await deploymentMaintenance(f.host,recover)
+ expect(receipt).toMatchObject({ticketId,sourceTicketId:oldTicket,files})
+ expect(await deploymentMaintenance(f.host,recover)).toEqual(receipt)
+ expect(f.host.store.get('run',ticketId)).toEqual(checkpoint)
+ expect(f.host.goals.get(next.id)).toEqual(held)
+ expect(f.host.goals.get(old.id)).toEqual(stopped)
+ expect(workerRuns).toBe(1)
+ await f.restart()
+ expect(handedOffFiles(f.host,ticketId)).toHaveLength(5)
+ await deploymentMaintenance(f.host,{action:'finish',operationId})
+ f.host.goals.command({action:'resume',id:held.id,expectedRevision:held.revision,operationId:'verify-old-files'},
+  f.context(f.send('Continue the original verification')))
+ await f.until(()=>workerRuns===2&&f.host.goals.get(next.id)?.state==='completed')
+ expect(f.host.goals.get(next.id)?.taskIds).toEqual([ticketId])
+ expect(f.host.store.get<Run>('run',ticketId)?.cwd).toBe(checkpoint.cwd)
+ expect(f.host.chat.businessDecisions(f.chat.id,owner)).toHaveLength(0)
+ expect(f.host.goals.get(old.id)?.state).toBe('cancelled')
+},30000)
 
 it('continues the stopped installer goal in its legacy workspace without a file confirmation',async()=>{
  const replay=process.env.ROPPO_INSTALLER_REPLAY_ROOT

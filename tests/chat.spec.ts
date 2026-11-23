@@ -1168,6 +1168,41 @@ it('preserves a connection default for an accepted Chat message before an explic
   await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
   expect(calls.find(request=>request.activity?.triggerId===first.runId)?.model).toBeUndefined()
 })
+it('forwards a blocked Worker report when the same inbox also contains a Router reply without a ticket',async()=>{
+ const reportText='The retained package is still missing from the task inputs.'
+ const {h,calls}=fixture(async r=>{
+  if(r.role==='worker')return {...report,state:'blocked',summary:'Package unavailable',reply:reportText}
+  const input=JSON.parse(r.input)
+  if(input.kind==='user_message'){
+   if(input.trigger.text==='Are you still there?')return {reply:'Yes, the package work is still waiting.'}
+   await assignFileWork(r,'Find the existing package')
+   return {reply:'I asked Research to locate it.'}
+  }
+  expect(input.kind).toBe('worker_result')
+  expect(input.messages.map((message:{text:string})=>message.text)).toEqual([reportText])
+  return {reply:'The package is still being located.'}
+ })
+ const c=h.chat.create('owner'),discussion='local:chat:'+c.id
+ const echo='router-reply:earlier',message={id:echo,channel:{source:'local',thread:discussion,address:{routerInbox:discussion}},
+  text:'Earlier Router reply',kind:'reply',status:'sent',attempts:0,nextAt:0}
+ h.store.put('router-inbox',echo,message)
+ h.store.put('router-inbox','invalid-report',{id:'invalid-report'})
+ const sent=send(h,c.id,'Continue locating the package')
+ const result=()=>h.store.db.prepare("SELECT state,error FROM jobs WHERE id LIKE 'router:result:failure:%'").get()
+ await settle(h,()=>['done','failed'].includes(String(result()?.state)))
+ expect(result()).toMatchObject({state:'done'})
+ const view=h.chat.view(c.id,'owner')
+ expect(view.messages.some(m=>m.text==='The package is still being located.')).toBe(true)
+ expect(view.run?.state).toBe('waiting')
+ expect(calls.filter(r=>r.role==='router')).toHaveLength(2)
+ const failedId='router:result:missing-report'
+ h.store.enqueue(failedId,'router',{discussion,triggerId:sent.runId,messageId:'missing-report'})
+ await settle(h,()=>!!h.store.get('router-error',failedId))
+ expect(h.chat.view(c.id,'owner').run?.state).toBe('waiting')
+ send(h,c.id,'Are you still there?')
+ await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.text==='Yes, the package work is still waiting.'))
+})
+
 it('projects real Router-to-Worker dialogue with distinct speakers and no extra external deliveries',async()=>{
   const {h,calls}=fixture(async r=>{
     if(r.role==='worker'){r.onModel?.('research-model');r.onUsage?.({id:'final',inputTokens:521,contextWindowTokens:2048});return report}

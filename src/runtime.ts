@@ -26,7 +26,7 @@ import {DecisionLayer,decisionInput} from './decision.ts'
 import { mkdirSync, openSync, writeFileSync, readFileSync, unlinkSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { Engine, latestAssignment, runningAssignment, followupOwners, ticketStage, type Candidate, type Assignment, type Ticket, type Trigger, type TicketInput, type WorkerReport } from './vendor/dsh-core/index.ts'
-import { Store, type Run, type Job } from './store.ts'
+import { Store, type Run, type Job, type Delivery } from './store.ts'
 import { makePolicy, makeScope } from './policy.ts'
 import { UncertainDelivery, incomingSchema, bodyDigest,stableDigest, type Source, type Incoming, type SourceChange } from './sources.ts'
 import type { Config } from './config.ts'
@@ -562,7 +562,7 @@ export class Runtime {
       })
     }
     const first=await run({...request,
-      instructions:request.instructions+'\n'+firstReplyInstructions,schema:firstReplySchema,
+      instructions:request.instructions+'\n'+firstReplyInstructions,schema:firstReplySchema,allowPlainTextReply:false,
       tools:[],options:{...request.options,tools:[],toolConnections:[]},onTool:undefined,
     })
     validate()
@@ -1022,7 +1022,7 @@ export class Runtime {
           this.store.jobState(job.id, 'failed', String(error))
           this.store.audit({ type: 'job.failed', id: job.id, message: String(error) })
           if(job.kind==='router'||job.kind==='router-admit')this.store.put('router-error',job.id,{discussion:routerDiscussion,triggerId:payload.triggerId,error:String(error).slice(0,500),at:Date.now()})
-          if(job.kind==='router')this.goals.finishTurn(payload.triggerId,error)
+          if(job.kind==='router'&&(!payload.messageId||!this.store.get('chat-run',payload.triggerId)))this.goals.finishTurn(payload.triggerId,error)
           if (payload.ticketId) {
             const ticket = this.store.tickets.get(payload.ticketId)
             if (ticket && !ticket.ended) this.reportWork(ticket.id, {state:'blocked',summary:String(error).slice(0,500),
@@ -1173,15 +1173,17 @@ export class Runtime {
         prioritize()
       }
     }
-    const authorizedMessage=(m:any)=>{
-      if(this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
+    const authorizedMessage=(m:Delivery)=>{
+      // The inbox can also contain Router replies without a Worker ticket.
+      if(typeof m.ticketId!=='string'||!m.ticketId||this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
       const owner=this.taskAuthority(m.ticketId)
       if(this.store.get<TaskContinuation>('task-continuation',m.ticketId)?.priorMessages.includes(m.id))return false
       if(!owner?.parentTrigger||owner.discussion!==discussion||!scoped&&this.store.get<{actor:string}>('worker-assignment',m.ticketId)?.actor!==trigger.actor.id)return false
       try{this.routerIngress.authority(owner.parentTrigger,discussion);if(scoped){this.scopes.checkTask(m.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(m.ticketId)!,scoped.route.entryId,'result')}return true}catch{return false}
     }
-    const pendingMessages=messageId?this.store.list<any>('router-inbox').filter(m=>
-      m.channel.address.routerInbox===discussion&&!this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
+    const pendingMessages=messageId?this.store.list<Delivery>('router-inbox').filter((m):m is Delivery & {ticketId:string}=>
+      m?.channel?.address?.routerInbox===discussion&&typeof m.id==='string'&&
+      !this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
     if(messageId&&!pendingMessages.some(m=>m.id===messageId))throw Error('Worker result authorization withdrawn')
     const readMessages=new Set<string>(pendingMessages.map(m=>m.id)),readReports=new Map<string,string>()
     const authorityInputs=new Set([...(candidates||followups?[]:[triggerId]),...(batchInputs??[]).map(t=>t.id),...pendingMessages.map(m=>this.taskAuthority(m.ticketId)!.parentTrigger!)])
@@ -1379,7 +1381,7 @@ export class Runtime {
           (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. For files, delegate creation or retrieval; the host publishes Worker outputs and accepts explicit review decisions. If an authorized existing Chat artifact is requested, use chat_artifact_find for its metadata and pass the selected artifact ID to the Worker for delivery. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
-        input:decorateInput(modelInput()),tools,
+        input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups,
         onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted||handoff?.yielded)return

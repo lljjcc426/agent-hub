@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os'
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,symlinkSync,linkSync,existsSync,readFileSync} from 'node:fs'
 import {spawn} from 'node:child_process'
 import {once} from 'node:events'
+import {randomUUID} from 'node:crypto'
 import {fileURLToPath} from 'node:url'
 import {digest} from '../plugins/cli-shared/files.ts'
 import {toolBridge} from '../plugins/cli-shared/mcp.ts'
@@ -19,6 +20,7 @@ import {bundledCLI,bundledEngineId,prepareBundledOpenCode} from '../src/backends
 import {stableDigest} from '../src/sources.ts'
 import {Store} from '../src/store.ts'
 import {Settings} from '../src/settings.ts'
+import {Runtime} from '../src/runtime.ts'
 import {workerProfileSchema} from '../src/backend-config.ts'
 import {configSchema} from '../src/config.ts'
 import type {ModelRequest} from '../src/model.ts'
@@ -26,6 +28,68 @@ import {webPageDirectory,webPageFile,webPageCheckpointSchema} from '../src/backe
 
 const request:ModelRequest={instructions:'',input:'',schema:{type:'object'},cwd:tmpdir()}
 const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yR5cAAAAASUVORK5CYII='
+
+it.skipIf(!bundledCLI)('delivers a successful plain-text OpenCode reply to Chat without another model call',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'harness-chat-reply-'))
+ const reply='在。\n\n- **任务**还在原来的位置。'
+ let replyText=reply,requests=0
+ const upstream=createServer(async(req,res)=>{
+  for await(const _chunk of req){}
+  requests++
+  const item={type:'message',id:'msg_'+requests,role:'assistant',status:'completed',
+   content:[{type:'output_text',text:replyText,annotations:[]}]}
+  const response={id:'resp_'+requests,object:'response',model:'sample',created_at:1,status:'completed',output:[item],
+   usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+  res.writeHead(200,{'content-type':'text/event-stream'})
+  const send=(type:string,data:object)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n')
+  send('response.created',{response:{...response,status:'in_progress',output:[]}})
+  send('response.output_item.added',{output_index:0,item:{...item,status:'in_progress',content:[]}})
+  send('response.output_text.delta',{item_id:item.id,output_index:0,content_index:0,delta:replyText})
+  send('response.output_item.done',{output_index:0,item})
+  send('response.completed',{response})
+  res.end()
+ })
+ await new Promise<void>(ok=>upstream.listen(0,'127.0.0.1',ok))
+ const baseUrl='http://127.0.0.1:'+(upstream.address() as {port:number}).port+'/v1'
+ let host:Runtime|undefined
+ try{
+  host=await Runtime.create(configSchema.parse({
+   stateDir:join(root,'state'),work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
+   backends:{api:{kind:'openai-responses',model:'sample',baseUrl,outputFormat:'prompt'}},
+   execution:{backend:'api',router:{mode:'host',backend:'api',model:'sample'},management:{enabled:true}},
+   sources:[{id:'local',kind:'local',cwd:root,allowedActors:['owner']}],
+  }))
+  const runtime=host,conversation=runtime.chat.create('owner')
+  const view=()=>runtime.chat.view(conversation.id,'owner')
+  const send=async(text:string)=>{
+   const {runId}=runtime.chat.send(conversation.id,'owner',{text,clientMessageId:randomUUID(),locale:'zh-CN'})
+   const jobId='router:'+runId
+   await vi.waitFor(async()=>{
+    await runtime.tick()
+    const job=runtime.store.db.prepare('select state from jobs where id=?').get(jobId)
+    expect(['done','failed']).toContain(job?.state)
+   },{timeout:14000,interval:50})
+   return {jobId,runId}
+  }
+  const first=await send('说话呢')
+  expect(view().messages.filter(m=>m.runId===first.runId&&m.role==='assistant')).toMatchObject([{text:reply,status:'complete'}])
+  expect(runtime.store.get('router-error',first.jobId)).toBeUndefined()
+  expect(requests).toBe(1)
+  replyText=JSON.stringify({reply:'收到。'})
+  const second=await send('再确认一下')
+  expect(view().messages.filter(m=>m.runId===second.runId&&m.role==='assistant')).toMatchObject([{text:'收到。',status:'complete'}])
+  replyText='{"reply":"不完整'
+  const malformed=await send('继续')
+  expect(view().messages.filter(m=>m.runId===malformed.runId&&m.role==='assistant'&&m.status==='complete')).toEqual([])
+  expect(runtime.store.get('router-error',malformed.jobId)).toMatchObject({error:expect.stringContaining('invalid_output')})
+  expect(requests).toBe(3)
+ }finally{
+  await host?.close()
+  upstream.closeAllConnections()
+  await new Promise<void>(ok=>upstream.close(()=>ok()))
+  rmSync(root,{recursive:true,force:true})
+ }
+},45000)
 
 it('transports mixed MCP images and gives malformed images a non-fatal tool result',async()=>{
  const fatal=vi.fn(),invoke=vi.fn(async(name:string)=>{

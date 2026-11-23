@@ -1299,7 +1299,9 @@ export class ChatSessions {
       ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid`).all(id)
     const replying=replyJobs[0]
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
-    const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]
+    const jobs=last?this.host.store.db.prepare(`SELECT state,kind='router' AND json_type(payload,'$.messageId')='text' AS workerReport
+      FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?)
+        OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)`).all(last.triggerId,batch?.id??null):[]
     const clarification=batch?.decision?.action==='clarify'?this.host.store.deliveries().find(d=>d.id==='router-clarify:'+batch.id):undefined
     const messages=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*'
       AND json_extract(body,'$.conversationId')=?
@@ -1324,12 +1326,12 @@ export class ChatSessions {
       else if(last.cancelRequested)state='cancel_requested'
       else if(jobs.some(j=>j.state==='running')||batch?.state==='evaluating')state='running'
       else if(jobs.some(j=>j.state==='pending')||batch?.state==='pending')state='queued'
-      else if(jobs.some(j=>j.state==='failed')||batch?.state==='failed')state='failed'
+      else if(jobs.some(j=>j.state==='failed'&&!j.workerReport)||batch?.state==='failed')state='failed'
       else if(currentTasks.some(t=>t.state==='running'||t.state==='queued'))state='running'
       else if(pendingChoice||managedRequests.some(a=>a.actor.runId===last.id&&a.phase==='pending')||requests.some(a=>a.chat?.runId===last.id&&a.status==='pending'))state='waiting'
       else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
-      else if(jobs.length&&jobs.every(j=>j.state==='done'))state='completed'
+      else if(jobs.some(j=>j.state==='done')&&jobs.every(j=>j.state==='done'||j.workerReport&&j.state==='failed'))state='completed'
     }
     if(runId&&state!=='failed'&&state!=='cancelled'&&state!=='cancel_requested'){
       const pending=this.host.store.list<import('./approvals.ts').Approval>('approval').some(a=>a.status==='pending'&&a.expiresAt>Date.now()&&currentTasks.some(t=>t.id===a.ticketId))

@@ -15,7 +15,7 @@ import type {ChatDelivery} from './chat-deliveries.ts'
 import type {ReplanRound} from './goal-replanning.ts'
 import type {VerificationRound} from './goal-verification.ts'
 import type {TaskOwnership} from './router-scope.ts'
-import {bodyDigest} from './sources.ts'
+import {bodyDigest,stableDigest} from './sources.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {restoreRetainedFiles,retainedFileHandoffSchema} from './chat-file-handoff.ts'
 
@@ -62,6 +62,31 @@ function retainedDeliveryFiles(store:DeploymentStore,id:string,files:string[]=[]
  })
 }
 
+/** Final quality rejection parks the graph with its individual ready deliveries intact. */
+function rejectedOverallRound(store:DeploymentStore,goal:RouterGoal){
+ const id=goal.finalRoundId,round=id&&store.get<VerificationRound>('goal-verification',id)
+ if(!round||round.id!==id||round.goalId!==goal.id||round.nodeId!==undefined||round.scopeId!==goal.scopeId||
+  round.entryId!==goal.entryId||round.triggerId!==goal.triggerId||!round.finishedAt||
+  !['failed','insufficient'].includes(round.state)||!round.checks?.some(check=>check.verdict!=='passed')||
+  !Array.isArray(round.snapshot?.tasks)||!Array.isArray(round.ticketIds))return
+ const held=goal.nodes?.filter(node=>node.state!=='passed')
+ if(held?.length!==1)return
+ const node=held[0]!
+ if(node.state!=='held'||node.roundId!==id||node.failure?.kind!=='quality'||!goal.reason||
+  node.reason!==goal.reason||node.failure.reason!==goal.reason||node.repairs-(node.repairStart??0)<(goal.maxRepairs??2))return
+ if(id!=='verify-'+stableDigest([goal.id,'goal',round.snapshot])||
+  !store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='goal-verify' AND state='done' AND json_extract(payload,'$.roundId')=? AND json_extract(payload,'$.goalId')=?").get('goal-verify:'+id,id,goal.id))return
+ const ids=new Set(goal.taskIds),tasks=round.snapshot.tasks
+ if(!ids.size||tasks.length!==ids.size||new Set(tasks.map(t=>t.ticketId)).size!==ids.size||
+  round.ticketIds.length!==ids.size||new Set(round.ticketIds).size!==ids.size||round.ticketIds.some(t=>!ids.has(t)))return
+ for(const task of tasks){
+  const delivery=retainedGoalDelivery(store,goal,task.ticketId)
+  if(!ids.has(task.ticketId)||!delivery||delivery.assignmentId!==task.assignmentId||delivery.inputRevision!==task.inputRevision||
+   stableDigest(delivery)!==task.reportHash||!retainedDeliveryFiles(store,task.ticketId,delivery.files))return
+ }
+ return node
+}
+
 // An idle Chat task may still be waiting on a user or a prerequisite. A
 // replacement host can keep that checkpoint without dispatching another turn.
 function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
@@ -78,6 +103,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    ((kind='goal-verification' AND json_extract(body,'$.state') IN ('pending','running'))
     OR (kind='goal-replan' AND json_extract(body,'$.state') IN ('pending','planning','reviewing','approved'))
     OR (kind='goal-wake' AND json_extract(body,'$.state') IN ('queued','running'))) LIMIT 1`).get(goal.id))return
+ const finalHold=rejectedOverallRound(store,goal)
  const ids=new Set<string>()
  for(const node of nodes){
   const id=node.ticketId
@@ -124,7 +150,10 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
    if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return
   }
-  if(node.state==='passed'){
+  if(node===finalHold){
+   if(assignment.report?.state!=='waiting'||ticket.attention||ticket.undelivered.length||
+    owner.originEntry!==goal.entryId||store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor)return
+  }else if(node.state==='passed'){
    const round=node.roundId&&store.get<VerificationRound>('goal-verification',node.roundId)
    const delivery=retainedGoalDelivery(store,goal,id)
    if(!round||round.state!=='passed'||round.goalId!==goal.id||round.nodeId!==node.id||
@@ -142,9 +171,9 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    }
   }
  }
- // An uncertain-read hold uses nextAt to back off evidence checks. Accept
- // that timer only when every held node was proven to contain denied reads.
- if(goal.nextAt!==undefined&&(!receipts.length||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
+ // Older overall quality holds kept their last active goal timestamp. It cannot
+ // dispatch a quality-held node; queued wakes and active rounds were checked above.
+ if(goal.nextAt!==undefined&&!finalHold&&(!receipts.length||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
  if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
  return {ids:[...ids],jobs,receipts}
 }

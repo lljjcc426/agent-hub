@@ -32,7 +32,7 @@ async function mappedRequest(url:string,headers:Record<string,string>,body?:stri
 }
 const prepare=(h:Runtime,id=randomUUID())=>deploymentMaintenance(h,{action:'prepare',operationId:id,expectedRevision:h.settings.current().revision})
 
-function stoppedCallback(h:Runtime,name:string,args:object,role:'router'|'subagent'){
+function stoppedCallback(h:Runtime,name:string,args:object,role:'router'|'subagent'|'worker'){
  const {store}=h,{stateDir}=h.config
  const cwd=realpathSync(h.config.sources[0]!.cwd),id='plugin:'+randomUUID(),turnId=randomUUID()
  const identity=stableDigest('account'),digest=stableDigest('engine'),nativeId=randomUUID(),folder=randomUUID()
@@ -42,7 +42,7 @@ function stoppedCallback(h:Runtime,name:string,args:object,role:'router'|'subage
   cwd,identity,nativeId,state:'failed',effectIds:[receiptId],lastFailure:{code:'outcome_unknown',at:failureAt}}
  const receipt:PluginToolEffect={state:'running',fingerprint:stableDigest([name,args]),failure:{operation:'tool',reason:'exception'}}
  const activity=randomUUID(),triggerId=randomUUID(),sourceId='local'
- const owner=role==='subagent'?{ticketId:randomUUID(),agentId:randomUUID()}:{}
+ const owner=role==='subagent'?{ticketId:randomUUID(),agentId:randomUUID()}:role==='worker'?{ticketId:randomUUID(),workerId:'one'}:{}
  store.put('backend-plugin-thread',id,thread)
  store.put('backend-plugin-tool',receiptId,receipt)
  store.put('backend-binding',id,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
@@ -50,7 +50,7 @@ function stoppedCallback(h:Runtime,name:string,args:object,role:'router'|'subage
  store.put('model-usage',activity,{id:activity,role,purpose:role,triggerId,sourceId,state:'failed',at:failureAt,endedAt:failureAt+1,steps:{},...owner})
  if(owner.agentId)store.put('work',owner.agentId,{...owner,id:owner.agentId,threadId:id,cwd,
   kind:'agent',state:'failed',endedAt:failureAt+2,createdAt:failureAt,notify:'collected'})
- else store.put('router-session',triggerId,{threadId:id,triggerId,source:sourceId})
+ else if(role==='router')store.put('router-session',triggerId,{threadId:id,triggerId,source:sourceId})
  const data=join(stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(id))
  const journal=join(data,'sessions',folder),session=join(journal,'session.json')
  mkdirSync(journal,{recursive:true});mkdirSync(join(data,'index'))
@@ -406,3 +406,39 @@ it('requires a current revision and safely aborts a request that never prepared'
 })
 
 it('normalizes an explicitly published HTTP default port',()=>{expect(publicOriginSchema.parse('http://127.0.0.1:80')).toBe('http://127.0.0.1');expect(requestHostOrigin('127.0.0.1','http://127.0.0.1:4337','http://127.0.0.1')).toBe('http://127.0.0.1')})
+
+it('preserves a migrated Worker callback only with the completed migration receipt and stopped native writer',async()=>{
+ const h=host(),f=stoppedCallback(h,'superagent_shell',{command:'wc -c file',requestId:'size'},'worker')
+ const s=h.store,session=s.get<{ticketId:string}>('model-session',f.thread.id)!,ticketId=session.ticketId
+ const old:Run={ticketId,assignmentId:'old',workerId:'one',backendId:'codex',cwd:f.thread.cwd,phase:'idle',prepared:true,threadId:f.thread.id,turnId:f.thread.turnId}
+ const migrate=(from:Run,key:string):Run=>{
+  const result={ticketId,migration:key,previousThread:from.threadId,status:'awaiting_followup'}
+  s.put('worker-migration',key,{ticketId,workerId:'one',from,to:{id:'one',backend:'codex'},at:Date.now()+10})
+  s.put('worker-command',key,{status:'completed',result})
+  return {...from,migration:key,threadId:'plugin:'+randomUUID(),turnId:randomUUID()}
+ }
+ const current=migrate(migrate(old,'first'),'second'),blockers=()=>deploymentBlockers(s,0,h.config.stateDir)
+ s.put('run',ticketId,current)
+ expect(blockers()).toEqual([])
+ const receipt=s.get<object>('worker-command','first')!
+ s.put('worker-command','first',{...receipt,status:'started'})
+ expect(blockers()).toContainEqual({kind:'backend-effects',count:1})
+ s.put('worker-command','first',receipt)
+ const migration=s.get<object>('worker-migration','first')!
+ s.put('worker-migration','first',{...migration,from:{...old,ticketId:'other'}})
+ expect(blockers()).toContainEqual({kind:'backend-effects',count:1})
+ s.put('worker-migration','first',migration)
+ s.put('run',ticketId,{...current,phase:'running'})
+ expect(blockers()).toContainEqual({kind:'backend-effects',count:1})
+ s.put('run',ticketId,current)
+ s.put('backend-plugin-thread',current.threadId!,{id:current.threadId,state:'running',effectIds:[]})
+ expect(blockers()).toContainEqual({kind:'backend-effects',count:1})
+ s.put('backend-plugin-thread',current.threadId!,{id:current.threadId,state:'completed',effectIds:[]})
+ writeFileSync(join(f.journal,'writer.lock'),String(process.pid))
+ expect(blockers()).toContainEqual({kind:'backend-effects',count:1})
+ rmSync(join(f.journal,'writer.lock'))
+ const op=randomUUID()
+ await prepare(h,op)
+ await deploymentMaintenance(h,{action:'finish',operationId:op})
+ expect(s.get('backend-plugin-tool',f.receiptId)).toEqual(f.receipt)
+})

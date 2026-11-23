@@ -38,7 +38,7 @@ async function tool<T=unknown>(r:ModelRequest,name:string,args:unknown):Promise<
  return JSON.parse(text) as T
 }
 
-function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean}={}){
+function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean;rejectOverall?:boolean}={}){
  const root=mkdtempSync(join(tmpdir(),'roppo-goal-workspace-'));roots.push(root)
  const source=join(root,'source');mkdirSync(source)
  if(options.git){
@@ -64,7 +64,7 @@ function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolea
     let offset:number|null=0
     do{offset=(await tool<{nextOffset:number|null}>(r,'goal_evidence',{id:e.id,offset})).nextOffset}while(offset!==null)
    }
-   output={checks:input.criteria.map((criterion:{id:string})=>({criterionId:criterion.id,verdict:'passed',
+   output={checks:input.criteria.map((criterion:{id:string})=>({criterionId:criterion.id,verdict:options.rejectOverall&&criterion.id==='__goal__'?'insufficient':'passed',
     explanation:'Inspected the evidence',evidenceIds:input.evidence.filter((e:{criterionIds:string[]})=>criterion.id==='__goal__'||e.criterionIds.includes(criterion.id)).map((e:{id:string})=>e.id)}))}
   }else output=await handler(r)
   return {threadId,turnId,text:JSON.stringify(output)}
@@ -452,4 +452,36 @@ it('shows the cause of a held prerequisite when a previously dispatched ticket i
  const view=f.host.chat.view(f.chat.id,owner)
  expect(view.run).toMatchObject({state:'blocked',blockedReason:reason})
  expect(view.workers.flatMap(w=>w.tasks).find(t=>t.id===existing.ticketId)?.blockedReason).toBe(reason)
+})
+
+it('retains a rejected final Chat review across maintenance with its exact deliveries and verdict',async()=>{
+ const f=fixture(async request=>request.role==='router'?{reply:'Checking the task'}:ready(),{rejectOverall:true})
+ const first=f.start('Review the retained delivery',{maxReplans:0,maxRepairs:0})
+ await f.until(()=>f.host.goals.get(first.id)?.state==='held'&&!f.host.activeExecutions&&
+  !f.host.store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('pending','running') LIMIT 1").get())
+ const h=f.host,goal=h.goals.get(first.id)!,id=goal.taskIds[0]!,s=h.store
+ expect(goal.finalRoundId).toBeTruthy()
+ expect(goal.nextAt).toBeUndefined()
+ const legacy={...goal,nextAt:Date.now()+60000}
+ s.put('router-goal',goal.id,legacy)
+ const blocked=()=>deploymentBlockers(s,0,f.config.stateDir),delivery=s.get<object>('goal-delivery',id)!
+ expect(blocked()).toEqual([])
+ s.put('goal-delivery',id,{...delivery,reply:'Changed since acceptance'})
+ expect(blocked()).toContainEqual({kind:'goals',count:1})
+ s.put('goal-delivery',id,delivery)
+ s.put('goal-wake','queued',{goalId:goal.id,state:'queued'})
+ expect(blocked()).toContainEqual({kind:'goals',count:1})
+ s.db.prepare("DELETE FROM records WHERE kind='goal-wake' AND id='queued'").run()
+ const round=s.get<object>('goal-verification',goal.finalRoundId!)!
+ s.put('goal-verification',goal.finalRoundId!,{...round,state:'running'})
+ expect(blocked()).toContainEqual({kind:'goals',count:1})
+ s.put('goal-verification',goal.finalRoundId!,round)
+ const operationId=randomUUID()
+ await deploymentMaintenance(h,{action:'prepare',operationId,expectedRevision:h.settings.current().revision})
+ await f.restart()
+ await deploymentMaintenance(f.host,{action:'finish',operationId})
+ await f.host.tick()
+ expect(f.host.goals.get(goal.id)).toEqual(legacy)
+ expect(f.host.store.get('goal-verification',goal.finalRoundId!)).toEqual(round)
+ expect(f.host.store.get('goal-delivery',id)).toEqual(delivery)
 })

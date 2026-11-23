@@ -24,6 +24,36 @@ export function savedChatPlan(store: Pick<Store, 'list'>, activityId: string, ar
     saved.activityId === activityId && stableDigest({ title: saved.title, steps: saved.steps }) === fingerprint)
 }
 
+interface WorkerMigration {ticketId:string;workerId:string;from:Run;to:{id:string;backend:string};at:number}
+interface MigrationReceipt {status:string;result?:{status:string;ticketId:string;migration:string;previousThread?:string}}
+
+/** A completed migration detaches the old native session without settling its effects. */
+function ownsStoppedWorkerTurn(store:RecoveryStore,run:Run,thread:PluginThread,session:Session,endedAt:number){
+  if(run.phase!=='idle'||!run.prepared||run.waitingForWriter||run.cwd!==session.cwd)return false
+  if(run.threadId===thread.id)return run.turnId===thread.turnId&&run.backendId===thread.backendId
+  if(run.threadId && store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return false
+  const seen=new Set<string>()
+  let successor=run
+  while(successor.migration&&!seen.has(successor.migration)){
+    const key=successor.migration
+    seen.add(key)
+    const migration=store.get<WorkerMigration>('worker-migration',key)
+    const command=store.get<MigrationReceipt>('worker-command',key),receipt=command?.result
+    const from=migration?.from
+    if(!from||!session.workerId||!Number.isSafeInteger(migration.at)||migration.at<endedAt||
+       migration.ticketId!==run.ticketId||migration.workerId!==session.workerId||successor.workerId!==session.workerId||
+       migration.to?.id!==successor.workerId||
+       successor.backendId!==undefined&&migration.to.backend!==successor.backendId||
+       command?.status!=='completed'||receipt?.status!=='awaiting_followup'||receipt.migration!==key||
+       receipt.ticketId!==run.ticketId||receipt.previousThread!==from.threadId||
+       from.ticketId!==run.ticketId||from.workerId!==session.workerId||from.cwd!==run.cwd||
+       from.phase!=='idle'||!from.prepared||from.waitingForWriter)return false
+    if(from.threadId===thread.id)return from.turnId===thread.turnId&&from.backendId===thread.backendId
+    successor=from
+  }
+  return false
+}
+
 function stoppedSession(store: RecoveryStore, thread: PluginThread): Session | undefined {
   const session = store.get<Session>('model-session', thread.id)
   if (session?.threadId !== thread.id || session.cwd !== thread.cwd || session.ephemeral !== false ||
@@ -42,9 +72,7 @@ function stoppedSession(store: RecoveryStore, thread: PluginThread): Session | u
   }
   if (usage.role === 'worker' && session.ticketId && !session.agentId) {
     const run = store.get<Run>('run', session.ticketId)
-    if (run?.ticketId === session.ticketId && run.phase === 'idle' && run.prepared && !run.waitingForWriter &&
-        run.threadId === thread.id && run.turnId === thread.turnId && run.backendId === thread.backendId &&
-        run.cwd === session.cwd) return session
+    if (run?.ticketId === session.ticketId && ownsStoppedWorkerTurn(store,run,thread,session,usage.endedAt)) return session
   }
   if (usage.role === 'router' && !session.ticketId && !session.agentId &&
       store.db.prepare(`SELECT 1 FROM records WHERE kind='router-session'

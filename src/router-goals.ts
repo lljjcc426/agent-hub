@@ -846,7 +846,7 @@ export class RouterGoals {
       const failedIds=new Set(round.checks.filter(ch=>ch.verdict!=='passed').map(ch=>ch.criterionId))
       const target=g.nodes!.find(n=>g.project?n.id===g.project.integration:n.criterionIds.some(id=>failedIds.has(id)))??g.nodes!.at(-1)!
       if((target.repairs-(target.repairStart??0))<(g.maxRepairs??2))this.repair(g,target,round)
-      else{target.state='held';target.reason='Overall goal acceptance did not pass within the repair allowance';target.failure={kind:'quality',reason:target.reason};target.roundId=round.id;this.save(g);if(!this.host.replanning.consider(g)){g.state='held';g.reason=target.reason;this.save(g);this.notice(g,g.reason)}}
+      else{target.state='held';target.reason='Overall goal acceptance did not pass within the repair allowance';target.failure={kind:'quality',reason:target.reason};target.roundId=round.id;this.save(g);if(!this.host.replanning.consider(g)){g.state='held';g.nextAt=undefined;g.reason=target.reason;this.save(g);this.notice(g,g.reason)}}
      }else if(round.state==='errored'){
       const failure=classifyVerificationFailure(round.error??'Verifier failed',this.now(),g.recoveryAttempts??0)
       if(['transient','quota','protocol'].includes(failure.kind)&&(failure.kind==='protocol'?round.attempts<=2:(g.recoveryAttempts??0)<5)){

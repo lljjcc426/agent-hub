@@ -9,7 +9,8 @@ import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
-import {recordedWorkerCalls,refusedWorkerJobReads} from '../src/backends/opencode-read-recovery.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads,unstartedWorkerShell} from '../src/backends/opencode-read-recovery.ts'
+import {ExecutionTrace} from '../src/execution-trace.ts'
 import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
@@ -189,6 +190,42 @@ it('requires terminal, matching native and host receipts before replacing a canc
  s.put('backend-plugin-tool',effectId,receipt)
  writeFileSync(join(f.session,'..',f.thread.turnId+'.operations'),JSON.stringify({id:'native-1',tool:'write'}))
  expect(proof()).toBeUndefined()
+})
+
+it('requires both a stopped session and uninterrupted host admission history to rule out shell execution',()=>{
+ const h=host(),s=h.store
+ new ExecutionTrace(()=>h)
+ const args={requestId:'locate',command:'pwd'},f=stoppedCallback(h,'superagent_shell',args,'worker')
+ const thread=f.thread,model=s.get<{ticketId:string;triggerId:string;sourceId:string;workerId:string}>('model-session',thread.id)!,id=model.ticketId
+ const at=Date.now(),assignment={id:'same-assignment',startedAt:new Date(at-500).toISOString()}
+ s.put('ticket',id,{id,assignments:[assignment]})
+ const run:Run={ticketId:id,assignmentId:assignment.id,cwd:thread.cwd,workerId:'one',backendId:'codex',phase:'uncertain',prepared:true,threadId:thread.id,turnId:thread.turnId}
+ const stable=f.native.turns[0]!
+ writeFileSync(join(f.journal,thread.turnId+'.ready'),'ready')
+ const activity={id:'callback',kind:'tool',name:'superagent_shell',ticketId:id,parentId:f.activity,startedAt:at,
+  triggerId:model.triggerId,sourceId:model.sourceId,workerId:model.workerId}
+ const usage=s.get<object>('model-usage',f.activity)!
+ s.put('model-usage',f.activity,{...usage,endedAt:at+1})
+ const check=()=>unstartedWorkerShell(s,h.config.stateDir,run)
+ s.put('execution-call',activity.id,{...activity,state:'running'})
+ expect(check()).toBeUndefined()
+ s.put('execution-call',activity.id,{...activity,state:'failed',endedAt:at+1})
+ expect(check()).toMatchObject({callback:{id:f.receiptId},activityId:activity.id,requestId:'locate'})
+ const key=[id,assignment.id,'root',args.requestId].join(':')
+ s.put('work-request',key,'already-admitted')
+ expect(check()).toBeUndefined()
+ s.db.prepare("DELETE FROM records WHERE kind='work-request' AND id=?").run(key)
+ writeFileSync(f.session,JSON.stringify({...f.native,turns:[{...stable,tools:[...stable.tools,{id:'next',name:'superagent_shell',args}]}]}))
+ expect(check()).toBeUndefined()
+ writeFileSync(f.session,JSON.stringify(f.native))
+ expect(check()?.callback.id).toBe(f.receiptId)
+ s.db.exec("DELETE FROM records WHERE kind='execution-call' AND id='callback'")
+ const other={...activity,id:'second-callback'}
+ s.put('execution-call',other.id,{...other,state:'running'})
+ s.put('work','possibly-launched',{id:'possibly-launched',kind:'shell',ticketId:id,assignmentId:assignment.id,state:'starting'})
+ s.db.exec("DELETE FROM records WHERE kind='work' AND id='possibly-launched'")
+ s.put('execution-call',other.id,{...other,state:'failed',endedAt:at+1})
+ expect(check()).toBeUndefined()
 })
 
 it('preserves proven denied log reads and their original report across a paused restart',async()=>{

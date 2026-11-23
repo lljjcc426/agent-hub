@@ -6,6 +6,7 @@ import type {GoalDelivery} from './goal-verification.ts'
 import type {RouterGoal} from './router-goals.ts'
 import type {ScopeContext} from './router-scope.ts'
 import type {Runtime} from './runtime.ts'
+import type {PluginThread} from './backends/plugin-process.ts'
 import type {Run,Store} from './store.ts'
 import {stableDigest} from './sources.ts'
 import {allowNewTaskInputs} from './task-context.ts'
@@ -41,11 +42,13 @@ export function recoverGoalEvidence(h:Runtime,g:RouterGoal,n:GoalNode,c:ScopeCon
   const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
   if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return false
  }
+ const thread=run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)
+ if(thread&&(!Array.isArray(thread.effectIds)||thread.effectIds.some(effect=>store.get<{state:string}>('backend-plugin-tool',effect)?.state!=='complete')))return false
  if(!h.goals.effectsSettled(id)||unsettledTaskEffects(store,id,0)||
     store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('pending','running','blocked','uncertain')
       AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(id,assignment.id)||
-    store.db.prepare(`SELECT 1 FROM records WHERE (kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
-      OR kind='backend-plugin-tool' AND json_extract(body,'$.threadId')=?) AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id,run.threadId??''))return false
+    store.db.prepare(`SELECT 1 FROM records WHERE kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
+      AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id))return false
  const digest=stableDigest(handoffs)
  const outputDigest=outputs&&stableDigest([g.contract,n.instruction,n.dependsOn.map(dep=>g.nodes!.find(item=>item.id===dep)?.roundId),outputs,digest])
  let review=false

@@ -8,6 +8,7 @@ import {readSchema} from '../resources.ts'
 import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
 import {stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
+import type {Ticket} from '../vendor/dsh-core/index.ts'
 import {jobInput,type WorkItem} from '../work.ts'
 import type {ThreadStore} from './api.ts'
 import {bundledEngineId} from './bundled-opencode.ts'
@@ -126,7 +127,7 @@ export function previouslyRecoveredRead(store:Pick<Store,'get'|'db'>,stateDir:st
  if(receipts.some(receipt=>receipt?.state!=='complete'))return false
  const recorded=session.readRecovery?.turnId===previous.turnId||receipts.some(receipt=>{
   const settled=receipt?.reconciliation
-  return settled?.reason==='interrupted_github_read_failed'&&settled.ticketId===run.ticketId&&settled.threadId===id&&settled.turnId===previous.turnId
+  return settled&&['interrupted_github_read_failed','shell_not_dispatched'].includes(settled.reason)&&settled.ticketId===run.ticketId&&settled.threadId===id&&settled.turnId===previous.turnId
  })||store.db.prepare(`SELECT 1 FROM audit WHERE json_extract(body,'$.type')='opencode.web_batch.recovered'
   AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.threadId')=? AND json_extract(body,'$.turnId')=? LIMIT 1`).get(run.ticketId,id,previous.turnId)
  if(!recorded)return false
@@ -308,6 +309,77 @@ export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:str
  if(run.phase!=='uncertain'||run.waitingForWriter)return
  const proof=accountedWorkerTurn(store,stateDir,run,'denied_reads')
  if(proof)return {kind:'denied_job_reads' as const,interrupted:proof.denied,calls:proof.calls}
+}
+
+/** Prove that the failed host callback never admitted a shell job. A command
+ * always commits its work row and request key atomically before starting a runner. */
+export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run){
+ if(run.phase!=='uncertain'||run.waitingForWriter)return
+ try{
+  const bound=boundWorkerSession(store,stateDir,run)
+  if(!bound)return
+  const {root,thread,session,last}=bound
+  if(thread.state!=='failed'||thread.lastFailure?.code!=='outcome_unknown'||last.state!=='interrupted')return
+  const model=store.get<{activity:string;agentId?:string;workerId?:string;triggerId:string;sourceId:string}>('model-session',thread.id)
+  const usage=model&&store.get<{id:string;role:string;state:string;ticketId?:string;workerId?:string;triggerId:string;sourceId:string;at:number;endedAt:number}>('model-usage',model.activity)
+  if(!model?.workerId||model.agentId||model.workerId!==run.workerId||usage?.role!=='worker'||usage.state!=='failed'||
+     usage.id!==model.activity||usage.workerId!==model.workerId||usage.triggerId!==model.triggerId||usage.sourceId!==model.sourceId||
+     usage.ticketId!==run.ticketId||!(usage.endedAt>=thread.lastFailure.at))return
+  const callbacks=stoppedOpenCodeCallbacks(store,stateDir,thread)
+  if(callbacks.length!==1||callbacks[0]!.name!=='superagent_shell')return
+  const callback=callbacks[0]!,args=z.object({requestId:z.string().min(1),command:z.string().min(1),yieldMs:z.number().optional()}).strict().safeParse(callback.args)
+  if(!args.success)return
+  const remaining=new Set(thread.effectIds)
+  if(remaining.size!==thread.effectIds.length||new Set(session.turns.map(turn=>turn.id)).size!==session.turns.length)return
+  for(const turn of session.turns){
+   if(turn!==last&&turn.state!=='completed'||!turn.nativeToolsDisabled&&privateText(join(root,turn.id+'.ready'),32)!=='ready')return
+   const operationsLog=operations(root,turn.id),native=new Map(operationsLog.map(op=>[op.id,op.tool]))
+   if(native.size!==operationsLog.length||new Set(turn.tools.map(call=>call.id)).size!==turn.tools.length)return
+   for(const call of turn.tools){
+    if(call.name.startsWith('opencode/')){
+     const tool=call.name.slice('opencode/'.length)
+     if(!call.result||!openCodeReadOnlyTools.has(tool)||native.get(call.id)!==tool)return
+     native.delete(call.id);continue
+    }
+    const id=stableDigest([thread.id,turn.id,call.id]),owned=remaining.delete(id)
+    const receipt=store.get<PluginToolEffect>('backend-plugin-tool',id)
+    if(!owned&&!receipt&&turn===last&&!call.result&&
+      (call.name==='superagent_read'&&readSchema.safeParse(call.args).success||
+       call.name==='chat_artifact_find'&&findChatArtifactInput.safeParse(call.args).success))continue
+    if(!owned||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return
+    if(id===callback.id)continue
+    if(!call.result||receipt.state!=='complete'||receipt.result?.success!==call.result.success||
+       receipt.result.permission==='uncertain'||receipt.result.permission==='pending')return
+   }
+   if(native.size)return
+  }
+  if(remaining.size)return
+  const calls=store.db.prepare(`SELECT id,json_extract(body,'$.startedAt') AS started,json_extract(body,'$.endedAt') AS ended
+   FROM records WHERE kind='execution-call' AND json_extract(body,'$.parentId')=? AND json_extract(body,'$.kind')='tool'
+   AND json_extract(body,'$.name')='superagent_shell' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL
+   AND json_extract(body,'$.workerId')=? AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.sourceId')=?
+   AND json_extract(body,'$.state')='failed'`).all(model.activity,run.ticketId,model.workerId,model.triggerId,model.sourceId)
+  if(calls.length!==1)return
+  const call=calls[0]!,started=Number(call.started),ended=Number(call.ended)
+  const assignment=store.get<Ticket>('ticket',run.ticketId)?.assignments.at(-1)
+  if(assignment?.id!==run.assignmentId||!assignment.startedAt||!(Date.parse(assignment.startedAt)<=started&&usage.at<=started&&started<=ended&&ended<=usage.endedAt))return
+  const trace=store.get<{version:number;installedAt:number}>('execution-trace-meta','current')
+  if(trace?.version!==1||!(trace.installedAt<=started))return
+  const events=store.db.prepare(`SELECT seq,json_extract(body,'$.state') AS state FROM audit WHERE json_valid(body)
+   AND json_extract(body,'$.type')='execution.trace' AND json_extract(body,'$.baseline')=0
+   AND json_extract(body,'$.entity')='execution-call' AND json_extract(body,'$.entityId')=?
+   AND json_extract(body,'$.ticketId')=? ORDER BY seq`).all(String(call.id),run.ticketId)
+  if(events.length!==2||events[0]!.state!=='running'||events[1]!.state!=='failed')return
+  const startSeq=Number(events[0]!.seq),endSeq=Number(events[1]!.seq)
+  const coverage=store.db.prepare('SELECT count(*) AS n FROM audit WHERE seq BETWEEN ? AND ?').get(startSeq,endSeq)
+  if(coverage?.n!==endSeq-startSeq+1)return
+  const key=[run.ticketId,run.assignmentId,'root',args.data.requestId].join(':')
+  if(store.get('work-request',key)!==undefined||store.db.prepare(`SELECT 1 FROM records WHERE kind='work' AND
+    json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? AND json_extract(body,'$.command')=? LIMIT 1`).get(run.ticketId,run.assignmentId,args.data.command)||
+     store.db.prepare(`SELECT 1 FROM audit WHERE seq BETWEEN ? AND ? AND json_extract(body,'$.entity')='work'
+      AND json_extract(body,'$.ticketId')=? LIMIT 1`).get(startSeq,endSeq,run.ticketId))return
+  if(stoppedWriter(root))return {callback,activityId:String(call.id),requestId:args.data.requestId}
+ }catch{/* An incomplete or ambiguous journal cannot establish non-execution. */}
 }
 
 export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):InterruptedRead|undefined{

@@ -3,7 +3,7 @@ import {createHash,randomUUID} from 'node:crypto'
 import {constants,copyFileSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {dirname,join} from 'node:path'
-import {afterEach,expect,it} from 'vitest'
+import {afterEach,expect,it,vi} from 'vitest'
 import {configSchema} from '../src/config.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
 import type {ContextManifest} from '../src/router-memory.ts'
@@ -486,7 +486,25 @@ it('retains a rejected final Chat review across maintenance with its exact deliv
  expect(f.host.store.get('goal-delivery',id)).toEqual(delivery)
 })
 
-it.each(['live','restart','question','changed','rejected'] as const)('reviews captured outputs independently after a Worker blocker (%s)',async mode=>{
+it('returns shell preflight rejections to the same Worker and preserves failures after job submission',async()=>{
+ let observed=false
+ const f=fixture(async r=>{
+  if(r.role==='router')return {reply:''}
+  const args={command:'pwd',requestId:'check'}
+  const denied=await r.onTool!('superagent_shell',{...args,writePaths:['relative-directory']},randomUUID())
+  expect(denied.success).toBe(false);expect(denied.contentItems[0]?.text).toContain('before submitting')
+  expect(shell).not.toHaveBeenCalled()
+  await expect(r.onTool!('superagent_shell',args,randomUUID())).rejects.toThrow('failure after submission')
+  expect(shell).toHaveBeenCalledOnce();observed=true
+  return ready()
+ })
+ const shell=vi.spyOn(f.host.work,'shell').mockRejectedValue(Error('failure after submission'))
+ const goal=f.start('Check shell admission')
+ await f.until(()=>f.host.goals.get(goal.id)?.state==='completed')
+ expect(observed).toBe(true)
+})
+
+it.each(['live','restart','question','changed','rejected','pending_effect'] as const)('reviews captured outputs independently after a Worker blocker (%s)',async mode=>{
  const path='index.md'
  let upstreamRuns=0,downstreamRuns=0
  const f=fixture(async request=>{
@@ -496,6 +514,11 @@ it.each(['live','restart','question','changed','rejected'] as const)('reviews ca
     upstreamRuns++
     writeFileSync(join(request.cwd!,path),'original captured bytes')
     await tool(request,'superagent_artifact',{path})
+    if(mode==='pending_effect'){
+     const id=f.host.store.list<Run>('run').find(run=>run.cwd===request.cwd)!.threadId!
+     f.host.store.put('backend-plugin-thread',id,{id,state:'failed',effectIds:['unresolved']})
+     f.host.store.put('backend-plugin-tool','unresolved',{state:'running'})
+    }
     if(mode==='changed')writeFileSync(join(request.cwd!,path),'unverified changed bytes')
     return {...ready('Independent evidence is missing'),state:'blocked',question:mode==='question'?'Which version should I use?':null}
   }
@@ -507,7 +530,7 @@ it.each(['live','restart','question','changed','rejected'] as const)('reviews ca
   {id:'capture',title:'Capture index',instruction:'CAPTURE original index',workerId:'builder',criterionIds:[],derivedFrom:'consume',supports:['verification'],outputs:[path]},
   {id:'consume',title:'Consume index',instruction:'Use accepted input',workerId:'reviewer',criterionIds:['verification'],dependsOn:['capture']},
  ]})
- if(mode==='restart'||mode==='question'||mode==='changed'||mode==='rejected'){
+ if(mode==='restart'||mode==='question'||mode==='changed'||mode==='rejected'||mode==='pending_effect'){
   await f.until(()=>f.host.goals.get(goal.id)?.state==='held')
   expect(downstreamRuns).toBe(0)
   if(mode==='rejected'){

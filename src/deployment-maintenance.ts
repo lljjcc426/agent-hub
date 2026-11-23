@@ -4,7 +4,7 @@ import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
 import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {retainedBackendReceipts} from './backend-receipt-recovery.ts'
-import {refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
+import {refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
@@ -92,8 +92,13 @@ function rejectedOverallRound(store:DeploymentStore,goal:RouterGoal){
 function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
  const nodes=goal.nodes,jobs:string[]=[],receipts:{id:string;threadId:string;turnId:string;tool:string}[]=[]
  const sourceHold=goal.reason==='Error: Goal sources changed; explicit goal reauthorization is required'
- if(goal.state!=='held'||!goal.managed||goal.supersededBy||goal.cancelledByUser||
-  goal.delegationIds?.length||goal.project?.review?.state==='pending'||!nodes?.some(node=>node.state==='held'||sourceHold&&node.state==='running'))return
+ if(!nodes||!goal.managed||goal.supersededBy||goal.cancelledByUser||
+  goal.delegationIds?.length||goal.project?.review?.state==='pending')return
+ // An interrupted Worker may be the graph's sole unfinished node while the
+ // graph still says active. Its exact callback is verified below before parking.
+ const activeNode=goal.state==='active'&&!goal.project&&!goal.replanId&&goal.nextAt===undefined&&
+  nodes.filter(node=>node.state!=='passed').length===1?nodes.find(node=>node.state==='running'):undefined
+ if(!activeNode&&(goal.state!=='held'||!nodes.some(node=>node.state==='held'||sourceHold&&node.state==='running')))return
  const chat=store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',goal.triggerId)
  if(!chat||chat.cancelled||chat.cancelRequested)return
  const conversation=store.get<{sourceId:string;discussion:string}>('chat-conversation',chat.conversationId)
@@ -109,21 +114,23 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
   const id=node.ticketId
   if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
    node.failure?.kind==='unconfirmed_effect'||
-   !['held','waiting_dependency','passed',...(sourceHold?['running']:[])].includes(node.state))return
+   !['held','waiting_dependency','passed',...(sourceHold||node===activeNode?['running']:[])].includes(node.state))return
   ids.add(id)
   const ticket=store.get<Ticket>('ticket',id),run=store.get<Run>('run',id),owner=store.get<TaskOwnership>('task-ownership',id)
   const assignment=ticket?.assignments.at(-1)
   const waitingOnDependency=node.state==='waiting_dependency'&&node.dependsOn.some(dep=>nodes.some(item=>item.id===dep&&item.state!=='passed'))
   if(node.state==='waiting_dependency'&&!waitingOnDependency)return
   const refused=run&&node.state==='held'&&node.failure?.kind==='uncertain'?refusedWorkerJobReads(store,stateDir,run):undefined
-  if(node.failure?.kind==='uncertain'&&!refused)return
-  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused||run.waitingForWriter||
+  const shell=run&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
+   node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?unstartedWorkerShell(store,stateDir,run):undefined
+  if(node===activeNode&&!shell||node.failure?.kind==='uncertain'&&!refused&&!shell)return
+  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!shell||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
   const parked=sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
-  if(node.state==='running'&&(!parked||owner.originEntry!==goal.entryId||
+  if((node.state==='running'||shell)&&(!parked&&!shell||owner.originEntry!==goal.entryId||
    store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor))return
   if(!parked&&(assignment.state!=='running'||run.assignmentId!==assignment.id||owner.state!=='active'))return
-  if(ticket.undelivered.length&&(!waitingOnDependency&&!parked||
+  if(ticket.undelivered.length&&(!waitingOnDependency&&!parked&&!shell||
    !ticket.undelivered.every(inputId=>ticket.inputs.some(input=>input.id===inputId))))return
   try{if(!statSync(run.cwd).isDirectory())return}catch{return}
   if(run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return
@@ -149,6 +156,16 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
   if(attempt){
    const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
    if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return
+  }
+  if(shell){
+   if(!run.threadId||!run.turnId||ticket.attention||assignment.report?.state!=='blocked')return
+   for(const inputId of ticket.undelivered){
+    const input=ticket.inputs.find(item=>item.id===inputId)
+    const trigger=input?.kind==='trigger'&&store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',input.triggerId)
+    if(!trigger||!trigger.human||!trigger.actor||JSON.stringify([trigger.actor.source,trigger.actor.id])!==goal.actor)return
+   }
+   receipts.push({id:shell.callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_shell'})
+   continue
   }
   if(node===finalHold){
    if(assignment.report?.state!=='waiting'||ticket.attention||ticket.undelivered.length||

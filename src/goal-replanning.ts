@@ -243,7 +243,7 @@ export class GoalReplanning {
    // independently approved, scoped recovery may release that implementation hold.
    this.host.engine.report(task.id,{state:'waiting',summary:'Independent replanning approved; continue with the revised implementation',question:null})
    this.host.engine.note(task.id,text);allowNewTaskInputs(this.host.store,task.id,previous)
-   n.state='running';n.refreshFrom=undefined;this.host.store.put('router-goal',g.id,g)
+   n.state='running';n.reason=undefined;n.refreshFrom=undefined;this.host.store.put('router-goal',g.id,g)
    this.host.store.put('goal-plan-dispatch',key,{id:key,goalId:g.id,scopeId:g.scopeId,entryId:g.entryId,triggerId:g.triggerId,ticketId:task.id,replanId:r.id,at:this.now()})
   })
   return true

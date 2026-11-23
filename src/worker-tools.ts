@@ -5,6 +5,7 @@ import {promisify} from 'node:util'
 import {isAbsolute,relative,sep} from 'node:path'
 import {realpathSync,statSync} from 'node:fs'
 import {hostPrivateFiles} from './private-files.ts'
+import {ContextBudgetExceeded} from './context-budget.ts'
 import {toolTrace} from './tool-trace.ts'
 import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
 import {actionFacts,routerRisk,workerRisk,type ToolResult} from './chat-permissions.ts'
@@ -66,14 +67,22 @@ export const workerDefinitions=[
 export const workerSpecs:ToolSpec[]=workerDefinitions.map(d=>withPendingNotice({type:'function',name:d.name,description:d.description,inputSchema:d.schema}))
 export class WorkerTools {
  constructor(private host:Runtime){}
- async call(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt,signal?:AbortSignal):Promise<ToolResult>{
+ async call(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt,signal?:AbortSignal,fromModel=false):Promise<ToolResult>{
   const run=this.host.store.get<any>('run',owner.ticketId),ticket=this.host.store.tickets.get(owner.ticketId)
   const browser=name==='superagent_browser'?browserToolSchema.safeParse(value):undefined
   const desktop=name==='superagent_desktop'?desktopToolDefinition.validator.safeParse(splitPendingNotice(name,value).args):undefined
   const metadata=browser?.success?{action:'browser:'+browser.data.action}:desktop?.success?{action:'desktop:'+desktop.data.action}:{trace:toolTrace(name,value)}
-  return this.host.activity.tool(name,{ticketId:owner.ticketId,workerId:run?.workerId,agentId:owner.agentId,sourceId:ticket?.mandate.actor.source,triggerId:ticket?.origin.triggerId},()=>this.invoke(owner,name,value,expectedId,attempt,signal),undefined,metadata)
+  let submitted=false
+  const submitting=fromModel&&name==='superagent_shell'?()=>{submitted=true}:undefined
+  try{
+   return await this.host.activity.tool(name,{ticketId:owner.ticketId,workerId:run?.workerId,agentId:owner.agentId,sourceId:ticket?.mandate.actor.source,triggerId:ticket?.origin.triggerId},()=>this.invoke(owner,name,value,expectedId,attempt,signal,submitting),undefined,metadata)
+  }catch(error){
+   if(!submitting||submitted||signal?.aborted||error instanceof ContextBudgetExceeded||
+      attempt&&!currentWorkerAttempt(this.host,attempt)||!this.host.validWork(owner))throw error
+   return {success:false,contentItems:[{type:'inputText',text:'The host rejected this shell request before submitting it for approval or execution. Check the task scope and request arguments, and continue from the authorized files and recorded jobs.'}]}
+  }
  }
- private async invoke(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt,signal?:AbortSignal):Promise<ToolResult>{
+ private async invoke(owner:WorkOwner,name:string,value:unknown,expectedId?:string,attempt?:WorkerAttempt,signal?:AbortSignal,submitting?:()=>void):Promise<ToolResult>{
   const plan=isWorkflowPlan(name,value)
   const read=<T>(fn:()=>T):T=>plan?this.host.scopes.readOnly(()=>this.host.memory.readOnly(fn)):fn()
   read(()=>this.host.delegation.guardWorker(owner.ticketId,name))
@@ -223,8 +232,10 @@ export class WorkerTools {
     if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
     const current=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)
     if(!current||current.runId!==actor.runId)throw Error('The task no longer owns its Chat permissions')
+    submitting?.()
     return this.host.permissions.run(current,name,args,risk,execute,expectedId,input.notice)
   }
+  submitting?.()
   return execute()
  }
  private async execute(fence:{checkAuthority:()=>void;plan:boolean;attempt?:WorkerAttempt;signal?:AbortSignal},owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{

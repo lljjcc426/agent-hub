@@ -20,7 +20,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
-import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
+import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {AcceptanceEvidenceTooLarge,acceptanceRetryTarget,type AcceptanceRetryResult,type AcceptanceRetryStatus,type EvidenceOverflow} from './goal-acceptance.ts'
 import {ChatError} from './chat-errors.ts'
@@ -460,6 +460,61 @@ export class RouterGoals {
  private automaticReadRecoveryAllowed(g:RouterGoal){
   return this.host.config.work.autoRecover&&g.managed&&g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
  }
+ private recoverUnstartedShell(g:RouterGoal,n:GoalNode,c:ScopeContext){
+  const id=n.ticketId,store=this.host.store
+  if(!id||!this.automaticReadRecoveryAllowed(g)||g.project||!this.host.artifacts.canCapture(g)||n.recoveries>=5||
+     this.host.executionActive(id)||store.get('task-continuation',id)||store.get('goal-delivery',id))return false
+  const run=store.get<Run>('run',id),task=store.tickets.get(id)
+  if(run?.phase!=='uncertain'||!task||task.ended||task.assignments.at(-1)?.report?.state!=='blocked'||
+    hasOutstandingQuestion(this.host,task)||!this.host.scopes.taskRunnable(id)||
+    !this.host.webhooks.taskExecutionAllowed(id)||this.host.webhooks.continuations.pending(id,run.assignmentId)||
+    n.dependsOn.some(dep=>g.nodes!.find(d=>d.id===dep)?.state!=='passed')||!this.effectsSettledAtPhase(id,'uncertain')||
+    unsettledTaskEffects(store,id,0)||store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('pending','running','blocked','uncertain')
+     AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(id,run.assignmentId))return false
+  const attempt=store.get<{assignmentId:string;attemptId:string}>('async-worker-current',id)
+  if(attempt){
+   const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
+   if(attempt.assignmentId!==run.assignmentId||terminal?.ticketId!==id||terminal.assignmentId!==run.assignmentId)return false
+  }
+  if(store.db.prepare(`SELECT 1 FROM records s JOIN records t ON t.kind='backend-plugin-thread' AND t.id=s.id
+    JOIN json_each(t.body,'$.effectIds') e LEFT JOIN records r ON r.kind='backend-plugin-tool' AND r.id=e.value
+    WHERE s.kind='model-session' AND json_extract(s.body,'$.ticketId')=? AND s.id<>?
+    AND json_extract(r.body,'$.state') IS NOT 'complete' LIMIT 1`).get(id,run.threadId??''))return false
+  const proof=unstartedWorkerShell(store,this.host.config.stateDir,run)
+  if(!proof)return false
+  this.host.scopes.checkTask(id,c,true)
+  const manifest=store.get<{manifest:ContextManifest}>('task-context',id)?.manifest
+  if(manifest)this.host.memory.validate(manifest)
+  const worker=workerProfiles(this.host.config).find(p=>p.id===run.workerId)
+  if(!worker||worker.backend!==run.backendId||worker.state==='paused'||
+     store.get<{workerId:string}>('worker-assignment',id)?.workerId!==worker.id)return false
+  const model=worker.model??this.host.config.backends[worker.backend]?.model??this.host.config.models.worker
+  if(run.model&&run.model!==model)return false
+  this.host.model.describe?.(run.threadId)
+  const prerequisites=n.dependsOn.flatMap(dep=>{
+   const node=g.nodes!.find(d=>d.id===dep)!,round=store.get<VerificationRound>('goal-verification',node.roundId!)
+   if(!round||round.state!=='passed'||!this.host.verification.current(round,g))throw Error('Prerequisite evidence changed before Worker recovery')
+   return round.snapshot.evidence.filter(e=>e.artifact).map(e=>({path:e.key,artifact:e.artifact}))
+  })
+  const note=JSON.stringify({instruction:'Continue the current reviewed task in the retained workspace. The interrupted shell request never started. Inspect existing work and the accepted prerequisite artifacts. Use superagent_artifact_read with each artifact.id. Preserve prior effects.',unstartedRequestId:proof.requestId,prerequisiteEvidence:prerequisites})
+  if(Buffer.byteLength(note)>this.host.scopes.scope(g.scopeId).contextBytes)return false
+  return store.atomic(()=>{
+   const {callback}=proof
+   store.put('backend-plugin-tool',callback.id,{...callback.receipt,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The host callback failed before a shell job was created.'}]},
+    reconciliation:{reason:'shell_not_dispatched',mode:'automatic',previousState:callback.receipt.state,ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,activityId:proof.activityId,at:this.now()}})
+   const session=store.get<object>('model-session',run.threadId!)!
+   store.put('model-session',run.threadId!,{...session,shellDispatchRecovery:{turnId:run.turnId,at:this.now()}})
+   const {threadId,turnId,error,failure,result,waitingForWriter,toolsVersion,toolsDigest,...retained}=run
+   store.put('run',id,{...retained,phase:'idle'})
+   n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.recoveries++
+   g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
+   this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)
+   this.host.engine.report(id,{state:'waiting',summary:'已核实上一条命令未启动，正在继续处理。',question:null})
+   this.host.engine.note(id,note)
+   store.audit({type:'backend.tool.reconciled',receiptId:callback.id,reason:'shell_not_dispatched',activityId:proof.activityId,ticketId:id,confirmed:false})
+   return true
+  })
+ }
  awaitingReadRecovery(run:Run){
   const g=this.forTask(run.ticketId)
   return !!g&&this.automaticReadRecoveryAllowed(g)&&['active','waiting'].includes(g.state)&&
@@ -693,7 +748,10 @@ export class RouterGoals {
      if(g.state==='held'&&!confirmed?.length)continue
      this.nextEvidenceCheck.delete(g.id)
     }
-    if(checkHeldRead){this.recoverInterruptedReads(g,c,held);continue}
+    if(checkHeldRead){
+     if(!held.some(node=>this.recoverUnstartedShell(g,node,c)))this.recoverInterruptedReads(g,c,held)
+     continue
+    }
     if(confirmed?.length){
      for(const node of confirmed){node.state='running';node.reason=undefined;node.failure=undefined}
      g.state='active';g.reason=undefined;g.nextAt=undefined;this.save(g)
@@ -772,9 +830,10 @@ export class RouterGoals {
      }
      const report=task.assignments.at(-1)?.report
      if(['blocked','failed'].includes(report?.state??'')){
-      if(task.undelivered.length||run?.phase==='running'||run?.phase==='starting')continue // A replacement turn has not reported yet.
+      if(run?.phase==='running'||run?.phase==='starting'||task.undelivered.length&&run?.phase!=='uncertain')continue
       if(run?.phase==='uncertain'){
        if(this.host.executionActive(task.id))continue
+       if(this.recoverUnstartedShell(g,n,c))continue
        if(this.recoverInterruptedReads(g,c,[n]))continue
       }
       // A just-finished Worker can still have a Router-inbox report awaiting flush.

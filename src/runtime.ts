@@ -92,7 +92,7 @@ import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
 import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
-import {recordedWorkerCalls,refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
 import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
@@ -347,12 +347,11 @@ export class Runtime {
         this.recoverAnsweredQuestionsOnResume=true
         continue
       }
-      // A held assignment with a recorded terminal report and only refused
-      // log reads has nothing to reconstruct during a paused release readback.
+      // Retain an accounted terminal report while maintenance owns the pause.
       if(this.paused&&run.phase==='uncertain'){
         const assignment=this.store.tickets.get(run.ticketId)?.assignments.at(-1)
         if(assignment?.id===run.assignmentId&&assignment.state==='running'&&assignment.report?.state==='blocked'&&
-          refusedWorkerJobReads(this.store,config.stateDir,run))continue
+          (refusedWorkerJobReads(this.store,config.stateDir,run)||unstartedWorkerShell(this.store,config.stateDir,run)))continue
       }
       if (run.phase === 'running' || run.phase === 'starting' || run.phase === 'background' || run.phase==='interrupted' || run.phase === 'uncertain' || run.phase === 'delivering' || run.phase==='merging') {
         this.store.put('run', run.ticketId, { ...run, phase: 'uncertain', error: run.phase==='uncertain'&&run.error?run.error:'Host stopped during execution; inspect native history and workspace before retry' })
@@ -840,7 +839,7 @@ export class Runtime {
       const tools=this.availableWorkerSpecs({githubConnector:false,network:owner.network!==false})
         .filter(s=>s.name!=='chat_deliver_file'&&s.name!=='workspace_browser')
       let result
-      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools,onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,undefined,signal),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
+      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools,onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,undefined,signal,true),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
       finally{this.controls.delete(key);this.controlRevisions.delete(key)}
       const output=report.parse(JSON.parse(result.text));threadId=result.threadId
       this.store.put('transcript',result.turnId,{ticketId:item.ticketId,agentId:item.id,threadId,turnId:result.turnId,text:result.text,at:Date.now()})
@@ -1844,7 +1843,7 @@ export class Runtime {
         instructions:builtInChat?instructions+(fullAccess?'':'\n'+permissionInstructions+' '+nativePermissionInstructions)+'\nNative questions return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Use chatFiles for uploaded originals and any confirmed read-only handoff. Each handed-off file has its original relative path and a host-provided read-only copy. Use superagent_shell for binary inputs. When requesting read-only handoff from a previous task, list exact relative file paths in backticks. A saved answer settles that question. Report concrete missing filenames or paths when input is unavailable. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
         managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path)],tools:specs,onTool:(name,args)=>{
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
-          return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal)
+          return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
         input: JSON.stringify({...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
         signal: controller.signal,

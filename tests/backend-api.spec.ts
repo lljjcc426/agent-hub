@@ -86,32 +86,38 @@ it('admits up to 32 independent reads and preserves write order and provider res
 it.each([
  {name:'the connection default',connectionLimit:2},
  {name:'the connection policy ceiling',connectionLimit:8,policyLimit:2},
-])('counts Code Mode child calls against $name',async({connectionLimit,policyLimit})=>{
+])('counts Worker Code Mode child calls against $name',async({connectionLimit,policyLimit})=>{
  const kind='openai-responses'
  let observed:boolean[]|undefined
  const wire=await server(body=>{
   const toolResults=results(kind,body)
+  if(body.tools?.some((tool:{name:string})=>tool.name==='worker_manage')){
+   expect(body.tools.some((tool:{name:string})=>tool.name==='code_mode')).toBe(false)
+   return toolResults.length?output(kind,'{"reply":"Assigned."}'):output(kind,'',[{id:'assign',name:'worker_manage',args:{
+    action:'assign',revision:0,requestId:'read-catalog',id:'reader',text:'Read the task resource catalog',
+   }}])
+  }
   if(toolResults.length){
    observed=JSON.parse(toolResults[0].output[0].text)
-   return output(kind,'{"reply":"Finished reading."}')
+   return output(kind,JSON.stringify({state:'ready',summary:'Finished reading.',reply:'',question:null,askedBy:null,decision:null,handbacks:[],files:[]}))
   }
   return output(kind,'',[{id:'script',name:'code_mode',args:{
-   source:'const all=await Promise.all([1,2,3].map(()=>tools.worker_manage({action:"list"}))); return all.map(r=>r.success)',
+   source:'const all=await Promise.all([1,2,3].map(()=>tools.superagent_read({resource:"catalog"}))); return all.map(r=>r.success)',
   }}])
  })
  const root=mkdtempSync(join(tmpdir(),'roppo-code-mode-limit-'));roots.push(root)
  const host=new Runtime(configSchema.parse({
   stateDir:join(root,'state'),work:{sandboxDriver:'disabled'},
   backends:{api:definition(kind,wire.url,{maxToolCalls:connectionLimit,...(policyLimit?{limits:{maxToolCalls:policyLimit}}:{})})},
-  execution:{backend:'api',router:{mode:'host',backend:'api'}},
+  execution:{backend:'api',router:{mode:'host',backend:'api'},management:{enabled:true},workers:[{id:'reader',backend:'api'}]},
   sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],
  }));hosts.push(host)
  const chat=host.chat.create('owner')
- host.chat.send(chat.id,'owner',{clientMessageId:'code-mode-limit',text:'Read the Worker list in Code Mode.'})
+ host.chat.send(chat.id,'owner',{clientMessageId:'code-mode-limit',text:'Have a Worker read its resource catalog.'})
  for(let i=0;i<500&&host.chat.view(chat.id,'owner').run?.state!=='completed';i++){await host.tick();await new Promise(r=>setTimeout(r,3))}
  expect(host.chat.view(chat.id,'owner').run?.state).toBe('completed')
  expect(observed).toEqual([true,false,false])
- expect(host.activity.list().filter(call=>call.name==='worker_manage'&&call.state==='completed')).toHaveLength(1)
+ expect(host.activity.list().filter(call=>call.name==='superagent_read'&&call.workerId==='reader'&&call.state==='completed')).toHaveLength(1)
 })
 
 it.each(kinds)('%s budgets full instructions, tools and provider parameters before HTTP',async kind=>{

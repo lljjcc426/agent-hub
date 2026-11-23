@@ -5,6 +5,12 @@ import {workerProfiles} from './worker-pool.ts'
 /** These predicates intentionally preserve the scheduler's existing asymmetry. */
 export function schedulerRoutingKind(kind:string){return ['assess','followup','router','router-admit','router-followup','router-batch','router-scheduled-followup','router-skill-run','workflow-decision','goal-verify','goal-replan'].includes(kind)}
 export function schedulerRoutingKey(id:string){return ['assess:','followup:','router:','router-admit:','router-followup:','router-batch:','workflow-decision:','goal-verify:','goal-replan:'].some(prefix=>id.startsWith(prefix))}
+export function schedulerUserChatTurn(store:Store,job:Job){
+ if(job.kind!=='router')return false
+ const {triggerId,messageId,permissionId,fileReviewId,teamResultId}=job.payload as {triggerId?:string;messageId?:string;permissionId?:string;fileReviewId?:string;teamResultId?:string}
+ return !!triggerId&&!messageId&&!permissionId&&!fileReviewId&&!teamResultId&&
+  !!store.get('chat-run',triggerId)&&store.triggers.get(triggerId)?.human===true
+}
 export function schedulerInteractiveJob(store:Store,job:Job){
  const ticketId=(job.payload as {ticketId?:string}|null)?.ticketId,ticket=ticketId?store.tickets.get(ticketId):undefined
  return job.kind==='followup'||job.kind==='router-followup'||(job.kind==='execute'&&!!ticket?.inputs.some(i=>i.kind==='trigger'&&i.human&&ticket.undelivered.includes(i.id)))

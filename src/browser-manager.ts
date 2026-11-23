@@ -50,6 +50,7 @@ interface Session extends DriverSession {
   maxTabs: number;
   handoffReason?: string;
   routerTurn?: string;
+  workspaceTicket?: string;
   routerConversation?: string;
   closing: boolean;
   tabs: { id: string; index: number; url: string; title: string; active?: boolean }[];
@@ -71,7 +72,7 @@ interface Session extends DriverSession {
   secrets: Set<string>;
   recording?: {recorder:PageRecording; done:Promise<unknown>};
 }
-interface WorkspaceBinding { id: string; paused: boolean; profileId?:string; resume?: {conversation: string; message: string; turn: string} }
+interface WorkspaceBinding { id: string; paused: boolean; profileId?:string; resume?: {conversation: string; message: string; turn: string; ticketId?:string} }
 interface Receipt {
   fingerprint: string;
   state: "running" | "complete" | "uncertain";
@@ -739,16 +740,17 @@ export class BrowserManager {
     const binding = this.workspaceBinding(s.user);
     binding.paused = true;
     if (s.routerConversation && s.routerTurn && !binding.resume)
-      binding.resume = {conversation: s.routerConversation, message: randomUUID(), turn:s.routerTurn};
+      binding.resume = {conversation: s.routerConversation, message: randomUUID(), turn:s.routerTurn, ticketId:s.workspaceTicket};
     this.host.store.put("browser-workspace", s.user, binding);
   }
-  endRouterTurn(turn: string) {
-    for (const s of this.sessions.values()) if (s.routerTurn === turn) {
+  endRouterTurn(turn: string, ticketId?:string) {
+    for (const s of this.sessions.values()) if (s.routerTurn === turn && s.workspaceTicket === ticketId) {
       s.routerTurn = undefined;
       s.routerConversation = undefined;
+      s.workspaceTicket = undefined;
     }
   }
-  async routerAction(user: string, conversation: string, turn: string, input: unknown, valid: () => void, deadline?:AbortSignal) {
+  async routerAction(user: string, conversation: string, turn: string, input: unknown, valid: () => void, deadline?:AbortSignal, ticketId?:string) {
     const action = workspaceAction(input);
     deadline?.throwIfAborted();
     valid();
@@ -760,13 +762,14 @@ export class BrowserManager {
       valid();
       if (s.closing || s.control !== "router" || s.epoch !== epoch)
         throw new BrowserError("browser_control_required", "The user has control. Wait for them to return the workspace browser.");
-      if (s.routerTurn && s.routerTurn !== turn)
-        throw new BrowserError("browser_control_busy", "Another Router turn is using this browser.");
+      if (s.routerTurn && (s.routerTurn !== turn || s.workspaceTicket !== ticketId))
+        throw new BrowserError("browser_control_busy", "Another task is using this browser.");
     };
     return abortable(this.enqueue(s, async () => {
       guard();
       s.routerTurn = turn;
       s.routerConversation = conversation;
+      s.workspaceTicket = ticketId;
       s.conversationId = conversation;
       if (action.action === "request_takeover") this.pauseWorkspace(s);
       await this.perform(s, action, guard, false, signal);
@@ -850,7 +853,11 @@ export class BrowserManager {
         if (s.workspace) this.host.store.atomic(() => {
           const binding = this.workspaceBinding(user);
           const pending = binding.resume;
-          if (pending && !this.host.store.get<{cancelRequested?:boolean}>("chat-run",pending.turn)?.cancelRequested) {
+          if (pending?.ticketId) {
+            const origin = this.host.chat.taskWorkspaceBrowser(pending.ticketId);
+            if (origin?.owner === user && origin.triggerId === pending.turn && origin.conversationId === pending.conversation)
+              this.noteBrowserReturn(pending.ticketId,s.id);
+          } else if (pending && !this.host.store.get<{cancelRequested?:boolean}>("chat-run",pending.turn)?.cancelRequested) {
             const locale = this.host.chat.locale(pending.turn);
             this.host.chat.send(pending.conversation, user, {
               clientMessageId: pending.message, locale,
@@ -871,13 +878,15 @@ export class BrowserManager {
       s.handoffReason = undefined;
       s.updatedAt = Date.now();
     });
-    if (s.owner && !s.ended && this.host.validWork(s.owner)) this.host.store.atomic(() => {
-      const prior = this.host.store.tickets.get(s.owner!.ticketId)!.inputs.map(i => i.id);
-      this.host.engine.note(s.owner!.ticketId,
-        `The user returned browser ${s.id}. Continue the same task autonomously. Read a fresh browser snapshot first; previous element references have expired.`);
-      allowNewTaskInputs(this.host.store, s.owner!.ticketId, prior);
-    });
+    if (s.owner && !s.ended && this.host.validWork(s.owner)) this.host.store.atomic(() => this.noteBrowserReturn(s.owner!.ticketId,s.id));
     return this.view(s, client);
+  }
+  private noteBrowserReturn(ticketId:string,browserId:string) {
+    const task = this.host.store.tickets.get(ticketId);
+    if (!task || task.ended) return;
+    this.host.engine.note(ticketId,
+      `The user returned browser ${browserId}. Continue the same task autonomously. Read a fresh browser snapshot first; previous element references have expired.`);
+    allowNewTaskInputs(this.host.store,ticketId,task.inputs.map(i=>i.id));
   }
   async subscribe(user: string, id: string, onFrame?: () => void) {
     await this.restoreWorkspace(user, id);

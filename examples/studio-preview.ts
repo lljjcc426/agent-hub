@@ -76,6 +76,11 @@ const config = configSchema.parse({
 });
 const checklist =
   '# 发布检查清单\n\n| 负责人 | 检查项 | 交付物 |\n| --- | --- | --- |\n| 文档助手 | 整理变更和使用说明 | 发布说明 |\n| 资料助手 | 核对文档链接与引用 | 链接清单 |\n| 检查助手 | 验证登录、对话和文件下载 | 验收记录 |\n';
+const brief = '# 发布进度简报\n\n## 本次范围\n对话、设置和文件交付。\n\n## 发布前确认\n- 核对模型连接\n- 复查入口和权限\n- 验证文件下载\n';
+const draftFiles = [
+  { instruction:'整理并交付发布检查清单。', name:'发布检查清单.md', content:checklist },
+  { instruction:'起草并交付发布进度简报。', name:'发布进度简报.md', content:brief },
+];
 const model: Model = {
   async run(request: ModelRequest) {
     const threadId = request.threadId ?? randomUUID(),
@@ -84,6 +89,12 @@ const model: Model = {
     request.onTurn?.(turnId);
     await wait(320, undefined, { signal: request.signal });
     if (request.role === 'worker') {
+      const draft=draftFiles.find(file=>request.input.includes(file.instruction));
+      if (draft) {
+        const file=await request.onTool?.('chat_deliver_file',{name:draft.name,content:draft.content},turnId+'-file');
+        if (!file?.success) throw Error('Preview file delivery failed');
+        return {threadId,turnId,text:JSON.stringify({state:'ready',summary:'文件已交付。',reply:'已交付 '+draft.name,question:null,askedBy:null,handbacks:[]})};
+      }
       if (request.activity?.workerId==='review' && !request.threadId) {
         const input=JSON.parse(request.input)
         const askedBy=input.inputs?.findLast((i:{kind:string;human?:boolean})=>i.kind==='trigger'&&i.human)?.triggerId??input.origin?.findLast((t:{human?:boolean})=>t?.human)?.id??null
@@ -107,31 +118,23 @@ const model: Model = {
       text = String(input.trigger?.text ?? '');
     let reply: string;
     if (input.kind !== 'user_message') reply = '协作结果已收到。发布前需要核对说明、链接和验收记录。';
-    else if (/清单|checklist/i.test(text)) {
+    else if (/清单|checklist|简报|brief/i.test(text)) {
+      const file = /清单|checklist/i.test(text) ? draftFiles[0]! : draftFiles[1]!;
       const roster = await request.onTool?.('worker_manage', { action: 'list' }, turnId + '-team');
       const list = roster?.success ? JSON.parse(roster.contentItems[0]!.text!) : undefined;
       const editor = list?.workers?.find((w: { id: string }) => w.id === 'editor');
-      if (editor)
-        await request.onTool?.(
+      const assigned = editor && await request.onTool?.(
           'worker_manage',
           {
             action: 'assign',
             id: editor.id,
             revision: list.revision,
             requestId: turnId + '-editor',
-            text: '核对发布说明、资料链接和验收范围。',
+            text: file.instruction,
           },
           turnId + '-assign',
         );
-      const file = await request.onTool?.(
-        'chat_deliver_file',
-        { name: '发布检查清单.md', content: checklist },
-        turnId + '-file',
-      );
-      reply =
-        '我把发布前的工作分成了三项。\n\n' +
-        checklist.split('\n\n')[1] +
-        (file?.success ? '\n清单已保存，可以打开或下载。' : '');
+      reply = assigned?.success ? '文档助手正在准备 '+file.name+'。' : '目前没有可用的文档助手。';
     } else if (/分工|团队|team|agent/i.test(text)) {
       const roster = await request.onTool?.('worker_manage', { action: 'list' }, turnId + '-team');
       const list = roster?.success ? JSON.parse(roster.contentItems[0]!.text!) : undefined;
@@ -143,15 +146,6 @@ const model: Model = {
           workers.join('、') +
           '。可以在「设置 → Agent 团队」调整成员和模型。'
         : '当前没有可用的协作成员。可以在「设置 → Agent 团队」添加。';
-    } else if (/简报|brief/i.test(text)) {
-      const content =
-        '# 发布进度简报\n\n## 本次范围\n对话、设置和文件交付。\n\n## 发布前确认\n- 核对模型连接\n- 复查入口和权限\n- 验证文件下载\n';
-      const file = await request.onTool?.(
-        'chat_deliver_file',
-        { name: '发布进度简报.md', content },
-        turnId + '-file',
-      );
-      reply = file?.success ? '简报草稿已保存。可以打开文件查看本次范围和发布前的确认事项。' : content;
     } else reply = '收到你的消息。这个预览使用本地示例模型，可以整理发布清单、查看团队分工，也可以起草简报。';
     const raw = JSON.stringify({ reply });
     request.onOutput?.({ id: turnId, type: 'start', phase: 'answer' });

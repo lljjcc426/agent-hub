@@ -76,18 +76,26 @@ async function publishManifest(f:ReturnType<typeof fixture>){
 }
 
 it('reuses an authorized package from a stopped task, supports resumed downloads and fences revoked file links',async()=>{
+ let selected:string
  const f=fixture(async r=>{
   if(r.role==='router'&&JSON.parse(r.input).trigger?.text==='给我'){
-   const invalid=await r.onTool!('chat_artifact_deliver',{id:'invalid'},'invalid')
-   expect(invalid.success).toBe(false)
-   expect(JSON.parse(invalid.contentItems[0]!.text!).code).toBe('invalid_request')
    const listing=await r.onTool!('chat_artifact_find',{query:'Windows x64'},'find')
    const found=JSON.parse(listing.contentItems[0]!.text!).items
    expect(found).toEqual([expect.objectContaining({name,sha256:sha})])
-   const delivered=await r.onTool!('chat_artifact_deliver',{id:found[0].id},'attach')
-   expect(await r.onTool!('chat_artifact_deliver',{id:found[0].id},'attach-again')).toEqual(delivered)
+   selected=found[0].id
+   const assignment=await r.onTool!('worker_manage',{action:'assign',id:'review',revision:0,requestId:'attach-package',text:'Deliver retained artifact '+selected},'assign')
+   expect(assignment.success).toBe(true)
+   return {reply:'已安排交付原包。'}
+  }
+  if(r.role==='worker'){
+   expect(r.input).toContain(selected)
+   const invalid=await r.onTool!('chat_artifact_deliver',{id:'invalid'},'invalid')
+   expect(invalid.success).toBe(false)
+   expect(invalid.contentItems[0]!.text).toContain('Invalid arguments')
+   const delivered=await r.onTool!('chat_artifact_deliver',{id:selected},'attach')
+   expect(await r.onTool!('chat_artifact_deliver',{id:selected},'attach-again')).toEqual(delivered)
    expect(delivered.success).toBe(true)
-   return {reply:'原包已就绪。'}
+   return {state:'ready',summary:'原包已就绪。',reply:'',question:null,handbacks:[]}
   }
   return r.role==='router'?{reply:''}:{state:'ready',summary:'Done',reply:'',question:null,handbacks:[]}
  })

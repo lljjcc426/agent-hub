@@ -70,7 +70,7 @@ export const routerFileTool: ToolSpec = {
   type: 'function',
   name: 'chat_deliver_file',
   description:
-    'Deliver a finished text file you authored in this Chat. Supply its filename and actual UTF-8 contents. When the user asks to review or approve before delivery, set requireApproval to true: the host holds those exact contents for their decision. End the turn after staging it. Otherwise deliver directly. For a binary file or work requiring execution, assign a Worker.',
+    'Deliver a finished text file you authored for this Chat task. Supply its filename and actual UTF-8 contents. When the user asks to review or approve before delivery, set requireApproval to true: the host holds those exact contents for their decision. End the turn after staging it. Otherwise deliver directly. For a binary file or work requiring execution, assign a Worker.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,

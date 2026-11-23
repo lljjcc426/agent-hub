@@ -441,7 +441,7 @@ export class Delegations {
   if(task.manifestId){const manifest=this.host.store.get<any>('context-manifest',task.manifestId);requireDelegation(manifest,'parent_context_unavailable',403);this.host.memory.validate(manifest)}
   return mandate
  }
- async command(value:unknown,context?:RouterContext,goal?:GoalDelegationRef){
+ async command(value:unknown,context?:RouterContext,goal?:GoalDelegationRef,onAssign?:(id:string,label:string)=>void){
   const x=teamCommandSchema.parse(value)
   if(context?.trigger)this.host.routerIngress.authority(context.trigger.id,context.discussion)
   const targets=(this.host.config.execution.teamTargets??[]).filter(t=>this.host.store.get<Connection>('delegation-connection',t.connectionId)?.active&&(!context?.scoped||this.host.scopes.scope(context.scoped.route.scopeId).teamTargetIds?.includes(t.id)))
@@ -463,7 +463,10 @@ export class Delegations {
    const source=this.host.sources.get(context.trigger.source)!.config,now=Date.now()
    const contract=contractSchema.parse({version:1,delegationId:id,rootId:stableDigest([this.identity.id,context.trigger.id]).slice(0,32),parentTriggerId:context.trigger.id,issuer:this.identity.id,target:conn.id,ancestors:[this.identity.id],principal:{source:context.trigger.actor.source,actor:context.trigger.actor.id},text:x.text,acceptance:x.acceptance,artifacts:x.artifacts??[],permissions:{...target.permissions,write:target.permissions.write&&source.sandbox==='workspace-write',network:target.permissions.network&&this.host.config.work.network},limits:target.limits,createdAt:now,deadline:now+target.limits.durationMs})
    const task:OutboundTask={id,connectionId:conn.id,targetId:target.id,contract,contractHash:fingerprint,triggerId:context.trigger.id,discussion:context.discussion,scopeId:context.scoped?.route.scopeId,manifestId:context.manifest?.id,state:'pending',desired:'running',controlEpoch:0,nextAt:0,acceptance:'pending',...(goal?{goal}:{})}
-   this.host.store.put('delegation-outbound',id,task)
+   this.host.store.atomic(()=>{
+    this.host.store.put('delegation-outbound',id,task)
+    onAssign?.(id,this.title(task.contract.text))
+   })
    this.pump();return this.outboundView(task)
   }
   requireDelegation(x.id,'task_required')

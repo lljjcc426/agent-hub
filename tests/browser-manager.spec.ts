@@ -1123,28 +1123,38 @@ it("lets a Router browser wait expire and fences a queued action until the activ
   expect(driver.calls.some(call=>call.id===page.id&&call.args[0]==="open")).toBe(false);
 });
 
-it("allows one inspection and one approved action in the actual shared Chat tab", async () => {
-  const observed:string[]=[];
+it("delegates work in the actual shared Chat tab and resumes the same Worker after approval", async () => {
   const {host,driver,config}=await fixture({async run(request){
-    if(request.ephemeral||request.role!=="router")return model.run(request);
+    if(request.ephemeral)return model.run(request);
     const threadId=request.threadId??randomUUID(),turnId=randomUUID();
     request.onThread?.(threadId);request.onTurn?.(turnId);
-    const call=(args:unknown)=>request.onTool!("workspace_browser",args,randomUUID());
     const input=JSON.parse(request.input);
-    if(input.permissionReceipt){
-      expect(input.permissionReceipt.success).toBe(true);
-      observed.push(JSON.parse((await call({action:"reload"})).contentItems[0]!.text!).code);
-      return {threadId,turnId,text:'{"reply":"Clicked."}'};
+    const result=(value:unknown)=>({threadId,turnId,text:JSON.stringify(value)});
+    const call=(name:string,args:unknown)=>request.onTool!(name,args,randomUUID());
+    if(request.role==="router"){
+      if(input.kind==="worker_result")return result({reply:input.messages?.some((message:{text:string})=>message.text.includes("Clicked."))?"Clicked.":""});
+      expect(request.tools?.some(tool=>tool.name==="workspace_browser")).toBe(false);
+      const unavailable=await call("workspace_browser",{action:"snapshot"});
+      expect(JSON.parse(unavailable.contentItems[0]!.text!).code).toBe("worker_required");
+      const assigned=await call("worker_manage",{action:"assign",id:"one",revision:0,requestId:"browser-click",text:"Click Continue in the current Chat tab"});
+      expect(assigned.success).toBe(true);
+      return result({reply:"I assigned the browser task."});
     }
-    const snapshot=await call({action:"snapshot"});
+    if(!request.tools?.some(tool=>tool.name==="workspace_browser"))return model.run(request);
+    const report={summary:"Shared tab inspected",reply:"",question:null,askedBy:null,handbacks:[]};
+    if(input.permissionReceipts?.length){
+      expect(input.permissionReceipts[0].success).toBe(true);
+      return result({...report,state:"ready",summary:"Clicked.",reply:"Clicked."});
+    }
+    const snapshot=await call("workspace_browser",{action:"snapshot"});
     expect(snapshot.success).toBe(true);
-    observed.push(JSON.parse((await call({action:"snapshot"})).contentItems[0]!.text!).code);
     const revision=JSON.parse(snapshot.contentItems[0]!.text!).revision;
-    const click=await call({action:"click",ref:"@e1",revision});
+    const click=await call("workspace_browser",{action:"click",ref:"@e1",revision});
     expect(click).toMatchObject({permission:"pending"});
-    return {threadId,turnId,text:'{"reply":"Awaiting approval."}'};
+    return result({...report,state:"waiting"});
   }});
   config.execution.router={mode:"host"};
+  config.execution.management={enabled:true,maxWorkers:12};
   const user=randomUUID(),client=randomUUID(),chat=host.chat.create(user);
   config.browser.workspace={owner:user,cdpPort:9222};
   const tab=await host.browser.openDefault(user,client,chat.id);
@@ -1154,15 +1164,15 @@ it("allows one inspection and one approved action in the actual shared Chat tab"
     throw new Error("Chat did not settle");
   };
   host.chat.send(chat.id,user,{clientMessageId:randomUUID(),text:"Click Continue in my current browser tab."});
-  await tickUntil(()=>host.chat.view(chat.id,user).messages.some(message=>message.text==="Awaiting approval."));
+  await tickUntil(()=>host.permissions.forChat(chat.id).some(action=>action.phase==="pending"));
   const permission=host.permissions.forChat(chat.id)[0]!;
-  expect(permission.phase).toBe("pending");
+  expect(permission.actor).toMatchObject({ticketId:expect.any(String),workerId:"one"});
   expect(driver.calls.some(call=>call.args[0]==="click")).toBe(false);
   host.chat.answerApproval(chat.id,user,permission.id,"accept");
-  await tickUntil(()=>host.chat.view(chat.id,user).messages.some(message=>message.text==="Clicked."));
+  await tickUntil(()=>host.store.tickets.get(permission.actor.ticketId!)?.ended!==undefined);
+  expect(host.permissions.get(permission.id)?.phase).toBe("complete");
   expect(driver.calls.filter(call=>call.args[0]==="click").map(call=>call.id)).toEqual([tab.id]);
   expect(driver.calls.some(call=>call.args[0]==="reload")).toBe(false);
-  expect(observed).toEqual(["worker_required","worker_required"]);
 });
 
 it("preserves the inspected CDP page title in background tabs until the document URL changes", async () => {

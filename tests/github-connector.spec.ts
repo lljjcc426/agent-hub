@@ -318,6 +318,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
    workerStarted=true
    await workerGate
    receipts.push(output(await call('github_read',compare)))
+   expect(output(await call('github_read',compare))).toMatchObject({repository,files:[expect.objectContaining({patch})]})
    receipts.push(output(await call('github_read',{...compare,repository:'fixture/other'})))
    receipts.push(output(await call('github_read',{...compare,repository:'fixture/inaccessible'})))
    return {threadId,turnId,text:JSON.stringify({state:'ready',summary:'Compared commits',reply:'Compared.',question:null,askedBy:null,handbacks:[]})}
@@ -326,9 +327,9 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   if(input.kind!=='user_message')return {threadId,turnId,text:'{"reply":""}'}
   if(input.trigger.text==='你有在看吗')return {threadId,turnId,text:'{"reply":"在，Worker 正在比较提交。"}'}
   expect(request.coordinationTurn).toBe(true)
-  expect(request.allowNativeTools).toBeUndefined()
+  expect(request.allowNativeTools).toBe(false)
   await call('chat_opening',{text:'I will ask the Worker to compare the two commits.'})
-  expect(output(await call('github_read',compare))).toMatchObject({repository,files:[{patch}]})
+  expect(output(await call('github_read',compare))).toMatchObject({code:'worker_required'})
   const assignment=await call('worker_manage',{action:'assign',id:'research',revision:0,requestId:'comparison',text:'Compare the two fixture commits'})
   expect(output(assignment)).toHaveProperty('ticketId')
   return {threadId,turnId,text:'{"reply":"Assigned the comparison."}'}
@@ -348,7 +349,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'你有在看吗',openingLocale:'zh-CN'})
   await waitUntil(()=>view().messages.some(message=>message.text==='在，Worker 正在比较提交。'))
   expect(view().workers[0]?.tasks[0]?.state).toBe('running')
-  expect(outbound).toEqual(['/repos/'+repository+'/compare/'+sha+'...'+mergeSha])
+  expect(outbound).toEqual([])
  }finally{releaseWorker()}
  await waitUntil(()=>receipts.length===3)
  expect(receipts).toEqual([
@@ -506,7 +507,12 @@ it('connects with a token alone, writes across repositories and never repeats an
   const threadId=request.threadId??randomUUID(),turnId=randomUUID()
   request.onThread?.(threadId);request.onTurn?.(turnId)
   const call=async(name:string,args:unknown)=>request.onTool!(name,args,randomUUID())
-  await call('chat_opening',{text:'I will check the repository.'})
+  if(request.role==='router'){
+   await call('chat_opening',{text:'I will ask a Worker to check the repository.'})
+   const assigned=await call('worker_manage',{action:'assign',id:'research',revision:0,requestId:'repository-check',text:'Check and update the fixture repository'})
+   expect(assigned.success).toBe(true)
+   return {threadId,turnId,text:'{"reply":"Assigned."}'}
+  }
   const program=[
    'const a=await tools.github_read({repository:"fixture/project",action:"files",paths:["gone"]});',
    'const [b,c]=await Promise.all(["main","another"].map(ref=>tools.github_read({repository:"fixture/project",action:"branch",ref})));',
@@ -518,9 +524,9 @@ it('connects with a token alone, writes across repositories and never repeats an
   observed.push(output(await call('github_write',comment)))
   observed.push(output(await call('github_write',{...comment,repository:'https://github.com/Fixture/Project'})))
   observed.push(output(await call('github_write',{repository:'fixture/other',action:'merge_pull',number:1,expectedHead:sha})))
-  return {threadId,turnId,text:'{"reply":"Checked."}'}
+  return {threadId,turnId,text:JSON.stringify({state:'ready',summary:'Repository checked',reply:'',question:null,askedBy:null,handbacks:[]})}
  }}
- const host=hostFor(model),http=await serve(host)
+ const host=hostFor(model,true),http=await serve(host)
  cleanups.push(async()=>{http.server.closeAllConnections();await new Promise<void>(resolve=>http.server.close(()=>resolve()))})
  const post=(path:string,headers:Record<string,string>,body:unknown)=>fetch(http.url+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)})
  const credentials={token},endpoint='/api/connectors/github/'
@@ -536,10 +542,8 @@ it('connects with a token alone, writes across repositories and never repeats an
  const chat=host.chat.create('owner')
  host.chat.setApprovalMode('owner','full')
  host.chat.send(chat.id,'owner',{clientMessageId:randomUUID(),text:'Check and update the fixture repository.',openingLocale:'en'})
- for(let retry=0;retry<100&&!['completed','failed'].includes(host.chat.view(chat.id,'owner').run?.state??'');retry++){
-  await host.tick();await delay(10)
- }
- expect(host.chat.view(chat.id,'owner').run?.state).toBe('completed')
+ for(let retry=0;retry<200&&(observed.length<5||host.activeExecutions>0);retry++){await host.tick();await delay(10)}
+ expect(host.chat.view(chat.id,'owner').messages.some(m=>m.text==='Assigned.')).toBe(true)
  expect(observed).toEqual([
   [false,true,true],expect.objectContaining({repository,item:expect.objectContaining({number:2})}),expect.objectContaining({status:'uncertain'}),
   expect.objectContaining({status:'uncertain'}),expect.objectContaining({repository:'fixture/other',status:'complete',sha:mergeSha}),

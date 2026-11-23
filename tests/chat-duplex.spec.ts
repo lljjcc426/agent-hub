@@ -131,6 +131,78 @@ it('ends a stalled Router reply after a confirmed assignment and answers the nex
  expect(f.calls.filter(request=>request.role==='worker')).toHaveLength(1)
 })
 
+it('returns a recorded status and handles a new conversation turn while a dispatched plan runs',async()=>{
+ const work=gate(),stalled=gate()
+ const requestText='Continuously investigate the build failure'
+ let worker:ModelRequest|undefined
+ const f=fixture(async r=>{
+  if(r.role==='worker'){
+   worker=r
+   await work.wait
+   return {state:'waiting',summary:'Build investigated',reply:'',question:null,askedBy:null,handbacks:[]}
+  }
+  const input=JSON.parse(r.input)
+  if(input.trigger.text!==requestText)return {reply:'I can answer while the investigation runs.'}
+  const result=await r.onTool!('router_goal',{action:'start',operationId:'build-plan',expectedRevision:0,
+   title:'Build investigation',objective:'Find the cause of the build failure',authorizationQuote:requestText,
+   criteria:[{id:'cause',description:'Explain the cause of the failure'}],
+   nodes:[{id:'investigate',title:'Investigate',instruction:'Inspect the failed build',workerId:'research',criterionIds:['cause']}]},'plan')
+  expect(JSON.parse(result.contentItems[0]!.text!)).toMatchObject({state:'active'})
+  await Promise.race([stalled.wait,new Promise<void>(resolve=>r.signal!.addEventListener('abort',()=>resolve(),{once:true}))])
+  r.signal!.throwIfAborted()
+  return {reply:'A late reply'}
+ },true)
+ const first=f.send(requestText)
+ try{
+  await settle(f.h,()=>!!worker)
+  const calls=f.calls.length
+  const status=f.h.chat.send(f.c.id,'local-operator',{text:'Any progress?',clientMessageId:randomUUID(),locale:'zh-CN'})
+  expect(f.view().messages.find(m=>m.runId===status.runId&&m.role==='assistant')?.text).toBe('research is working on it.')
+  expect(f.calls).toHaveLength(calls)
+  expect(f.h.store.get('router-dispatch','router:'+first.runId)).toMatchObject({items:[{kind:'plan',label:'Build investigation'}]})
+  f.send('Are you still there?')
+  await settle(f.h,()=>f.view().messages.some(m=>m.text==='I can answer while the investigation runs.'))
+  expect(f.view().messages.some(m=>m.text==='I queued “Build investigation” for execution.')).toBe(true)
+  expect(worker!.signal!.aborted).toBe(false)
+  expect(f.view().workers[0]!.tasks.map(t=>t.state)).toEqual(['running'])
+ }finally{stalled.release();work.release()}
+ expect(f.h.store.tickets.list()).toHaveLength(1)
+ expect(f.calls.filter(r=>r.role==='worker')).toHaveLength(1)
+})
+
+it('rejects direct execution and confirms an accepted assignment after the Router provider fails',async()=>{
+ let started=0
+ const work=gate()
+ const forbidden=['github_read','github_write','github_git','workspace_browser','chat_deliver_file','chat_artifact_deliver','code_mode','superagent_shell']
+ const f=fixture(async r=>{
+  if(r.role==='worker'){
+   started++
+   await work.wait
+   return {state:'ready',summary:'Verified',reply:'Done',question:null,askedBy:null,handbacks:[]}
+  }
+  if(JSON.parse(r.input).kind==='worker_result')return {reply:'Verified.'}
+  expect(r.tools?.filter(t=>forbidden.includes(t.name))).toEqual([])
+  expect(r.allowNativeTools).toBe(false)
+  expect(r.options?.toolConnections).toEqual([])
+  for(const name of forbidden){
+   const denied=await r.onTool!(name,{},'direct-'+name)
+   expect(denied.success).toBe(false)
+   expect(JSON.parse(denied.contentItems[0]!.text!).code).toBe('worker_required')
+  }
+  const receipt=await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'assignment',text:'Inspect the build log'},'assign')
+  expect(receipt.success).toBe(true)
+  throw Error('Provider closed after receiving the assignment')
+ },true)
+ const first=f.send('Inspect the build log')
+ try{
+  await settle(f.h,()=>started===1&&f.view().messages.some(m=>m.text==='I assigned this to research.'))
+  expect(f.h.store.get('router-dispatch','router:'+first.runId)).toMatchObject({items:[{kind:'assign',label:'research'}]})
+  expect(f.h.store.tickets.list()).toHaveLength(1)
+ }finally{work.release()}
+ await settle(f.h,()=>f.view().messages.some(m=>m.text==='Verified.'))
+ expect(started).toBe(1)
+})
+
 it('finishes the active tool receipt before retiring the Router writer',async()=>{
  vi.useFakeTimers()
  const parent=new AbortController(),handoff=new RouterHandoff(parent.signal,false),effect=gate()

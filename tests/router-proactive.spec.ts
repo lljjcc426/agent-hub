@@ -228,14 +228,16 @@ it('keeps all batch inputs authoritative after delegation, including a later wit
  await until(f.h,()=>f.h.store.tickets.list()[0]?.assignments.at(-1)?.report?.state==='blocked')
  expect(f.calls.filter(r=>r.role==='worker')).toHaveLength(0);expect(f.h.store.deliveries().filter(d=>!d.channel.address.routerInbox)).toHaveLength(0)
 })
-it('blocks overlapping work after a failed Router turn and still permits stopping its surviving task',async()=>{
+it('keeps an accepted schedule running after a failed Router reply without starting overlapping work',async()=>{
  const f=fixture(async(r,input)=>{
   if(input.schedule){const result=await r.onTool!('worker_manage',{action:'assign',id:'one',revision:0,requestId:'partial-schedule',text:'start waiting task'},'assign');expect(result.success).toBe(true);throw Error('Router failed after delegation')}
   if(r.role==='worker')return {state:'waiting',summary:'Waiting',reply:'',question:null,askedBy:null,handbacks:[]}
  })
  const anchor=f.receive('Authorize check');await until(f.h,()=>f.calls.length===1)
  f.plan(anchor.triggerId,{timing:{kind:'interval',intervalSeconds:60,startAt:new Date(f.now()+1000).toISOString()}});f.advance(1001)
- await until(f.h,()=>runs(f.h)[0]?.state==='failed'&&f.h.store.tickets.list().length===1)
+ await until(f.h,()=>f.h.store.deliveries().some(d=>d.text==='I assigned this to one.'&&d.status==='sent'))
+ expect(runs(f.h)[0]?.state).toBe('running')
+ expect(f.h.store.tickets.list()).toHaveLength(1)
  f.advance(60000);await f.h.tick();expect(runs(f.h)[1]?.state).toBe('skipped');expect(f.h.store.tickets.list()).toHaveLength(1)
  const r=runs(f.h)[0]!;f.h.store.put('router-schedule-run',r.id,{...r,taskIds:[]}) // Simulate crash between task commit and secondary tracking.
  f.command('run.cancel',{id:r.id},r.revision)

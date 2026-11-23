@@ -1,5 +1,11 @@
 import type {ToolResult} from './chat-permissions.ts'
 
+export interface RouterDispatch {
+  kind:'assign'|'send'|'plan'|'team'
+  id:string
+  label:string
+}
+
 const replyGraceMs=6000
 const queuedInputGraceMs=250
 
@@ -7,6 +13,7 @@ const queuedInputGraceMs=250
 export class RouterHandoff {
   private readonly closeModel=new AbortController()
   private readonly workers=new Set<string>()
+  private plan?:string
   private grace?:ReturnType<typeof setTimeout>
   private deadline=Infinity
   private stop?:ReturnType<typeof setImmediate>
@@ -23,6 +30,14 @@ export class RouterHandoff {
     this.workers.add(worker)
     this.assigned ||= assigned
     this.closeIn(replyGraceMs)
+  }
+
+  recordDispatch(dispatch:RouterDispatch){
+    if(dispatch.kind==='assign'||dispatch.kind==='send')this.record(dispatch.label,dispatch.kind==='assign')
+    else{
+      this.plan=dispatch.label
+      this.closeIn(replyGraceMs)
+    }
   }
 
   prioritizeInput(){
@@ -56,6 +71,8 @@ export class RouterHandoff {
 
   reply(){
     const names=[...this.workers].join(this.chinese?'、':', ')
+    if(!names)return this.chinese?this.plan?`已安排「${this.plan}」进入执行队列。`:'任务已提交。':
+      this.plan?`I queued “${this.plan}” for execution.`:'The task was submitted.'
     if(this.chinese)return this.assigned?`已交给 ${names} 处理。`:`已把补充发给 ${names}。`
     return this.assigned?`I assigned this to ${names}.`:`I sent your follow-up to ${names}.`
   }

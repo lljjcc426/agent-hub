@@ -23,8 +23,20 @@ const model={
   const threadId=r.threadId??randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
   const wait=(ms=2800)=>new Promise<void>((resolve,reject)=>{const timer=setTimeout(done,ms);function done(){r.signal?.removeEventListener('abort',stop);resolve()}function stop(){clearTimeout(timer);reject(Error('Fixture cancelled'))}r.signal?.addEventListener('abort',stop,{once:true});if(r.signal?.aborted)stop()})
   const reply=async(text:string)=>{const raw=JSON.stringify({reply:text});r.onOutput?.({id:turnId,type:'start',phase:'answer'});for(let i=0;i<raw.length;i+=9){r.onOutput?.({id:turnId,type:'delta',phase:'answer',text:raw.slice(i,i+9)});await wait(120)}return {threadId,turnId,text:raw}}
+  const assignFile=async(text:string)=>{
+    const assigned=await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:turnId+'-file',text},'assign-file')
+    if(!assigned.success)throw Error('Could not assign the file task')
+    return {threadId,turnId,text:JSON.stringify({reply:''})}
+  }
+  const deliverFile=async(args:{name:string;content:string;requireApproval?:boolean;pendingNotice?:string},summary:string)=>{
+    const delivered=await r.onTool!('chat_deliver_file',args,'file')
+    if(!delivered.success)throw Error('File delivery failed')
+    return {threadId,turnId,text:JSON.stringify({state:'ready',summary,reply:args.requireApproval?'':summary,question:null,askedBy:null,handbacks:[]})}
+  }
   if(schedule){
     const input=JSON.parse(r.input)
+    if(r.role==='worker')return deliverFile({name:'release-digest.md',content:'# Release digest\n\nThe scheduled delivery ran.'},'The scheduled release digest is ready.')
+    if(input.kind==='worker_result')return reply('The scheduled release digest is ready.')
     if(input.kind==='user_message'){
       const context=runtime.scopes.context(input.trigger,'local:'+input.trigger.threads[0].id)!
       const result=await r.onTool!('router_manage',{action:'schedule.put',scopeId:context.route.scopeId,operationId:'create-'+turnId,expectedRevision:0,
@@ -33,14 +45,13 @@ const model={
       if(!result.success)throw Error('Could not create the schedule')
       return reply('Scheduled the release digest.')
     }
-    if(input.schedule){
-      const file=await r.onTool!('chat_deliver_file',{name:'release-digest.md',content:'# Release digest\n\nThe scheduled delivery ran.'},'deliver')
-      if(!file.success)throw Error('Scheduled file delivery failed')
-      return reply('The scheduled release digest is ready.')
-    }
+    if(input.schedule)return assignFile('Prepare the scheduled release digest')
   }
   if(workflow){
     if(r.role==='worker'){
+      if(r.input.includes('Write the checklist as a list'))return deliverFile({name:'checklist.md',content:'- Review the release'},'Checklist drafted.')
+      if(r.input.includes('Draft the release notes for explicit review'))
+        return deliverFile({name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'Sending the release notes needs your approval.'},'Release notes drafted.')
       const answered=JSON.parse(r.input).inputs?.some((i:{text?:string})=>i.text?.includes('native_question_answer'))
       if(!answered){
         const approval=await r.onHumanRequest!({id:'command',method:'item/commandExecution/requestApproval',params:{command:'pwd',reason:'Inspect the working directory with your approval.'}})
@@ -55,11 +66,10 @@ const model={
     r.onUsage?.({id:'preflight',inputTokens:3000})
     r.onUsage?.({id:'latest',inputTokens:137,contextWindowTokens:8192})
     if(data.fileReviewReceipt)return {threadId,turnId,text:JSON.stringify({reply:''})}
-    if(data.kind!=='user_message')return reply('The Worker verified the layout.')
+    if(data.kind!=='user_message')return reply(r.input.includes('Checklist drafted.')?'Checklist ready.':'The Worker verified the layout.')
     if(text==='Draft a checklist; pick the layout.'){
       await r.onTool!('chat_request_decision',{question:'Checklist layout?',options:[{label:'List'},{label:'Table'}],defaultOption:'List'},'layout')
-      await r.onTool!('chat_deliver_file',{name:'checklist.md',content:'- Review the release'},'checklist')
-      return reply('Checklist ready.')
+      return assignFile('Write the checklist as a list')
     }
     if(text==='Table')return reply('Switched to table.')
     if(text==='English'){
@@ -70,8 +80,7 @@ const model={
     }
     if(text==='Keep going')return reply('Still here.')
     if(text==='Let me review the release notes before delivery.'){
-      await r.onTool!('chat_deliver_file',{name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'Sending the release notes needs your approval.'},'file')
-      return {threadId,turnId,text:JSON.stringify({reply:''})}
+      return assignFile('Draft the release notes for explicit review')
     }
     await r.onTool!('superagent_plan',{title:'Release guide',steps:[{id:'format',title:'Choose language',state:'running'},{id:'review',title:'Delegate review',state:'pending'}]},'start')
     await r.onTool!('worker_manage',{action:'list'},'list')
@@ -84,16 +93,14 @@ const model={
   if(data.kind==='user_message'){
     const result=await r.onTool!('worker_manage',{action:'list'},'list')
     const revision=JSON.parse(result.contentItems[0]!.text!).revision
-    let ticketId=''
-    for(const [index,id] of ['research','planning','review'].entries()){const assigned=await r.onTool!('worker_manage',{action:'assign',id,revision,requestId:turnId+'-'+id,text:['Research the market for Roppo','Draft the release plan','Review the onboarding scope'][index]},id);ticketId=JSON.parse(assigned.contentItems[0]!.text!).ticketId}
-    await r.onTool!('worker_manage',{action:'result',ticketId,waitMs:1800},turnId+'-result')
+    for(const [index,id] of ['research','planning','review'].entries())await r.onTool!('worker_manage',{action:'assign',id,revision,requestId:turnId+'-'+id,text:['Research the market for Roppo','Draft the release plan','Review the onboarding scope'][index]},id)
     return reply('I’ll split the research and launch planning across the team, then bring the results together.')
   }
   return reply('The team has returned its findings.\n\n## Recommended next steps\n\n1. Start with individual users.\n2. Make the first Router conversation easy to begin.\n3. Keep Worker progress visible and results easy to review.')
 }}
 const runtime=new Runtime(config,native?{}:{model:desktopChatFixture(model,'I’ll check the requested task and its inputs.')}),host=await serve(runtime)
 if(schedule&&!runtime.scopes.enabled())runtime.scopes.command({action:'scope.put',operationId:'acceptance-scope',expectedRevision:0,
-  scope:{id:'local',tenantId:'local',name:'Acceptance',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
+  scope:{id:'local',tenantId:'local',name:'Acceptance',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['research'],backendIds:['codex']}})
 runtime.start()
 const token=readFileSync(join(config.stateDir,'access-token'),'utf8').trim()
 const username='chat-preview',password='Roppo-preview-2026!'

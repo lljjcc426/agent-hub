@@ -128,7 +128,8 @@ const server=createServer(async(req,res)=>{
    const text=JSON.stringify(previous)
    let reply:string|undefined,next:readonly [string,Record<string,unknown>]|undefined,callId:string|undefined
    if(coordinator){
-    for(const tool of ['read','bash','grep','websearch','webfetch'])assert(!names.includes(tool),tool)
+    for(const tool of ['read','bash','grep','websearch','webfetch','roppo_code_mode','roppo_github_read','roppo_workspace_browser','roppo_chat_deliver_file'])
+     assert(!names.includes(tool),tool)
     if(previous?.role==='tool'&&previous.tool_call_id==='router-handoff'){
      assert(text.includes('queued'))
      stalledRouter=true
@@ -159,7 +160,7 @@ const server=createServer(async(req,res)=>{
    res.writeHead(200,{'content-type':'text/event-stream'})
    const send=(delta:unknown,finish_reason:string|null)=>res.write('data: '+JSON.stringify({id:'chat-fixture',object:'chat.completion.chunk',created:1,model:input.model,choices:[{index:0,delta,finish_reason}]})+'\n\n')
    if(next)send({role:'assistant',tool_calls:[{index:0,id:callId,type:'function',function:{name:next[0],arguments:JSON.stringify(next[1])}}]},null)
-   else send({role:'assistant',content:reply?JSON.stringify({reply}):report},null)
+   else send({role:'assistant',content:reply?JSON.stringify({reply}):JSON.stringify({...JSON.parse(report),files:[]})},null)
    send({},next?'tool_calls':'stop');res.end('data: [DONE]\n\n');return
   }
   if(hasTools){
@@ -320,6 +321,10 @@ try{
   }
   send('Check endpoint.txt')
   await tickUntil(()=>stalledRouter&&waitingWorker)
+  const statusAt=Date.now()
+  const status=send('Any progress?')
+  assert(view().messages.some(m=>m.runId===status.runId&&m.text==='one is working on it.'))
+  console.log(JSON.stringify({scenario:'Task status while the Router provider is stalled',statusMs:Date.now()-statusAt}))
   const followupAt=Date.now()
   send('Are you looking?')
   await tickUntil(()=>view().messages.some(m=>m.text==='The Worker is still checking.'))

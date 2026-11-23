@@ -30,6 +30,10 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+async function assignFileWork(request:ModelRequest,text:string){
+  const assignment=await request.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'file-work',text},'assign')
+  expect(assignment.success).toBe(true)
+}
 
 function interruptedOpenCode(h:Runtime,request:ModelRequest,calls:{
  id:string;name:string;args:unknown;result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>
@@ -323,9 +327,13 @@ it('holds exact draft bytes across restart and publishes them once on the owner�
   const draft={name:'验收.csv',content:'步骤,结果\r\n确认,可下载 ✅\r\n',requireApproval:true}
   const f=fixture(async r=>{
     expect(r.tools?.some(t=>t.name==='chat_preview_cards')).toBe(false)
+    if(r.role==='router'){
+      if(JSON.parse(r.input).kind==='user_message')await assignFileWork(r,'Draft the CSV for review')
+      return {reply:''}
+    }
     const result=await r.onTool!('chat_deliver_file',draft,'draft')
     expect(result.success).toBe(true)
-    return {reply:''}
+    return {...report,reply:''}
   }),c=f.h.chat.create('owner'),other=f.h.chat.create('other')
   send(f.h,c.id,'Let me review before delivery')
   await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='waiting')
@@ -548,9 +556,13 @@ it('continues independent file work while a delivery review is open, then resume
   const f=fixture(async r=>{
     const input=JSON.parse(r.input)
     if(input.fileReviewReceipt){receipts++;return {reply:'Reviewed release delivered.'}}
+    if(r.role==='router'){
+      if(input.kind==='user_message')await assignFileWork(r,'Draft the release and prepare the summary')
+      return {reply:''}
+    }
     await r.onTool!('chat_deliver_file',{name:'release.md',content:'Release',requireApproval:true},'review')
     await r.onTool!('chat_deliver_file',{name:'summary.md',content:'Summary'},'independent')
-    return {reply:''}
+    return {...report,reply:''}
   }),c=f.h.chat.create('owner')
   send(f.h,c.id,'Review the release and prepare the separate summary')
   await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='waiting')
@@ -566,11 +578,16 @@ it('continues independent file work while a delivery review is open, then resume
 it('uses a reversible preference immediately and accepts a later change as an ordinary follow-up',async()=>{
   const f=fixture(async r=>{
     const input=JSON.parse(r.input)
+    if(r.role==='worker'){
+      await r.onTool!('chat_deliver_file',{name:'notes.md',content:'- Prepared'},'file')
+      return {...report,reply:''}
+    }
+    if(input.kind==='worker_result')return {reply:''}
     if(input.trigger.text!=='Prepare notes')return {reply:'Switched to table'}
     const choices=await r.onTool!('chat_request_decision',{question:'How should the notes look?',options:[{label:'List'},{label:'Table'}],defaultOption:'List'},'choose')
     expect(JSON.parse(choices.contentItems[0]!.text!)).toMatchObject({continueWith:'List'})
-    await r.onTool!('chat_deliver_file',{name:'notes.md',content:'- Prepared'},'file')
-    return {reply:'The list is ready.'}
+    await assignFileWork(r,'Prepare the notes as a list')
+    return {reply:'Preparing the list.'}
   }),c=f.h.chat.create('owner')
   const sent=send(f.h,c.id,'Prepare notes')
   await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')
@@ -1678,12 +1695,16 @@ it('scopes schedules, commands and reminder delivery to the original private Cha
 })
 
 
-it('gives a direct Router text file a download receipt and reuses it on retry',async()=>{
+it('gives a Worker text file a download receipt and reuses it on retry',async()=>{
   const f=fixture(async r=>{
+    if(r.role==='router'){
+      if(JSON.parse(r.input).kind==='user_message')await assignFileWork(r,'Make a checklist')
+      return {reply:''}
+    }
     const args={name:'清单.md',content:'# 发布\n- [ ] 检查链接'}
     const first=await r.onTool!('chat_deliver_file',args,'one'),again=await r.onTool!('chat_deliver_file',args,'two')
     expect(first.success).toBe(true);expect(again).toEqual(first)
-    return {reply:'Attached'}
+    return {...report,reply:''}
   }),c=f.h.chat.create('owner')
   send(f.h,c.id,'Make a checklist')
   await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')

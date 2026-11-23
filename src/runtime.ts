@@ -1,10 +1,8 @@
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
 import {ApiUsage} from './api-usage.ts'
 
-import {workspaceAction,workspaceBrowserSpec} from './browser-contract.ts'
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
-import {routerFileTool} from './chat-deliveries.ts'
-import {chatArtifactDeliver,chatArtifactFind,chatArtifactSpecs} from './chat-retained-artifacts.ts'
+import {chatArtifactFind,chatArtifactSpecs} from './chat-retained-artifacts.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
@@ -12,7 +10,7 @@ import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
-import {RouterHandoff} from './router-handoff.ts'
+import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
@@ -45,9 +43,8 @@ import {ProcessSource} from './plugin-process.ts'
 import {ToolConnections} from './tool-connections.ts'
 import {OfficeMcp} from './office-mcp.ts'
 import {pairedOfficeBot} from './office-groups.ts'
-import {GithubConnector,githubWriteSpec} from './github-connector.ts'
-import {githubPublicReadSpec,githubReadSchema,githubReadSpec} from './github-read.ts'
-import {GithubError,githubFailure} from './github-errors.ts'
+import {GithubConnector} from './github-connector.ts'
+import {githubPublicReadSpec,githubReadSpec} from './github-read.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {isApiBackend,validateBackendSelection} from './backend-config.ts'
@@ -65,7 +62,7 @@ import {observeRepository} from './repository-source.ts'
 import {loadManagedConfig} from './managed-config.ts'
 import {loadMarketConfig,recoverMarket} from './plugin-market-state.ts'
 import {workerProfiles} from './worker-pool.ts'
-import {schedulerStatus,schedulerRoutingKind,schedulerRoutingKey,schedulerInteractiveJob,schedulerFollowupSlot} from './scheduler-status.ts'
+import {schedulerStatus,schedulerRoutingKind,schedulerRoutingKey,schedulerInteractiveJob,schedulerFollowupSlot,schedulerUserChatTurn} from './scheduler-status.ts'
 import {Heartbeat} from './heartbeat.ts'
 import type {WorkerProfile} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
@@ -570,7 +567,7 @@ export class Runtime {
     this.chat.introduce(triggerId,choice.opening.trim())
     return run({...request,threadId:first.threadId,
       input:JSON.stringify({kind:'continue_after_opening',triggerId}),
-      instructions:request.instructions+'\nYour opening has been delivered. Now carry out the user request from the preceding turn and report the actual results. Do not repeat the opening.',
+      instructions:request.instructions+'\nYour opening has been delivered. Answer the user or coordinate the requested work. Do not repeat the opening.',
     })
   }
   modelInput(input:string,role:NonNullable<ModelRequest['role']>,triggerId?:string,sourceId?:string) {
@@ -596,6 +593,7 @@ export class Runtime {
     const profile=role==='router'?this.config.execution.router:context.workerId?workerProfiles(this.config).find(w=>w.id===context.workerId):undefined
     const backend=this.model instanceof BackendRegistry?this.model.definition(request.threadId?this.model.describe(request.threadId).id:request.backendId??this.model.selected(role)):undefined
     const options=agentOptionsSchema.parse(mergeOptions(backend?.defaults,request.options??(profile?Object.fromEntries(Object.entries(profile).filter(([key])=>key in agentOptionsSchema.shape)):{})))
+    if(role==='router'){options.toolConnections=[];request={...request,allowNativeTools:false}}
     const trigger=context.triggerId?this.store.triggers.get(context.triggerId):undefined
     if(request.allowNativeTools&&trigger?.text)request={...request,webEvidenceQuery:trigger.text.slice(0,4000)}
     const manifest=request.contextId?this.store.get<ContextManifest>('context-manifest',request.contextId):context.ticketId?this.store.get<{manifest:ContextManifest}>('task-context',context.ticketId)?.manifest:undefined
@@ -659,7 +657,7 @@ export class Runtime {
     const toolLimit=backend&&isApiBackend(backend)
       ?Math.min(request.options?.maxToolCalls??backend.maxToolCalls,backend.limits?.maxToolCalls??Infinity)
       :request.options?.maxToolCalls
-    request=withCodeMode(request,toolLimit)
+    if(role!=='router')request=withCodeMode(request,toolLimit)
     let invokedEffect=false
     if(request.onTool){
       const invoke=request.onTool,{chatOpeningReady,signal}=request,dispatch=new ToolDispatch(signal)
@@ -766,7 +764,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,...chatArtifactSpecs,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs({githubConnector=true,network=true}:{githubConnector?:boolean;network?:boolean}={}){
     return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&
       (s.name!=='superagent_artifact'||this.delegation.enabled)&&
@@ -785,8 +783,10 @@ export class Runtime {
       const parent=this.store.get<Run>('run',item.ticketId),backendId=this.config.execution.roles.subagent??parent?.backendId
       const inheritsParent=!this.config.execution.roles.subagent||backendId===parent?.backendId
       const options=inheritsParent?parent?.agentOptions:undefined
+      const tools=this.availableWorkerSpecs({githubConnector:false,network:owner.network!==false})
+        .filter(s=>s.name!=='chat_deliver_file'&&s.name!=='workspace_browser')
       let result
-      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools:this.availableWorkerSpecs({githubConnector:false,network:owner.network!==false}),onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,undefined,signal),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
+      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools,onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,undefined,signal),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
       finally{this.controls.delete(key);this.controlRevisions.delete(key)}
       const output=report.parse(JSON.parse(result.text));threadId=result.threadId
       this.store.put('transcript',result.turnId,{ticketId:item.ticketId,agentId:item.id,threadId,turnId:result.turnId,text:result.text,at:Date.now()})
@@ -959,7 +959,8 @@ export class Runtime {
       reconsiderRouterFollowups(this)
       for(const id of this.liveInputs.keys())void this.deliverLiveInputs(id)
       const interactive=(job:Job)=>schedulerInteractiveJob(this.store,job)
-      for (const job of this.store.jobs().sort((a,b)=>Number(interactive(b))-Number(interactive(a)))) {
+      const priority=(job:Job)=>schedulerUserChatTurn(this.store,job)?2:interactive(job)?1:0
+      for (const job of this.store.jobs().map(job=>({job,priority:priority(job)})).sort((a,b)=>b.priority-a.priority).map(item=>item.job)) {
         const payload = job.payload as any
         if(['start','execute'].includes(job.kind)){
           const g=this.goals.forTask(payload.ticketId)
@@ -1109,15 +1110,16 @@ export class Runtime {
     const selectedSkill=!messageId&&chatBinding?this.chat.skillForTrigger(triggerId):undefined
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
       ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
-    const artifactTools=browserRun?chatArtifactSpecs:[]
-    const fileTool=chatBinding||this.chat.scheduledFileTarget(triggerId)?[routerFileTool,...artifactTools]:[]
+    const artifactTools=browserRun?chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind):[]
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
-    const workspaceTool = browserOwner && this.browser.workspaceEnabled(browserOwner) ? workspaceBrowserSpec : undefined
-    const githubTools=browserRun&&this.config.work.network?[githubReadSpec,...(this.github.connected()?[githubWriteSpec]:[])]:[]
-    const officeApps=browserRun&&this.config.work.network&&this.chat.permissionActor(triggerId)
-      ?this.officeMcp.inventory().filter(app=>app.status==='connected').map(app=>app.label):[]
-    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,this.settings.current().revision,managementSpecs,routerReadSpec,teamSpecs,candidateSpecs,followupSpecs,memoryToolSpecs,skillSpecs,proactiveSpecs,knowledgeSpecs,journalSpecs,goalSpecs,chatReactionSpec,workspaceTool,...fileTool,...githubTools,...(officeApps.length?[officeApps]:[]),...(chatBinding?[decisionTool,publicPlanTool]:[]),...(fullAccess?[{operationApprovalNotices:false}]:[])])
+    const tools=(followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...artifactTools,
+      ...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),
+      ...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])])
+      .map(fullAccess?withoutPendingNotice:withPendingNotice)
+    const allowedTools=new Set(tools.map(tool=>tool.name))
+    const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,
+      this.settings.current().revision,tools,chatStatusTool,publicPlanTool,'coordination-only'])
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,
       ...(selectedSkill?{selectedSkill:{...selectedSkill,notice:'Apply the skill the user selected to this request. Follow the current request and its permitted scope. If delegating, pass the relevant steps to the Worker. Relative references in the skill are relative to its file; use only available tools and report when a required resource is unavailable.'}}:{}),
       ...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
@@ -1125,8 +1127,29 @@ export class Runtime {
     const controller=new AbortController(),key='router:'+discussion
     const locale=this.chat.locale(triggerId)
     const chinese=locale?locale.toLowerCase().startsWith('zh'):browserRun?.openingLocale==='zh-CN'||/\p{Script=Han}/u.test(trigger.text)
-    const handoff=browserRun&&!permissionId&&!fileReviewId&&!teamResultId?new RouterHandoff(controller.signal,chinese):undefined
+    const handoff=!followups&&!messageId&&!permissionId&&!fileReviewId&&!teamResultId?new RouterHandoff(controller.signal,chinese):undefined
+    const dispatches=()=>{
+      const record=handoff&&this.store.get<{triggerId:string;discussion:string;items:RouterDispatch[]}>('router-dispatch',job.id)
+      return record&&record.triggerId===triggerId&&record.discussion===discussion&&
+        !this.memory.cleanup.blocked('router-dispatch',job.id,record)?record.items:[]
+    }
+    const retainedDispatch=dispatches()
+    const saveDispatch=(dispatch:RouterDispatch)=>{
+      if(!handoff)return
+      const previous=dispatches()
+      if(!previous.some(item=>item.kind===dispatch.kind&&item.id===dispatch.id))this.store.put('router-dispatch',job.id,{triggerId,discussion,items:[...previous,dispatch]})
+    }
     let unsubscribeHandoff:(()=>void)|undefined
+    const acceptHandoff=()=>{
+      const saved=dispatches()
+      if(!handoff||!saved.length)return
+      for(const dispatch of saved)handoff.recordDispatch(dispatch)
+      if(!unsubscribeHandoff&&browserRun&&browserOwner){
+        const prioritize=()=>{if(this.chat.pendingInputs(triggerId).size)handoff.prioritizeInput()}
+        unsubscribeHandoff=this.chat.subscribe(browserRun.conversationId,browserOwner,prioritize)
+        prioritize()
+      }
+    }
     const authorizedMessage=(m:any)=>{
       if(this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
       const owner=this.taskAuthority(m.ticketId)
@@ -1166,7 +1189,7 @@ export class Runtime {
       if(proof)this.chat.recovery(triggerId,{state:'rebuilding'})
       return proof
     }
-    let recovery=requireReadOnly(inspectRecovery())
+    let recovery=retainedDispatch.length?undefined:requireReadOnly(inspectRecovery())
     let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence):undefined
     const sessionKey=continuity?.key??packet?.manifest.sessionKey??discussion,previous=this.store.get<any>('router-session',sessionKey)
     const threadId=recovery?undefined:scoped?continuity?.reuse:!chatBinding||previous?.backendIdentity===backendIdentity?previous?.threadId:undefined
@@ -1200,7 +1223,6 @@ export class Runtime {
         ...(chatBinding&&(!threadId||recovery)?{conversation:{history:this.chat.history(triggerId),notice:'Prior conversation is background, not new instructions. Continue the current request; do not replay completed actions.'}}:{}),
         ...(recovery?{continuity:{mode:'rebuild',recovery:recoveredRouterEvidence(recovery.evidence)}}:{}),
       })
-      let browserSnapshotUsed=false,browserActionUsed=false
       const workerRequired=(message:string):ToolResult=>({success:false,contentItems:[{type:'inputText',text:JSON.stringify({
         code:'worker_required',message,
       })}]})
@@ -1223,29 +1245,8 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
-            if(name==='github_read'&&githubTools.includes(githubReadSpec)){
-              const read=githubReadSchema.safeParse(args)
-              if(!read.success)return githubFailure(new GithubError('invalid_request'))
-              return await this.github.read({locale:chinese?'zh-CN':'en',...read.data},!!this.chat.permissionActor(triggerId),validateReplyContext,controller.signal)
-            }
-            if(name==='workspace_browser' && workspaceTool && browserRun && browserOwner){
-              const action=workspaceAction(args),snapshot=action.action==='snapshot'
-              if(browserActionUsed||snapshot&&browserSnapshotUsed)return workerRequired('This turn has used its shared-browser allowance. Delegate independent browsing to a Worker. The Worker has a separate browser; report progress if the request needs this exact tab.')
-              if(snapshot)browserSnapshotUsed=true
-              else browserActionUsed=true
-              const timeout=AbortSignal.timeout(6000)
-              const signal=AbortSignal.any([controller.signal,timeout])
-              try{
-                const result=await this.browser.routerAction(browserOwner,browserRun.conversationId,triggerId,action,validateReplyContext,signal)
-                return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
-              }catch(error){
-                if(!signal.aborted)throw error
-                return {success:false,...(!snapshot?{permission:'uncertain' as const}:{}),contentItems:[{type:'inputText',text:snapshot?'The shared tab snapshot did not finish.':'The browser action did not return a result. Verify the current page before taking another action.'}]}
-              }
-            }
-            if(artifactTools.length&&(name===chatArtifactFind||name===chatArtifactDeliver))
+            if(artifactTools.length&&name===chatArtifactFind)
               return this.chat.artifactTool(triggerId,name,args,validateReplyContext,controller.signal)
-            if(name==='chat_deliver_file'&&fileTool.length)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.deliverText(triggerId,args))}]}
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
@@ -1253,7 +1254,19 @@ export class Runtime {
               return result?.kind==='image'?{success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}:{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
             }
             if(name==='router_skill'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.skills.readTool(args,scoped))}]}
-            if(name==='router_goal'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.goals.command(args,scoped,packet?.manifest))}]}
+            if(name==='router_goal'&&scoped){
+              const action=(args as {action?:string})?.action
+              const result=this.store.atomic(()=>{
+                const output=this.goals.command(args,scoped,packet?.manifest)
+                if(action==='start'||action==='resume'){
+                  const goal=output as RouterGoal
+                  if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:'plan',id:goal.id,label:goal.title})
+                }
+                return output
+              })
+              acceptHandoff()
+              return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+            }
             if(name==='router_journal'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.continuity.command(args,scoped,packet?.manifest))}]}
             if(name==='router_knowledge'&&scoped){
               const output=this.knowledge.command(args,scoped)
@@ -1263,24 +1276,25 @@ export class Runtime {
             }
             if(name==='router_manage'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.proactive.command(args,scoped))}]}
             if(name==='router_memory'&&scoped){const result=await this.agentMemory.tool(scoped,args);if(packet&&result&&typeof result==='object'&&'items' in result){for(const fact of (result as any).items){if(!packet.manifest.facts.some(f=>f.id===fact.id))packet.manifest.facts.push({id:fact.id,revision:fact.revision})}this.store.put('context-manifest',packet.manifest.id,packet.manifest)}return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}}
-            if(name==='team_delegate')return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(await this.delegation.command(args,{discussion,trigger,scoped,manifest:packet?.manifest}))}]}
+            if(name==='team_delegate'){
+              const result=await this.delegation.command(args,{discussion,trigger,scoped,manifest:packet?.manifest},undefined,
+                (id,label)=>saveDispatch({kind:'team',id,label}))
+              acceptHandoff()
+              return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
+            }
             if(name!=='worker_manage')throw Error('Unknown Router tool')
             this.delegation.guardRouter(trigger,args)
-            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,manifest:packet?.manifest})),ticketId=(args as any).ticketId
+            const action=(args as {action?:string})?.action
+            if(action==='inspect'||action==='result')args={...args as object,waitMs:0}
+            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,manifest:packet?.manifest,
+              onDispatch:(kind,id)=>{
+                const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
+                if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId})
+              }
+            })),ticketId=(args as {ticketId?:string})?.ticketId
             if(result.ticketId)this.proactive.noteTask(triggerId,result.ticketId)
             if(result.ticketId)this.goals.noteTask(triggerId,result.ticketId)
-            const action=(args as {action:string}).action
-            if(handoff&&result.status==='queued'&&result.ticketId&&(action==='assign'||action==='send')){
-              const assignment=this.store.get<{workerId:string}>('worker-assignment',result.ticketId)
-              if(assignment){
-                handoff.record(workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId,action==='assign')
-                if(!unsubscribeHandoff&&browserRun&&browserOwner){
-                  const prioritize=()=>{if(this.chat.pendingInputs(triggerId).size)handoff.prioritizeInput()}
-                  unsubscribeHandoff=this.chat.subscribe(browserRun.conversationId,browserOwner,prioritize)
-                  prioritize()
-                }
-              }
-            }
+            acceptHandoff()
             if(ticketId&&packet){const owner=this.scopes.ownership(ticketId);if(owner&&!packet.manifest.taskOwners.some(t=>t.id===ticketId)){packet.manifest.taskOwners.push({id:ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});this.store.put('context-manifest',packet.manifest.id,packet.manifest)}}
             if(ticketId&&result.report?.at){
               readReports.set(ticketId,result.report.at)
@@ -1295,27 +1309,9 @@ export class Runtime {
         const authored=splitPendingNotice(name,args)
         args=authored.args
         const actor=permissionActor(),input=(args??{}) as Record<string,unknown>
-        if(name==='github_write'){
-          if(!actor||!githubTools.includes(githubWriteSpec)||mandate?.strength!=='explicit'){
-            if(expectedId)this.permissions.cancel(expectedId)
-            return githubFailure(new GithubError('access_denied'))
-          }
-          const check=()=>{
-            validateReplyContext()
-            if(permissionActor()?.runId!==actor.runId)throw new GithubError('access_denied')
-            if(scoped)this.scopes.assertCurrent(scoped)
-          }
-          try{
-            check()
-            this.proactive.toolAllowed(triggerId,name,args);this.goals.toolAllowed(triggerId,name,args)
-            const plan=await this.github.prepare(name,args,undefined,controller.signal)
-            check()
-            return await this.permissions.run(actor,name,plan.args,this.github.facts(plan),()=>this.github.execute(plan,check,controller.signal),expectedId,authored.notice)
-          }catch(error){
-            if(!(error instanceof GithubError))throw error
-            if(expectedId)this.permissions.cancel(expectedId)
-            return githubFailure(error)
-          }
+        if(!allowedTools.has(name)){
+          if(expectedId)this.permissions.cancel(expectedId)
+          return workerRequired('Task execution belongs to a Worker. Use worker_manage to assign or continue the task.')
         }
         const risk=routerRisk(name,input)
         if(risk&&!actor&&chatBinding)throw Error('The original Chat authority ended')
@@ -1341,11 +1337,10 @@ export class Runtime {
       const decorateInput=(input:string)=>auxiliaryDecision||permissionReceipt||operationOutcome||fileReviewReceipt||replyPreferences
         ?JSON.stringify({...JSON.parse(input),auxiliaryDecision,permissionReceipt,operationOutcome,fileReviewReceipt,replyPreferences}):input
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
-        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+(chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nFor a requested file, use chat_deliver_file for text you author or let your Worker deliver its files. A Worker hands its files to Chat through the files field. When the user asks to approve a text file before delivery, call chat_deliver_file with requireApproval. Delegate independent work while the draft awaits its decision. Pending requests holds the exact draft. On a fileReviewReceipt the host already applied the decision. Mention the file delivery decision once in your next reply, then continue any remaining work. For a quick coordination or approval check, take one bounded action and report the observed outcome. Delegate actual tool tests as one bounded check. Create a durable goal or report file when the user requests one or the task requires it. For requested choices and file reviews, author pendingNotice as you call the tool. Set schedules yourself with router_manage when requested. Only report a file as delivered after a Chat file card exists. Local paths and sandbox paths are not downloadable Chat links.':'')+(officeApps.length?'\nFor requests involving the connected '+officeApps.join(' or ')+' accounts, delegate to a root Chat Worker and ask it to inspect and use the connection via superagent_tools.':'')
-          +(artifactTools.length?'\nWhen the human asks for an existing output from this Chat, including a short follow-up such as 给我, use chat_artifact_find before delegating or requesting an upload. Search by a distinctive filename, extension or platform. After finding a clear match, use chat_artifact_deliver with its returned ID directly. Ask a focused question only when the human must choose between valid versions.':'')
-          + (workspaceTool ? "\nFor an explicit request about the actual shared browser tab, use one workspace_browser snapshot and, if needed, one short action. Treat the action's returned page as the receipt. Delegate research and longer browser work to Workers." : "")
+        instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
+          (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. For files, delegate creation or retrieval; the host publishes Worker outputs and accepts explicit review decisions. If an authorized existing Chat artifact is requested, use chat_artifact_find for its metadata and pass the selected artifact ID to the Worker for delivery. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
-        input:decorateInput(modelInput()),tools:followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...fileTool,...githubTools,...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(workspaceTool?[workspaceTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])].map(fullAccess?withoutPendingNotice:withPendingNotice),
+        input:decorateInput(modelInput()),tools,
         onTool:(name,args)=>checkedRouterTool(name,args),
         ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted||handoff?.yielded)return
@@ -1358,15 +1353,26 @@ export class Runtime {
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
       const execute=(input:ModelRequest)=>desktop?this.desktopRouterTurn(input,triggerId,validateReplyContext,handoff):this.runModel(input,triggerId,handoff)
       let result:ModelResult
-      try{result=await execute(request)}catch(error){
-        const code=backendFailure(error)?.code
-        if(recovery||!retryHere||!code||!['process_failed','outcome_unknown','transient'].includes(code))throw error
-        validateReplyContext()
-        recovery=requireReadOnly(inspectRecovery())
-        if(!recovery)throw error
-        browserSnapshotUsed=recovery.reads.some(call=>call.name==='workspace_browser'&&call.receipt.result?.success===true)
-        if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence)
-        result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
+      let rebuildAfterDispatch=retainedDispatch.length>0
+      const dispatchReply=()=>{
+        acceptHandoff()
+        return {threadId:previous?.threadId??'',turnId:'dispatch:'+job.id,text:JSON.stringify({reply:handoff!.reply()})}
+      }
+      if(rebuildAfterDispatch)result=dispatchReply()
+      else try{result=await execute(request)}catch(error){
+        if(dispatches().length&&!controller.signal.aborted){
+          validateReplyContext()
+          result=dispatchReply()
+          rebuildAfterDispatch=true
+        }else{
+          const code=backendFailure(error)?.code
+          if(recovery||!retryHere||!code||!['process_failed','outcome_unknown','transient'].includes(code))throw error
+          validateReplyContext()
+          recovery=requireReadOnly(inspectRecovery())
+          if(!recovery)throw error
+          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence)
+          result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
+        }
       }
       controller.signal.throwIfAborted();candidates?.check()
       const quiet=followups?!followups.replied:!!candidates&&this.routerIngress.get(triggerId)?.state!=='accepted'
@@ -1389,7 +1395,7 @@ export class Runtime {
           const saved=this.store.get<any>('router-session',sessionKey)
           this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
-        if(handoff?.yielded){
+        if(handoff?.yielded||rebuildAfterDispatch){
           // An interrupted native tool turn may reject resume. Rebuild from the
           // committed conversation and task state instead of replaying its tools.
           const saved=this.store.get<Record<string,unknown>>('router-session',sessionKey)
@@ -1408,7 +1414,7 @@ export class Runtime {
       candidates?.fail(error);this.chat.endOutput(job.id,controller.signal.aborted?'interrupted':'failed')
       if(error instanceof ContextBudgetExceeded||continuity?.reuse&&/thread[^\n]*not found|not found[^\n]*thread|unknown[^\n]*thread|conversation[^\n]*not found/i.test(String(error))){const saved=this.store.get<any>('router-session',sessionKey);if(saved)this.store.put('router-session',sessionKey,{...saved,signature:undefined,rebuildReason:error instanceof ContextBudgetExceeded?error.code:'native_session_unavailable'})}
       throw error
-    }finally{unsubscribeHandoff?.();handoff?.dispose();this.browser.endRouterTurn(triggerId);this.chat.endOutput(job.id);this.controllers.delete(key)}
+    }finally{unsubscribeHandoff?.();handoff?.dispose();this.chat.endOutput(job.id);this.controllers.delete(key)}
   }
   async scopeCommand(value:unknown):Promise<unknown>{
     if(['source.verify','identity.challenge','identity.link','identity.unlink'].includes((value as any)?.action))return new SourceIdentities(this.store,this.scopes,this.sources).command(value)
@@ -1611,7 +1617,10 @@ export class Runtime {
       const schema=chatDelivery?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const specs=this.availableWorkerSpecs({githubConnector:!!chatActor&&this.github.connected(),network:owner.network!==false&&!delegatedTask})
-        .filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)&&(s.name!=='superagent_desktop'||builtInChat))
+        .filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
+          && (s.name!=='superagent_desktop'||builtInChat)
+          && (s.name!=='chat_deliver_file'||builtInChat&&!projectGoal?.managed)
+          && (s.name!=='workspace_browser'||builtInChat&&!!this.chat.taskWorkspaceBrowser(ticket.id)))
       const toolsDigest=digest(JSON.stringify(fullAccess?specs.map(withoutPendingNotice):specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')

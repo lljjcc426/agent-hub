@@ -1055,7 +1055,10 @@ function Chat(p: ChatProps) {
   };
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
-  const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId ? runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
+  const awaitingFirstReply=(run?.state==='queued'||run?.state==='running')&&run.recovery?.state!=='rebuilding'&&
+    !snapshot?.messages.some(message=>message.runId===run.id&&message.role==='assistant'&&!message.recipient);
+  const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId
+    ? awaitingFirstReply?L('Received','已收到'):runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -1697,7 +1700,7 @@ function Chat(p: ChatProps) {
                       {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftHasContext={!!quote||!!skill}
                         retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
-                      {showTranscriptDetails&&run&&standaloneStatus?<div className="run-activity" aria-live="polite">
+                      {run&&standaloneStatus&&(showTranscriptDetails||awaitingFirstReply)?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}
                     </div>

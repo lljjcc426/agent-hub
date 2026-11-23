@@ -80,7 +80,7 @@ export function routerActionTargets(store: Pick<Store, 'get'>, name: string, arg
   if (name === 'router_goal') {
     const x = goalCommandSchema.safeParse(raw)
     if (!x.success) return []
-    const ids = [x.data.id, x.data.supersedes?.goalId, x.data.continueFrom?.goalId].filter((id): id is string => !!id)
+    const ids = [x.data.id, x.data.supersedes?.goalId, x.data.continueFrom?.goalId, ...(x.data.targets ?? []).map(target => target.id)].filter((id): id is string => !!id)
     return [...new Set(ids.flatMap(id => {
       const goal = store.get<RouterGoal>('router-goal', id)
       return ['goal:' + id, ...(goal?.taskIds ?? []).map(ticket => 'task:' + ticket)]

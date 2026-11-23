@@ -80,7 +80,7 @@ function transcriptText(id:string,text:string){
   }catch{/* A plain assignment can start with a JSON example. */}
   return text
 }
-export type ChatRunState='queued'|'running'|'waiting'|'completed'|'failed'|'cancel_requested'|'cancelled'
+export type ChatRunState='queued'|'running'|'waiting'|'blocked'|'completed'|'failed'|'cancel_requested'|'cancelled'
 /** Narrow operation metadata, never arbitrary tool arguments, prompts or results. */
 export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'action'|'target'|'trace'>{
   if(name!=='worker_manage')return {trace:toolTrace(name,args)}
@@ -1102,7 +1102,7 @@ export class ChatSessions {
     })
   }
   private tasks(c:Conversation,run?:ChatRun,routerPlanIds?:ReadonlySet<string>,goals=this.conversationGoals(c)):ChatTask[]{
-    const nodes=new Map(goals.flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
+    const nodes=new Map(goals.flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,held:g.state==='held'||g.state==='paused'||n.state==='held',reason:n.reason??g.reason,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
     return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>{
       if(run&&d.parentTrigger!==run.triggerId&&d.ticketId!==run.decisionTicketId)return false
       if(d.discussion===c.discussion)return true
@@ -1113,7 +1113,14 @@ export class ChatSessions {
     }).map(d=>{
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
       const node=nodes.get(d.ticketId),reviewing=!!node?.reviewing&&!t?.ended&&!t?.attention
-      const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':reviewing?'running':['starting','running','background','delivering','merging'].includes(r?.phase??'')?'running':r?.phase==='uncertain'||r?.phase==='human'||t?.attention||['blocked','failed','waiting'].includes(report?.state??'')?'waiting':report?.state==='ready'?'completed':'queued'
+      const attention=t?.attention
+      const decision=attention&&this.host.store.get<{status:string}>('business-decision',attention.id)
+      const question=attention&&(!decision||decision.status==='pending')&&!isRuntimeRecoveryQuestion(attention.question)?attention.question:undefined
+      const executing=reviewing||['starting','running','background','delivering','merging'].includes(r?.phase??'')
+      const held=node?.held||r?.phase==='uncertain'||report?.state==='blocked'
+      const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':executing?'running':question?'waiting':
+        held?'blocked':report?.state==='failed'?'failed':r?.phase==='human'||report?.state==='waiting'?'waiting':report?.state==='ready'?'completed':'queued'
+      const blockedReason=state==='blocked'?(node?.reason??report?.summary??r?.error):undefined
       // Worker follow-ups can change the current routing authority; the initial assignment owns the plan link.
       let parentPlanId:string|undefined
       if(routerPlanIds?.size){
@@ -1122,8 +1129,7 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      const question=t?.attention?.question
-      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question:isRuntimeRecoveryQuestion(question)?undefined:question??undefined,summary:report?.summary??undefined}
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question,blockedReason,summary:report?.summary??undefined}
     })
   }
   private conversationTasks(c:Conversation){
@@ -1291,7 +1297,7 @@ export class ChatSessions {
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
     const {conversationPlans,goals,tasks}=this.conversationTasks(c)
-    const runGoals=runId?goals.filter(g=>this.goalRunId(g)===runId):[]
+    const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id):[]
     const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
     const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
       FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
@@ -1329,6 +1335,9 @@ export class ChatSessions {
       else if(jobs.some(j=>j.state==='failed'&&!j.workerReport)||batch?.state==='failed')state='failed'
       else if(currentTasks.some(t=>t.state==='running'||t.state==='queued'))state='running'
       else if(pendingChoice||managedRequests.some(a=>a.actor.runId===last.id&&a.phase==='pending')||requests.some(a=>a.chat?.runId===last.id&&a.status==='pending'))state='waiting'
+      else if(currentTasks.some(t=>t.state==='waiting'&&t.question))state='waiting'
+      else if(currentTasks.some(t=>t.state==='failed'))state='failed'
+      else if(currentTasks.some(t=>t.state==='blocked'))state='blocked'
       else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
       else if(jobs.some(j=>j.state==='done')&&jobs.every(j=>j.state==='done'||j.workerReport&&j.state==='failed'))state='completed'
@@ -1338,12 +1347,13 @@ export class ChatSessions {
       const reportDeliveries=state==='completed'?this.host.store.deliveries().filter(d=>d.channel.address.routerInbox&&currentTasks.some(t=>t.id===d.ticketId)):[]
       if(reportDeliveries.some(d=>['failed','uncertain','held'].includes(d.status)))state='failed'
       else if(reportDeliveries.some(d=>!['sent','dropped'].includes(d.status)))state='running'
-      else if(state!=='running'&&(pending||goals.some(g=>['held','paused','needs_input'].includes(g.state))))state='waiting'
-      else if(goals.some(g=>g.state==='cancelled'))state='cancelled'
-      else if(currentTasks.some(t=>t.state==='waiting'&&this.host.store.tickets.get(t.id)?.assignments.at(-1)?.report?.state==='failed'))state='failed'
+      else if(state!=='running'&&(pending||runGoals.some(g=>g.state==='needs_input')))state='waiting'
+      else if(state!=='running'&&state!=='waiting'&&runGoals.some(g=>g.state==='held'||g.state==='paused'))state='blocked'
+      else if(runGoals.some(g=>g.state==='cancelled'))state='cancelled'
       else if(currentTasks.some(t=>t.state==='cancelled'))state='cancelled'
-      else if(state==='completed'&&goals.some(g=>g.state==='active'||g.state==='waiting'))state='running'
+      else if(state==='completed'&&runGoals.some(g=>g.state==='active'||g.state==='waiting'))state='running'
     }
+    const blockedReason=state==='blocked'?(currentTasks.find(t=>t.blockedReason)?.blockedReason??runGoals.find(g=>g.state==='held'||g.state==='paused')?.reason):undefined
     const workers=workerProfiles(this.host.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:tasks.filter(t=>t.workerId===w.id)}))
     const correctedFullRuns=new Set(runs.filter(item=>item.decisionTicketId&&item.permissionEpoch===undefined&&
       this.permissionMode(c.owner,item)==='full').map(item=>item.id))
@@ -1377,7 +1387,7 @@ export class ChatSessions {
     const sessionRouterPlans=workerView?visiblePlans.filter(plan=>!plan.workerId&&!plan.ticketId):undefined
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
     const handoffs=withPending?this.handoffs(id):[]
-    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(blockedReason?{blockedReason}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue

@@ -15,6 +15,7 @@ import type {ReplanRound} from './goal-replanning.ts'
 import type {VerificationRound} from './goal-verification.ts'
 import type {TaskOwnership} from './router-scope.ts'
 import {bodyDigest} from './sources.ts'
+import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {restoreRetainedFiles,retainedFileHandoffSchema} from './chat-file-handoff.ts'
 
 export class DeploymentError extends Error {constructor(readonly code:string,message:string,readonly status=409){super(message)}}
@@ -62,10 +63,11 @@ function retainedDeliveryFiles(store:DeploymentStore,id:string,files:string[]=[]
 
 // An idle Chat task may still be waiting on a user or a prerequisite. A
 // replacement host can keep that checkpoint without dispatching another turn.
-function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined {
- const nodes=goal.nodes
+function heldChatTasks(store:DeploymentStore,goal:RouterGoal,parkedStarts:Set<string>):string[]|undefined {
+ const nodes=goal.nodes,starts:string[]=[]
+ const sourceHold=goal.reason==='Error: Goal sources changed; explicit goal reauthorization is required'
  if(goal.state!=='held'||!goal.managed||goal.supersededBy||goal.cancelledByUser||goal.nextAt!==undefined||
-  goal.delegationIds?.length||goal.project?.review?.state==='pending'||!nodes?.some(node=>node.state==='held'))return
+  goal.delegationIds?.length||goal.project?.review?.state==='pending'||!nodes?.some(node=>node.state==='held'||sourceHold&&node.state==='running'))return
  const chat=store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',goal.triggerId)
  if(!chat||chat.cancelled||chat.cancelRequested)return
  const conversation=store.get<{sourceId:string;discussion:string}>('chat-conversation',chat.conversationId)
@@ -80,17 +82,19 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined
   const id=node.ticketId
   if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
    node.failure?.kind==='uncertain'||node.failure?.kind==='unconfirmed_effect'||
-   !['held','waiting_dependency','passed'].includes(node.state))return
+   !['held','waiting_dependency','passed',...(sourceHold?['running']:[])].includes(node.state))return
   ids.add(id)
   const ticket=store.get<Ticket>('ticket',id),run=store.get<Run>('run',id),owner=store.get<TaskOwnership>('task-ownership',id)
   const assignment=ticket?.assignments.at(-1)
   const waitingOnDependency=node.state==='waiting_dependency'&&node.dependsOn.some(dep=>nodes.some(item=>item.id===dep&&item.state!=='passed'))
   if(node.state==='waiting_dependency'&&!waitingOnDependency)return
-  if(!ticket||ticket.ended||assignment?.state!=='running'||
-   !run||run.ticketId!==id||run.phase!=='idle'||run.assignmentId!==assignment.id||run.waitingForWriter||
-   owner?.state!=='active'||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||
-   unsettledTaskEffects(store,id,0))return
-  if(ticket.undelivered.length&&(!waitingOnDependency||
+  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'||run.waitingForWriter||
+   !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
+  const parked=sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
+  if(node.state==='running'&&(!parked||owner.originEntry!==goal.entryId||
+   store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor))return
+  if(!parked&&(assignment.state!=='running'||run.assignmentId!==assignment.id||owner.state!=='active'))return
+  if(ticket.undelivered.length&&(!waitingOnDependency&&!parked||
    !ticket.undelivered.every(inputId=>ticket.inputs.some(input=>input.id===inputId))))return
   try{if(!statSync(run.cwd).isDirectory())return}catch{return}
   if(run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return
@@ -99,6 +103,11 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined
   if(store.db.prepare(`SELECT 1 FROM records WHERE kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
     AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id))return
   const attempt=store.get<{attemptId:string;assignmentId:string}>('async-worker-current',id)
+  if(parked){
+   if(ticket.attention||!ticket.undelivered.length)return
+   if(parked==='start')starts.push('start:'+assignment.id)
+   continue
+  }
   if(attempt){
    const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
    if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return
@@ -122,6 +131,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined
   }
  }
  if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
+ for(const id of starts)parkedStarts.add(id)
  return [...ids]
 }
 
@@ -135,15 +145,17 @@ export function inspectDeployment(store:DeploymentStore,activeExecutions=0,state
  const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
  const goals=store.list<RouterGoal&{deleted?:boolean}>('router-goal').filter(g=>g.objective&&!g.deleted&&!['completed','cancelled'].includes(g.state))
  const retained=new Set(artifactHolds.map(hold=>hold.run.ticketId))
- const heldGoals:{goalId:string;taskIds:string[]}[]=[]
+ const heldGoals:{goalId:string;taskIds:string[]}[]=[],parkedStarts=new Set<string>()
  const unsettled=goals.filter(goal=>{
   const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)??
-   (stateDir&&!activeExecutions?heldChatTasks(store,goal):undefined)
+   (stateDir&&!activeExecutions?heldChatTasks(store,goal,parkedStarts):undefined)
   if(!ids)return true
   for(const id of ids)retained.add(id)
   heldGoals.push({goalId:goal.id,taskIds:ids})
   return false
  })
+ const jobs=items.find(item=>item.kind==='jobs')
+ if(jobs)jobs.count-=parkedStarts.size
  count('tasks',store.list<Ticket>('ticket').filter(t=>!t.ended&&!retained.has(t.id)).length)
  count('goals',unsettled.length)
  count('active-models',activeExecutions)
@@ -154,7 +166,7 @@ export function inspectDeployment(store:DeploymentStore,activeExecutions=0,state
   const exists=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)
   if(exists)count(table,Number(store.db.prepare('SELECT COUNT(*) n FROM '+table+" WHERE state IN ('received','pending','sending','held','uncertain')").get()!.n))
  }
- return {blockers:items,heldGoals,backendReceipts:backendReceipts.map(({id,threadId,turnId,name,recovery})=>({
+ return {blockers:items.filter(item=>item.count>0),heldGoals,backendReceipts:backendReceipts.map(({id,threadId,turnId,name,recovery})=>({
   id,threadId,turnId,tool:name,recovery:recovery?.reason,
  }))}
 }

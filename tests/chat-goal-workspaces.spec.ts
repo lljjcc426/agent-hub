@@ -6,7 +6,9 @@ import {dirname,join} from 'node:path'
 import {afterEach,expect,it} from 'vitest'
 import {configSchema} from '../src/config.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
+import type {ContextManifest} from '../src/router-memory.ts'
 import type {RouterGoal} from '../src/router-goals.ts'
+import {stableDigest} from '../src/sources.ts'
 import {Runtime} from '../src/runtime.ts'
 import type {Run} from '../src/store.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
@@ -168,13 +170,142 @@ it('restores exact installer inputs across an upgrade without reopening the orig
  await f.restart()
  expect(handedOffFiles(f.host,ticketId)).toHaveLength(5)
  await deploymentMaintenance(f.host,{action:'finish',operationId})
- f.host.goals.command({action:'resume',id:held.id,expectedRevision:held.revision,operationId:'verify-old-files'},
-  f.context(f.send('Continue the original verification')))
+ const follow=f.send('Continue the original verification'),scoped=f.context(follow)
+ const context={discussion:scoped.route.discussion,trigger:scoped.trigger,scoped}
+ const pending=()=>Number(f.host.store.db.prepare("SELECT count(*) n FROM jobs WHERE kind='execute' AND state='pending' AND json_extract(payload,'$.ticketId')=?").get(ticketId)?.n)
+ const command={action:'send',ticketId,text:'Verify the restored inputs',revision:f.host.settings.current().revision,requestId:'continue-verification'}
+ const original=f.host.store.tickets.get(ticketId)!
+ const blocked=await f.host.manager.call(command,context)
+ expect(blocked).toMatchObject({status:'goal_blocked',goal:{id:held.id,state:'held',revision:held.revision}})
+ expect(blocked.availableInputs.map((file:{relativePath:string})=>file.relativePath).sort()).toEqual([...installerFiles].sort())
+ expect(blocked.availableInputs[0]).not.toHaveProperty('path')
+ expect(f.host.store.tickets.get(ticketId)).toEqual(original)
+ expect(pending()).toBe(0)
+ expect(f.host.chat.view(f.chat.id,owner,undefined,undefined,undefined,next.triggerId).run).toMatchObject({state:'blocked'})
+
+ // Older hosts accepted this input while the goal was held. Restore the durable job once.
+ const origin=f.host.store.triggers.get(original.origin.triggerId)!
+ const legacy={...scoped.trigger,id:'router-followup:legacy',threads:origin.threads,channel:origin.channel,
+  text:command.text,meta:{...scoped.trigger.meta,delegatedBy:'router',parentTrigger:follow}}
+ f.host.store.triggers.save(legacy)
+ f.host.engine.attach(ticketId,legacy.id,command.text)
+ expect(pending()).toBe(1)
+ await f.restart()
+ const resume={action:'resume',id:held.id,expectedRevision:held.revision,operationId:'verify-old-files'}
+ f.host.goals.command(resume,f.context(follow))
+ f.host.goals.command(resume,f.context(follow))
+ expect(pending()).toBe(1)
  await f.until(()=>workerRuns===2&&f.host.goals.get(next.id)?.state==='completed')
  expect(f.host.goals.get(next.id)?.taskIds).toEqual([ticketId])
  expect(f.host.store.get<Run>('run',ticketId)?.cwd).toBe(checkpoint.cwd)
  expect(f.host.chat.businessDecisions(f.chat.id,owner)).toHaveLength(0)
  expect(f.host.goals.get(old.id)?.state).toBe('cancelled')
+},30000)
+
+it('reports each requested goal and resumes the eligible work once through the Router tool',async()=>{
+ let targets:{id:string;expectedRevision:number;operationId:string}[]=[]
+ let outcome:{outcomes:{id:string;resumed:boolean;reason?:string}[]}|undefined
+ let workAllowed=false,workerRuns=0
+ const f=fixture(async request=>{
+  if(request.role==='router'){
+   if(JSON.parse(request.input).trigger?.text==='Continue both goals'){
+    const command={action:'resume_many',targets}
+    outcome=await tool(request,'router_goal',command)
+    const replay=await tool(request,'router_goal',command)
+    expect(replay).toEqual(outcome)
+   }
+   return {reply:'Checked the requested goals.'}
+  }
+  workerRuns++
+  return workAllowed?ready():{...ready('Waiting for retained inputs'),state:'blocked'}
+ })
+ const one=f.start('First task',{maxReplans:0}),two=f.start('Second task',{maxReplans:0})
+ await f.until(()=>[one,two].every(g=>f.host.goals.get(g.id)?.state==='held')&&!f.host.activeExecutions)
+ const a=f.host.goals.get(one.id)!,b=f.host.goals.get(two.id)!
+ targets=[{id:a.id,expectedRevision:a.revision,operationId:'resume-first'},
+  {id:b.id,expectedRevision:b.revision,operationId:'resume-second'},
+  {id:'outside-context',expectedRevision:0,operationId:'resume-unavailable'}]
+ workAllowed=true
+ f.send('Continue both goals')
+ await f.until(()=>!!outcome&&[a,b].every(g=>f.host.goals.get(g.id)?.state==='completed'))
+ expect(outcome?.outcomes).toMatchObject([{id:a.id,resumed:true},{id:b.id,resumed:true},{id:'outside-context',resumed:false,reason:'Goal unavailable'}])
+ expect(workerRuns).toBe(4)
+},30000)
+
+it('returns a readable receipt before OpenCode truncates a large Router result',async()=>{
+ let goalId='',readBack=false
+ const f=fixture(async r=>{
+  if(r.role!=='router')return {...ready('On hold'),state:'blocked'}
+  if(JSON.parse(r.input).trigger?.text==='Inspect the full plan'){
+   r.onConfiguration?.({requested:{},sent:{harness:'opencode'}})
+   const ref=await tool<{status:string;resource:string}>(r,'router_goal',{action:'inspect',id:goalId})
+   expect(ref.status).toBe('retained')
+   expect(ref.resource).toMatch(/^model-tool-receipt\//)
+   let text='',offset:number|null=0
+   do{
+    const page: {text:string;nextOffset:number|null}=await tool(r,'router_read',{resource:ref.resource,offset,limit:64000})
+    text+=page.text;offset=page.nextOffset
+   }while(offset!==null)
+   const result=JSON.parse(JSON.parse(text).contentItems[0].text)
+   expect(result.goal.plan.at(-1)).toBe('Last planned step')
+   readBack=true
+  }
+  return {reply:'Checked.'}
+ })
+ const goal=f.start('A long plan',{plan:[...Array.from({length:39},(_,i)=>'Step '+i+' '+ 'x'.repeat(1000)),'Last planned step'],maxReplans:0})
+ goalId=goal.id
+ f.send('Inspect the full plan')
+ await f.until(()=>readBack)
+},30000)
+
+it('keeps sibling progress and repairs only a proven old private Chat hold',async()=>{
+ let lastUserTurn=''
+ const f=fixture(async r=>{
+  if(r.role==='router'){lastUserTurn=JSON.parse(r.input).trigger?.text;return {reply:'Checked.'}}
+  return {...ready('Waiting for retained inputs'),state:'blocked'}
+ })
+ const a=f.start('Installer files',{maxReplans:0}),b=f.start('Branch review',{maxReplans:0})
+ await f.until(()=>[a,b].every(g=>f.host.goals.get(g.id)?.state==='held')&&!f.host.activeExecutions)
+ const [left,right]=[a,b].map(g=>f.host.goals.get(g.id)!.taskIds[0]!) as [string,string]
+ const {store,memory,scopes}=f.host
+ const original=f.context(a.triggerId)
+ const manifest=memory.build(original,{task:left},'codex').manifest
+ manifest.taskOwners=[left,right].map(id=>({id,epoch:scopes.ownership(id)!.ownerEpoch,dataRevision:1}))
+ store.put('task-context',left,{manifest})
+ const lower=f.context(f.send('New private input for branch review'))
+ store.atomic(()=>{scopes.noteInput(right,lower);memory.moveTaskContext(right,lower)})
+ const updated=store.get<{manifest:ContextManifest}>('task-context',left)!.manifest
+ expect(updated.taskOwners[1]?.dataRevision).toBe(2)
+ expect(()=>memory.validate(manifest)).toThrow('Task input changed')
+ expect(memory.validateWorkerTurn(left,manifest)).toBe(false)
+ expect(()=>memory.workerSnapshot(right,manifest)).toThrow('Task input changed')
+ const other=f.host.chat.create(owner)
+ const elsewhere=f.context(f.send('Separate conversation',other.id),other.id)
+ expect(()=>memory.workerSnapshot(left,{...manifest,triggerId:elsewhere.trigger.id})).toThrow('Task input changed')
+
+ // Recreate exactly the cached checkpoint and the fence recorded by an older host.
+ const ownerBefore=scopes.ownership(left)!,held={...ownerBefore,state:'held',reason:'context_permissions_changed'}
+ const checkpoint={ticketId:left,scopeId:original.route.scopeId,state:'held',reason:held.reason,previousContext:manifest.id}
+ store.put('task-context',left,{manifest})
+ store.put('task-ownership',left,held)
+ store.put('context-rebuild',left,checkpoint)
+ // Genuine permission changes still roll back the prospective owner.
+ const revoked=store.list<{ticketId:string;entryId:string;result:boolean}>('task-channel').find(v=>v.ticketId===right)!
+ const key=stableDigest([right,revoked.entryId])
+ store.put('task-channel',key,{...revoked,result:false})
+ f.send('Check while result access is revoked')
+ await f.until(()=>lastUserTurn==='Check while result access is revoked'&&!f.host.activeExecutions)
+ expect(scopes.ownership(left)).toEqual(held)
+ expect(store.get('context-rebuild',left)).toEqual(checkpoint)
+ store.put('task-channel',key,revoked)
+ // In production a revoked sibling would also stay held until its own access is reviewed.
+ expect(scopes.ownership(right)?.state).toBe('held')
+ store.put('task-ownership',right,{...scopes.ownership(right)!,state:'active',reason:undefined})
+ f.send('Verify my original private task')
+ await f.until(()=>scopes.ownership(left)?.state==='active')
+ expect(store.get('context-rebuild',left)).toBeUndefined()
+ expect(f.host.goals.get(a.id)?.state).toBe('held')
+ expect(store.get<{manifest:ContextManifest}>('task-context',left)?.manifest.taskOwners).toEqual(updated.taskOwners)
 },30000)
 
 it('continues the stopped installer goal in its legacy workspace without a file confirmation',async()=>{

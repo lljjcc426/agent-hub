@@ -80,7 +80,7 @@ import {RouterScopes,scopeCommandSchema,type ScopeContext} from './router-scope.
 import {RouterMemory,memoryToolSpecs,type ContextManifest} from './router-memory.ts'
 import {AgentMemory} from './agent-memory.ts'
 import type {EmbedMemory} from './memory-vectors.ts'
-import {fitResourcePage,scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
+import {fitResourcePage,protocolBytes,receiptReference,scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
 import {executionEvidenceNotice} from './execution-output.ts'
 import {GoalArtifacts} from './goal-artifacts.ts'
 import {heldArtifactReads,reconcileArtifactReads} from './artifact-read-recovery.ts'
@@ -90,8 +90,9 @@ import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
 import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
+import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
-import {RouterGoals,goalSpecs,type RouterGoal} from './router-goals.ts'
+import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
 import {Webhooks} from './webhooks.ts'
 import {GoalVerification,type GoalDelivery} from './goal-verification.ts'
 import {GoalReplanning,ReplanningInterrupted,type ReplanRound} from './goal-replanning.ts'
@@ -621,16 +622,22 @@ export class Runtime {
     if(onActive)request.onActive=control=>onActive({...control,...(control.refresh?{refresh:(instructions:string)=>control.refresh!(appendAgentPrompt(instructions,options.prompt,options.persona))}:{})})
     request=this.delegation.restrict(request)
     if(request.tools?.some(tool=>tool.name===chatStatusTool.name))request={...request,instructions:request.instructions+'\nDuring substantial work, use superagent_status to keep the Chat status concise and current in the user language. Update only when the work stage changes. Lifecycle states are managed by the host.'}
+    let usingOpenCode=false
     if(request.onTool && request.contextBudget){
-      const invoke=request.onTool,byteLimit=request.contextBudget.toolReserveBytes
+      const invoke=request.onTool,scopeLimit=request.contextBudget.toolReserveBytes
       request={...request,onTool:async(name,args,id)=>{
         const result=await invoke(name,args,id)
-        return ['router_read','superagent_read','orchestrator_eval_read','orchestrator_followup_read'].includes(name)?fitResourcePage(result,byteLimit):result
+        // OpenCode can truncate a result before the larger host context budget is reached.
+        const nativeRouter=usingOpenCode&&role==='router'
+        const byteLimit=nativeRouter?Math.min(scopeLimit,32*1024):scopeLimit
+        if(['router_read','superagent_read','orchestrator_eval_read','orchestrator_followup_read'].includes(name))return fitResourcePage(result,byteLimit)
+        if(nativeRouter&&request.retainToolResult&&result.contentItems.every(item=>item.type==='inputText')&&protocolBytes(result)>byteLimit)
+          return receiptReference(result,await request.retainToolResult(id,result),'router_read')
+        return result
       }}
     }
     if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
-    let usingOpenCode=false
     request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools);this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
     const onBackendIssue=request.onBackendIssue
@@ -898,12 +905,65 @@ export class Runtime {
     this.fenceInvalidContexts()
     return receipt
   }
+  /** Older hosts also fenced unchanged private tasks when a sibling received input.
+   * Revalidate that exact checkpoint for its authenticated manager. The goal stays
+   * held until a separate explicit resume. Keep its original inputs and effects.
+   */
+  private revalidateChatWorkerHolds(c:ScopeContext){
+    const discussion=c.route.discussion
+    if(!this.chat.personalManagement({trigger:c.trigger,discussion,scoped:c})||!this.scopes.canManage(c))return
+    for(const hold of this.store.list<{ticketId:string;scopeId:string;state:string;reason:string;previousContext?:string}>('context-rebuild')){
+      if(hold.scopeId!==c.route.scopeId||hold.state!=='held'||hold.reason!=='context_permissions_changed')continue
+      const id=hold.ticketId,owner=this.scopes.ownership(id),goal=this.goals.forTask(id)
+      if(owner?.state!=='held'||owner.reason!==hold.reason||owner.originEntry!==c.route.entryId||owner.discussion!==discussion||
+        goal?.state!=='held'||goal.discussion!==discussion||goal.entryId!==c.route.entryId||goal.actor!==c.actor||
+        goal.cancelledByUser||goal.supersededBy||this.executionActive(id))continue
+      const saved=this.store.get<{manifest:ContextManifest}>('task-context',id)
+      if(!saved||saved.manifest.id!==hold.previousContext||saved.manifest.entryId!==c.route.entryId||
+        saved.manifest.actor!==c.actor||!saved.manifest.taskOwners.some(ref=>ref.id===id))continue
+      try{
+        this.scopes.checkTask(id,c,true,true)
+        this.scopes.checkTaskEntry(owner,c.route.entryId,'result',true)
+        this.routerIngress.authority(saved.manifest.triggerId,discussion)
+        this.store.atomic(()=>{
+          const ticket=this.store.tickets.get(id),run=this.store.get<Run>('run',id)
+          const parked=ticket&&!ticket.ended&&!ticket.attention&&ticket.undelivered.length&&run?.phase==='idle'&&
+            sourceHeldNode(this.store,ticket,run,owner)==='interrupted'&&this.goals.effectsSettled(id)&&
+            !this.store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('pending','running','blocked','uncertain') AND json_extract(payload,'$.ticketId')=?").get(id)
+
+          // Validate against the prospective owner inside a savepoint. A genuine
+          // grant change, revoked source, or stale own input rolls this back.
+          this.store.put('task-ownership',id,{...owner,state:'active',reason:undefined})
+          const current=this.memory.workerSnapshot(id,saved.manifest)
+          if(current===saved.manifest||!this.scopes.taskRunnable(id))throw Error('No verified sibling update')
+          for(const [index,ref] of current.taskOwners.entries()){
+            if(ref.dataRevision===saved.manifest.taskOwners[index]?.dataRevision)continue
+            const route=this.store.get<{parentTrigger:string}>('task-routing',ref.id)
+            if(!route||this.routerIngress.authority(route.parentTrigger,discussion).strength!=='explicit')throw Error('Sibling input unavailable')
+          }
+          this.store.put('task-context',id,{...saved,manifest:current})
+          this.store.db.prepare("DELETE FROM records WHERE kind='context-rebuild' AND id=?").run(id)
+          // The old host consumed the job and then cancelled its turn. Park exactly
+          // one replacement for the still-undelivered inputs behind the held goal.
+          if(parked&&run){
+            const attempt=this.store.get<{attemptId:string}>('async-worker-current',id)!
+            this.store.enqueue('execute:'+run.assignmentId+':revalidate:'+attempt.attemptId,'execute',{ticketId:id,assignmentId:run.assignmentId})
+          }
+          this.store.audit({type:'task.context.revalidated',ticketId:id,previousContext:hold.previousContext,triggerId:c.trigger.id,queuedExistingInput:!!parked})
+        })
+      }catch{/* Retain the original hold when any dependency cannot be verified. */}
+    }
+  }
   /** Invalidate execution and output before an asynchronous model can return. */
   private fenceInvalidContexts(){
     for(const row of this.store.db.prepare("SELECT id,body FROM records WHERE kind='task-context'").all()){
       const id=String(row.id),saved=JSON.parse(String(row.body)),owner=this.scopes.ownership(id)
       if(!owner||owner.state==='held')continue
-      try{this.memory.validate(saved.manifest);continue}catch{}
+      try{
+        const current=this.memory.workerSnapshot(id,saved.manifest)
+        if(current!==saved.manifest)this.store.put('task-context',id,{...saved,manifest:current})
+        continue
+      }catch{}
       this.store.put('task-ownership',id,{...owner,state:'held',reason:'context_permissions_changed'})
       const run=this.store.get<Run>('run',id)
       this.store.put('context-rebuild',id,{ticketId:id,scopeId:owner.scopeId,state:'held',reason:'context_permissions_changed',threadId:run?.threadId,previousContext:saved.manifest.id,at:Date.now()})
@@ -982,7 +1042,7 @@ export class Runtime {
         const payload = job.payload as any
         if(['start','execute'].includes(job.kind)){
           const g=this.goals.forTask(payload.ticketId)
-          if(g&&(!['active','waiting'].includes(g.state)||g.nodes?.some(node=>node.ticketId===payload.ticketId&&node.state==='held')))continue
+          if(goalExecutionHold(g,payload.ticketId))continue
           if(!this.webhooks.taskExecutionAllowed(payload.ticketId))continue
         }
         if(['start','execute'].includes(job.kind)&&this.watchdog.recovering(payload.ticketId))continue
@@ -1130,6 +1190,7 @@ export class Runtime {
       ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
     const artifactTools=browserRun?chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind):[]
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
+    if(browserRun&&scoped&&admittedMandate?.strength==='explicit'&&!permissionId&&!fileReviewId&&!teamResultId)this.revalidateChatWorkerHolds(scoped)
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const tools=(followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...artifactTools,
       ...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),
@@ -1294,6 +1355,13 @@ export class Runtime {
                   const goal=output as RouterGoal
                   if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:'plan',id:goal.id,label:goal.title})
                   if(action==='resume')refreshTaskRevisions(goal.taskIds)
+                }else if(action==='resume_many'){
+                  const outcomes:GoalResumeOutcome[]=output.outcomes
+                  const resumed=outcomes.filter(item=>item.resumed)
+                  refreshTaskRevisions(resumed.flatMap(item=>item.taskIds??[]))
+                  if(resumed.length){
+                    for(const item of outcomes)saveDispatch({kind:item.resumed?'resumed':'blocked',id:item.id,label:item.title,reason:item.reason})
+                  }
                 }
                 return output
               })
@@ -1325,6 +1393,7 @@ export class Runtime {
                 if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId})
               }
             })),ticketId=(args as {ticketId?:string})?.ticketId
+            if(result.status==='goal_blocked')return {success:false,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
             if(result.ticketId)this.proactive.noteTask(triggerId,result.ticketId)
             if(result.ticketId)this.goals.noteTask(triggerId,result.ticketId)
             if((action==='send'||action==='rebuild')&&typeof ticketId==='string')refreshTaskRevisions([ticketId])
@@ -1335,7 +1404,10 @@ export class Runtime {
               const parent=this.taskAuthority(ticketId)?.parentTrigger
               if(parent)authorityInputs.add(parent)
             }
-            if(['result','inspect'].includes((args as any).action)&&ticketId)for(const m of this.store.list<any>('router-inbox'))if(m.ticketId===ticketId&&m.channel.address.routerInbox===discussion)readMessages.add(m.id)
+            if(['result','inspect'].includes(action??'')&&ticketId){
+              for(const m of this.store.list<Delivery>('router-inbox'))
+                if(m.ticketId===ticketId&&m.channel?.address?.routerInbox===discussion&&authorizedMessage(m))readMessages.add(m.id)
+            }
             return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
           }catch(error){return {success:false,contentItems:[{type:'inputText',text:String(error)}]}}
       }

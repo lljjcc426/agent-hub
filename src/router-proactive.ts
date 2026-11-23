@@ -468,7 +468,8 @@ export class RouterProactive {
   const packet=this.host.memory.build(context,{kind:'task_followup',triggers,ticketId},'router-followup')
   if(decisionManifest)this.host.memory.inherit(packet.manifest,decisionManifest)
   this.host.memory.validate(packet.manifest)
-  await this.host.manager.call({action:'send',ticketId,text:triggers.map(t=>t.text).join('\n\n'),requestId,revision:this.host.settings.current().revision},{discussion,trigger:last,scoped:context,manifest:packet.manifest})
+  const result=await this.host.manager.call({action:'send',ticketId,text:triggers.map(t=>t.text).join('\n\n'),requestId,revision:this.host.settings.current().revision},{discussion,trigger:last,scoped:context,manifest:packet.manifest})
+  if(result.status==='goal_blocked')throw Error(JSON.stringify(result))
  }
  async attachAdmitted(trigger:Trigger,discussion:string,ticketId:string){
   const task=this.host.store.tickets.get(ticketId)

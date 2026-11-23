@@ -168,6 +168,46 @@ it('rejects unfinished work without pausing or inventing a completed maintenance
  expect(h.schedulingPaused).toBe(false)
 })
 
+it.each(['start','interrupted'] as const)('preserves only a proven parked %s under a private source hold',async kind=>{
+ const h=host(),s=h.store,id='ticket',assignment=kind==='start'?'next':'prior',thread='plugin:retained'
+ const goal={id:'goal',objective:'Verify retained work',state:'held',managed:true,scopeId:'scope',entryId:'entry',actor:'owner',
+  discussion:'local:chat:private',triggerId:'origin',reason:'Error: Goal sources changed; explicit goal reauthorization is required',
+  taskIds:[id],nodes:[{id:'verify',ticketId:id,state:'running',dependsOn:[],criterionIds:['verified']}]}
+ s.put('router-goal',goal.id,goal)
+ s.put('chat-run','origin',{conversationId:'private'})
+ s.put('chat-conversation','private',{sourceId:'local',discussion:goal.discussion})
+ s.put('entry-binding','entry',{privateActor:'owner'})
+ const prior={id:'prior',state:kind==='start'?'ended':'running',report:{state:'blocked'}}
+ s.put('ticket',id,{id,inputs:[{id:'follow'}],undelivered:['follow'],assignments:[prior,...(kind==='start'?[{id:'next',state:'pending'}]:[])]})
+ s.put('run',id,{ticketId:id,assignmentId:'prior',phase:'idle',threadId:thread,cwd:h.config.stateDir})
+ s.put('model-session',thread,{ticketId:id})
+ s.put('task-ownership',id,{ticketId:id,originEntry:'entry',scopeId:'scope',discussion:goal.discussion,
+  state:kind==='start'?'active':'held',reason:'context_permissions_changed'})
+ s.put('backend-plugin-thread',thread,{id:thread,cwd:h.config.stateDir,effectIds:['effect'],
+  state:kind==='start'?'completed':'interrupted',lastFailure:{code:'cancelled'}})
+ s.put('backend-plugin-tool','effect',{state:'complete',result:{success:true}})
+ s.put('async-worker-current',id,{attemptId:'attempt',assignmentId:'prior'})
+ if(kind==='start'){
+  s.put('async-worker-terminal','attempt',{ticketId:id,assignmentId:'prior'})
+  s.enqueue('start:next','start',{ticketId:id,assignmentId:assignment})
+ }else{
+  s.put('task-context',id,{manifest:{id:'manifest'}})
+  s.put('context-rebuild',id,{state:'held',reason:'context_permissions_changed',previousContext:'manifest',threadId:thread})
+  s.put('async-worker-attempt','attempt',{ticketId:id,assignmentId:'prior',causeJobId:'execute:prior'})
+  s.enqueue('execute:prior','execute',{ticketId:id,assignmentId:assignment})
+  s.jobState('execute:prior','done')
+ }
+ const inspect=()=>inspectDeployment(s,0,h.config.stateDir)
+ expect(inspect()).toMatchObject({blockers:[],heldGoals:[{goalId:goal.id,taskIds:[id]}]})
+ const job=kind==='start'?'start:next':'execute:prior'
+ s.jobState(job,'running')
+ expect(inspect().blockers).toContainEqual({kind:'jobs',count:1})
+ s.jobState(job,kind==='start'?'pending':'done')
+ s.put('backend-plugin-tool','effect',{state:'complete',result:{permission:'uncertain'}})
+ expect(inspect().heldGoals).toEqual([])
+ expect(inspect().blockers).toContainEqual({kind:'goals',count:1})
+})
+
 it('recovers only supported stopped callbacks and leaves the original command fenced after upgrade',async()=>{
  const dir=root(),h=host(dir),plan={title:'Original plan',steps:[{id:'one',title:'Read retained data',state:'running'}]}
  const published=stoppedCallback(h,'superagent_plan',plan,'router')

@@ -491,14 +491,45 @@ export class RouterMemory {
   for(const ref of manifest.facts){const f=this.fact(ref.id);if(!f||!this.visible(f,context)||f.revision!==ref.revision||f.state!=='active'||f.expiresAt!==undefined&&f.expiresAt<=Date.now()||!this.supported(f))throw Error('Context fact expired')}
   for(const t of manifest.taskOwners){const owner=this.scopes.ownership(t.id);if(!owner||owner.ownerEpoch!==t.epoch||owner.routerId!==manifest.routerId)throw Error('Task owner changed');if((owner.dataRevision??1)!==(t.dataRevision??1))throw Error('Task input changed');this.scopes.checkTaskEntry(owner,manifest.entryId,'context');this.scopes.checkTaskEntry(owner,manifest.entryId,'result')}
  }
+ /** A Worker can retain an earlier observation of a sibling in the same private Chat.
+  * The observation never grants access to the sibling's new input or its effects.
+  * Every original dependency (including ownership and result access) is still checked.
+  */
+ workerSnapshot(ticketId:string,manifest:ContextManifest):ContextManifest{
+  try{this.validate(manifest);return manifest}catch(error){
+   if(!(error instanceof Error)||error.message!=='Task input changed')throw error
+  }
+  const chat=this.store.get<{conversationId:string}>('chat-run',manifest.triggerId)
+  const entry=this.scopes.binding(manifest.entryId),worker=this.scopes.ownership(ticketId)
+  if(!chat||!worker||!entry.scopeId.startsWith('@chat:')||entry.privateActor!==manifest.actor||
+   worker.originEntry!==entry.id||worker.scopeId!==manifest.scopeId||entry.scopeId!==manifest.scopeId)throw Error('Task input changed')
+  const discussion=entry.sourceId+':chat:'+chat.conversationId
+  if(worker.discussion!==discussion)throw Error('Task input changed')
+  const taskOwners=manifest.taskOwners.map(ref=>{
+   const owner=this.scopes.ownership(ref.id),revision=owner?.dataRevision??1
+   if(ref.id===ticketId||revision<=(ref.dataRevision??1))return ref
+   const route=this.store.get<{entryId:string;discussion:string;parentTrigger:string}>('task-routing',ref.id)
+   if(!owner||owner.originEntry!==entry.id||owner.scopeId!==manifest.scopeId||owner.discussion!==discussion||
+    route?.entryId!==entry.id||route.discussion!==discussion)return ref
+   const followup=this.store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',route.parentTrigger)
+   const trigger=this.store.triggers.get(route.parentTrigger)
+   if(followup?.conversationId!==chat.conversationId||followup.cancelled||followup.cancelRequested||
+    !trigger?.human||this.scopes.actor(trigger)!==manifest.actor)return ref
+   this.scopes.assertTrigger(trigger)
+   return {...ref,dataRevision:revision}
+  })
+  const current={...manifest,taskOwners}
+  this.validate(current)
+  return current
+ }
  /** A same-entry follow-up advances this ticket's input revision while its Worker is running. */
  validateWorkerTurn(ticketId:string,started:ContextManifest){
   const saved=this.store.get<{manifest:ContextManifest}>('task-context',ticketId)?.manifest
   const original=started.taskOwners.find(t=>t.id===ticketId),current=saved?.taskOwners.find(t=>t.id===ticketId)
-  if(!original||!current||original.dataRevision===current.dataRevision){this.validate(started);return false}
+  if(!original||!current||original.dataRevision===current.dataRevision){this.workerSnapshot(ticketId,started);return false}
   if(!saved||saved.id!==started.id||saved.entryId!==started.entryId||saved.actor!==started.actor||current.epoch!==original.epoch)throw Error('Task context changed during execution')
-  this.validate(saved)
-  this.validate({...started,taskOwners:started.taskOwners.map(t=>t.id===ticketId?{...t,dataRevision:current.dataRevision}:t)})
+  this.workerSnapshot(ticketId,saved)
+  this.workerSnapshot(ticketId,{...started,taskOwners:started.taskOwners.map(t=>t.id===ticketId?{...t,dataRevision:current.dataRevision}:t)})
   return true
  }
  moveTaskContext(ticketId:string,c:ScopeContext){
@@ -506,8 +537,20 @@ export class RouterMemory {
   if(!previous)return
   const owner=this.scopes.ownership(ticketId)!
   const manifest={...previous.manifest,taskOwners:[...previous.manifest.taskOwners.filter(t=>t.id!==ticketId),{id:ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1}],triggerId:c.trigger.id,actor:c.actor,entryId:c.route.entryId,scopeId:c.route.scopeId,routerId:c.route.routerId,epoch:c.route.epoch,generation:this.generation(c.route.scopeId)}
-  this.validate(manifest)
-  this.store.put('task-context',ticketId,{manifest})
+  this.store.put('task-context',ticketId,{manifest:this.workerSnapshot(ticketId,manifest)})
+  // Update stored Worker checkpoints within the same input transaction. Router turns
+  // and delivery manifests keep their original revision fences.
+  if(!c.trigger.human||!c.route.scopeId.startsWith('@chat:'))return
+  const peers=this.store.db.prepare(`SELECT id,body FROM records WHERE kind='task-context' AND id!=?
+   AND json_extract(body,'$.manifest.entryId')=? AND EXISTS
+   (SELECT 1 FROM json_each(body,'$.manifest.taskOwners') WHERE json_extract(value,'$.id')=?)`).all(ticketId,c.route.entryId,ticketId)
+  for(const row of peers){
+   const id=String(row.id),saved=JSON.parse(String(row.body)) as {manifest:ContextManifest}
+   try{
+    const current=this.workerSnapshot(id,saved.manifest)
+    if(current!==saved.manifest)this.store.put('task-context',id,{...saved,manifest:current})
+   }catch{/* The execution fence will hold independently invalid Worker contexts. */}
+  }
  }
  async tool(c:ScopeContext,args:unknown){
   const x=z.object({action:z.enum(['query','inspect','propose']),query:z.string().max(memoryCapacity.queryCharacters).optional(),limit:z.number().int().min(1).max(resourcePage.maxItems).optional(),id:id.optional(),subject:id.optional(),content:z.string().max(memoryCapacity.noteCharacters).optional(),operationId:id.optional()}).strict().parse(args)

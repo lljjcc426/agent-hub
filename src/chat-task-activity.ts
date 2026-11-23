@@ -13,6 +13,7 @@ export interface ChatTask {
   parentPlanId?: string
   question?: string
   summary?: string
+  blockedReason?: string
   failed?: boolean
 }
 
@@ -91,7 +92,7 @@ export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }
     if (plan.state !== 'completed') continue
     // Finishing a checklist's delegation step does not finish the work it assigned.
     const states = new Set(plan.tickets.map(activityState))
-    plan.state = ['running', 'reviewing', 'waiting', 'queued', 'failed', 'cancelled'].find(state => states.has(state)) ?? plan.state
+    plan.state = ['running', 'reviewing', 'waiting', 'blocked', 'queued', 'failed', 'cancelled'].find(state => states.has(state)) ?? plan.state
   }
   for (const activity of activities) {
     for (const ticket of activity.tickets) activity.updatedAt = Math.max(activity.updatedAt, ticket.updatedAt)

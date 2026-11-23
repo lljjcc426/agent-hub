@@ -1,7 +1,8 @@
 import type {ToolResult} from './chat-permissions.ts'
 
 export interface RouterDispatch {
-  kind:'assign'|'send'|'plan'|'team'
+  kind:'assign'|'send'|'plan'|'team'|'resumed'|'blocked'
+  reason?:string
   id:string
   label:string
 }
@@ -13,7 +14,7 @@ const queuedInputGraceMs=250
 export class RouterHandoff {
   private readonly closeModel=new AbortController()
   private readonly workers=new Set<string>()
-  private plan?:string
+  private readonly goals=new Map<string,RouterDispatch>()
   private grace?:ReturnType<typeof setTimeout>
   private deadline=Infinity
   private stop?:ReturnType<typeof setImmediate>
@@ -35,7 +36,7 @@ export class RouterHandoff {
   recordDispatch(dispatch:RouterDispatch){
     if(dispatch.kind==='assign'||dispatch.kind==='send')this.record(dispatch.label,dispatch.kind==='assign')
     else{
-      this.plan=dispatch.label
+      this.goals.set(dispatch.id,dispatch)
       this.closeIn(replyGraceMs)
     }
   }
@@ -71,10 +72,16 @@ export class RouterHandoff {
 
   reply(){
     const names=[...this.workers].join(this.chinese?'、':', ')
-    if(!names)return this.chinese?this.plan?`已安排「${this.plan}」进入执行队列。`:'任务已提交。':
-      this.plan?`I queued “${this.plan}” for execution.`:'The task was submitted.'
-    if(this.chinese)return this.assigned?`已交给 ${names} 处理。`:`已把补充发给 ${names}。`
-    return this.assigned?`I assigned this to ${names}.`:`I sent your follow-up to ${names}.`
+    const lines:string[]=[]
+    if(names)lines.push(this.chinese?
+      (this.assigned?`已交给 ${names} 处理。`:`已把补充发给 ${names}。`):
+      (this.assigned?`I assigned this to ${names}.`:`I sent your follow-up to ${names}.`))
+    for(const goal of this.goals.values()){
+      if(goal.kind==='blocked')lines.push((this.chinese?`「${goal.label}」未能恢复`:`Could not resume “${goal.label}”`)+(goal.reason?' · '+goal.reason:''))
+      else if(goal.kind==='resumed')lines.push(this.chinese?`已恢复「${goal.label}」。`:`I resumed “${goal.label}”.`)
+      else lines.push(this.chinese?`已安排「${goal.label}」进入执行队列。`:`I queued “${goal.label}” for execution.`)
+    }
+    return lines.join('\n')||(this.chinese?'任务已提交。':'The task was submitted.')
   }
 
   dispose(){

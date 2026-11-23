@@ -6,6 +6,8 @@ import {afterEach,expect,it,vi} from 'vitest'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import {ChatDeliveries} from '../src/chat-deliveries.ts'
+import {restoreRetainedFiles} from '../src/chat-file-handoff.ts'
+import {goalHandoffEvidence} from '../src/goal-handoff-evidence.ts'
 import {legacyExecutionQuestion} from '../src/business-decisions.ts'
 import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
@@ -27,7 +29,8 @@ const patchBytes=Buffer.from('original patch\n')
 const question='能否将旧任务留存的 `'+patch+'`、`'+report+'` 和报告所列的原始安装包，只读交接到本验收任务？'
 const summary='缺少旧任务保留的验收原件'
 
-async function fixture(missing=false){
+async function fixture(missing=false,nameSource=false){
+ let originalQuestion=question
  const root=mkdtempSync(join(tmpdir(),'roppo-handoff-test-'));roots.push(root)
  const config=configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled',network:false,autoRecover:false},
   execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'builder',backend:'codex'},{id:'reviewer',backend:'codex'}]},
@@ -40,7 +43,7 @@ async function fixture(missing=false){
   reviews.push(request)
   const answered=JSON.parse(request.input).inputs?.some((item:{event?:{text:string}})=>item.event?.text==='可以')
   const value=answered?{state:'waiting',summary:'原件已齐，继续验收。',reply:'',question:null,handbacks:[]}:
-   {state:'blocked',summary,reply:'',question,handbacks:[]}
+   {state:'blocked',summary,reply:'',question:originalQuestion,handbacks:[]}
   return {threadId,turnId,text:JSON.stringify(value)}
  }}
  const open=()=>{const host=new Runtime(config,{model});hosts.add(host);return host}
@@ -55,6 +58,7 @@ async function fixture(missing=false){
  const context=(id:string)=>host.scopes.context(host.store.triggers.get(id)!,discussion)!
  const old=send('保留首版文件'),oldContext=context(old.runId)
  const {ticketId:sourceId}=await host.manager.call({action:'assign',id:'builder',text:'首版文件',requestId:'old-task',revision:0},{discussion,trigger:oldContext.trigger,scoped:oldContext})
+ if(nameSource)originalQuestion=question.replace('旧任务留存的','旧任务 `'+sourceId+'` 留存的')
  const cwd=managedWorkspacePath(config.stateDir,sourceId)
  const reportText='| Package | Bytes | SHA-256 |\n| `'+installer+'` | '+packageBytes.length+' | `'+createHash('sha256').update(packageBytes).digest('hex')+'` |\n'
  for(const [path,bytes] of [[patch,patchBytes],[report,Buffer.from(reportText)]] as const){
@@ -206,4 +210,70 @@ it('keeps an uncertain execution after the saved answer as a blocked status acro
  expect(reopened.store.tickets.get(ticketId)?.attention).toBeUndefined()
  expect(reopened.store.get<Run>('run',ticketId)?.phase).toBe('uncertain')
  expect(f.reviews).toHaveLength(1)
+})
+
+it('binds acceptance to the original delivered question, human reply and task handoff, while retaining older rounds',async()=>{
+ const f=await fixture(),{host,owner,chat,sourceId,ticketId,decision}=f
+ host.chat.decide(chat.id,owner,f.input)
+ await f.until(host,()=>f.reviews.length===2&&!host.executionActive(ticketId))
+ const goal=host.goals.get(f.goal.id)!,node=goal.nodes!.find(n=>n.ticketId===ticketId)!
+ const receipt=host.store.get<object>('chat-file-handoff',decision.id)!
+ const remove=(kind:string,id:string)=>host.store.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind,id)
+ remove('chat-file-handoff',decision.id)
+ expect(host.verification.capture(ticketId,{state:'ready',summary:'Inspection finished',question:null})).toBe(true)
+ const initial=host.verification.ensure(goal,node)
+ const {handoffEvidence,...old}=initial
+ expect(handoffEvidence).toBe(true)
+ expect(old.snapshot.evidence.some(e=>e.key==='chat-file-handoff')).toBe(false)
+ host.store.put('chat-file-handoff',decision.id,receipt)
+ expect(host.verification.current(old,goal,{readOnly:true})).toBe(true)
+ expect(host.verification.current(initial,goal,{readOnly:true})).toBe(false)
+ const round=host.verification.ensure(goal,node)
+ const evidence=round.snapshot.evidence.find(e=>e.key==='chat-file-handoff')!
+ expect(evidence?.ticketId).toBe(ticketId)
+ const proof=JSON.parse(evidence.content).handoffs[0]
+ expect(proof).toMatchObject({receiptId:decision.id,ticketId,sourceTicketId:sourceId,conversationId:chat.id,
+  exchanges:[{decisionId:decision.id,question:{text:question,role:'assistant',workerId:'reviewer',status:'complete'},answer:{role:'user',text:'可以'}}]})
+ expect(proof.files.map((file:{relativePath:string})=>file.relativePath).sort()).toEqual([patch,report,installer].sort())
+ expect(host.verification.current(round,goal,{readOnly:true})).toBe(true)
+ const ask=proof.exchanges[0].question.messageId,answer=proof.exchanges[0].answer.messageId
+ const original=host.store.get<object>('chat-message',ask)!,reply=host.store.get<object>('chat-message',answer)!
+ host.store.put('chat-message',ask,{...original,status:'interrupted'})
+ expect(host.verification.current(round,goal,{readOnly:true})).toBe(false)
+ const read=()=>JSON.parse(host.verification.ensure(goal,node).snapshot.evidence.find(e=>e.key==='chat-file-handoff')!.content).handoffs[0]
+ expect(read().exchanges).toEqual([])
+ host.store.put('chat-message',ask,original)
+ host.store.put('chat-message',answer,{...reply,conversationId:'other-private-chat'})
+ expect(read().exchanges).toEqual([])
+ host.store.put('chat-message',answer,reply)
+ const saved=host.store.get<object>('question-answer',proof.exchanges[0].answerReceiptId)!
+ host.store.put('question-answer',proof.exchanges[0].answerReceiptId,{...saved,answerDigest:'unrelated'})
+ expect(read().exchanges).toEqual([])
+ host.store.put('question-answer',proof.exchanges[0].answerReceiptId,saved)
+ expect(host.verification.current(round,goal,{readOnly:true})).toBe(true)
+})
+
+it.each([true,false])('includes only explicitly linked questions for a restored manifest (named source=%s)',async named=>{
+ const f=await fixture(false,named),{host,ticketId,sourceId,chat,owner}=f
+ const files=[patch,report,installer].map(path=>{
+  const binary=readFileSync(join(f.cwd,path))
+  return {path,bytes:binary.length,sha256:createHash('sha256').update(binary).digest('hex')}
+ })
+ const hold=vi.spyOn(host.goals,'resumeAnsweredQuestion').mockReturnValue(false)
+ const text='你自己找，就在本机'
+ host.chat.decide(chat.id,owner,{...f.input,text})
+ hold.mockRestore()
+ const restored=await restoreRetainedFiles(host,{ticketId,sourceTicketId:sourceId,files},()=>{},new AbortController().signal)
+ const goal=host.goals.get(f.goal.id)!,context=host.goals.context(goal),read=()=>goalHandoffEvidence(host,goal,ticketId,context)
+ const [proof]=read()
+ expect(proof).toMatchObject({receiptId:restored.id,sourceTicketId:sourceId})
+ expect(proof!.files.map(f=>[f.relativePath,f.sha256]).sort()).toEqual(files.map(f=>[f.path,f.sha256]).sort())
+ expect(proof!.exchanges.map(e=>e.answer.text)).toEqual(named?[text]:[])
+ const asset=restored.files[0]!.id,saved=host.store.get<object>('asset',asset)!
+ host.store.put('asset',asset,{...saved,sha256:'0'.repeat(64)})
+ expect(read()).toEqual([])
+ host.store.put('asset',asset,saved)
+ const cleanup=host.memory.cleanup.blocked.bind(host.memory.cleanup)
+ vi.spyOn(host.memory.cleanup,'blocked').mockImplementation((kind,id,value)=>kind==='asset'&&id===asset||cleanup(kind,id,value))
+ expect(read()).toEqual([])
 })

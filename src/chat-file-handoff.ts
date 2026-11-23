@@ -20,7 +20,7 @@ interface Request {
   ticketId:string;conversationId:string;triggerId:string;question:string;paths:string[]
   outcome?:FileHandoffOutcome
 }
-interface Material {id:string;kind:'task-handoff';ticketId:string;sourceTicketId:string;name:string;relativePath:string;path:string;bytes:number;sha256?:string}
+export interface HandoffMaterial {id:string;kind:'task-handoff';ticketId:string;sourceTicketId:string;name:string;relativePath:string;path:string;bytes:number;sha256?:string}
 interface Delivery {id:string;ticketId:string;name:string}
 
 export const validRetainedPath=(path:string)=>path.length<=1000&&path.split('/').every(
@@ -36,11 +36,15 @@ type RetainedFileHandoff=z.infer<typeof retainedFileHandoffSchema>
 const quotedPaths=(text:string)=>[...text.matchAll(/`([^`\r\n]+)`/g)].map(match=>match[1]!).filter(path=>/\.[a-z\d]+$/i.test(path))
 const accepted=(text:string)=>/^(可以|同意|允许|确认|yes|ok(?:ay)?|approved?|go ahead)[。！.!]?$/i.test(text.trim())
 
-export function approvedFilePaths(question:string,answer:string){
+export function requestedFilePaths(question:string){
   question=question.trim()
   const asksForTransfer=/^(?:能否|是否可以)(?:将|把).+只读交接/s.test(question)||
     /^(?:may|can) I (?:hand off|transfer) .+read[- ]only/is.test(question)
-  return accepted(answer)&&asksForTransfer?[...new Set(quotedPaths(question))]:[]
+  return asksForTransfer?[...new Set(quotedPaths(question))]:[]
+}
+
+export function approvedFilePaths(question:string,answer:string){
+  return accepted(answer)?requestedFilePaths(question):[]
 }
 
 /** An affirmative answer applies to the read-only files described in this question. */
@@ -177,7 +181,7 @@ export async function restoreRetainedFiles(host:Runtime,input:RetainedFileHandof
   const directory=await mkdtemp(join(assets,'retained-'))
   let committed=false
   try{
-    const materials:Material[]=[]
+    const materials:HandoffMaterial[]=[]
     for(const file of result.files){
       signal.throwIfAborted()
       const destination=join(directory,file.path)
@@ -227,7 +231,7 @@ export async function prepareFileHandoff(host:Runtime,ticketId:string,signal:Abo
   const directory=join(assets,stableDigest(['file-handoff',id]))
   await rm(directory,{force:true,recursive:true})
   await mkdir(directory,{mode:0o700})
-  const materials:Material[]=[]
+  const materials:HandoffMaterial[]=[]
   let retained=false
   try{
     for(const file of files.values()){
@@ -264,7 +268,7 @@ export async function prepareFileHandoff(host:Runtime,ticketId:string,signal:Abo
 }
 
 export function handedOffFiles(host:Runtime,ticketId:string){
-  return host.store.list<Material>('asset').filter(item=>item.kind==='task-handoff'&&item.ticketId===ticketId&&
+  return host.store.list<HandoffMaterial>('asset').filter(item=>item.kind==='task-handoff'&&item.ticketId===ticketId&&
     !host.memory.cleanup.blocked('asset',item.id,item)).map(item=>({
       name:item.name,path:item.path,relativePath:item.relativePath,resource:'asset/'+item.id,
       ...(item.sha256?{bytes:item.bytes,sha256:item.sha256}:{}),

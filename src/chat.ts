@@ -58,6 +58,7 @@ interface Conversation {
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
 interface Message {handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;skill?:ChatSkillRef;reactions?:string[];agentReactions?:AgentReaction[]}
+export type {Conversation as ChatConversation, Message as ChatMessage, ChatRun}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
   | {kind:'file';id:string;createdAt:number;name:string;review:FileReview}

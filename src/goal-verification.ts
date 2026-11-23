@@ -1,4 +1,5 @@
 import {evidenceBytes} from './goal-artifacts.ts'
+import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
 
 import {z} from 'zod'
 import type {WatchdogRecovery} from './watchdog-contract.ts'
@@ -18,13 +19,13 @@ import {AcceptanceEvidenceTooLarge,type EvidenceOverflow} from './goal-acceptanc
 export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;reply?:string;files?:string[];inputRevision:number;at:number}
 interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
 export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];method:'program'|'agent'}
-export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
+export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];handoffEvidence?:true;delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
 // Bounds retained snapshots. Model input and evidence pages have their own context budgets.
 const snapshotLimitMiB=2
 const snapshotLimitBytes=snapshotLimitMiB*1024*1024
 const verdict=z.object({checks:z.array(z.object({criterionId:z.string(),verdict:z.enum(['passed','failed','insufficient']),explanation:z.string().min(1).max(8000),evidenceIds:z.array(z.string()).min(1)}).strict()).min(1)}).strict()
 const operational=(e:Evidence)=>e.kind==='execution'||e.kind==='report'&&e.key==='watchdog-observation'
-const requiredEvidence=(e:Evidence,criterionId:string)=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||operational(e)&&criterionId==='__goal__')&&(criterionId==='__goal__'||e.criterionIds.includes(criterionId))
+const requiredEvidence=(e:Evidence,criterionId:string)=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||e.key==='chat-file-handoff'||operational(e)&&criterionId==='__goal__')&&(criterionId==='__goal__'||e.criterionIds.includes(criterionId))
 
 /** Read only declared, bounded artifacts within this task's actual workspace. */
 function readArtifact(cwd:string,path:string):{content:string;missing?:boolean} {
@@ -135,7 +136,7 @@ export class GoalVerification {
   }
   return items
  }
- private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean}={}):Snapshot {
+ private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean;includeHandoffs?:boolean}={}):Snapshot {
   const c=this.host.goals.context(g),criteria=this.criteria(g,node)
   const closure=(ids:string[])=>{const selected=new Set(ids);let grew=true;while(grew){grew=false;for(const n of g.nodes??[])if(selected.has(n.id))for(const id of n.dependsOn)if(!selected.has(id)){selected.add(id);grew=true}}return selected}
   // A dependent result may describe work performed by its prerequisites. Include
@@ -203,6 +204,10 @@ export class GoalVerification {
     execution=JSON.stringify({...JSON.parse(execution),chatDeliveries})
    }
    add({kind:'execution',ticketId:n.ticketId,key:'host-execution',content:execution,criterionIds:citeIds(ids)})
+   if(options.includeHandoffs!==false){
+    const handoffs=goalHandoffEvidence(this.host,g,n.ticketId,c)
+    if(handoffs.length)add({kind:'execution',ticketId:n.ticketId,key:'chat-file-handoff',content:JSON.stringify({handoffs}),criterionIds:citeIds(ids)})
+   }
    // Final acceptance needs the same immutable failure observation the planner
    // received. Exclude mutable recovery status so resolving it cannot stale a review.
    for(const r of this.host.store.list<WatchdogRecovery>('watchdog-recovery').filter(r=>r.goalId===g.id&&r.ticketId===n.ticketId&&r.contractHash===stableDigest(g.contract)&&r.state!=='stale')){
@@ -233,7 +238,9 @@ export class GoalVerification {
    // Context lookup may create a route when one is missing. Observation must
    // fail closed rather than establish a new authorization fact on a GET.
    if(options.readOnly&&!this.host.store.get('router-route',g.triggerId))return false
-   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,options))===stableDigest(round.snapshot)
+   // Compare a retained round against its original evidence sources. Newly created
+   // rounds discover handoffs; rereading old rounds must not rewrite their history.
+   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,{...options,includeHandoffs:round.handoffEvidence===true}))===stableDigest(round.snapshot)
   }
   try{return options.readOnly?this.host.scopes.readOnly(()=>this.host.memory.readOnly(compare)):compare()}catch{return false}
  }
@@ -241,7 +248,7 @@ export class GoalVerification {
   const snapshot=this.snapshot(g,node,requireSettled),id='verify-'+stableDigest([g.id,node?.id??'goal',snapshot])
   const prior=this.host.store.get<VerificationRound>('goal-verification',id);if(prior){if(prior.state==='pending')this.host.store.db.prepare("UPDATE jobs SET state='pending' WHERE id=? AND state IN ('done','failed')").run('goal-verify:'+id);return prior}
   if(snapshot.tasks.some(t=>!this.host.goals.effectsSettled(t.ticketId)))throw Error('Task has unfinished or uncertain effects')
-  const round:VerificationRound={id,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}
+  const round:VerificationRound={id,handoffEvidence:true,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}
   this.host.store.atomic(()=>{this.host.store.put('goal-verification',id,round);this.host.store.enqueue('goal-verify:'+id,'goal-verify',{roundId:id,goalId:g.id,triggerId:g.triggerId,discussion:g.discussion})})
   return round
  }

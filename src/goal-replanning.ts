@@ -14,6 +14,7 @@ import {BackendRegistry} from './backends/registry.ts'
 import {agentOptionsSchema} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
 import {workerSpecs} from './worker-tools.ts'
+import {businessDecision} from './business-decisions.ts'
 
 export interface GoalContract {details?:import('./goal-contract.ts').GoalDetails;skill?:{id:string;version:number};objective:string;criteria:GoalCriterion[];triggerId:string;triggerHash:string;mandate:Mandate;workerIds:string[];backendIds:string[];teamTargets?:{id:string;policyHash:string}[]}
 export class ReplanningInterrupted extends Error {}
@@ -78,9 +79,17 @@ export class GoalReplanning {
   }).sort((a,b)=>a.id.localeCompare(b.id)):undefined
   return {contract,goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds:g.nodes.filter(n=>n.state==='held').map(n=>n.id),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
  }
+ private waitingForAnswer(g:RouterGoal){
+  return g.nodes?.some(node=>{
+   if(!node.ticketId)return false
+   const task=this.host.store.tickets.get(node.ticketId)
+   return !!task?.attention&&businessDecision(this.host,task.attention.id)?.status==='pending'
+  })
+ }
  private current(r:ReplanRound){
   const g=this.host.goals.get(r.goalId)
   if(!g||g.replanId!==r.id)throw Error('Replanning input, goal state, Worker capabilities or authority changed')
+  if(this.waitingForAnswer(g))throw Error('The goal is waiting for a user answer')
   const snapshot=this.snapshot(g,r.snapshot.workerCapabilities!==undefined)
   // Progress updates advance the optimistic-lock revision without changing plan inputs.
   snapshot.goalRevision=r.snapshot.goalRevision
@@ -91,7 +100,7 @@ export class GoalReplanning {
  consider(g:RouterGoal):boolean {
   // Remote contracts are immutable and have no safe amendment/resume protocol yet.
   // Retain a failed mixed graph for explicit review instead of duplicating effects.
-  if(g.nodes?.some(n=>n.teamTargetId))return false
+  if(g.nodes?.some(n=>n.teamTargetId)||this.waitingForAnswer(g))return false
   if(!g.contract||(g.replans??0)>=(g.maxReplans??(g.project?.policy.budget?Infinity:0))||g.replanId)return false
   const failures=g.nodes?.filter(n=>n.state==='held')??[]
   if(!failures.length)return false
@@ -182,6 +191,13 @@ export class GoalReplanning {
   }catch(error){
    const g=this.host.goals.get(r.goalId)
    if(g?.state==='cancelled'){save({state:'stale'});return}
+   if(g?.replanId===r.id&&this.waitingForAnswer(g)){
+    this.host.store.atomic(()=>{
+     save({state:'stale'})
+     this.host.store.put('router-goal',g.id,{...g,replanId:undefined})
+    })
+    return
+   }
    if(error instanceof ReplanningInterrupted)return false // Read-only reasoning can safely resume after host restart.
    const reason=String(error).slice(0,1500)
    save({state:/changed|unavailable|current state|revoked|cannot be revived/.test(reason)?'stale':'errored',error:reason})

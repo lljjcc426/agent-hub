@@ -49,7 +49,7 @@ import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {isApiBackend,validateBackendSelection} from './backend-config.ts'
 import {ProjectCode} from './project-code.ts'
-import { prepareWorkspace } from './workspace.ts'
+import { prepareGoalWorkspace, prepareWorkspace, retainedWorkspace } from './workspace.ts'
 import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,validateRuleAssessment } from './schemas.ts'
 import {WorkManager,type WorkOwner,type WorkItem} from './work.ts'
 import {Resources,routerReadSpec} from './resources.ts'
@@ -912,6 +912,18 @@ export class Runtime {
   start(): void {
     this.timer = setInterval(() => { void this.tick().catch(error => this.store.audit({ type: 'host.error', message: String(error) })) }, 150)
   }
+  private goalWorkspaceBusy(ticketId:string){
+    const workspace=this.goals.workspaceForTask(ticketId)
+    if(!workspace)return false
+    return this.store.list<Run>('run').some(run=>{
+      if(run.ticketId===ticketId)return false
+      const id=run.workspaceId??run.ticketId
+      if(id===workspace.workspace.id&&run.phase==='starting'&&!run.prepared)return true
+      if(id!==workspace.id||workspace.mode==='read-only'||run.workspaceMode==='read-only')return false
+      return this.executionActive(run.ticketId)||this.work.active(run.ticketId,run.assignmentId).length>0||
+        run.phase==='uncertain'&&!this.store.tickets.get(run.ticketId)?.ended
+    })
+  }
   private dispatchWorker(ticketId:string,reserve:boolean):{profile:WorkerProfile;reserve:boolean}|undefined {
     const assigned=this.store.get<{workerId:string}>('worker-assignment',ticketId)?.workerId
     const pool=workerProfiles(this.config).filter(w=>(!assigned||w.id===assigned)&&(!w.state||w.state==='enabled'||w.state==='retiring'&&(assigned===w.id||this.store.get<Run>('run',ticketId)?.workerId===w.id))),busy=new Set(this.store.list<Run>('run').filter(r=>r.ticketId!==ticketId&&(['starting','running'].includes(r.phase)||r.phase==='background'&&this.work.active(r.ticketId,r.assignmentId).length>0)).map(r=>r.workerId).filter(Boolean))
@@ -994,7 +1006,7 @@ export class Runtime {
         const workers=[...this.runningJobs.keys()].filter(id=>!isRouting(id)).length
         const reserved=this.store.list<Run>('run').filter(r=>r.phase==='background'&&r.ticketId!==payload.ticketId&&!this.controllers.has(r.ticketId)&&this.work.active(r.ticketId,r.assignmentId).length).length
         if(routing?[...this.runningJobs.keys()].filter(isRouting).length>=4:workers+reserved>=workerProfiles(this.config).length+(followupSlot?1:0))continue
-        if (job.kind === 'execute' && this.controllers.has(payload.ticketId)) continue
+        if(job.kind==='execute'&&(this.controllers.has(payload.ticketId)||this.goalWorkspaceBusy(payload.ticketId)))continue
         if (this.paused || (payload.ticketId && ['human','delivering','merging'].includes(this.store.get<Run>('run', payload.ticketId)?.phase??''))) continue
         const dispatch=job.kind==='execute'?this.dispatchWorker(payload.ticketId,followupSlot):undefined
         if(job.kind==='execute'&&!dispatch)continue
@@ -1339,6 +1351,7 @@ export class Runtime {
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
           (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. For files, delegate creation or retrieval; the host publishes Worker outputs and accepts explicit review decisions. If an authorized existing Chat artifact is requested, use chat_artifact_find for its metadata and pass the selected artifact ID to the Worker for delivery. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
+          +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:decorateInput(modelInput()),tools,
         onTool:(name,args)=>checkedRouterTool(name,args),
@@ -1548,7 +1561,9 @@ export class Runtime {
     ticket=this.replanning.executionView(taskView(this.store,ticket))
     const configuredSource = this.sources.get(ticket.mandate.actor.source)!.config
     const delegatedTask=this.delegation.forTicket(ticket.id)
-    const source={...configuredSource,sandbox:delegatedTask&&!delegatedTask.contract.permissions.write?'read-only' as const:configuredSource.sandbox}
+    const workspace=this.goals.workspaceForTask(ticket.id)
+    const readOnly=workspace?.mode==='read-only'||delegatedTask&&!delegatedTask.contract.permissions.write
+    const source={...configuredSource,sandbox:readOnly?'read-only' as const:configuredSource.sandbox}
     const saved = this.store.get<Run>('run', ticket.id)
     if(saved?.rebuild){const handoff=this.store.get<any>('context-handoff',saved.rebuild);if(handoff?.previousThread&&handoff.reason!=='context_permissions_changed')this.model.describe?.(handoff.previousThread)}
     const context=this.store.get<{manifest:ContextManifest}>('task-context',ticket.id)
@@ -1564,6 +1579,11 @@ export class Runtime {
     const live:LiveInputs={context:context?.manifest,assignmentId,inputs,offered:new Set(),accepting:true,retryAt:0,failures:0}
     this.liveInputs.set(ticket.id,live)
     const run: Run = { ...saved, ticketId: ticket.id, assignmentId, cwd: saved?.cwd ?? source.cwd, phase: 'starting',error:undefined,failure:undefined,...(dispatch?{workerId:dispatch.profile.id,interactiveReserve:dispatch.reserve}:{}) }
+    if(workspace){
+      run.workspaceId=workspace.id
+      run.workspaceMode=workspace.mode
+      run.workspaceSource=workspace.workspace.source
+    }
     this.store.put('run', ticket.id, run)
     let eventAttempt:WorkerAttempt|undefined
     let turnStarted=false,toolInvoked=false
@@ -1598,6 +1618,15 @@ export class Runtime {
       if(projectNode&&(source.sandbox!=='workspace-write'||delegatedTask))throw Error('Code projects require a local writable assignment')
       const project=projectNode?await this.projectCode.prepare(projectGoal!,projectNode,controller.signal):undefined
       if(project){run.cwd=project.cwd;run.prepared=true;persist()}
+      else if(workspace){
+        if(configuredSource.sandbox!=='workspace-write'||configuredSource.workspace?.mode==='source')
+          throw Error('The source changed its goal workspace policy')
+        if(workspace.workspace.source)this.goals.checkWorkspaceSource(workspace.workspace.source,this.goals.context(workspace.goal))
+        if(!saved?.prepared&&!saved?.threadId)
+          run.cwd=await prepareGoalWorkspace(this.config,configuredSource,ticket.id,workspace.workspace,workspace.mode,controller.signal)
+        if(run.cwd!==retainedWorkspace(this.config.stateDir,workspace.id))throw Error('Goal workspace changed')
+        run.prepared=true;persist()
+      }
       else if(!saved?.prepared&&!saved?.threadId){run.cwd=await prepareWorkspace(this.config,source,ticket.id,controller.signal);run.prepared=true;persist()}
       controller.signal.throwIfAborted()
       const contextSource=this.sources.get(ticket.mandate.actor.source)!
@@ -1609,7 +1638,8 @@ export class Runtime {
       const identityChanged=!!saved?.threadId&&(profile?.backend!==saved.backendId||!!profile?.model&&profile.model!==saved.model)
       const agentOptions=identityChanged||saved?.rebuild?saved?.agentOptions:profile?agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape))):undefined
       run.agentOptions=agentOptions
-      const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text
+      const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text+
+        (workspace?.workspace.source&&workspace.mode!=='worktree'?'\nThis is the previous task’s retained workspace. Read the existing manifests, source baselines and original files here before requesting uploads or recreating outputs. Candidate files still require the current goal’s validation.':'')
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
       const chatActor=this.chat.permissionActor(ticket.origin.triggerId,ticket.id)
       const fullAccess=builtInChat&&chatActor?.mode==='full'

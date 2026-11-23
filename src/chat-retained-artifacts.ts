@@ -80,11 +80,14 @@ export class ChatRetainedArtifacts {
    !authority?.parentTrigger||authority.discussion!==chat.discussion||
    store.get<ChatRun>('chat-run',authority.parentTrigger)?.conversationId!==chat.id||
    this.host.memory.cleanup.blocked('ticket',ticketId,ticket))return false
+  const source=store.get<Run>('run',ticketId)?.workspaceSource
+  if(source&&!c.scoped)return false
   try{
    this.host.routerIngress.authority(authority.parentTrigger,chat.discussion)
    if(c.scoped){
     this.host.scopes.checkTask(ticketId,c.scoped)
     this.host.scopes.checkTaskEntry(this.host.scopes.ownership(ticketId)!,c.scoped.route.entryId,'result')
+    if(source)this.host.goals.checkWorkspaceSource(source,c.scoped)
    }
    return true
   }catch{return false}
@@ -154,9 +157,9 @@ export class ChatRetainedArtifacts {
  private async file(candidate:Candidate,wanted?:string){
   const source=candidate.original
   if(!source)throw unavailable()
-  const cwd=this.host.store.get<Run>('run',source.ticketId)?.cwd
+  const run=this.host.store.get<Run>('run',source.ticketId),cwd=run?.cwd
   const state=this.host.config.stateDir
-  if(!cwd||![managedWorkspacePath(state,source.ticketId),projectWorkspace(state,source.ticketId)].some(root=>resolve(root)===resolve(cwd)))throw unavailable()
+  if(!cwd||![managedWorkspacePath(state,run.workspaceId??source.ticketId),projectWorkspace(state,source.ticketId)].some(root=>resolve(root)===resolve(cwd)))throw unavailable()
   let descriptor:FileHandle|undefined
   try{
    const root=join(await realpath(state),'work',basename(cwd)),path=join(root,source.path)

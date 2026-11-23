@@ -71,9 +71,12 @@ function sourceFiles(host:Runtime,request:Request){
     const task=store.tickets.get(file.ticketId),source=host.taskAuthority(file.ticketId)
     if(!task?.ended||!source||source.discussion!==authority.discussion||task.mandate.actor.source!==trigger.actor.source||
        task.mandate.actor.id!==trigger.actor.id||host.memory.cleanup.blocked('ticket',task.id,task))continue
+    const previous=store.get<Run>('run',task.id)?.workspaceSource
+    if(previous&&!scoped)continue
     if(scoped)try{
       host.scopes.checkTask(task.id,scoped)
       host.scopes.checkTaskEntry(host.scopes.ownership(task.id)!,scoped.route.entryId,'result')
+      if(previous)host.goals.checkWorkspaceSource(previous,scoped)
     }catch{continue}
     const files=candidates.get(task.id)??[]
     files.push(file)
@@ -82,8 +85,8 @@ function sourceFiles(host:Runtime,request:Request){
   // Confirmed names must identify a single prior task. Never choose by newest or merge sources.
   if(candidates.size!==1)return
   const [ticketId,files]=[...candidates][0]!
-  const cwd=store.get<Run>('run',ticketId)?.cwd
-  const roots=[managedWorkspacePath(host.config.stateDir,ticketId),projectWorkspace(host.config.stateDir,ticketId)]
+  const sourceRun=store.get<Run>('run',ticketId),cwd=sourceRun?.cwd
+  const roots=[managedWorkspacePath(host.config.stateDir,sourceRun?.workspaceId??ticketId),projectWorkspace(host.config.stateDir,ticketId)]
   const root=cwd&&roots.some(path=>resolve(path)===resolve(cwd))?cwd:undefined
   return {ticketId,files,root}
 }

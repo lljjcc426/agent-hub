@@ -31,23 +31,23 @@ type InterruptedRead={kind:'github';interrupted:GithubRead[]}
  |{kind:'web_batch';replay:WebBatchReplay;urls:string[];batches:string[][];interrupted:GithubRead[]}
  |{kind:'read_only'}
 
-type RouterReadCall={name:string;args:unknown;receiptId:string;receipt:PluginToolEffect}
+export type RecordedRouterCall={name:string;args:unknown;receiptId:string;receipt:PluginToolEffect}
 type ArtifactReconciliation={reason:'interrupted_artifact_read';ticketId:string;assignmentId:string;threadId:string;turnId:string;at:number}
 export type ArtifactReadProof={
  receiptId:string;artifactId:string;threadId:string;turnId:string;
  receipt:PluginToolEffect&{reconciliation?:ArtifactReconciliation}
 }
 export type InterruptedRouterTurn=
- |{kind:'read_only';threadId:string;turnId:string;reads:RouterReadCall[]}
+ |{kind:'stopped';threadId:string;turnId:string;calls:RecordedRouterCall[]}
  |{kind:'unverified';threadId:string;turnId:string;tool?:string;receiptId?:string}
 
-function isRouterRead(name:string,args:unknown){
+export function isRouterRead(name:string,args:unknown){
  const action=(args as {action?:unknown}|null)?.action
  switch(name){
   case 'router_read':return readSchema.safeParse(args).success
   case 'chat_artifact_find':return findChatArtifactInput.safeParse(args).success
   case 'github_read':return githubReadSchema.safeParse(args).success
-  case 'worker_manage':return action==='list'
+  case 'worker_manage':return action==='list'||action==='inspect'||action==='result'
   case 'router_goal':return action==='list'||action==='inspect'
   case 'router_journal':return action==='read'
   case 'workspace_browser':return action==='snapshot'
@@ -143,14 +143,14 @@ function operations(root:string,turnId:string){
 export function inspectInterruptedRouterTurn(store:Pick<ThreadStore,'get'>,stateDir:string,
  owner:{threadId:string;triggerId:string;sourceId:string;scopeId?:string;contextId?:string;cwd:string}):InterruptedRouterTurn|undefined{
  const thread=store.get<PluginThread>('backend-plugin-thread',owner.threadId)
- if(!thread||thread.state==='completed'||!thread.turnId)return
+ if(!thread||thread.pluginId!=='opencode-cli'||thread.state==='completed'||!thread.turnId)return
+ const unverified:InterruptedRouterTurn={kind:'unverified',threadId:owner.threadId,turnId:thread.turnId}
  const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',owner.threadId)
  const model=store.get<{threadId:string;cwd:string;ephemeral:boolean;triggerId:string;sourceId:string;scopeId:string;contextId:string;ticketId?:string}>('model-session',owner.threadId)
  if(thread.id!==owner.threadId||thread.pluginId!=='opencode-cli'||thread.stateVersion!==1||binding?.harness!==bundledEngineId||
   binding.id!==thread.backendId||binding.harnessDigest!==thread.digest||model?.threadId!==thread.id||
   model.ticketId||model.ephemeral!==false||model.triggerId!==owner.triggerId||model.sourceId!==owner.sourceId||
-  model.scopeId!==owner.scopeId||model.contextId!==owner.contextId)return
- const unverified:InterruptedRouterTurn={kind:'unverified',threadId:thread.id,turnId:thread.turnId}
+  model.scopeId!==owner.scopeId||model.contextId!==owner.contextId)return unverified
  try{
   if(realpathSync(owner.cwd)!==thread.cwd||realpathSync(model.cwd)!==thread.cwd)return unverified
   const location=sessionRoot(stateDir,thread)
@@ -160,9 +160,9 @@ export function inspectInterruptedRouterTurn(store:Pick<ThreadStore,'get'>,state
   const last=session.turns.at(-1)!
   if(session.folder!==folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd||
    last.id!==thread.turnId)return unverified
-  if(last.state==='completed')return
   const journal=operations(root,last.id)
-  if(!last.tools.length&&!journal.length&&(thread.effectIds.length===0||thread.lastFailure?.diagnostic?.effectFree))return
+  if(!last.tools.length&&!journal.length&&(thread.effectIds.length===0||thread.lastFailure?.diagnostic?.effectFree))
+   return {kind:'stopped',threadId:thread.id,turnId:last.id,calls:[]}
   if(last.nativeToolsDisabled?journal.length>0:privateText(join(root,last.id+'.ready'),32)!=='ready')return unverified
   const failed=thread.lastFailure
   if(thread.state==='failed'&&!['outcome_unknown','process_failed','transient'].includes(failed?.code??'')&&!failed?.diagnostic?.readOnlyHistory)return unverified
@@ -170,7 +170,7 @@ export function inspectInterruptedRouterTurn(store:Pick<ThreadStore,'get'>,state
   if(unsafe)return {...unverified,tool:'opencode/'+unsafe.tool,receiptId:unsafe.id}
   const nativeCalls=new Map(journal.map(op=>[op.id,op.tool]))
   if(nativeCalls.size!==journal.length)return unverified
-  const effects=new Set(thread.effectIds),turns=new Set<string>(),reads:RouterReadCall[]=[]
+  const effects=new Set(thread.effectIds),turns=new Set<string>(),calls:RecordedRouterCall[]=[]
   if(effects.size!==thread.effectIds.length)return unverified
   for(const turn of session.turns){
    if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'&&(turn.tools.length||operations(root,turn.id).length))return unverified
@@ -182,19 +182,21 @@ export function inspectInterruptedRouterTurn(store:Pick<ThreadStore,'get'>,state
     }
     const id=stableDigest([thread.id,turn.id,call.id])
     const receipt=store.get<PluginToolEffect>('backend-plugin-tool',id)
+    // The native journal can contain a callback that the host never admitted.
+    if(turn===last&&!receipt&&!call.result&&!effects.has(id))continue
     const evidence={...unverified,tool:call.name,receiptId:id}
     if(!effects.delete(id)||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return evidence
     if(turn!==last){
      if(receipt.state!=='complete'||!call.result)return evidence
      continue
     }
-    if(!isRouterRead(call.name,call.args))return evidence
-    if(receipt.state==='complete'&&!receipt.result||receipt.state==='running'&&(call.result||receipt.result))return evidence
-    reads.push({name:call.name,args:call.args,receiptId:id,receipt})
+    if(receipt.state==='complete'&&(!receipt.result||call.result&&receipt.result.success!==call.result.success)||
+     receipt.state==='running'&&(call.result||receipt.result))return evidence
+    calls.push({name:call.name,args:call.args,receiptId:id,receipt})
    }
   }
   if(effects.size||!stoppedWriter(root))return unverified
-  return {kind:'read_only',threadId:thread.id,turnId:last.id,reads}
+  return {kind:'stopped',threadId:thread.id,turnId:last.id,calls}
  }catch{return unverified}
 }
 

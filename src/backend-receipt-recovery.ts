@@ -4,7 +4,7 @@ import { browserToolSchema } from './browser-contract.ts'
 import { publicPlanSchema, type ChatPlan } from './chat-workflow.ts'
 import type { ExecutionContext } from './execution-activity.ts'
 import { stableDigest } from './sources.ts'
-import type { Store } from './store.ts'
+import type { Run, Store } from './store.ts'
 import type { UsageRecord } from './usage-ledger.ts'
 import type { WorkItem } from './work.ts'
 
@@ -15,6 +15,14 @@ type Recovery =
   | { reason: 'interrupted_chat_plan'; confirmed: boolean }
   | { reason: 'interrupted_browser_snapshot'; confirmed: false }
 type RetainedReceipt = Callback & { recovery?: Recovery }
+
+export function savedChatPlan(store: Pick<Store, 'list'>, activityId: string, args: unknown) {
+  const plan = publicPlanSchema.safeParse(args)
+  if (!plan.success) return
+  const fingerprint = stableDigest(plan.data)
+  return store.list<ChatPlan>('chat-plan').find(saved =>
+    saved.activityId === activityId && stableDigest({ title: saved.title, steps: saved.steps }) === fingerprint)
+}
 
 function stoppedSession(store: RecoveryStore, thread: PluginThread): Session | undefined {
   const session = store.get<Session>('model-session', thread.id)
@@ -32,6 +40,12 @@ function stoppedSession(store: RecoveryStore, thread: PluginThread): Session | u
         work.endedAt !== undefined && work.endedAt >= usage.endedAt &&
         work.ticketId === session.ticketId && work.threadId === thread.id && work.cwd === session.cwd) return session
   }
+  if (usage.role === 'worker' && session.ticketId && !session.agentId) {
+    const run = store.get<Run>('run', session.ticketId)
+    if (run?.ticketId === session.ticketId && run.phase === 'idle' && run.prepared && !run.waitingForWriter &&
+        run.threadId === thread.id && run.turnId === thread.turnId && run.backendId === thread.backendId &&
+        run.cwd === session.cwd) return session
+  }
   if (usage.role === 'router' && !session.ticketId && !session.agentId &&
       store.db.prepare(`SELECT 1 FROM records WHERE kind='router-session'
         AND json_extract(body,'$.threadId')=? AND json_extract(body,'$.triggerId')=?
@@ -44,9 +58,7 @@ function recoverableResult(store: RecoveryStore, session: Session, call: Callbac
     if (!plan.success) return
     // This callback only writes the local Chat plan. Preserve its current
     // value, and acknowledge publication only with the exact saved plan.
-    const fingerprint = stableDigest(plan.data)
-    const confirmed = store.list<ChatPlan>('chat-plan').some(saved =>
-      saved.activityId === session.activity && stableDigest({ title: saved.title, steps: saved.steps }) === fingerprint)
+    const confirmed = !!savedChatPlan(store, session.activity, plan.data)
     return { reason: 'interrupted_chat_plan', confirmed }
   }
   if (call.name === 'superagent_browser' && session.agentId) {

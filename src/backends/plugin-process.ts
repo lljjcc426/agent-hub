@@ -10,6 +10,7 @@ import {Ajv} from 'ajv'
 import type {Config} from '../config.ts'
 import type {PluginBackendDefinition} from '../backend-config.ts'
 import type {Model,ModelRequest,ModelResult,BackendDescription} from '../model.ts'
+import type {ToolResult} from '../chat-permissions.ts'
 import type {ThreadStore} from './api.ts'
 import {networkEnvironment,sandboxCommand} from '../sandbox.ts'
 import {supportsOpenCodeTools} from '../../plugins/backend-opencode/native-tools.ts'
@@ -23,7 +24,7 @@ import {backendEnvelope,backendResult,backendDiagnosticSchema,backendIssueSchema
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
 
 export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
-export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:Awaited<ReturnType<NonNullable<ModelRequest['onTool']>>>;failure?:BackendDiagnostic}
+export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:ToolResult;failure?:BackendDiagnostic}
 const text=z.string().min(1).max(1000)
 const healthSchema=z.object({available:z.boolean(),authenticated:z.union([z.boolean(),z.literal('unknown')]),remoteVerified:z.literal(false),accountIdentity:z.string().regex(/^[a-f0-9]{64}$/).optional(),version:z.string().max(200).optional()}).strict()
 const historySchema=z.object({id:z.string().min(1).max(1000),turns:z.array(z.unknown())}).passthrough()

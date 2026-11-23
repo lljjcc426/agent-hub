@@ -957,41 +957,6 @@ export class ChatSessions {
       this.changed(c.id)
     })
   }
-  /** An unambiguous status-only follow-up can use the current task record without a model turn. */
-  private replyWithTaskStatus(c:Conversation,run:ChatRun,text:string,quote?:Message){
-    const question=text.trim().replace(/[?？。.!！]+$/u,'').toLowerCase()
-    if(!/^(?:进度|现在(?:进度|情况)如何|进度如何|进展如何|情况如何|做到哪了|做完了吗|做完了没|搞好了没|完成了吗|还在(?:做|跑|处理)吗|status|progress|any progress|how is it going|is it (?:done|finished|still running))$/u.test(question)||
-      quote?.decision||quote?.fileReview)return
-    const candidates=this.tasks(c).filter(task=>{
-      const assignment=this.host.store.get<Delegation>('worker-assignment',task.id)
-      if(assignment?.discussion!==c.discussion)return false
-      if(quote?.ticketId)return task.id===quote.ticketId
-      if(quote)return assignment.parentTrigger===quote.runId||this.host.taskAuthority(task.id)?.parentTrigger===quote.runId
-      return task.state==='running'||task.state==='waiting'||task.state==='queued'
-    })
-    const task=candidates.length===1?candidates[0]:undefined
-    if(!task||!this.workerResultAllowed(task.id,run.triggerId,c.discussion))return
-    const chinese=/\p{Script=Han}/u.test(question)
-    const state=task.failed?'failed':task.reviewing?'reviewing':task.state
-    const label=this.worker(task.workerId).label
-    const message=({
-      failed:chinese?'这项任务遇到了问题。':'The task hit a problem.',
-      reviewing:chinese?'工作已交付，正在验收。':'The work is under review.',
-      running:chinese?`${label} 正在处理这项任务。`:`${label} is working on it.`,
-      waiting:chinese?'这项任务目前在等待后续处理。':'The task is waiting for the next step.',
-      queued:chinese?'这项任务已排队，等待执行。':'The task is queued.',
-      completed:chinese?'这项任务已完成。':'The task is complete.',
-      cancelled:chinese?'这项任务已停止。':'The task was stopped.',
-    })[state]
-    if(!message)return
-    const jobs=this.host.store.db.prepare("SELECT id FROM jobs WHERE id IN (?,?) AND kind='router' AND state='pending'")
-      .all('router:'+run.triggerId,'router:'+c.discussion+':'+run.triggerId)
-    if(jobs.length!==1)return
-    const jobId=String(jobs[0]!.id)
-    this.host.store.jobState(jobId,'done')
-    this.host.store.put('router-result',jobId,{discussion:c.discussion,triggerId:run.triggerId,reply:message})
-    this.reply(jobId,run.triggerId,message)
-  }
   send(id:string,owner:string,input:{clientMessageId:string;text:string;locale?:string;timeZone?:string;openingLocale?:'zh-CN'|'en';attachments?:string[];quote?:ChatQuote;skillId?:string},
     resolveSkill?:(skillId:string,project:string)=>SelectedChatSkill|undefined){
     return this.host.store.atomic(()=>{
@@ -1027,12 +992,16 @@ export class ChatSessions {
       this.uploads.bind(attachments.map(a=>a.id),run.id)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),
         ...(attachments.length?{attachments}:{}),...(skill?{skill:{id:skill.id,name:skill.name}}:{})})
+      // Text commands can be handled by the host, but the Router still receives
+      // the original Chat message and the host's disposition of the command.
+      if(this.host.store.get('project-review-input',run.id)||
+        this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='workflow-decision'").get('workflow-decision:'+run.id))
+        this.host.store.enqueue('router:'+run.id,'router',{discussion:c.discussion,triggerId:run.id})
       if(text&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
         const questionRun=this.host.store.get<ChatRun>('chat-run',sourceMessage.runId)
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)
           this.host.store.put('chat-message',sourceMessage.id,{...sourceMessage,decision:{...sourceMessage.decision,answer:text,replyRunId:run.id}})
       }
-      if(!attachments.length&&!skill)this.replyWithTaskStatus(c,run,text,sourceMessage)
       this.changed(c.id)
       return {runId:run.id,duplicate:false}
     })

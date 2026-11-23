@@ -11,6 +11,8 @@ import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,
 import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
+import {blockedByRouterRecovery} from './router-operation-recovery.ts'
+import {isRouterRead} from './backends/opencode-read-recovery.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
@@ -1136,7 +1138,12 @@ export class Runtime {
     const allowedTools=new Set(tools.map(tool=>tool.name))
     const backendIdentity=stableDigest([profile??this.config.execution.router,chatBinding,this.config.execution.roles.router??this.config.execution.backend,
       this.settings.current().revision,tools,chatStatusTool,publicPlanTool,'coordination-only'])
+    const reviewCommand=browserRun?this.store.get<{message?:string}>('project-review-input',triggerId):undefined
+    const workflowCommand=browserRun?this.store.db.prepare("SELECT state FROM jobs WHERE id=? AND kind='workflow-decision'").get('workflow-decision:'+triggerId):undefined
+    const hostCommand=reviewCommand?{kind:'project_review',message:reviewCommand.message}:
+      workflowCommand?{kind:'workflow_decision',state:workflowCommand.state}:undefined
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,
+      ...(hostCommand?{hostCommand:{...hostCommand,notice:'The host owns this exact decision. Explain its recorded state without executing it again.'}}:{}),
       ...(selectedSkill?{selectedSkill:{...selectedSkill,notice:'Apply the skill the user selected to this request. Follow the current request and its permitted scope. If delegating, pass the relevant steps to the Worker. Relative references in the skill are relative to its file; use only available tools and report when a required resource is unavailable.'}}:{}),
       ...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
     if(scoped&&!this.chat.isReactionInput(triggerId))this.memory.ingest(scoped)
@@ -1194,18 +1201,11 @@ export class Runtime {
     if(packet)for(const task of scopedTasks){const owner=this.scopes.ownership(task.ticketId)!;if(!packet.manifest.taskOwners.some(ref=>ref.id===task.ticketId))packet.manifest.taskOwners.push({id:task.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});if(task.report?.at)readReports.set(task.ticketId,task.report.at)}
     if(candidates&&packet)candidates.bindContext(packet.manifest)
     const retryHere=job.kind==='router'&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId
-    const inspectRecovery=()=>retryHere&&browserRun?this.continuity.recoverRead(trigger,scoped,{
-      jobId:job.id,conversationId:browserRun.conversationId,discussion,cwd:source.cwd,backendIdentity
+    const recoveryChat=chatBinding?this.store.get<{conversationId:string}>('chat-run',triggerId):undefined
+    const inspectRecovery=()=>recoveryChat?this.continuity.recoverChatTurn(trigger,scoped,{
+      conversationId:recoveryChat.conversationId,discussion,cwd:source.cwd,backendIdentity
     }):undefined
-    const requireReadOnly=(proof:ReturnType<typeof inspectRecovery>)=>{
-      if(proof?.kind==='unverified'){
-        this.chat.recovery(triggerId,{state:'held',tool:proof.tool,receiptId:proof.receiptId})
-        throw Error('Previous OpenCode turn requires reconciliation'+(proof.tool?' for '+proof.tool:'')+(proof.receiptId?' (receipt '+proof.receiptId+')':''))
-      }
-      if(proof)this.chat.recovery(triggerId,{state:'rebuilding'})
-      return proof
-    }
-    let recovery=retainedDispatch.length?undefined:requireReadOnly(inspectRecovery())
+    let recovery=inspectRecovery()
     let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence):undefined
     const sessionKey=continuity?.key??packet?.manifest.sessionKey??discussion,previous=this.store.get<any>('router-session',sessionKey)
     const threadId=recovery?undefined:scoped?continuity?.reuse:!chatBinding||previous?.backendIdentity===backendIdentity?previous?.threadId:undefined
@@ -1216,6 +1216,20 @@ export class Runtime {
       for(const id of authorityInputs)this.routerIngress.authority(id,scoped?undefined:discussion)
       if(packet)this.memory.validate(packet.manifest)
       if(pendingMessages.some(m=>!authorizedMessage(m)))throw Error('Worker result authorization withdrawn')
+    }
+    const refreshTaskRevisions=(ids:readonly string[])=>{
+      if(!chatBinding||!packet)return
+      const manifest=packet.manifest,targets=new Set(ids)
+      const taskOwners=manifest.taskOwners.map(ref=>{
+        const owner=targets.has(ref.id)&&this.scopes.ownership(ref.id)
+        return owner&&owner.ownerEpoch===ref.epoch?{...ref,dataRevision:owner.dataRevision??1}:ref
+      })
+      if(taskOwners.every((ref,index)=>ref.dataRevision===manifest.taskOwners[index]!.dataRevision))return
+      // A successful tool may advance the task input revision in this turn.
+      // Recheck all original ownership and result permissions before using it.
+      this.memory.validate({...manifest,taskOwners})
+      manifest.taskOwners=taskOwners
+      this.store.put('context-manifest',manifest.id,manifest)
     }
     try{
       let auxiliaryDecision:unknown
@@ -1277,6 +1291,7 @@ export class Runtime {
                 if(action==='start'||action==='resume'){
                   const goal=output as RouterGoal
                   if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:'plan',id:goal.id,label:goal.title})
+                  if(action==='resume')refreshTaskRevisions(goal.taskIds)
                 }
                 return output
               })
@@ -1310,6 +1325,7 @@ export class Runtime {
             })),ticketId=(args as {ticketId?:string})?.ticketId
             if(result.ticketId)this.proactive.noteTask(triggerId,result.ticketId)
             if(result.ticketId)this.goals.noteTask(triggerId,result.ticketId)
+            if((action==='send'||action==='rebuild')&&typeof ticketId==='string')refreshTaskRevisions([ticketId])
             acceptHandoff()
             if(ticketId&&packet){const owner=this.scopes.ownership(ticketId);if(owner&&!packet.manifest.taskOwners.some(t=>t.id===ticketId)){packet.manifest.taskOwners.push({id:ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});this.store.put('context-manifest',packet.manifest.id,packet.manifest)}}
             if(ticketId&&result.report?.at){
@@ -1321,7 +1337,7 @@ export class Runtime {
             return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
           }catch(error){return {success:false,contentItems:[{type:'inputText',text:String(error)}]}}
       }
-      const checkedRouterTool=async(name:string,args:unknown,expectedId?:string)=>{
+      const checkedRouterTool=async(name:string,args:unknown,expectedId?:string):Promise<ToolResult>=>{
         const authored=splitPendingNotice(name,args)
         args=authored.args
         const actor=permissionActor(),input=(args??{}) as Record<string,unknown>
@@ -1329,6 +1345,12 @@ export class Runtime {
           if(expectedId)this.permissions.cancel(expectedId)
           return workerRequired('Task execution belongs to a Worker. Use worker_manage to assign or continue the task.')
         }
+        if(hostCommand&&!isRouterRead(name,args))return workerRequired('The host handles this decision. Read its state and reply without repeating the action.')
+        const held=blockedByRouterRecovery(this.store,recovery?.holds??[],name,args)
+        if(held)return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+          code:'operation_outcome_unconfirmed',tool:held.tool,receiptId:held.receiptId,
+          message:'Verify the previous operation with authorized reads. Answer the current message and continue independent work.',
+        })}]}
         const risk=routerRisk(name,input)
         if(risk&&!actor&&chatBinding)throw Error('The original Chat authority ended')
         if(expectedId&&(!actor||!risk))throw Error('The approved Router action is no longer available')
@@ -1385,7 +1407,7 @@ export class Runtime {
           const code=backendFailure(error)?.code
           if(recovery||!retryHere||!code||!['process_failed','outcome_unknown','transient'].includes(code))throw error
           validateReplyContext()
-          recovery=requireReadOnly(inspectRecovery())
+          recovery=inspectRecovery()
           if(!recovery)throw error
           if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence)
           result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
@@ -1415,8 +1437,7 @@ export class Runtime {
         if(handoff?.yielded||rebuildAfterDispatch){
           // An interrupted native tool turn may reject resume. Rebuild from the
           // committed conversation and task state instead of replaying its tools.
-          const saved=this.store.get<Record<string,unknown>>('router-session',sessionKey)
-          this.store.put('router-session',sessionKey,{...saved,threadId:undefined,rebuildReason:'router_handoff'})
+          this.continuity.retireThread(sessionKey,triggerId)
         }
         if(output.reply.trim()&&trigger.channel&&this.proactive.notify(triggerId)){
           const id='router-reply:'+(messageId?bodyDigest([discussion,output.reply,[...readMessages].sort()]):job.id)

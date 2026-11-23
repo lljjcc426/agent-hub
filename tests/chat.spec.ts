@@ -18,6 +18,7 @@ import {measureChatInput} from '../src/chat-input.ts'
 import {createServer,type Server} from 'node:http'
 import {chatUploadLimits} from '../src/chat-attachments.ts'
 import {chatPersonalizationChange,changeChatPersonalization} from '../src/chat-personalization.ts'
+import {blockedByRouterRecovery} from '../src/router-operation-recovery.ts'
 const roots:string[]=[],hosts:Runtime[]=[],servers:Server[]=[]
 afterEach(async()=>{for(const s of servers.splice(0)){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()))}for(const h of hosts.splice(0))await h.close();for(const p of roots.splice(0))rmSync(p,{recursive:true,force:true})})
 const report={state:'ready',summary:'Worker checked the evidence',reply:'Worker result',question:null,askedBy:null,handbacks:[]}
@@ -88,7 +89,7 @@ it.each([false,true])('recovers an interrupted OpenCode image read in the same C
    workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
  const conversation=h.chat.create('owner')
  await h.chat.uploads.upload(conversation.id,'owner',imageId,{name:'fixture.png',mimeType:'image/png'},Readable.from([Buffer.from(data,'base64')]))
- const disabled=later?vi.spyOn(h.continuity,'recoverRead').mockReturnValue(undefined):undefined
+ const disabled=later?vi.spyOn(h.continuity,'recoverChatTurn').mockReturnValue(undefined):undefined
  const original=h.chat.send(conversation.id,'owner',{clientMessageId:randomUUID(),openingLocale:'zh-CN',text:'识别截图',attachments:[imageId]})
  if(later){
   await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
@@ -98,26 +99,152 @@ it.each([false,true])('recovers an interrupted OpenCode image read in the same C
  await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='completed')
  const view=h.chat.view(conversation.id,'owner')
  expect(calls).toHaveLength(2)
- expect(view.run?.recovery).toEqual({state:'rebuilding'})
  expect(view.messages.filter(m=>m.opening&&m.runId===original.runId)).toHaveLength(1)
  expect(view.messages.some(m=>m.text==='已读取原截图。')).toBe(true)
 })
 
-it('keeps an unconfirmed OpenCode write held and carries its receipt into a follow-up',async()=>{
- let receiptId=''
- const {h,calls}=fixture(async r=>{
-  const proof=interruptedOpenCode(h,r,[{id:'write',name:'github_write',args:{action:'update_issue'}}])
-  receiptId=proof.effectIds[0]!
-  throw new BackendPluginError('outcome_unknown','codex')
+it('answers new Chat messages while a previous operation remains unconfirmed across restart',async()=>{
+ let receiptId='',originalThread='',attempt=0
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(++attempt===1){
+   const proof=interruptedOpenCode(f.h,r,[{id:'send',name:'worker_manage',
+    args:{action:'assign',id:'research',requestId:'unknown-assignment',revision:0,text:'Check the issue'}}])
+   receiptId=proof.effectIds[0]!;originalThread=proof.threadId
+   throw new BackendPluginError('cancelled','codex')
+  }
+  expect(input.continuity.recovery.pending).toEqual([{tool:'worker_manage',receiptId}])
+  expect(r.threadId).toBeUndefined()
+  const read=await r.onTool!('worker_manage',{action:'list'},'list')
+  expect(read.success).toBe(true)
+  const write=await r.onTool!('worker_manage',{action:'assign',id:'research',requestId:'new-id',revision:0,text:'Check the issue'},'repeat')
+  expect(write).toMatchObject({success:false})
+  expect(write.contentItems[0]!.text).toContain('operation_outcome_unconfirmed')
+  return {reply:'I received '+input.trigger.text}
  })
- const conversation=h.chat.create('owner')
- send(h,conversation.id,'Update the issue')
- await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
- expect(h.chat.view(conversation.id,'owner').run?.recovery).toEqual({state:'held',tool:'github_write',receiptId})
- send(h,conversation.id,'继续')
- await settle(h,()=>h.chat.view(conversation.id,'owner').run?.state==='failed')
+ f.h.scopes.command({action:'scope.put',operationId:'scoped',expectedRevision:0,
+  scope:{id:'team',tenantId:'local',name:'Team',managers:[JSON.stringify(['local','operator'])],
+   workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
+ const chat=f.h.chat.create('owner')
+ send(f.h,chat.id,'Update the issue')
+ await settle(f.h,()=>f.h.chat.view(chat.id,'owner').run?.state==='failed')
+ send(f.h,chat.id,'有问题吗')
+ await settle(f.h,()=>f.h.chat.view(chat.id,'owner').messages.some(message=>message.text==='I received 有问题吗'))
+ await f.h.close();hosts.splice(hosts.indexOf(f.h),1)
+ const next=new Runtime(f.config,{model:f.model});hosts.push(next)
+ send(next,chat.id,'进度如何')
+ await settle(next,()=>next.chat.view(chat.id,'owner').messages.some(message=>message.text==='I received 进度如何'))
+ expect(f.calls).toHaveLength(3)
+ expect(next.store.get('backend-plugin-tool',receiptId)).toMatchObject({state:'running'})
+ expect(next.store.tickets.list()).toHaveLength(0)
+ expect(next.store.list<{heldTurns?:{threadId:string}[]}>('router-session').flatMap(session=>session.heldTurns??[]))
+  .toContainEqual(expect.objectContaining({threadId:originalThread}))
+})
+
+it('recovers a saved plan and a completed local command without replay before answering a new message',async()=>{
+ let first=true,receiptIds:string[]=[]
+ const f=fixture(async r=>{
+  if(r.role==='worker')return {state:'waiting',summary:'Paused for evidence',reply:'',question:null,handbacks:[]}
+  const input=JSON.parse(r.input)
+  if(first){
+   first=false
+   const plan={title:'Review existing work',steps:[{id:'review',title:'Review work',state:'running'}]}
+   const assigned={action:'assign',id:'research',requestId:'real-assignment',revision:0,text:'Review existing work'}
+   const planResult=await r.onTool!('superagent_plan',plan,'plan')
+   const assignmentResult=await r.onTool!('worker_manage',assigned,'assigned')
+   expect(planResult.success&&assignmentResult.success).toBe(true)
+   // Both operations committed, but the backend stopped before saving either reply.
+   receiptIds=interruptedOpenCode(f.h,r,[
+    {id:'plan',name:'superagent_plan',args:plan},
+    {id:'assigned',name:'worker_manage',args:assigned},
+   ],true).effectIds
+   throw new BackendPluginError('cancelled','codex')
+  }
+  if(input.kind==='worker_result')return {reply:''}
+  expect(input.trigger.text).toBe('进度如何')
+  expect(input.continuity.recovery).toMatchObject({pending:[],confirmed:[
+   {tool:'superagent_plan',success:true},{tool:'worker_manage',success:true},
+  ]})
+  return {reply:'我已核对，正在等证据。'}
+ })
+ f.h.scopes.command({action:'scope.put',operationId:'scope',expectedRevision:0,
+  scope:{id:'team',tenantId:'local',name:'Team',managers:[JSON.stringify(['local','operator'])],
+   workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
+ const chat=f.h.chat.create('owner')
+ send(f.h,chat.id,'Review the existing work')
+ await settle(f.h,()=>f.h.store.tickets.list()[0]?.assignments.at(-1)?.report?.state==='waiting'&&!f.h.chat.view(chat.id,'owner').reply)
+ send(f.h,chat.id,'进度如何')
+ await settle(f.h,()=>f.h.chat.view(chat.id,'owner').messages.some(message=>message.text==='我已核对，正在等证据。'))
+ expect(f.h.store.tickets.list()).toHaveLength(1)
+ expect(f.h.store.list('chat-plan')).toHaveLength(1)
+ for(const id of receiptIds)expect(f.h.store.get('backend-plugin-tool',id)).toMatchObject({state:'complete',result:{success:true}})
+})
+
+it('keeps an uncertain task action fenced while allowing changes to an independently identified task',()=>{
+ const {h}=fixture()
+ const holds=[{tool:'worker_manage',targets:['task:original']}]
+ expect(blockedByRouterRecovery(h.store,holds,'worker_manage',{action:'send',ticketId:'original'})).toEqual(holds[0])
+ expect(blockedByRouterRecovery(h.store,holds,'worker_manage',{action:'send',ticketId:'independent'})).toBeUndefined()
+ expect(blockedByRouterRecovery(h.store,holds,'worker_manage',{action:'assign',ticketId:'independent'})).toEqual(holds[0])
+})
+
+it('retains the Router reply when its own goal resume advances a task input revision',async()=>{
+ const initial='Investigate this issue and report the evidence'
+ let goalId=''
+ const f=fixture(async r=>{
+  if(r.role==='worker')return {state:'blocked',summary:'Waiting for the source',reply:'',question:null,handbacks:[]}
+  const input=JSON.parse(r.input)
+  if(input.kind==='worker_result')return {reply:''}
+  if(input.trigger.text===initial){
+   const started=await r.onTool!('router_goal',{action:'start',operationId:'start-investigation',expectedRevision:0,maxReplans:0,
+    title:'Investigation',objective:initial,authorizationQuote:initial,
+    criteria:[{id:'evidence',description:'Gather evidence'}],
+    nodes:[{id:'investigate',title:'Investigate',instruction:'Check the source',workerId:'research',criterionIds:['evidence']}]},'start')
+   expect(started.success).toBe(true)
+   goalId=JSON.parse(started.contentItems[0]!.text!).id
+   return {reply:'Investigation started.'}
+  }
+  expect(input.trigger.text).toBe('Resume the investigation with the available source')
+  const old=f.h.goals.get(goalId)!
+  const resumed=await r.onTool!('router_goal',{action:'resume',id:old.id,operationId:'resume-investigation',expectedRevision:old.revision},'resume')
+  expect(resumed.success).toBe(true)
+  r.onOutput?.({id:'answer',phase:'answer',type:'start'})
+  expect(r.signal?.aborted).toBe(false)
+  return {reply:'The original investigation has resumed.'}
+ })
+ f.h.scopes.command({action:'scope.put',operationId:'scope',expectedRevision:0,
+  scope:{id:'team',tenantId:'local',name:'Team',managers:[JSON.stringify(['local','operator'])],
+   workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
+ const chat=f.h.chat.create('owner')
+ send(f.h,chat.id,initial)
+ await settle(f.h,()=>f.h.goals.get(goalId)?.state==='held'&&!f.h.chat.view(chat.id,'owner').reply)
+ const task=f.h.store.tickets.list()[0]!,revision=f.h.scopes.ownership(task.id)?.dataRevision??1
+ const resume=send(f.h,chat.id,'Resume the investigation with the available source')
+ await settle(f.h,()=>f.h.chat.view(chat.id,'owner').messages.some(message=>message.text==='The original investigation has resumed.'))
+ expect(f.h.store.get('router-error','router:'+resume.runId)).toBeUndefined()
+ expect(f.h.scopes.ownership(task.id)?.dataRevision).toBe(revision+1)
+ expect(f.h.store.tickets.list()).toHaveLength(1)
+ const assignments=f.h.store.tickets.get(task.id)!.assignments
+ expect(assignments.slice(0,-1).map(a=>a.id)).toEqual(task.assignments.map(a=>a.id))
+ expect(assignments).toHaveLength(task.assignments.length+1)
+})
+
+it('gives the Router the original text of a host-handled review command',async()=>{
+ const text='验收通过 1111111111111111'
+ const {h,calls}=fixture(async request=>{
+  const input=JSON.parse(request.input)
+  expect(input.trigger.text).toBe(text)
+  expect(input.hostCommand).toMatchObject({kind:'project_review',message:expect.stringContaining('验收编号')})
+  expect((await request.onTool!('worker_manage',{action:'list'},'read')).success).toBe(true)
+  const write=await request.onTool!('worker_manage',{action:'assign',revision:0,id:'research',requestId:'repeat-review',text},'write')
+  expect(write.success).toBe(false)
+  return {reply:'我看到了，但这个验收编号无效。'}
+ })
+ const chat=h.chat.create('owner')
+ send(h,chat.id,text)
+ await settle(h,()=>h.chat.view(chat.id,'owner').messages.some(message=>message.text==='我看到了，但这个验收编号无效。'))
  expect(calls).toHaveLength(1)
- expect(h.store.get('backend-plugin-tool',receiptId)).toMatchObject({state:'running'})
+ expect(h.store.tickets.list()).toHaveLength(0)
 })
 
 it('offers setup for a new Chat, keeps skip and save idempotent, and preserves another owner’s changes', () => {

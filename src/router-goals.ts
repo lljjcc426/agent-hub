@@ -564,7 +564,7 @@ export class RouterGoals {
    const review=this.decide(g,id!,returning?'return':'approve',c!.actor,feedback)
    message='已记录对提交 '+review.head+' 的'+(returning?'退回意见。':'验收通过。')
   }catch(error){message=String(error).replace(/^Error: /,'')}
-  this.host.store.put('project-review-input',t.id,{triggerId:t.id,goalId:g?.id,reviewId:id})
+  this.host.store.put('project-review-input',t.id,{triggerId:t.id,goalId:g?.id,reviewId:id,message})
   if(t.channel){
    const reply='project-review-input:'+t.id
    this.host.store.put('router-reply-owner',reply,{discussion:t.source+':'+t.threads[0]!.id,triggerId:t.id,inputs:[t.id]})

@@ -131,7 +131,7 @@ it('ends a stalled Router reply after a confirmed assignment and answers the nex
  expect(f.calls.filter(request=>request.role==='worker')).toHaveLength(1)
 })
 
-it('returns a recorded status and handles a new conversation turn while a dispatched plan runs',async()=>{
+it('delivers progress questions to the Router while a dispatched plan runs',async()=>{
  const work=gate(),stalled=gate()
  const requestText='Continuously investigate the build failure'
  let worker:ModelRequest|undefined
@@ -142,6 +142,10 @@ it('returns a recorded status and handles a new conversation turn while a dispat
    return {state:'waiting',summary:'Build investigated',reply:'',question:null,askedBy:null,handbacks:[]}
   }
   const input=JSON.parse(r.input)
+  if(input.trigger.text==='Any progress?'){
+   expect(input.tasks).toEqual([expect.objectContaining({workerId:'research'})])
+   return {reply:'The model checked the investigation.'}
+  }
   if(input.trigger.text!==requestText)return {reply:'I can answer while the investigation runs.'}
   const result=await r.onTool!('router_goal',{action:'start',operationId:'build-plan',expectedRevision:0,
    title:'Build investigation',objective:'Find the cause of the build failure',authorizationQuote:requestText,
@@ -155,13 +159,11 @@ it('returns a recorded status and handles a new conversation turn while a dispat
  const first=f.send(requestText)
  try{
   await settle(f.h,()=>!!worker)
-  const calls=f.calls.length
   const status=f.h.chat.send(f.c.id,'local-operator',{text:'Any progress?',clientMessageId:randomUUID(),locale:'zh-CN'})
-  expect(f.view().messages.find(m=>m.runId===status.runId&&m.role==='assistant')?.text).toBe('research is working on it.')
-  expect(f.calls).toHaveLength(calls)
   expect(f.h.store.get('router-dispatch','router:'+first.runId)).toMatchObject({items:[{kind:'plan',label:'Build investigation'}]})
   f.send('Are you still there?')
   await settle(f.h,()=>f.view().messages.some(m=>m.text==='I can answer while the investigation runs.'))
+  expect(f.view().messages.find(m=>m.runId===status.runId&&m.role==='assistant')?.text).toBe('The model checked the investigation.')
   expect(f.view().messages.some(m=>m.text==='I queued “Build investigation” for execution.')).toBe(true)
   expect(worker!.signal!.aborted).toBe(false)
   expect(f.view().workers[0]!.tasks.map(t=>t.state)).toEqual(['running'])

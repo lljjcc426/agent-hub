@@ -14,6 +14,7 @@ import type {ChatDelivery} from './chat-deliveries.ts'
 import type {ReplanRound} from './goal-replanning.ts'
 import type {VerificationRound} from './goal-verification.ts'
 import type {TaskOwnership} from './router-scope.ts'
+import {bodyDigest} from './sources.ts'
 
 export class DeploymentError extends Error {constructor(readonly code:string,message:string,readonly status=409){super(message)}}
 const command=z.object({action:z.enum(['prepare','finish','abort']),operationId:z.string().uuid(),
@@ -79,10 +80,14 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined
   ids.add(id)
   const ticket=store.get<Ticket>('ticket',id),run=store.get<Run>('run',id),owner=store.get<TaskOwnership>('task-ownership',id)
   const assignment=ticket?.assignments.at(-1)
-  if(!ticket||ticket.ended||ticket.undelivered.length||assignment?.state!=='running'||
+  const waitingOnDependency=node.state==='waiting_dependency'&&node.dependsOn.some(dep=>nodes.some(item=>item.id===dep&&item.state!=='passed'))
+  if(node.state==='waiting_dependency'&&!waitingOnDependency)return
+  if(!ticket||ticket.ended||assignment?.state!=='running'||
    !run||run.ticketId!==id||run.phase!=='idle'||run.assignmentId!==assignment.id||run.waitingForWriter||
    owner?.state!=='active'||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||
    unsettledTaskEffects(store,id,0))return
+  if(ticket.undelivered.length&&(!waitingOnDependency||
+   !ticket.undelivered.every(inputId=>ticket.inputs.some(input=>input.id===inputId))))return
   try{if(!statSync(run.cwd).isDirectory())return}catch{return}
   if(run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return
   if(store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('blocked','uncertain')
@@ -100,10 +105,15 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined
    if(!round||round.state!=='passed'||round.goalId!==goal.id||round.nodeId!==node.id||
     !delivery||!retainedDeliveryFiles(store,id,delivery.files))return
   }else{
-   if(!assignment.report||!['blocked','failed'].includes(assignment.report.state))return
+   if(!assignment.report||!['blocked','failed',...(waitingOnDependency?['waiting']:[])].includes(assignment.report.state))return
    if(ticket.attention){
     const decision=store.get<BusinessDecisionView>('business-decision',ticket.attention.id)
-    if(decision?.status!=='pending'||decision.ticketId!==id||decision.question!==ticket.attention.question)return
+    if(decision?.ticketId!==id||decision.question!==ticket.attention.question)return
+    if(decision.status!=='pending'){
+     const answer=store.get<{assignmentId:string;triggerId:string}>('question-answer',bodyDigest([id,decision.id]))
+     if(!waitingOnDependency||decision.status!=='answered'||answer?.assignmentId!==assignment.id||
+      !store.get('trigger',answer.triggerId))return
+    }
    }
   }
  }

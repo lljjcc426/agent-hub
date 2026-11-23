@@ -8,6 +8,7 @@ import {configSchema} from '../src/config.ts'
 import {ChatDeliveries} from '../src/chat-deliveries.ts'
 import {restoreRetainedFiles} from '../src/chat-file-handoff.ts'
 import {goalHandoffEvidence} from '../src/goal-handoff-evidence.ts'
+import {stableDigest} from '../src/sources.ts'
 import {legacyExecutionQuestion} from '../src/business-decisions.ts'
 import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
@@ -273,6 +274,10 @@ it.each([true,false])('includes only explicitly linked questions for a restored 
  host.store.put('asset',asset,{...saved,sha256:'0'.repeat(64)})
  expect(read()).toEqual([])
  host.store.put('asset',asset,saved)
+ const channelId=stableDigest([ticketId,goal.entryId]),channel=host.store.get<object>('task-channel',channelId)!
+ host.store.put('task-channel',channelId,{...channel,result:false})
+ expect(read()).toEqual([])
+ host.store.put('task-channel',channelId,channel)
  const cleanup=host.memory.cleanup.blocked.bind(host.memory.cleanup)
  vi.spyOn(host.memory.cleanup,'blocked').mockImplementation((kind,id,value)=>kind==='asset'&&id===asset||cleanup(kind,id,value))
  expect(read()).toEqual([])

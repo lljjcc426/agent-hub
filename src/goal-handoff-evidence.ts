@@ -23,6 +23,7 @@ function humanRun(h:Runtime,id:string,chat:ChatConversation){
  const run=visible<ChatRun>(h,'chat-run',id),trigger=visible<Trigger>(h,'trigger',id)
  if(run?.conversationId!==chat.id||run.id!==id||run.triggerId!==id||run.cancelled||run.cancelRequested||
     !trigger?.human||trigger.meta.delegatedBy||!sameActor(trigger.actor,chat))return
+ try{h.routerIngress.authority(id,chat.discussion)}catch{return}
  return {run,trigger}
 }
 
@@ -60,7 +61,12 @@ export function goalHandoffEvidence(h:Runtime,goal:RouterGoal,ticketId:string,co
  if(!chat||chat.id!==run.conversationId||chat.discussion!==goal.discussion||goal.scopeId!=='@chat:'+stableDigest(chat.owner)||
     context.route.scopeId!==goal.scopeId||context.route.entryId!==goal.entryId||context.actor!==goal.actor||goal.actor!==JSON.stringify([chat.sourceId,chat.actor])||
     h.scopes.binding(goal.entryId).privateActor!==goal.actor||!humanRun(h,goal.triggerId,chat))return []
- h.scopes.checkTask(ticketId,context)
+ const targetOwner=h.scopes.ownership(ticketId)
+ if(!targetOwner)return []
+ try{
+  h.scopes.checkTask(ticketId,context)
+  h.scopes.checkTaskEntry(targetOwner,context.route.entryId,'result')
+ }catch{return []}
  const materials=h.store.db.prepare("SELECT id FROM records WHERE kind='asset' AND json_extract(body,'$.kind')='task-handoff' AND json_extract(body,'$.ticketId')=? ORDER BY id").all(ticketId)
   .flatMap(row=>{const id=String(row.id),m=visible<HandoffMaterial>(h,'asset',id);return m?.id===id?[m]:[]})
  return receipts.flatMap(row=>{

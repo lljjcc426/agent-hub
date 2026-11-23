@@ -80,27 +80,46 @@ async function fixture(missing=false){
  return {host,owner,chat,sourceId,cwd,reviews,decision,input,open,until,goal,ticketId:decision.ticketId}
 }
 
-it('keeps the approval and resumes the same held task with exact read-only copies',async()=>{
+it.each([false,true])('keeps the approval and resumes the same held task with exact read-only copies (upgrade=%s)',async upgrade=>{
  const f=await fixture(),{host,chat,owner,decision,sourceId,ticketId}=f
  expect(decision.target.label).toBe('验收原有文件')
  const assignment=host.store.tickets.get(ticketId)!.assignments.at(-1)!.id
- expect(host.chat.decide(chat.id,owner,f.input).decision.status).toBe('answered')
- expect(host.chat.decide(chat.id,owner,f.input).duplicate).toBe(true)
- await f.until(host,()=>f.reviews.length===2&&!host.executionActive(ticketId))
+ let current=host
+ if(upgrade){
+  const state=()=>[current.store.get('router-goal',f.goal.id),current.store.get('ticket',ticketId),
+   current.store.get('run',ticketId),current.store.get('business-decision',decision.id)]
+  const checkpoint=state(),operationId=randomUUID()
+  const maintenance={action:'prepare',operationId,expectedRevision:host.settings.current().revision}
+  host.store.put('chat-permission','unfinished',{actor:{ticketId},phase:'uncertain'})
+  await expect(deploymentMaintenance(host,maintenance)).rejects.toMatchObject({code:'deployment_busy'})
+  host.store.db.prepare("DELETE FROM records WHERE kind='chat-permission' AND id='unfinished'").run()
+  await expect(deploymentMaintenance(host,maintenance)).resolves.toMatchObject({state:'prepared'})
+  await host.close();hosts.delete(host)
+  current=f.open()
+  expect(state()).toEqual(checkpoint)
+  await expect(deploymentMaintenance(current,{action:'finish',operationId})).resolves.toMatchObject({resumed:true})
+  await current.tick()
+  expect(state()).toEqual(checkpoint)
+  expect(f.reviews).toHaveLength(1)
+  expect(current.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'pending'})])
+ }
+ expect(current.chat.decide(chat.id,owner,f.input).decision.status).toBe('answered')
+ expect(current.chat.decide(chat.id,owner,f.input).duplicate).toBe(true)
+ await f.until(current,()=>f.reviews.length===2&&!current.executionActive(ticketId))
  const continued=f.reviews[1]!,{chatFiles}=JSON.parse(continued.input)
  expect(continued.activity?.ticketId).toBe(ticketId)
- expect(host.chat.permissionActor(continued.activity!.triggerId!,ticketId)?.mode).toBe('full')
+ expect(current.chat.permissionActor(continued.activity!.triggerId!,ticketId)?.mode).toBe('full')
  expect(continued.instructions).not.toMatch(/permission mode|native_permission_decision/)
  expect(continued.tools!.find(tool=>tool.name==='superagent_tool')?.inputSchema.properties).not.toHaveProperty('pendingNotice')
  expect(continued.threadId).toBeDefined()
- expect(host.store.tickets.get(ticketId)!.assignments.map(item=>item.id)).toEqual([assignment])
+ expect(current.store.tickets.get(ticketId)!.assignments.map(item=>item.id)).toEqual([assignment])
  expect(chatFiles.map((item:{relativePath:string})=>item.relativePath)).toEqual([patch,report,installer])
  expect(chatFiles.map((item:{path:string})=>item.path)).toEqual(continued.attachments)
  for(const file of chatFiles)expect(statSync(file.path).mode&0o777).toBe(0o400)
  expect(readFileSync(chatFiles[0].path)).toEqual(patchBytes)
  expect(readFileSync(chatFiles[2].path)).toEqual(packageBytes)
- expect(host.store.tickets.get(sourceId)?.ended?.by).toBe('human')
- expect(host.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'answered',fileHandoff:{state:'ready',missing:[]}})])
+ expect(current.store.tickets.get(sourceId)?.ended?.by).toBe('human')
+ expect(current.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'answered',fileHandoff:{state:'ready',missing:[]}})])
 })
 
 it.each(['absent','changed'] as const)('reports the %s package on the answered record without another model call',async state=>{

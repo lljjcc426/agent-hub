@@ -8,7 +8,7 @@ import {Runtime} from '../src/runtime.ts'
 import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
-import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
+import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
 import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
@@ -30,6 +30,34 @@ async function mappedRequest(url:string,headers:Record<string,string>,body?:stri
  })
 }
 const prepare=(h:Runtime,id=randomUUID())=>deploymentMaintenance(h,{action:'prepare',operationId:id,expectedRevision:h.settings.current().revision})
+
+function stoppedCallback(h:Runtime,name:string,args:object,role:'router'|'subagent'){
+ const {store}=h,{stateDir}=h.config
+ const cwd=realpathSync(h.config.sources[0]!.cwd),id='plugin:'+randomUUID(),turnId=randomUUID()
+ const identity=stableDigest('account'),digest=stableDigest('engine'),nativeId=randomUUID(),folder=randomUUID()
+ const call={id:'number:1',name,args}
+ const receiptId=stableDigest([id,turnId,call.id]),failureAt=Date.now()
+ const thread:PluginThread={id,turnId,backendId:'codex',pluginId:'opencode-cli',digest,stateVersion:1,
+  cwd,identity,nativeId,state:'failed',effectIds:[receiptId],lastFailure:{code:'outcome_unknown',at:failureAt}}
+ const receipt:PluginToolEffect={state:'running',fingerprint:stableDigest([name,args]),failure:{operation:'tool',reason:'exception'}}
+ const activity=randomUUID(),triggerId=randomUUID(),sourceId='local'
+ const owner=role==='subagent'?{ticketId:randomUUID(),agentId:randomUUID()}:{}
+ store.put('backend-plugin-thread',id,thread)
+ store.put('backend-plugin-tool',receiptId,receipt)
+ store.put('backend-binding',id,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
+ store.put('model-session',id,{threadId:id,cwd,activity,triggerId,sourceId,ephemeral:false,...owner})
+ store.put('model-usage',activity,{id:activity,role,purpose:role,triggerId,sourceId,state:'failed',at:failureAt,endedAt:failureAt+1,steps:{},...owner})
+ if(owner.agentId)store.put('work',owner.agentId,{...owner,id:owner.agentId,threadId:id,cwd,
+  kind:'agent',state:'failed',endedAt:failureAt+2,createdAt:failureAt,notify:'collected'})
+ else store.put('router-session',triggerId,{threadId:id,triggerId,source:sourceId})
+ const data=join(stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(id))
+ const journal=join(data,'sessions',folder),session=join(journal,'session.json')
+ mkdirSync(journal,{recursive:true});mkdirSync(join(data,'index'))
+ writeFileSync(join(data,'index',createHash('sha256').update(nativeId).digest('hex')+'.json'),JSON.stringify({id:nativeId,folder}))
+ const native={format:1,folder,nativeId,cwd,turns:[{id:turnId,state:'interrupted',tools:[call]}]}
+ writeFileSync(session,JSON.stringify(native))
+ return {thread,receiptId,receipt,journal,session,native,activity}
+}
 
 function interruptedArtifact(h:Runtime,followingTool='superagent_read'){
  const {store}=h,{stateDir}=h.config,cwd=realpathSync(h.config.sources[0]!.cwd)
@@ -139,6 +167,61 @@ it('rejects unfinished work without pausing or inventing a completed maintenance
  await expect(prepare(h)).rejects.toThrow('Unsettled work')
  expect(h.schedulingPaused).toBe(false)
 })
+
+it('recovers only supported stopped callbacks and leaves the original command fenced after upgrade',async()=>{
+ const dir=root(),h=host(dir),plan={title:'Original plan',steps:[{id:'one',title:'Read retained data',state:'running'}]}
+ const published=stoppedCallback(h,'superagent_plan',plan,'router')
+ const unpublished=stoppedCallback(h,'superagent_plan',plan,'router')
+ const snapshot=stoppedCallback(h,'superagent_browser',{action:'snapshot',requestId:'snapshot'},'subagent')
+ const shell=stoppedCallback(h,'superagent_shell',{command:'example command',requestId:'shell'},'subagent')
+ h.store.put('chat-plan','plan',{...plan,id:'plan',activityId:published.activity})
+ const original=[published,unpublished,snapshot,shell],journals=original.map(f=>readFileSync(f.session))
+ const jobs=h.store.db.prepare('SELECT * FROM jobs ORDER BY id').all()
+ const operationId=randomUUID()
+ expect(inspectDeployment(h.store,0,h.config.stateDir)).toMatchObject({
+  blockers:[],backendReceipts:expect.arrayContaining([
+   expect.objectContaining({id:published.receiptId,recovery:'interrupted_chat_plan'}),
+   expect.objectContaining({id:snapshot.receiptId,recovery:'interrupted_browser_snapshot'}),
+   expect.objectContaining({id:shell.receiptId,tool:'superagent_shell'}),
+  ]),
+ })
+ await expect(prepare(h,operationId)).resolves.toMatchObject({state:'prepared'})
+ await h.close()
+ const next=host(dir),saved=(id:string)=>next.store.get('backend-plugin-tool',id)
+ for(const f of original)expect(saved(f.receiptId)).toEqual(f.receipt)
+ await expect(deploymentMaintenance(next,{action:'finish',operationId})).resolves.toMatchObject({resumed:true})
+ expect(saved(published.receiptId)).toMatchObject({state:'complete',result:{success:true}})
+ for(const f of [unpublished,snapshot])expect(saved(f.receiptId)).toMatchObject({state:'complete',result:{success:false}})
+ expect(saved(shell.receiptId)).toEqual(shell.receipt)
+ expect(next.store.get('chat-plan','plan')).toEqual({...plan,id:'plan',activityId:published.activity})
+ for(const [index,f] of original.entries()){
+  expect(next.store.get('backend-plugin-thread',f.thread.id)).toEqual(f.thread)
+  expect(readFileSync(f.session)).toEqual(journals[index])
+ }
+ expect(next.store.db.prepare('SELECT * FROM jobs ORDER BY id').all()).toEqual(jobs)
+ next.pause(false)
+ expect(next.store.db.prepare("SELECT 1 FROM audit WHERE json_extract(body,'$.type')='backend.tool.reconciled'").all()).toHaveLength(3)
+ expect(deploymentBlockers(next.store,0,next.config.stateDir)).toEqual([])
+})
+
+it.each(['live writer','ambiguous thread','mismatched fingerprint','active terminal owner'])(
+ 'blocks upgrade when receipt evidence has a %s',async reason=>{
+  const h=host(),f=stoppedCallback(h,'superagent_browser',{action:'snapshot',requestId:'snapshot'},'subagent')
+  if(reason==='live writer')writeFileSync(join(f.journal,'writer.lock'),String(process.pid))
+  if(reason==='ambiguous thread'){
+   const id='plugin:'+randomUUID()
+   h.store.put('backend-plugin-thread',id,{...f.thread,id})
+  }
+  if(reason==='mismatched fingerprint')h.store.put('backend-plugin-tool',f.receiptId,{...f.receipt,fingerprint:stableDigest('different call')})
+  if(reason==='active terminal owner'){
+   const usage=h.store.get<object>('model-usage',f.activity)
+   h.store.put('model-usage',f.activity,{...usage,state:'running'})
+  }
+  await expect(prepare(h)).rejects.toMatchObject({code:'deployment_busy'})
+  expect(h.schedulingPaused).toBe(false)
+  expect(h.store.get<PluginToolEffect>('backend-plugin-tool',f.receiptId)?.state).toBe('running')
+ },
+)
 
 it('preserves a held artifact task through deployment and reconciles its failed read on resume without replay',async()=>{
  const home=root(),h=host(home),f=interruptedArtifact(h),operationId=randomUUID()

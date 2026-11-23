@@ -1,14 +1,19 @@
 import {z} from 'zod'
+import {statSync} from 'node:fs'
 import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
 import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
+import {retainedBackendReceipts} from './backend-receipt-recovery.ts'
+import type {PluginThread} from './backends/plugin-process.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
 import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
-import {legacyAnsweredGoalReply} from './business-decisions.ts'
+import {legacyAnsweredGoalReply,type BusinessDecisionView} from './business-decisions.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
 import type {ChatDelivery} from './chat-deliveries.ts'
 import type {ReplanRound} from './goal-replanning.ts'
+import type {VerificationRound} from './goal-verification.ts'
+import type {TaskOwnership} from './router-scope.ts'
 
 export class DeploymentError extends Error {constructor(readonly code:string,message:string,readonly status=409){super(message)}}
 const command=z.object({action:z.enum(['prepare','finish','abort']),operationId:z.string().uuid(),
@@ -38,37 +43,110 @@ function heldAcceptanceTasks(store:DeploymentStore,goal:RouterGoal):string[]|und
   const delivery=retainedGoalDelivery(store,goal,id)
   if(!delivery)return
   if(unsettledTaskEffects(store,id,delivery.at))return
-  for(const fileId of delivery.files??[]){
-   const file=store.get<ChatDelivery>('chat-delivery',fileId)
-   if(!file?.mime||file.ticketId!==id||store.db.prepare('SELECT length(bytes) AS size FROM chat_delivery_bytes WHERE id=?').get(fileId)?.size!==file.size)return
-  }
+  if(!retainedDeliveryFiles(store,id,delivery.files))return
  }
  return ids
 }
 
-export function deploymentBlockers(store:DeploymentStore,activeExecutions=0,stateDir?:string){
+function retainedDeliveryFiles(store:DeploymentStore,id:string,files:string[]=[]){
+ return files.every(fileId=>{
+  const file=store.get<ChatDelivery>('chat-delivery',fileId)
+  return file?.mime&&file.ticketId===id&&store.db.prepare('SELECT length(bytes) AS size FROM chat_delivery_bytes WHERE id=?').get(fileId)?.size===file.size
+ })
+}
+
+// An idle Chat task may still be waiting on a user or a prerequisite. A
+// replacement host can keep that checkpoint without dispatching another turn.
+function heldChatTasks(store:DeploymentStore,goal:RouterGoal):string[]|undefined {
+ const nodes=goal.nodes
+ if(goal.state!=='held'||!goal.managed||goal.supersededBy||goal.cancelledByUser||goal.nextAt!==undefined||
+  goal.delegationIds?.length||goal.project?.review?.state==='pending'||!nodes?.some(node=>node.state==='held'))return
+ const chat=store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',goal.triggerId)
+ if(!chat||chat.cancelled||chat.cancelRequested)return
+ const conversation=store.get<{sourceId:string;discussion:string}>('chat-conversation',chat.conversationId)
+ if(!conversation?.sourceId||conversation.discussion!==goal.discussion||
+  goal.discussion!==conversation.sourceId+':chat:'+chat.conversationId)return
+ if(store.db.prepare(`SELECT 1 FROM records WHERE json_extract(body,'$.goalId')=? AND
+   ((kind='goal-verification' AND json_extract(body,'$.state') IN ('pending','running'))
+    OR (kind='goal-replan' AND json_extract(body,'$.state') IN ('pending','planning','reviewing','approved'))
+    OR (kind='goal-wake' AND json_extract(body,'$.state') IN ('queued','running'))) LIMIT 1`).get(goal.id))return
+ const ids=new Set<string>()
+ for(const node of nodes){
+  const id=node.ticketId
+  if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
+   node.failure?.kind==='uncertain'||node.failure?.kind==='unconfirmed_effect'||
+   !['held','waiting_dependency','passed'].includes(node.state))return
+  ids.add(id)
+  const ticket=store.get<Ticket>('ticket',id),run=store.get<Run>('run',id),owner=store.get<TaskOwnership>('task-ownership',id)
+  const assignment=ticket?.assignments.at(-1)
+  if(!ticket||ticket.ended||ticket.undelivered.length||assignment?.state!=='running'||
+   !run||run.ticketId!==id||run.phase!=='idle'||run.assignmentId!==assignment.id||run.waitingForWriter||
+   owner?.state!=='active'||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||
+   unsettledTaskEffects(store,id,0))return
+  try{if(!statSync(run.cwd).isDirectory())return}catch{return}
+  if(run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return
+  if(store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('blocked','uncertain')
+    AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(id,assignment.id))return
+  if(store.db.prepare(`SELECT 1 FROM records WHERE kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
+    AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id))return
+  const attempt=store.get<{attemptId:string;assignmentId:string}>('async-worker-current',id)
+  if(attempt){
+   const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
+   if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return
+  }
+  if(node.state==='passed'){
+   const round=node.roundId&&store.get<VerificationRound>('goal-verification',node.roundId)
+   const delivery=retainedGoalDelivery(store,goal,id)
+   if(!round||round.state!=='passed'||round.goalId!==goal.id||round.nodeId!==node.id||
+    !delivery||!retainedDeliveryFiles(store,id,delivery.files))return
+  }else{
+   if(!assignment.report||!['blocked','failed'].includes(assignment.report.state))return
+   if(ticket.attention){
+    const decision=store.get<BusinessDecisionView>('business-decision',ticket.attention.id)
+    if(decision?.status!=='pending'||decision.ticketId!==id||decision.question!==ticket.attention.question)return
+   }
+  }
+ }
+ if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
+ return [...ids]
+}
+
+export function inspectDeployment(store:DeploymentStore,activeExecutions=0,stateDir?:string){
  const artifactHolds=stateDir&&!activeExecutions?heldArtifactReads(store,stateDir):[]
+ const backendReceipts=stateDir&&!activeExecutions?retainedBackendReceipts(store,stateDir):[]
  const verifiedReceipts=new Set(artifactHolds.filter(hold=>hold.proof.receipt.state==='running').map(hold=>hold.proof.receiptId))
+ for(const receipt of backendReceipts)verifiedReceipts.add(receipt.id)
  const items=marketBlockers({store}).filter(i=>i.kind!=='goals'&&i.kind!=='tasks').map(item=>
   item.kind==='backend-effects'?{...item,count:item.count-verifiedReceipts.size}:item).filter(item=>item.count>0)
  const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
  const goals=store.list<RouterGoal&{deleted?:boolean}>('router-goal').filter(g=>g.objective&&!g.deleted&&!['completed','cancelled'].includes(g.state))
  const retained=new Set(artifactHolds.map(hold=>hold.run.ticketId))
+ const heldGoals:{goalId:string;taskIds:string[]}[]=[]
  const unsettled=goals.filter(goal=>{
-  const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)
+  const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)??
+   (stateDir&&!activeExecutions?heldChatTasks(store,goal):undefined)
   if(!ids)return true
   for(const id of ids)retained.add(id)
+  heldGoals.push({goalId:goal.id,taskIds:ids})
   return false
  })
  count('tasks',store.list<Ticket>('ticket').filter(t=>!t.ended&&!retained.has(t.id)).length)
  count('goals',unsettled.length)
  count('active-models',activeExecutions)
+ count('active-managed-work',Number(store.db.prepare(`SELECT COUNT(*) AS n FROM records WHERE kind='work'
+  AND json_extract(body,'$.state') IN ('starting','running')`).get()!.n))
  count('delegated-work',store.list<any>('delegation-outbound').filter(t=>t.contract&&!t.deleted&&!(t.remote&&['ready','cancelled'].includes(t.remote.state)&&(t.acceptance==='passed'||t.desired==='cancelled'&&t.remote.controlEpoch>=t.controlEpoch))).length)
  for(const table of ['webhook_inbox','webhook_deliveries']){
   const exists=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)
   if(exists)count(table,Number(store.db.prepare('SELECT COUNT(*) n FROM '+table+" WHERE state IN ('received','pending','sending','held','uncertain')").get()!.n))
  }
- return items
+ return {blockers:items,heldGoals,backendReceipts:backendReceipts.map(({id,threadId,turnId,name,recovery})=>({
+  id,threadId,turnId,tool:name,recovery:recovery?.reason,
+ }))}
+}
+
+export function deploymentBlockers(store:DeploymentStore,activeExecutions=0,stateDir?:string){
+ return inspectDeployment(store,activeExecutions,stateDir).blockers
 }
 export async function deploymentMaintenance(host:Runtime,input:unknown){
  const x=command.parse(input),store=host.store,old=store.get<Maintenance>('deployment-maintenance',x.operationId)

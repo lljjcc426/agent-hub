@@ -85,6 +85,35 @@ function stoppedWriter(root:string){
  if(!Number.isSafeInteger(pid)||pid<2)return false
  try{process.kill(pid,0);return false}catch(error){return (error as NodeJS.ErrnoException).code==='ESRCH'}
 }
+
+/** Identify incomplete host callbacks in a stopped, pinned native turn. This
+ * proves which call needs reconciliation, not what the operation did. */
+export function stoppedOpenCodeCallbacks(store:Pick<ThreadStore,'get'>,stateDir:string,thread:PluginThread){
+ if(thread.state!=='failed'||thread.lastFailure?.code!=='outcome_unknown'||thread.pluginId!=='opencode-cli'||
+  thread.stateVersion!==1||!thread.turnId||new Set(thread.effectIds).size!==thread.effectIds.length)return []
+ const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',thread.id)
+ if(binding?.id!==thread.backendId||binding.harness!==bundledEngineId||binding.harnessDigest!==thread.digest)return []
+ try{
+  const location=sessionRoot(stateDir,thread)
+  if(!location||!stoppedWriter(location.root))return []
+  const session=sessionSchema.parse(JSON.parse(privateText(join(location.root,'session.json'))))
+  const turn=session.turns.at(-1)!
+  if(session.folder!==location.folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd||
+   new Set(session.turns.map(item=>item.id)).size!==session.turns.length||
+   turn.id!==thread.turnId||turn.state!=='interrupted'||new Set(turn.tools.map(call=>call.id)).size!==turn.tools.length||
+   !stoppedWriter(location.root))return []
+  const effects=new Set(thread.effectIds)
+  return turn.tools.flatMap(call=>{
+   if(call.result||call.name.startsWith('opencode/'))return []
+   const id=stableDigest([thread.id,turn.id,call.id])
+   if(!effects.has(id))return []
+   const receipt=store.get<PluginToolEffect>('backend-plugin-tool',id)
+   if(receipt?.state!=='running'||receipt.result!==undefined||receipt.failure?.operation!=='tool'||
+    receipt.failure.reason!=='exception'||receipt.fingerprint!==stableDigest([call.name,call.args]))return []
+   return [{id,threadId:thread.id,turnId:turn.id,name:call.name,args:call.args,receipt}]
+  })
+ }catch{return []}
+}
 export function previouslyRecoveredRead(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run,id:string):boolean {
  const previous=store.get<PluginThread>('backend-plugin-thread',id)
  const current=store.get<PluginThread>('backend-plugin-thread',run.threadId!)

@@ -1,5 +1,6 @@
 import {resourcePage,maxResourceBytes,maxInlineImageBytes} from './execution-limits.ts'
 import {textPage} from './context-budget.ts'
+import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
 import {taskView,type TaskContinuation} from './task-context.ts'
 import {randomUUID} from 'node:crypto'
 import {readFileSync,readdirSync,realpathSync,statSync,mkdirSync,writeFileSync} from 'node:fs'
@@ -108,6 +109,18 @@ export class Resources {
   }
   const scopeSignature=()=>{if(principal.triggerId){const t=this.reached(principal,principal.triggerId);this.host.scopes.assertTrigger(t);return stableDigest(this.host.scopes.context(t,t.source+':'+t.threads[0]!.id)?.route??t.id)}if(!principal.ticketId||!this.host.scopes.enabled())return;const context=this.host.store.get<{manifest:import('./router-memory.ts').ContextManifest}>('task-context',principal.ticketId);if(!context)throw Error('Scoped reads require a verified task context');this.host.memory.validate(context.manifest);return stableDigest(context.manifest)}
   const signature=scopeSignature()
+  if(resource==='chat-file-handoffs'){
+   const {ticketId,assignmentId}=principal
+   if(!ticketId||!assignmentId||principal.agentId)throw Error('The assigned Worker is required')
+   const ticket=this.ticket(principal),goal=this.host.goals.forTask(ticketId)
+   if(!goal||ticket.ended||ticket.assignments.at(-1)?.id!==assignmentId)throw Error('The handoff assignment is unavailable')
+   const handoffs=goalHandoffEvidence(this.host,goal,ticketId,this.host.goals.context(goal))
+   if(!handoffs.length)throw Error('No accessible file handoff for this task')
+   // Reauthorize each page. Cached chat text must not survive revocation or cleanup.
+   const cursor=stableDigest([ticketId,assignmentId,handoffs])
+   if(input.cursor&&input.cursor!==cursor)throw Error('File handoff changed while paging')
+   return this.textPage(JSON.stringify({handoffs}),offset,limit,cursor,resource)
+  }
   if(resource.startsWith('model-tool-receipt/')){
    const id=resource.slice('model-tool-receipt/'.length),value=this.host.store.get<any>('model-tool-receipt',id)
    if(!value||this.host.memory.cleanup.blocked('model-tool-receipt',id,value))throw Error('Tool receipt unavailable or deleted. Use the exact model-tool-receipt resource returned by the host; backend effect IDs are not readable resources.')
@@ -133,6 +146,7 @@ export class Resources {
    const run=principal.ticketId?this.host.store.get<Run>('run',this.ticket(principal).id):undefined
    const threadId=principal.agentId?this.host.store.get<{threadId?:string}>('work',principal.agentId)?.threadId:run?.threadId
    const resources=resourceCatalog.filter(path=>!path.startsWith('github/')||this.githubSources(principal,path).length===1)
+   if(principal.ticketId&&principal.assignmentId&&!principal.agentId)resources.push('chat-file-handoffs')
    return {resources,worker:!!principal.ticketId,backend:this.host.model.describe?.(threadId,principal.agentId?'subagent':'worker'),commandSandbox:{driver:this.host.config.work.sandboxDriver,enabled:this.host.config.work.sandboxDriver!=='disabled'}}
   }
   const requestedCursor=input.cursor??uploadCursor

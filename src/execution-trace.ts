@@ -55,7 +55,7 @@ const projections:Projection[]=[
  {kind:'workflow-action',stage:'tool',ticket:a=>field(a,'$.ticketId'),state:a=>stateSQL(field(a,'$.state'))},
  {key:'project_commit',kind:'project-commit',stage:'commit',ticket:a=>field(a,'$.ticketId'),state:a=>`CASE WHEN length(${field(a,'$.head')}) IN (40,64) AND ${field(a,'$.head')} NOT GLOB '*[^a-f0-9]*' THEN 'completed' WHEN ${field(a,'$.error')} IS NOT NULL THEN 'failed' ELSE 'observed' END`},
  {key:'project_test',kind:'project-commit',stage:'test',ticket:a=>field(a,'$.ticketId'),state:a=>`CASE WHEN ${field(a,'$.test.exit')}=0 THEN 'passed' WHEN typeof(${field(a,'$.test.exit')})='integer' THEN 'failed' ELSE 'observed' END`},
- {kind:'goal-delivery',stage:'result',ticket:a=>field(a,'$.ticketId'),state:()=>"'ready'"},
+ {kind:'goal-delivery',stage:'result',ticket:a=>field(a,'$.ticketId'),state:a=>`CASE WHEN json_type(${a}.body,'$.retainedOutputs')='object' THEN 'pending' ELSE 'ready' END`},
  {kind:'goal-verification',stage:'acceptance',ticket:()=>`task.value`,state:a=>stateSQL(field(a,'$.state')),many:'$.ticketIds'},
 ]
 const projectionSQL=(p:Projection,a:string,baseline=false)=>`json_object('type','execution.trace','schema',1,'entity',${sqlString(p.kind)},'entityId',${a}.id,'ticketId',${p.ticket(a)},'stage',${sqlString(p.stage)},'state',${p.state(a)},'baseline',${baseline?1:0}${p.extra?.(a)??''})`
@@ -71,6 +71,11 @@ function installProjection(store:Store){
  store.atomic(()=>{
   const version=store.get<{version:number}>('execution-trace-meta','current')?.version
   if(version!==undefined&&version!==1)throw new TraceError('trace_version_unsupported')
+  for(const operation of ['insert','update']){
+   const name='execution_trace_v1_goal_delivery_'+operation
+   const old=store.db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)
+   if(old&&!String(old.sql).includes('retainedOutputs'))store.db.exec('DROP TRIGGER '+name)
+  }
   for(const p of projections){
    const suffix=(p.key??p.kind).replaceAll('-','_'),many=(alias:string)=>p.many?`,json_each(${alias}.body,${sqlString(p.many)}) AS task`:''
    for(const operation of ['INSERT','UPDATE'] as const){

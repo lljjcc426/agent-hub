@@ -33,7 +33,9 @@ export function retainedGoalDelivery(store: GoalStore, goal: RouterGoal, ticketI
   const owner = store.get<TaskOwnership>('task-ownership', ticketId)
   const run = store.get<Run>('run', ticketId)
   if (!proposal || proposal.goalId !== goal.id || proposal.scopeId !== goal.scopeId ||
-      proposal.ticketId !== ticketId || proposal.report?.state !== 'ready' ||
+      proposal.ticketId !== ticketId || !(proposal.report?.state === 'ready' ||
+        proposal.report?.state === 'blocked' && proposal.retainedOutputs?.digest && goal.nodes?.some(n =>
+          n.ticketId === ticketId && n.derivedFrom && n.outputReviewDigest === proposal.retainedOutputs!.digest)) ||
       !ticket || ticket.ended || ticket.attention || ticket.undelivered.length ||
       owner?.state !== 'active' || owner.scopeId !== goal.scopeId || owner.discussion !== goal.discussion ||
       proposal.assignmentId !== ticket.assignments.at(-1)?.id ||

@@ -38,7 +38,7 @@ async function tool<T=unknown>(r:ModelRequest,name:string,args:unknown):Promise<
  return JSON.parse(text) as T
 }
 
-function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean;rejectOverall?:boolean}={}){
+function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean;rejectOverall?:boolean;rejectIntermediate?:boolean}={}){
  const root=mkdtempSync(join(tmpdir(),'roppo-goal-workspace-'));roots.push(root)
  const source=join(root,'source');mkdirSync(source)
  if(options.git){
@@ -64,7 +64,7 @@ function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolea
     let offset:number|null=0
     do{offset=(await tool<{nextOffset:number|null}>(r,'goal_evidence',{id:e.id,offset})).nextOffset}while(offset!==null)
    }
-   output={checks:input.criteria.map((criterion:{id:string})=>({criterionId:criterion.id,verdict:options.rejectOverall&&criterion.id==='__goal__'?'insufficient':'passed',
+   output={checks:input.criteria.map((criterion:{id:string})=>({criterionId:criterion.id,verdict:options.rejectOverall&&criterion.id==='__goal__'||options.rejectIntermediate&&criterion.id.startsWith('__step__:')?'insufficient':'passed',
     explanation:'Inspected the evidence',evidenceIds:input.evidence.filter((e:{criterionIds:string[]})=>criterion.id==='__goal__'||e.criterionIds.includes(criterion.id)).map((e:{id:string})=>e.id)}))}
   }else output=await handler(r)
   return {threadId,turnId,text:JSON.stringify(output)}
@@ -484,4 +484,59 @@ it('retains a rejected final Chat review across maintenance with its exact deliv
  expect(f.host.goals.get(goal.id)).toEqual(legacy)
  expect(f.host.store.get('goal-verification',goal.finalRoundId!)).toEqual(round)
  expect(f.host.store.get('goal-delivery',id)).toEqual(delivery)
+})
+
+it.each(['live','restart','question','changed','rejected'] as const)('reviews captured outputs independently after a Worker blocker (%s)',async mode=>{
+ const path='index.md'
+ let upstreamRuns=0,downstreamRuns=0
+ const f=fixture(async request=>{
+  if(request.role==='router')return {reply:''}
+  const {node}=JSON.parse(JSON.parse(request.input).mandate.scope)
+  if(node.instruction==='CAPTURE original index'){
+    upstreamRuns++
+    writeFileSync(join(request.cwd!,path),'original captured bytes')
+    await tool(request,'superagent_artifact',{path})
+    if(mode==='changed')writeFileSync(join(request.cwd!,path),'unverified changed bytes')
+    return {...ready('Independent evidence is missing'),state:'blocked',question:mode==='question'?'Which version should I use?':null}
+  }
+  downstreamRuns++
+  return ready('Processed the accepted input')
+ },{rejectIntermediate:mode==='rejected'})
+ if(mode==='restart')f.host.config.work.autoRecover=false
+ const goal=f.start('Process retained files',{maxRepairs:0,maxReplans:0,nodes:[
+  {id:'capture',title:'Capture index',instruction:'CAPTURE original index',workerId:'builder',criterionIds:[],derivedFrom:'consume',supports:['verification'],outputs:[path]},
+  {id:'consume',title:'Consume index',instruction:'Use accepted input',workerId:'reviewer',criterionIds:['verification'],dependsOn:['capture']},
+ ]})
+ if(mode==='restart'||mode==='question'||mode==='changed'||mode==='rejected'){
+  await f.until(()=>f.host.goals.get(goal.id)?.state==='held')
+  expect(downstreamRuns).toBe(0)
+  if(mode==='rejected'){
+   const n=f.host.goals.get(goal.id)!.nodes![0]!
+   expect(f.host.store.get<{state:string}>('goal-verification',n.roundId!)?.state).toBe('insufficient')
+   await f.restart();await f.host.tick();await f.host.goals.advance()
+   expect([upstreamRuns,downstreamRuns]).toEqual([1,0])
+   return
+  }
+  if(mode!=='restart'){
+   expect(f.host.store.list('goal-delivery')).toHaveLength(0)
+   return
+  }
+  f.config.work.autoRecover=true
+  f.host.pause(true)
+  await f.restart()
+  await f.host.tick()
+  expect(f.host.goals.get(goal.id)?.state).toBe('held')
+  expect(f.host.store.list('goal-delivery')).toHaveLength(0)
+  f.host.pause(false)
+ }
+ await f.until(()=>f.host.goals.get(goal.id)?.state==='completed')
+ const completed=f.host.goals.get(goal.id)!,node=completed.nodes![0]!
+ const proposal=f.host.store.get<any>('goal-delivery',node.ticketId!)!
+ expect(proposal).toMatchObject({retainedOutputs:{digest:node.outputReviewDigest},report:{state:'blocked'}})
+ const round=f.host.store.get<any>('goal-verification',node.roundId!)!
+ expect(round.state).toBe('passed')
+ expect(round.snapshot.evidence.find((e:any)=>e.key==='delivery').content).toContain('Independent evidence is missing')
+ expect(f.host.store.tickets.get(node.ticketId!)?.ended?.outcome).toBe('completed')
+ expect([upstreamRuns,downstreamRuns]).toEqual([1,1])
+ expect(f.host.chat.view(f.chat.id,owner).pendingCards).toEqual([])
 })

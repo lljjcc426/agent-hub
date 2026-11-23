@@ -45,6 +45,21 @@ function fixture(options:{proposal?:(p:any)=>any;review?:boolean;reviewExplanati
 }
 async function until(f:ReturnType<typeof fixture>,predicate:()=>boolean){for(let i=0;i<2000;i++){await f.h.tick();await new Promise(r=>setTimeout(r,2));if(predicate())return}throw Error(JSON.stringify({attempts:[...f.attempts],runs:f.h.store.list('run'),jobs:f.h.store.db.prepare('SELECT id,state,error FROM jobs').all(),goal:f.goal(),plans:f.plans().map(({snapshot,...r})=>r)}))}
 
+it('recovers the undispatched approved plan when an older host replaced its dependency pointer',async()=>{
+ const f=fixture({blocked:'Missing original inputs'});f.start()
+ await until(f,()=>f.goal().nodes!.find(n=>n.id==='build')?.state==='waiting_dependency'&&
+  f.goal().nodes!.find(n=>n.id==='extract')?.state==='passed')
+ const goal=f.goal(),build=goal.nodes!.find(n=>n.id==='build')!,plan=build.refreshFrom!
+ const id=build.ticketId!
+ build.refreshFrom=goal.nodes!.find(n=>n.id==='extract')!.roundId
+ f.h.store.put('router-goal',goal.id,goal)
+ await f.restart()
+ await until(f,()=>f.goal().state==='completed')
+ expect(f.h.store.list<{replanId:string;ticketId:string}>('goal-plan-dispatch').filter(d=>d.ticketId===id))
+  .toEqual([expect.objectContaining({replanId:plan})])
+ expect(f.attempts.get(id)).toBe(2)
+})
+
 it('changes strategy, splits work and rewires dependencies while retaining the original contract and failed task',async()=>{
  const f=fixture(),original=f.start();await until(f,()=>f.goal().state==='completed')
  expect(f.goal().contract).toEqual(original.contract);expect(f.goal().criteria).toEqual(original.criteria);expect(f.goal().objective).toBe(original.objective)

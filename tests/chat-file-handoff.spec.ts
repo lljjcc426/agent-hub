@@ -9,7 +9,7 @@ import {ChatDeliveries} from '../src/chat-deliveries.ts'
 import {restoreRetainedFiles} from '../src/chat-file-handoff.ts'
 import {goalHandoffEvidence} from '../src/goal-handoff-evidence.ts'
 import {stableDigest} from '../src/sources.ts'
-import {legacyExecutionQuestion} from '../src/business-decisions.ts'
+import {hasOutstandingQuestion,legacyExecutionQuestion} from '../src/business-decisions.ts'
 import {deploymentBlockers,deploymentMaintenance,pauseControl} from '../src/deployment-maintenance.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
@@ -30,10 +30,10 @@ const patchBytes=Buffer.from('original patch\n')
 const question='能否将旧任务留存的 `'+patch+'`、`'+report+'` 和报告所列的原始安装包，只读交接到本验收任务？'
 const summary='缺少旧任务保留的验收原件'
 
-async function fixture(missing=false,nameSource=false){
+async function fixture(missing=false,nameSource=false,blockAfterAnswer=false){
  let originalQuestion=question
  const root=mkdtempSync(join(tmpdir(),'roppo-handoff-test-'));roots.push(root)
- const config=configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled',network:false,autoRecover:false},
+ const config=configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled',network:false,autoRecover:blockAfterAnswer},
   execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'builder',backend:'codex'},{id:'reviewer',backend:'codex'}]},
   sources:[{id:'local',kind:'local',cwd:root,sandbox:'workspace-write',workspace:{mode:'directory'},allowedActors:['operator']}]})
  const reviews:ModelRequest[]=[]
@@ -43,7 +43,8 @@ async function fixture(missing=false,nameSource=false){
   if(request.role!=='worker')return {threadId,turnId,text:'{"reply":""}'}
   reviews.push(request)
   const answered=JSON.parse(request.input).inputs?.some((item:{event?:{text:string}})=>item.event?.text==='可以')
-  const value=answered?{state:'waiting',summary:'原件已齐，继续验收。',reply:'',question:null,handbacks:[]}:
+  const value=blockAfterAnswer&&JSON.parse(request.input).chatFileHandoffEvidence?{state:'blocked',summary:'还缺原问题的凭证',reply:'',question:null,handbacks:[]}:
+   answered?{state:'waiting',summary:'原件已齐，继续验收。',reply:'',question:null,handbacks:[]}:
    {state:'blocked',summary,reply:'',question:originalQuestion,handbacks:[]}
   return {threadId,turnId,text:JSON.stringify(value)}
  }}
@@ -85,6 +86,27 @@ async function fixture(missing=false,nameSource=false){
  return {host,owner,chat,sourceId,cwd,reviews,decision,input,open,until,goal,ticketId:decision.ticketId}
 }
 
+it('delivers newly recovered evidence once to a legacy blocked Worker without a captured output',async()=>{
+ const f=await fixture(false,false,true),{host,chat,owner,ticketId}=f
+ host.chat.decide(chat.id,owner,f.input)
+ await f.until(host,()=>f.reviews.length===2&&host.goals.get(f.goal.id)?.state==='held')
+ // The older host recorded the answer and files, but did not give the exchange to the Worker.
+ host.store.db.prepare("DELETE FROM records WHERE kind='worker-handoff-evidence' AND id=?").run(ticketId)
+ const userMessages=()=>host.store.list<{role:string}>('chat-message').filter(m=>m.role==='user').length
+ const before=userMessages()
+ await host.close();hosts.delete(host)
+ const newer=f.open()
+ expect(newer.config.work.autoRecover).toBe(true)
+ await f.until(newer,()=>f.reviews.length===3&&newer.goals.get(f.goal.id)?.state==='held')
+ expect(JSON.parse(f.reviews[2]!.input).chatFileHandoffEvidence.handoffs[0].exchanges).toHaveLength(1)
+ expect(newer.store.list<{role:string}>('chat-message').filter(m=>m.role==='user')).toHaveLength(before)
+ await newer.close();hosts.delete(newer)
+ const restarted=f.open()
+ await restarted.tick();await restarted.goals.advance()
+ expect(f.reviews).toHaveLength(3)
+ expect(restarted.chat.businessDecisions(chat.id,owner).every(d=>d.status==='answered')).toBe(true)
+})
+
 it.each([false,true])('keeps the approval and resumes the same held task with exact read-only copies (upgrade=%s)',async upgrade=>{
  const f=await fixture(),{host,chat,owner,decision,sourceId,ticketId}=f
  expect(decision.target.label).toBe('验收原有文件')
@@ -108,10 +130,26 @@ it.each([false,true])('keeps the approval and resumes the same held task with ex
   expect(f.reviews).toHaveLength(1)
   expect(current.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'pending'})])
  }
+ expect(hasOutstandingQuestion(current,current.store.tickets.get(ticketId)!)).toBe(true)
  expect(current.chat.decide(chat.id,owner,f.input).decision.status).toBe('answered')
+ expect(hasOutstandingQuestion(current,current.store.tickets.get(ticketId)!)).toBe(false)
  expect(current.chat.decide(chat.id,owner,f.input).duplicate).toBe(true)
  await f.until(current,()=>f.reviews.length===2&&!current.executionActive(ticketId))
  const continued=f.reviews[1]!,{chatFiles}=JSON.parse(continued.input)
+ const evidence=JSON.parse(continued.input).chatFileHandoffEvidence
+ expect(evidence).toMatchObject({resource:'chat-file-handoffs',handoffs:[{ticketId,exchanges:[{
+  question:{text:question},answer:{text:'可以'}}]}]})
+ const reader={ticketId,assignmentId:assignment}
+ const page=await current.resources.read({resource:evidence.resource,limit:25},reader)
+ expect(page.nextOffset).toBe(25)
+ await expect(current.resources.read({resource:evidence.resource},{ticketId,assignmentId:'other'})).rejects.toThrow()
+ await expect(current.resources.read({resource:evidence.resource},{...reader,agentId:'child'})).rejects.toThrow()
+ await expect(current.resources.read({resource:evidence.resource})).rejects.toThrow()
+ const exchange=evidence.handoffs[0].exchanges[0]
+ const original=current.store.get<object>('chat-message',exchange.question.messageId)!
+ current.store.put('chat-message',exchange.question.messageId,{...original,status:'interrupted'})
+ await expect(current.resources.read({resource:evidence.resource,cursor:page.cursor,offset:page.nextOffset},reader)).rejects.toThrow('changed')
+ current.store.put('chat-message',exchange.question.messageId,original)
  expect(continued.activity?.ticketId).toBe(ticketId)
  expect(current.chat.permissionActor(continued.activity!.triggerId!,ticketId)?.mode).toBe('full')
  expect(continued.instructions).not.toMatch(/permission mode|native_permission_decision/)

@@ -17,6 +17,8 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureBusinessDecision,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
+import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
+import {capturedOutputs} from './goal-evidence-recovery.ts'
 import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
@@ -95,7 +97,7 @@ import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
 import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
 import {Webhooks} from './webhooks.ts'
-import {GoalVerification,type GoalDelivery} from './goal-verification.ts'
+import {GoalVerification,type GoalDelivery,type VerificationRound} from './goal-verification.ts'
 import {GoalReplanning,ReplanningInterrupted,type ReplanRound} from './goal-replanning.ts'
 import {RouterCandidates,candidateSpecs} from './router-candidates.ts'
 import {relayRouterFollowups,reachedRouterFollowup,returnRouterFollowup,reconsiderRouterFollowups,awaitRouterFollowups,RouterFollowupBatch,followupSpecs} from './router-followups.ts'
@@ -470,8 +472,14 @@ export class Runtime {
           WHERE id=? AND status='pending' AND json_extract(body,'$.channel.address.routerInbox') IS NOT NULL`).run(result.id)
       }
       else if(reply&&(value.state==='failed'||value.state==='blocked')){
-        if(value.answers)this.engine.reply({purpose:'answer',ticketId,triggerId:value.answers,text:reply})
-        else{
+        const goal=value.state==='blocked'&&this.config.work.autoRecover?this.goals.forTask(ticketId):undefined
+        const node=goal?.nodes?.find(n=>n.ticketId===ticketId)
+        // The scheduler independently checks captured work on the next tick. A true
+        // hold is announced from the goal with its cause after that check.
+        const awaitingReview=goal&&['active','waiting'].includes(goal.state)&&node?.state==='running'&&!ticket.attention&&
+          this.artifacts.canCapture(goal)&&capturedOutputs(this.store,goal,node)
+        if(!awaitingReview&&value.answers)this.engine.reply({purpose:'answer',ticketId,triggerId:value.answers,text:reply})
+        else if(!awaitingReview){
           const channel=this.store.triggers.get(ticket.origin.triggerId)?.channel??ticket.channels[0]
           if(channel)this.store.outbox.send({id:'failure:'+bodyDigest([ticketId,latestAssignment(ticket)?.id,value.state,reply]),ticketId,channel,kind:'reply',text:reply})
         }
@@ -498,7 +506,25 @@ export class Runtime {
     return {eventId:ref.eventId,attemptId:ref.attemptId}
   }
   previewPrompt(input:import('./execution-prompts.ts').PromptPreviewInput,config=this.config){return previewInstructions(config,input,this.scopes.enabled())}
-  acceptGoalDelivery(delivery:GoalDelivery){this.store.atomic(()=>{if(this.store.get('goal-release',delivery.id))return;const before=new Set(this.store.deliveries().map(d=>d.id));this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true,delivery.files);const ref=this.store.get<{eventId:string}>('async-worker-delivery',delivery.id),event=ref?this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId):undefined;if(event?.ticketId===delivery.ticketId&&event.assignmentId===delivery.assignmentId)this.bindWorkerEventMessages(event,before);this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})})}
+  acceptGoalDelivery(delivery:GoalDelivery){
+    this.store.atomic(()=>{
+      if(this.store.get('goal-release',delivery.id))return
+      if(delivery.retainedOutputs){
+        const goal=this.goals.get(delivery.goalId),node=goal?.nodes?.find(n=>n.ticketId===delivery.ticketId)
+        const round=node?.roundId&&this.store.get<VerificationRound>('goal-verification',node.roundId)
+        if(!goal||node?.state!=='passed'||node.outputReviewDigest!==delivery.retainedOutputs.digest||
+          !round||round.state!=='passed'||!this.verification.current(round,goal))throw Error('Captured outputs have not passed independent acceptance')
+        this.engine.report(delivery.ticketId,{state:'ready',summary:'中间产物已通过独立验收。',question:null})
+      }else{
+        const before=new Set(this.store.deliveries().map(d=>d.id))
+        this.reportWork(delivery.ticketId,delivery.report,delivery.reply,true,delivery.files)
+        const ref=this.store.get<{eventId:string}>('async-worker-delivery',delivery.id)
+        const event=ref?this.store.get<WorkerEventReceipt>('async-worker-event',ref.eventId):undefined
+        if(event?.ticketId===delivery.ticketId&&event.assignmentId===delivery.assignmentId)this.bindWorkerEventMessages(event,before)
+      }
+      this.store.put('goal-release',delivery.id,{id:delivery.id,goalId:delivery.goalId,ticketId:delivery.ticketId,triggerId:delivery.triggerId,at:Date.now()})
+    })
+  }
   goalEvidenceBudget(goal:RouterGoal){
     const scope=this.scopes.scope(goal.scopeId).contextBytes,id=this.config.execution.router?.backend??this.config.execution.roles.router??this.config.execution.backend,backend=this.config.backends[id]
     return backend&&backend.kind!=='codex'&&backend.kind!=='plugin'?Math.min(scope,backend.maxContextBytes):scope
@@ -1794,6 +1820,11 @@ export class Runtime {
       controller.signal.throwIfAborted()
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')
       const handoffFiles=builtInChat?handedOffFiles(this,ticket.id):[]
+      const handoffs=handoffFiles.length&&projectGoal?goalHandoffEvidence(this,projectGoal,ticket.id,this.goals.context(projectGoal)):[]
+      const handoffDigest=handoffs.length?stableDigest(handoffs):undefined
+      const handoffInput=handoffDigest?{resource:'chat-file-handoffs',
+        notice:'Original host handoff receipts and any authenticated prior questions and answers. Use them to resolve claims of missing evidence. Read the full resource with superagent_read when needed.',
+        ...(Buffer.byteLength(JSON.stringify(handoffs))<=Math.min(8192,this.scopes.scope(projectGoal!.scopeId).contextBytes/16)?{handoffs}:{})}:undefined
       const chatFiles=builtInChat?[...this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])),...handoffFiles]:[]
       this.work.turnStarted(ticket.id,assignmentId)
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
@@ -1815,7 +1846,7 @@ export class Runtime {
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
+        input: JSON.stringify({...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))
@@ -1935,6 +1966,7 @@ export class Runtime {
             run.phase='idle';run.threadId=result.threadId;persist(true);return
           }
         }
+        if(handoffDigest)this.store.put('worker-handoff-evidence',ticket.id,{ticketId:ticket.id,assignmentId,digest:handoffDigest})
         this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
         run.phase = background?'background':'idle'; run.threadId = result.threadId; run.result = output.reply; persist(true)
         const updated = this.store.tickets.get(ticket.id)!

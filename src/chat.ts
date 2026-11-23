@@ -1106,7 +1106,7 @@ export class ChatSessions {
     const nodes=new Map(goals.flatMap(g=>{
       const goalHeld=g.state==='held'||g.state==='paused'
       return (g.nodes??[]).map(n=>[n.ticketId,{
-        title:n.title,held:goalHeld||n.state==='held',
+        title:n.title,held:goalHeld||n.state==='held',awaitingDependency:!goalHeld&&n.state==='waiting_dependency',
         reason:goalHeld&&n.state==='waiting_dependency'?(g.reason??n.reason):(n.reason??g.reason),
         reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed'),
       }] as const)
@@ -1127,7 +1127,7 @@ export class ChatSessions {
       const executing=reviewing||['starting','running','background','delivering','merging'].includes(r?.phase??'')
       const held=node?.held||r?.phase==='uncertain'||report?.state==='blocked'
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':executing?'running':question?'waiting':
-        held?'blocked':report?.state==='failed'?'failed':r?.phase==='human'||report?.state==='waiting'?'waiting':report?.state==='ready'?'completed':'queued'
+        node?.awaitingDependency&&r?.phase!=='uncertain'?'waiting':held?'blocked':report?.state==='failed'?'failed':r?.phase==='human'||report?.state==='waiting'?'waiting':report?.state==='ready'?'completed':'queued'
       const blockedReason=state==='blocked'?(node?.reason??report?.summary??r?.error):undefined
       // Worker follow-ups can change the current routing authority; the initial assignment owns the plan link.
       let parentPlanId:string|undefined

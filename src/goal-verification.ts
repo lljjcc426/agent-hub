@@ -16,7 +16,7 @@ import type {DelegationBinding} from './delegation/goals.ts'
 import {taskView} from './task-context.ts'
 import {AcceptanceEvidenceTooLarge,type EvidenceOverflow} from './goal-acceptance.ts'
 
-export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;reply?:string;files?:string[];inputRevision:number;at:number}
+export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;retainedOutputs?:{digest:string;reportedAt:string};reply?:string;files?:string[];inputRevision:number;at:number}
 interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
 export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];method:'program'|'agent'}
 export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];handoffEvidence?:true;delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
@@ -214,7 +214,7 @@ export class GoalVerification {
     add({kind:'report',ticketId:n.ticketId,key:'watchdog-observation',criterionIds:citeIds(ids),content:JSON.stringify({id:r.id,assignmentId:r.assignmentId,contractHash:r.contractHash,at:r.at,judgment:r.judgment,observation:r.observation??null})})
    }
 
-   add({kind:'report',ticketId:n.ticketId,key:'delivery',content:JSON.stringify({report:proposal.report,reply:proposal.reply}),criterionIds:citeIds(ids)})
+   add({kind:'report',ticketId:n.ticketId,key:'delivery',content:JSON.stringify({report:proposal.report,reply:proposal.reply,...(proposal.retainedOutputs?{basis:'Host submitted the captured intermediate outputs for independent review. The original Worker blocker is an observation. Decide from the declared requirements, files and host records.',reportedAt:proposal.retainedOutputs.reportedAt}:{})}),criterionIds:citeIds(ids)})
    const followups=taskView(this.host.store,task).inputs.flatMap(input=>input.kind==='trigger'&&input.human&&!input.context?[{inputId:input.id,triggerId:input.triggerId,text:this.host.store.triggers.get(input.triggerId)?.text,note:input.note}]:[])
    if(followups.length)add({kind:'report',ticketId:n.ticketId,key:'admitted-followups',content:JSON.stringify({basis:'Human follow-ups admitted to this task. Evaluate clarifications within the immutable mandate; these do not grant wider authority.',followups}),criterionIds:citeIds(ids)})
    // Overall acceptance also inspects the released bytes of files owned by earlier nodes.

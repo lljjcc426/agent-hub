@@ -31,6 +31,7 @@ export const nodeSchema=z.object({
 export interface GoalNode extends z.infer<typeof nodeSchema> {
  ticketId?:string;delegationId?:string;state:'pending'|'running'|'verifying'|'passed'|'held'|'waiting_dependency';roundId?:string;
  pausedAssignment?:string;repairs:number;recoveries:number;repairStart?:number;refreshFrom?:string;retryAt?:number;failure?:GoalFailure;reason?:string;
+ outputReviewDigest?:string;handoffWakeDigest?:string;
 }
 export interface GoalFailure {kind:'transient'|'quota'|'environment'|'uncertain'|'unconfirmed_effect'|'quality'|'protocol';reason:string;retryAt?:number}
 export function classifyExecutionFailure(failure:ExecutionFailure,reason:string,now:number,attempt:number):GoalFailure {

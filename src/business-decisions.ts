@@ -131,6 +131,22 @@ export function chatDecisionDelivery(host:Runtime,message:{id:string;ticketId?:s
  return rows.some(({id})=>key('attention-reply',String(id))===message.id&&!!readDecision(host,String(id)))
 }
 
+/** Core attention can remain attached until the original assignment consumes its admitted answer. */
+export function hasOutstandingQuestion(host:Runtime,ticket:Ticket){
+ const attention=ticket.attention
+ if(!attention)return false
+ const decision=readDecision(host,attention.id)
+ const receipt=host.store.get<{ticketId:string;questionId:string;triggerId:string;assignmentId:string;answerDigest:string}>(
+  'question-answer',bodyDigest([ticket.id,attention.id]))
+ if(decision?.status!=='answered'||!decision.answer||decision.ticketId!==ticket.id||decision.question!==attention.question||
+    receipt?.ticketId!==ticket.id||receipt.questionId!==attention.id||receipt.assignmentId!==ticket.assignments.at(-1)?.id||
+    receipt.answerDigest!==bodyDigest(decision.answer.text))return true
+ const trigger=host.store.triggers.get(receipt.triggerId)
+ return !trigger?.human||!!trigger.meta.delegatedBy||trigger.text!==decision.answer.text||
+  trigger.actor.source!==decision.actor.source||trigger.actor.id!==decision.actor.id||
+  !ticket.inputs.some(i=>i.kind==='trigger'&&(i.triggerId===trigger.id||repeatsChatAnswer(host,ticket,i.triggerId)))
+}
+
 export function repeatsChatAnswer(host:Runtime,ticket:Ticket,askedBy:string|undefined){
  if(!askedBy||!ticket.attention||!host.chat.hasContext({ticketId:ticket.id}))return false
  const reply=host.store.get<{triggerId:string;assignmentId:string}>('question-answer',bodyDigest([ticket.id,ticket.attention.id]))

@@ -211,8 +211,18 @@ export class GoalReplanning {
  private hold(g:RouterGoal,reason:string){const latest=this.host.goals.get(g.id);if(!latest||!['active','waiting'].includes(latest.state))return;const next={...latest,state:'held' as const,reason};this.host.store.put('router-goal',g.id,next);this.host.goals.notice(next,'Autonomous replanning is unresolved; inspect the goal and currently available evidence for details.')}
  /** Dispatch a changed existing node only after all newly required prerequisites pass. */
  resumeNode(g:RouterGoal,n:GoalNode){
-  const r=n.refreshFrom?this.host.store.get<ReplanRound>('goal-replan',n.refreshFrom):undefined
-  if(!r||r.state!=='applied')return false
+  let r=n.refreshFrom?this.host.store.get<ReplanRound>('goal-replan',n.refreshFrom):undefined
+  // Earlier hosts replaced the awaiting plan ID when a prerequisite needed repair.
+  // Recover only the current approved edit for this exact retained assignment.
+  if(!r&&n.refreshFrom&&this.host.store.get<{goalId:string}>('goal-verification',n.refreshFrom)?.goalId===g.id){
+   r=this.host.store.list<ReplanRound>('goal-replan').find(round=>{
+    const edit=round.proposal?.changes.find(change=>change.id===n.id)
+    return round.goalId===g.id&&round.state==='applied'&&round.review?.approved&&round.snapshot.planRevision+1===g.planRevision&&
+     round.snapshot.nodes.some(before=>before.id===n.id&&before.ticketId===n.ticketId)&&edit?.instruction===n.instruction&&
+     stableDigest(edit.dependsOn)===stableDigest(n.dependsOn)&&stableDigest(round.snapshot.contract)===stableDigest(g.contract)
+   })
+  }
+  if(!r||r.goalId!==g.id||r.state!=='applied'||!r.review?.approved||this.host.store.get('goal-plan-dispatch',stableDigest([r.id,n.id])))return false
   const c=this.host.goals.context(g),task=this.host.store.tickets.get(n.ticketId!)!
   this.host.scopes.checkTask(task.id,c,true)
   if(task.ended||!this.host.goals.effectsSettled(task.id))throw Error('Replanned task must retain settled open execution')

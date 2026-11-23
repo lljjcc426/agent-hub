@@ -1103,7 +1103,14 @@ export class ChatSessions {
     })
   }
   private tasks(c:Conversation,run?:ChatRun,routerPlanIds?:ReadonlySet<string>,goals=this.conversationGoals(c)):ChatTask[]{
-    const nodes=new Map(goals.flatMap(g=>(g.nodes??[]).map(n=>[n.ticketId,{title:n.title,held:g.state==='held'||g.state==='paused'||n.state==='held',reason:n.reason??g.reason,reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed')}] as const)))
+    const nodes=new Map(goals.flatMap(g=>{
+      const goalHeld=g.state==='held'||g.state==='paused'
+      return (g.nodes??[]).map(n=>[n.ticketId,{
+        title:n.title,held:goalHeld||n.state==='held',
+        reason:goalHeld&&n.state==='waiting_dependency'?(g.reason??n.reason):(n.reason??g.reason),
+        reviewing:g.state==='active'&&(n.state==='verifying'||n.state==='passed'),
+      }] as const)
+    }))
     return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>{
       if(run&&d.parentTrigger!==run.triggerId&&d.ticketId!==run.decisionTicketId)return false
       if(d.discussion===c.discussion)return true

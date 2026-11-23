@@ -438,3 +438,18 @@ it('keeps a genuine missing-input question on one task across scheduler ticks an
  expect(f.host.goals.get(goal.id)?.taskIds).toEqual([task])
  expect(f.host.chat.businessDecisions(f.chat.id,owner)).toEqual([expect.objectContaining({id:answer.id,status:'answered'})])
 },30000)
+
+it('shows the cause of a held prerequisite when a previously dispatched ticket is waiting on it',async()=>{
+ const f=fixture(async r=>r.role==='router'?{reply:'Inspecting the files'}:{...ready('Input is unavailable'),state:'blocked'})
+ const started=f.start('Inspect the retained files',{maxReplans:0})
+ await f.until(()=>f.host.goals.get(started.id)?.state==='held'&&!f.host.activeExecutions)
+ const goal=f.host.goals.get(started.id)!,existing=goal.nodes![0]!,reason='The original file receipt is missing'
+ const prerequisite={...existing,id:'collect',ticketId:undefined,title:'Collect the source file',reason}
+ // A repair can add a prerequisite after the dependent Worker already has a ticket.
+ f.host.store.put('router-goal',goal.id,{...goal,reason,nodes:[
+  {...existing,state:'waiting_dependency',dependsOn:['collect'],reason:'Prerequisite repair requires refreshing this result'},prerequisite,
+ ]})
+ const view=f.host.chat.view(f.chat.id,owner)
+ expect(view.run).toMatchObject({state:'blocked',blockedReason:reason})
+ expect(view.workers.flatMap(w=>w.tasks).find(t=>t.id===existing.ticketId)?.blockedReason).toBe(reason)
+})

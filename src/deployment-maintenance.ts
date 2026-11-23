@@ -4,6 +4,7 @@ import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
 import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {retainedBackendReceipts} from './backend-receipt-recovery.ts'
+import {refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
@@ -63,10 +64,10 @@ function retainedDeliveryFiles(store:DeploymentStore,id:string,files:string[]=[]
 
 // An idle Chat task may still be waiting on a user or a prerequisite. A
 // replacement host can keep that checkpoint without dispatching another turn.
-function heldChatTasks(store:DeploymentStore,goal:RouterGoal,parkedStarts:Set<string>):string[]|undefined {
- const nodes=goal.nodes,starts:string[]=[]
+function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
+ const nodes=goal.nodes,jobs:string[]=[],receipts:{id:string;threadId:string;turnId:string;tool:string}[]=[]
  const sourceHold=goal.reason==='Error: Goal sources changed; explicit goal reauthorization is required'
- if(goal.state!=='held'||!goal.managed||goal.supersededBy||goal.cancelledByUser||goal.nextAt!==undefined||
+ if(goal.state!=='held'||!goal.managed||goal.supersededBy||goal.cancelledByUser||
   goal.delegationIds?.length||goal.project?.review?.state==='pending'||!nodes?.some(node=>node.state==='held'||sourceHold&&node.state==='running'))return
  const chat=store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',goal.triggerId)
  if(!chat||chat.cancelled||chat.cancelRequested)return
@@ -81,14 +82,16 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,parkedStarts:Set<st
  for(const node of nodes){
   const id=node.ticketId
   if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
-   node.failure?.kind==='uncertain'||node.failure?.kind==='unconfirmed_effect'||
+   node.failure?.kind==='unconfirmed_effect'||
    !['held','waiting_dependency','passed',...(sourceHold?['running']:[])].includes(node.state))return
   ids.add(id)
   const ticket=store.get<Ticket>('ticket',id),run=store.get<Run>('run',id),owner=store.get<TaskOwnership>('task-ownership',id)
   const assignment=ticket?.assignments.at(-1)
   const waitingOnDependency=node.state==='waiting_dependency'&&node.dependsOn.some(dep=>nodes.some(item=>item.id===dep&&item.state!=='passed'))
   if(node.state==='waiting_dependency'&&!waitingOnDependency)return
-  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'||run.waitingForWriter||
+  const refused=run&&node.state==='held'&&node.failure?.kind==='uncertain'?refusedWorkerJobReads(store,stateDir,run):undefined
+  if(node.failure?.kind==='uncertain'&&!refused)return
+  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
   const parked=sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
   if(node.state==='running'&&(!parked||owner.originEntry!==goal.entryId||
@@ -103,9 +106,18 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,parkedStarts:Set<st
   if(store.db.prepare(`SELECT 1 FROM records WHERE kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
     AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id))return
   const attempt=store.get<{attemptId:string;assignmentId:string}>('async-worker-current',id)
+  if(refused){
+   if(!attempt||!run.threadId||!run.turnId||ticket.attention||ticket.undelivered.length||owner.originEntry!==goal.entryId||
+    store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor)return
+   for(const call of refused.interrupted)receipts.push({id:call.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_job'})
+   // A wake may run before the initial activation job. The held goal parks
+   // that exact pending job; maintenance must leave it and its receipts intact.
+   const initial='execute:'+assignment.id+':initial'
+   if(store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND state='pending' AND kind='execute' AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?").get(initial,id,assignment.id))jobs.push(initial)
+  }
   if(parked){
    if(ticket.attention||!ticket.undelivered.length)return
-   if(parked==='start')starts.push('start:'+assignment.id)
+   if(parked==='start')jobs.push('start:'+assignment.id)
    continue
   }
   if(attempt){
@@ -130,32 +142,40 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,parkedStarts:Set<st
    }
   }
  }
+ // An uncertain-read hold uses nextAt to back off evidence checks. Accept
+ // that timer only when every held node was proven to contain denied reads.
+ if(goal.nextAt!==undefined&&(!receipts.length||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
  if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
- for(const id of starts)parkedStarts.add(id)
- return [...ids]
+ return {ids:[...ids],jobs,receipts}
 }
 
 export function inspectDeployment(store:DeploymentStore,activeExecutions=0,stateDir?:string){
  const artifactHolds=stateDir&&!activeExecutions?heldArtifactReads(store,stateDir):[]
- const backendReceipts=stateDir&&!activeExecutions?retainedBackendReceipts(store,stateDir):[]
+ const backendReceipts=(stateDir&&!activeExecutions?retainedBackendReceipts(store,stateDir):[]).map(({id,threadId,turnId,name,recovery})=>({id,threadId,turnId,tool:name,recovery:recovery?.reason}))
  const verifiedReceipts=new Set(artifactHolds.filter(hold=>hold.proof.receipt.state==='running').map(hold=>hold.proof.receiptId))
  for(const receipt of backendReceipts)verifiedReceipts.add(receipt.id)
- const items=marketBlockers({store}).filter(i=>i.kind!=='goals'&&i.kind!=='tasks').map(item=>
-  item.kind==='backend-effects'?{...item,count:item.count-verifiedReceipts.size}:item).filter(item=>item.count>0)
- const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
  const goals=store.list<RouterGoal&{deleted?:boolean}>('router-goal').filter(g=>g.objective&&!g.deleted&&!['completed','cancelled'].includes(g.state))
  const retained=new Set(artifactHolds.map(hold=>hold.run.ticketId))
- const heldGoals:{goalId:string;taskIds:string[]}[]=[],parkedStarts=new Set<string>()
+ const heldGoals:{goalId:string;taskIds:string[]}[]=[],parkedJobs=new Set<string>()
  const unsettled=goals.filter(goal=>{
-  const ids=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)??
-   (stateDir&&!activeExecutions?heldChatTasks(store,goal,parkedStarts):undefined)
+  const existing=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)
+  const chat=!existing&&stateDir&&!activeExecutions?heldChatTasks(store,goal,stateDir):undefined
+  const ids=existing??chat?.ids
+  for(const key of chat?.jobs??[])parkedJobs.add(key)
+  for(const receipt of chat?.receipts??[]){
+   if(!verifiedReceipts.has(receipt.id))backendReceipts.push({...receipt,recovery:undefined})
+   verifiedReceipts.add(receipt.id)
+  }
   if(!ids)return true
   for(const id of ids)retained.add(id)
   heldGoals.push({goalId:goal.id,taskIds:ids})
   return false
  })
+ const items=marketBlockers({store}).filter(i=>i.kind!=='goals'&&i.kind!=='tasks').map(item=>
+  item.kind==='backend-effects'?{...item,count:item.count-verifiedReceipts.size}:item).filter(item=>item.count>0)
+ const count=(kind:string,n:number)=>{if(n)items.push({kind,count:n})}
  const jobs=items.find(item=>item.kind==='jobs')
- if(jobs)jobs.count-=parkedStarts.size
+ if(jobs)jobs.count-=parkedJobs.size
  count('tasks',store.list<Ticket>('ticket').filter(t=>!t.ended&&!retained.has(t.id)).length)
  count('goals',unsettled.length)
  count('active-models',activeExecutions)
@@ -166,9 +186,7 @@ export function inspectDeployment(store:DeploymentStore,activeExecutions=0,state
   const exists=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)
   if(exists)count(table,Number(store.db.prepare('SELECT COUNT(*) n FROM '+table+" WHERE state IN ('received','pending','sending','held','uncertain')").get()!.n))
  }
- return {blockers:items.filter(item=>item.count>0),heldGoals,backendReceipts:backendReceipts.map(({id,threadId,turnId,name,recovery})=>({
-  id,threadId,turnId,tool:name,recovery:recovery?.reason,
- }))}
+ return {blockers:items.filter(item=>item.count>0),heldGoals,backendReceipts}
 }
 
 export function deploymentBlockers(store:DeploymentStore,activeExecutions=0,stateDir?:string){

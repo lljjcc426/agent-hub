@@ -13,7 +13,6 @@ import type {ContextManifest} from './router-memory.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {agentOptionsSchema} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
-import {workerSpecs} from './worker-tools.ts'
 import {businessDecision} from './business-decisions.ts'
 
 export interface GoalContract {details?:import('./goal-contract.ts').GoalDetails;skill?:{id:string;version:number};objective:string;criteria:GoalCriterion[];triggerId:string;triggerHash:string;mandate:Mandate;workerIds:string[];backendIds:string[];teamTargets?:{id:string;policyHash:string}[]}
@@ -71,11 +70,16 @@ export class GoalReplanning {
   if(!g.managed||!g.nodes?.length||!['active','waiting'].includes(g.state))throw Error('Goal cannot autonomously replan in its current state')
   if(g.taskIds.some(id=>this.host.store.tickets.get(id)?.ended))throw Error('Stopped or ended tasks cannot be revived by replanning')
   const trigger=this.host.store.triggers.get(contract.triggerId)!,source=this.host.sources.get(trigger.source)!.config,scope=this.host.scopes.scope(g.scopeId)
+  const builtInChat=includeCapabilities&&this.host.chat.hasContext({triggerId:g.triggerId})
+  const localTools=includeCapabilities?this.host.taskWorkerSpecs({localOutputs:this.host.artifacts.canCapture(g),delegatedTask:false,builtInChat,managedGoal:true,
+   githubConnector:builtInChat&&this.host.github.connected(),network:this.host.config.work.network,
+   workspaceBrowser:builtInChat&&!!g.nodes.some(n=>n.ticketId&&this.host.chat.taskWorkspaceBrowser(n.ticketId)),
+  }):[]
   const workerCapabilities=includeCapabilities?workerProfiles(this.host.config).filter(w=>contract.workerIds.includes(w.id)&&scope.workerIds.includes(w.id)&&contract.backendIds.includes(w.backend)&&scope.backendIds.includes(w.backend)).map(w=>{
    const defaults=this.host.model instanceof BackendRegistry?this.host.model.definition(w.backend).defaults:undefined
    const profile=agentOptionsSchema.parse(Object.fromEntries(Object.entries(w).filter(([key])=>key in agentOptionsSchema.shape)))
    const options=agentOptionsSchema.parse(mergeOptions(defaults,profile))
-   return {id:w.id,backend:w.backend,tools:workerSpecs.filter(t=>!options.tools||options.tools.includes(t.name)).map(t=>t.name).sort(),sandboxDriver:this.host.config.work.sandboxDriver,network:this.host.config.work.network,sourceSandbox:source.sandbox}
+   return {id:w.id,backend:w.backend,tools:localTools.filter(t=>!options.tools||options.tools.includes(t.name)).map(t=>t.name).sort(),sandboxDriver:this.host.config.work.sandboxDriver,network:this.host.config.work.network,sourceSandbox:source.sandbox}
   }).sort((a,b)=>a.id.localeCompare(b.id)):undefined
   return {contract,goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds:g.nodes.filter(n=>n.state==='held').map(n=>n.id),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
  }

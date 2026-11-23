@@ -1,4 +1,5 @@
 import {StringDecoder} from 'node:string_decoder'
+import {z} from 'zod'
 import {textPage} from './context-budget.ts'
 import {resourcePage,maxJobWaitMs} from './execution-limits.ts'
 import {execFileSync, type ChildProcess} from 'node:child_process'
@@ -10,6 +11,12 @@ import type {Store} from './store.ts'
 import type {Config} from './config.ts'
 import {projectWorkspace} from './project-code.ts'
 import {hostPrivateFiles} from './private-files.ts'
+
+export const jobInput=z.object({
+ id:z.string(),action:z.enum(['read','wait','stop']),yieldMs:z.number().int().min(0).max(maxJobWaitMs).default(5000),
+ offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(resourcePage.maxCharacters).default(resourcePage.defaultCharacters),
+}).strict()
+export class WorkItemUnavailable extends Error {constructor(){super('Work item is outside this worker')}}
 
 export interface WorkOwner {ticketId:string;assignmentId:string;cwd:string;sandbox:'read-only'|'workspace-write';agentId?:string;depth:number;network?:boolean}
 export interface WorkItem extends WorkOwner {
@@ -92,7 +99,7 @@ export class WorkManager {
  private put(item:WorkItem){this.store.put('work',item.id,item);return item}
  private assert(owner:WorkOwner){if(this.stopping||!this.hooks.valid(owner))throw Error('This assignment no longer owns work tools')}
  private matching(owner:WorkOwner,item:WorkItem){return item.ticketId===owner.ticketId&&item.assignmentId===owner.assignmentId&&item.agentId===owner.agentId}
- private own(owner:WorkOwner,id:string){this.assert(owner);const item=this.store.get<WorkItem>('work',id);if(!item||!this.matching(owner,item))throw Error('Work item is outside this worker');return item}
+ private own(owner:WorkOwner,id:string){this.assert(owner);const item=this.store.get<WorkItem>('work',id);if(!item||!this.matching(owner,item))throw new WorkItemUnavailable();return item}
  private key(owner:WorkOwner,requestId:string){return owner.ticketId+':'+owner.assignmentId+':'+(owner.agentId??'root')+':'+requestId}
  private create(owner:WorkOwner,kind:WorkItem['kind'],requestId:string,body:{command?:string;prompt?:string}){
   this.assert(owner)

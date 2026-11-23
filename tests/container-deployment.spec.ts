@@ -9,6 +9,7 @@ import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads} from '../src/backends/opencode-read-recovery.ts'
 import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
@@ -166,6 +167,53 @@ it('rejects unfinished work without pausing or inventing a completed maintenance
  const h=host();h.receive('local','operator',{id:'work',thread:'work',text:'Do a bounded task',addressed:true})
  await expect(prepare(h)).rejects.toThrow('Unsettled work')
  expect(h.schedulingPaused).toBe(false)
+})
+
+it('requires terminal, matching native and host receipts before replacing a cancelled writer',()=>{
+ const h=host(),f=interruptedArtifact(h),s=h.store
+ const last={id:'number:11',name:'superagent_shell',args:{command:'pwd'},result:{success:true}}
+ const effectId=stableDigest([f.thread.id,f.thread.turnId,last.id])
+ const receipt={state:'complete',fingerprint:stableDigest([last.name,last.args]),result:{success:true,contentItems:[]}}
+ const journal=JSON.parse(readFileSync(f.session,'utf8'))
+ journal.turns[0].tools=[last]
+ writeFileSync(f.session,JSON.stringify(journal))
+ s.put('backend-plugin-thread',f.thread.id,{...f.thread,state:'interrupted',lastFailure:{code:'cancelled'},effectIds:[effectId]})
+ const proof=()=>recordedWorkerCalls(s,h.config.stateDir,f.run)
+ expect(proof()).toBeUndefined()
+ s.put('backend-plugin-tool',effectId,receipt)
+ expect(proof()).toEqual([{tool:last.name,effectId,success:true}])
+ s.put('backend-plugin-tool',effectId,{...receipt,fingerprint:'different request'})
+ expect(proof()).toBeUndefined()
+ s.put('backend-plugin-tool',effectId,{...receipt,result:{...receipt.result,permission:'uncertain'}})
+ expect(proof()).toBeUndefined()
+ s.put('backend-plugin-tool',effectId,receipt)
+ writeFileSync(join(f.session,'..',f.thread.turnId+'.operations'),JSON.stringify({id:'native-1',tool:'write'}))
+ expect(proof()).toBeUndefined()
+})
+
+it('recovers only refused reads of a previous assignment with all other tool outcomes recorded',()=>{
+ const h=host(),f=interruptedArtifact(h),s=h.store
+ const journal=JSON.parse(readFileSync(f.session,'utf8')),turn=journal.turns[0]
+ const job={id:'old-job',kind:'shell',ticketId:f.ticketId,cwd:f.run.cwd,assignmentId:'previous',state:'completed',endedAt:10}
+ const call={id:'number:3',name:'superagent_job',args:{id:job.id,action:'read'}}
+ const bind=()=>{
+  turn.tools=[turn.tools[0],call]
+  writeFileSync(f.session,JSON.stringify(journal))
+  s.put('backend-plugin-tool',f.receiptId,{state:'running',fingerprint:stableDigest([call.name,call.args]),failure:{operation:'tool',reason:'exception'}})
+ }
+ bind();s.put('work',job.id,job)
+ const proof=()=>refusedWorkerJobReads(s,h.config.stateDir,f.run)
+ expect(proof()?.interrupted.map(item=>item.id)).toEqual([f.receiptId])
+ for(const change of [{ticketId:'other task'},{assignmentId:f.run.assignmentId},{agentId:'another agent'},{state:'running'}]){
+  s.put('work',job.id,{...job,...change})
+  expect(proof()).toBeUndefined()
+ }
+ s.put('work',job.id,job)
+ call.args.action='stop';bind();expect(proof()).toBeUndefined()
+ call.args.action='wait';bind();expect(proof()).toBeUndefined()
+ call.args.action='read';bind()
+ s.put('backend-plugin-tool',f.thread.effectIds[0]!,{state:'running'})
+ expect(proof()).toBeUndefined()
 })
 
 it.each(['start','interrupted'] as const)('preserves only a proven parked %s under a private source hold',async kind=>{

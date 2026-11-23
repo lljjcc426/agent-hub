@@ -1,3 +1,4 @@
+import {captureInternalFile,installInternalFiles,internalEvidence,materializeInternalFile} from './goal-internal-files.ts'
 import {maxResourceBytes} from './execution-limits.ts'
 import {createHash} from 'node:crypto'
 import {constants,closeSync,fstatSync,lstatSync,openSync,readSync,realpathSync} from 'node:fs'
@@ -13,7 +14,7 @@ import {stableDigest} from './sources.ts'
 import {atomicPrivateFile} from './managed-config.ts'
 
 const mimeTypes:Record<string,string>={'.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.pdf':'application/pdf','.mp4':'video/mp4','.png':'image/png'}
-export interface ArtifactVersion {id:string;goalId:string;ticketId:string;nodeId:string;path:string;version:number;sha256:string;size:number;mime:string}
+export interface ArtifactVersion {id:string;goalId:string;ticketId:string;nodeId:string;path:string;version:number;sha256:string;size:number;mime:string;internal?:true}
 export class ArtifactReadError extends Error {
   constructor(readonly code:'artifact_dependency_required'|'artifact_unavailable',message:string){super(message)}
 }
@@ -56,6 +57,7 @@ export function workbookObservation(bytes:Buffer,checks:CellCheck[]|null){
 
 export class GoalArtifacts {
   constructor(private host:Runtime){
+    installInternalFiles(host.store)
     host.store.db.exec(`CREATE TABLE IF NOT EXISTS goal_artifact_bytes(id TEXT PRIMARY KEY, bytes BLOB NOT NULL);
       CREATE TRIGGER IF NOT EXISTS erase_goal_artifact AFTER UPDATE OF body ON records
       WHEN NEW.kind='goal-artifact' AND json_extract(NEW.body,'$.mime') IS NULL
@@ -63,7 +65,25 @@ export class GoalArtifacts {
       CREATE TRIGGER IF NOT EXISTS delete_goal_artifact AFTER DELETE ON records WHEN OLD.kind='goal-artifact'
       BEGIN DELETE FROM goal_artifact_bytes WHERE id=OLD.id; END;`)
   }
-  evidence(goal:RouterGoal,nodeId:string,ticketId:string,cwd:string,path:string,criteria:GoalCriterion[],head?:string,options:{readOnly?:boolean}={}){
+  canCapture(goal:RouterGoal|undefined){
+    return !!goal?.managed&&!goal.project&&!!this.host.scopes.binding(goal.entryId).privateActor&&
+      this.host.chat.hasContext({triggerId:goal.triggerId})
+  }
+  capture(owner:WorkOwner,path:string){
+    const goal=this.host.goals.forTask(owner.ticketId)
+    const node=goal?.nodes?.find(n=>n.ticketId===owner.ticketId)
+    if(!goal||!this.canCapture(goal)||!node||node.state!=='running'||!node.derivedFrom||!node.outputs?.includes(path)||
+      owner.agentId||!this.host.validWork(owner)||this.host.store.get<{cwd:string}>('run',owner.ticketId)?.cwd!==owner.cwd)
+      throw new ArtifactReadError('artifact_unavailable','Only a declared output of this running intermediate goal step can be captured.')
+    this.host.scopes.checkTask(owner.ticketId,this.host.goals.context(goal),true)
+    return captureInternalFile(this.host.store,goal.id,node.id,owner.ticketId,owner.cwd,path,
+      artifact=>!this.host.memory.cleanup.blocked('goal-artifact',artifact.id,artifact))
+  }
+  evidence(goal:RouterGoal,nodeId:string,ticketId:string,cwd:string,path:string,criteria:GoalCriterion[],head?:string,options:{readOnly?:boolean}={}):{content:string;missing?:boolean;artifact?:ArtifactVersion}{
+    if(!head){
+      const captured=internalEvidence(this.host.store,goal.id,nodeId,ticketId,cwd,path)
+      if(captured)return captured
+    }
     const mime=mimeTypes[extname(path).toLowerCase()]
     const limit=mime?maxResourceBytes:4*1024*1024
     const bytes=head?this.host.projectCode.blob(goal,head,path,limit):evidenceBytes(cwd,path,limit)
@@ -105,7 +125,7 @@ export class GoalArtifacts {
   private operatorVersion(id:string){
     const artifact=this.host.store.get<ArtifactVersion>('goal-artifact',id)
     const goal=artifact?.goalId&&this.host.goals.get(artifact.goalId)
-    if(!artifact?.mime||!goal||this.host.scopes.binding(goal.entryId).privateActor)throw Error('Artifact is outside the operator workspace')
+    if(!artifact?.mime||artifact.internal||!goal||this.host.scopes.binding(goal.entryId).privateActor)throw Error('Artifact is outside the operator workspace')
     this.host.goals.context(goal)
     return artifact
   }
@@ -133,7 +153,8 @@ export class GoalArtifacts {
     const artifact=round.snapshot.evidence.find(e=>e.artifact?.id===id)!.artifact!
     const assetId=artifactReadAssetId(owner.ticketId,id),directory=join(this.host.config.stateDir,'assets',assetId)
     const path=join(directory,basename(artifact.path))
-    atomicPrivateFile(path,this.bytes(id),0o400)
+    if(artifact.internal)materializeInternalFile(this.host.store,artifact,path)
+    else atomicPrivateFile(path,this.bytes(id),0o400)
     const asset={id:assetId,path,name:basename(path),bytes:artifact.size,ticketId:owner.ticketId,artifactId:id,resource:'asset/'+assetId}
     this.host.store.put('asset',assetId,asset)
     return {...asset,version:artifact.version,sha256:artifact.sha256}

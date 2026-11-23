@@ -17,6 +17,17 @@ async function fixture(){
  const t=h.store.tickets.list()[0]!,owner={ticketId:t.id,assignmentId:t.assignments.at(-1)!.id,cwd,sandbox:'read-only' as const,depth:0}
  return {h,cwd,root,t,owner}
 }
+it('returns a recoverable tool refusal for stale job IDs without revealing their output',async()=>{
+ const f=await fixture(),id='old-job'
+ f.h.store.put('work',id,{...f.owner,id,assignmentId:'previous',kind:'shell',state:'completed',result:'private prior result'})
+ for(const action of ['read','stop']){
+  const result=await f.h.workerTools.call(f.owner,'superagent_job',{id,action})
+  expect(result.success).toBe(false)
+  expect(JSON.stringify(result)).not.toContain('private prior result')
+ }
+ expect(f.h.store.get<any>('work',id).state).toBe('completed')
+})
+
 it('paginates stable text snapshots and keeps cursors scoped to their reader',async()=>{
  const f=await fixture();writeFileSync(join(f.cwd,'large.txt'),'abcdef')
  const first=await f.h.resources.read({resource:'files/large.txt',limit:3},f.owner)

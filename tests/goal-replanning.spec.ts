@@ -228,12 +228,12 @@ it('resumes an interrupted independent review after orderly host shutdown withou
 })
 
 it('supplies the current Worker tools to both planner and independent reviewer',async()=>{
- const f=fixture();f.h.config.execution.workers![0]!.tools=['superagent_shell'];f.start()
+ const f=fixture();f.h.config.execution.workers![0]!.tools=['superagent_read','superagent_shell','superagent_artifact','chat_deliver_file'];f.start()
  await until(f,()=>f.goal().state==='completed')
  const turns=f.calls.filter(r=>['goal_replanning','goal_plan_review'].includes(JSON.parse(r.input).kind))
  expect(turns).toHaveLength(2)
- for(const turn of turns){const input=JSON.parse(turn.input);expect(input.workerCapabilities.find((w:any)=>w.id==='one')).toMatchObject({tools:['superagent_shell'],sandboxDriver:'disabled'});expect(turn.instructions).toContain('private host execution ledgers')}
- expect(f.plans()[0]!.snapshot.workerCapabilities?.find(w=>w.id==='one')?.tools).toEqual(['superagent_shell'])
+ for(const turn of turns){const input=JSON.parse(turn.input);expect(input.workerCapabilities.find((w:any)=>w.id==='one')).toMatchObject({tools:['superagent_read'],sandboxDriver:'disabled'});expect(turn.instructions).toContain('private host execution ledgers')}
+ expect(f.plans()[0]!.snapshot.workerCapabilities?.find(w=>w.id==='one')?.tools).toEqual(['superagent_read'])
 })
 
 it('rejects a plan if Worker capabilities change while it is being prepared',async()=>{

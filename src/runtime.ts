@@ -90,6 +90,7 @@ import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
 import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
+import {recordedWorkerCalls} from './backends/opencode-read-recovery.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
 import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
@@ -778,11 +779,18 @@ export class Runtime {
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
   routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
-  availableWorkerSpecs({githubConnector=true,network=true}:{githubConnector?:boolean;network?:boolean}={}){
+  availableWorkerSpecs({githubConnector=true,network=true,localOutputs=false}:{githubConnector?:boolean;network?:boolean;localOutputs?:boolean}={}){
     return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&
-      (s.name!=='superagent_artifact'||this.delegation.enabled)&&
+      (s.name!=='superagent_artifact'||localOutputs||this.delegation.enabled)&&
       (!s.name.startsWith('github_')||this.config.work.network&&network&&(githubConnector||s.name===githubReadSpec.name)))
       .map(s=>!githubConnector&&s.name===githubReadSpec.name?githubPublicReadSpec:s)
+  }
+  taskWorkerSpecs(options:{localOutputs:boolean;delegatedTask:boolean;builtInChat:boolean;managedGoal:boolean;workspaceBrowser:boolean;githubConnector:boolean;network:boolean}){
+    return this.availableWorkerSpecs(options).filter(s=>
+      (s.name!=='superagent_artifact'||options.delegatedTask||options.localOutputs)&&
+      (s.name!=='superagent_desktop'||options.builtInChat)&&
+      (s.name!=='chat_deliver_file'||options.builtInChat&&!options.managedGoal)&&
+      (s.name!=='workspace_browser'||options.builtInChat&&options.workspaceBrowser))
   }
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}
@@ -943,11 +951,20 @@ export class Runtime {
           }
           this.store.put('task-context',id,{...saved,manifest:current})
           this.store.db.prepare("DELETE FROM records WHERE kind='context-rebuild' AND id=?").run(id)
-          // The old host consumed the job and then cancelled its turn. Park exactly
-          // one replacement for the still-undelivered inputs behind the held goal.
           if(parked&&run){
+            const calls=recordedWorkerCalls(this.store,this.config.stateDir,run)
+            if(!calls||!run.threadId)throw Error('Interrupted Worker effects require reconciliation')
+            this.model.describe?.(run.threadId)
             const attempt=this.store.get<{attemptId:string}>('async-worker-current',id)!
-            this.store.enqueue('execute:'+run.assignmentId+':revalidate:'+attempt.attemptId,'execute',{ticketId:id,assignmentId:run.assignmentId})
+            const handoff='revalidate:'+attempt.attemptId
+            this.store.put('context-handoff',handoff,{ticketId:id,previousThread:run.threadId,previousTurn:run.turnId,
+              backendId:run.backendId,model:run.model,reason:'interrupted_after_sibling_input',calls,
+              effects:this.work.list(id).map(w=>({id:w.id,kind:w.kind,state:w.state,exitCode:w.exitCode})),at:Date.now()})
+            // Keep the incomplete adapter journal immutable. Only a new native
+            // session consumes the original inputs after the goal is resumed.
+            const {threadId,turnId,result,error,failure,toolsDigest,toolsVersion,waitingForWriter,webFetchReplay,...retained}=run
+            this.store.put('run',id,{...retained,phase:'idle',rebuild:handoff} satisfies Run)
+            this.store.enqueue('execute:'+run.assignmentId+':'+handoff,'execute',{ticketId:id,assignmentId:run.assignmentId})
           }
           this.store.audit({type:'task.context.revalidated',ticketId:id,previousContext:hold.previousContext,triggerId:c.trigger.id,queuedExistingInput:!!parked})
         })
@@ -1745,11 +1762,11 @@ export class Runtime {
       const chatDelivery=builtInChat||!!delegated&&this.chat.canDeliverWorkerFiles(ticket.id)
       const schema=chatDelivery?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
-      const specs=this.availableWorkerSpecs({githubConnector:!!chatActor&&this.github.connected(),network:owner.network!==false&&!delegatedTask})
-        .filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
-          && (s.name!=='superagent_desktop'||builtInChat)
-          && (s.name!=='chat_deliver_file'||builtInChat&&!projectGoal?.managed)
-          && (s.name!=='workspace_browser'||builtInChat&&!!this.chat.taskWorkspaceBrowser(ticket.id)))
+      const localNode=projectGoal?.nodes?.find(n=>n.ticketId===ticket.id)
+      const localOutputs=!!localNode?.derivedFrom&&!!localNode.outputs?.length&&this.artifacts.canCapture(projectGoal)
+      const specs=this.taskWorkerSpecs({localOutputs,delegatedTask:!!delegatedTask,builtInChat,managedGoal:!!projectGoal?.managed,
+        workspaceBrowser:builtInChat&&!!this.chat.taskWorkspaceBrowser(ticket.id),githubConnector:!!chatActor&&this.github.connected(),
+        network:owner.network!==false&&!delegatedTask})
       const toolsDigest=digest(JSON.stringify(fullAccess?specs.map(withoutPendingNotice):specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')

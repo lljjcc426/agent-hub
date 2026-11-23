@@ -1,3 +1,4 @@
+import {unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {z} from 'zod'
 import {startCodeProject,type GoalProject,type CodeReceipt} from './project-code.ts'
 import {projectBudget} from './project-budget.ts'
@@ -17,7 +18,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
-import {previouslyRecoveredRead,proveInterruptedOpenCodeRead} from './backends/opencode-read-recovery.ts'
+import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {AcceptanceEvidenceTooLarge,acceptanceRetryTarget,type AcceptanceRetryResult,type AcceptanceRetryStatus,type EvidenceOverflow} from './goal-acceptance.ts'
 import {ChatError} from './chat-errors.ts'
@@ -56,8 +57,9 @@ export function goalExecutionHold(goal:RouterGoal|undefined,ticketId:string){
  return {id:goal.id,title:goal.title,revision:goal.revision,state:goal.state,nodeState:node?.state,
   reason:node?.reason??goal.reason}
 }
-type ReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedOpenCodeRead>>}
+type ReadRecovery={run:Run;proof:NonNullable<ReturnType<typeof proveInterruptedOpenCodeRead|typeof refusedWorkerJobReads>>}
 function readContinuation(proof:ReadRecovery['proof']){
+ if(proof.kind==='denied_job_reads')return {instruction:'Continue the same node from the retained workspace. Reads of jobs owned by an earlier assignment returned no output. Use the existing evidence files and current assignment’s own job IDs. Preserve completed operations without repeating them.',recordedCalls:proof.calls}
  if(proof.kind==='github')return {instruction:githubReadContinuation}
  if(proof.kind==='read_only')return {instruction:'Continue the original task in its retained workspace. The interrupted operations were read-only. Repeat only the unfinished reads needed for the task.'}
  return {instruction:'Continue the original task in its retained workspace. Retry the recorded webfetch_batch calls. The tool reuses saved excerpts and fetches pages with missing results.',
@@ -399,19 +401,21 @@ export class RouterGoals {
   const run=this.host.store.get<Run>('run',ticketId)
   return !run||run.phase===phase&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
  }
- private interruptedRead(task:Ticket,run:Run|undefined):ReadRecovery|undefined{
+ private interruptedRead(task:Ticket,run:Run|undefined,requested=false):ReadRecovery|undefined{
   const {store}=this.host
   if(!run||run.phase!=='uncertain'&&(run.phase!=='idle'||!run.failure?.readOnlyHistory)||!run.threadId||run.ticketId!==task.id||run.assignmentId!==task.assignments.at(-1)?.id||
-   this.host.executionActive(task.id)||!this.effectsSettledAtPhase(task.id,run.phase)||this.host.work.list(task.id).length)return
+   this.host.executionActive(task.id)||!this.effectsSettledAtPhase(task.id,run.phase))return
+  const denied=requested?refusedWorkerJobReads(store,this.host.config.stateDir,run):undefined
+  if(denied?unsettledTaskEffects(store,task.id,0):this.host.work.list(task.id).length)return
   // Approval effects can execute outside the adapter's tool journal.
   const otherActivity=store.db.prepare(`SELECT 1 FROM records WHERE
    (kind='approval' AND json_extract(body,'$.ticketId')=?)
    OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=?) LIMIT 1`).get(task.id,task.id)
-  if(otherActivity)return
+  if(otherActivity&&!denied)return
   const previous=store.db.prepare(`SELECT id FROM records WHERE kind='model-session' AND id<>?
    AND json_extract(body,'$.ticketId')=?`).all(run.threadId,task.id)
   if(previous.some(row=>!previouslyRecoveredRead(store,this.host.config.stateDir,run,String(row.id))))return
-  const proof=proveInterruptedOpenCodeRead(store,this.host.config.stateDir,run)
+  const proof=denied??proveInterruptedOpenCodeRead(store,this.host.config.stateDir,run)
   if(!proof)return
   const assigned=store.get<{workerId:string}>('worker-assignment',task.id)
   const worker=workerProfiles(this.host.config).find(profile=>profile.id===assigned?.workerId)
@@ -426,8 +430,8 @@ export class RouterGoals {
   const {store}=this.host
   for(const {id,receipt} of proof.kind==='read_only'?[]:proof.interrupted){
    store.put('backend-plugin-tool',id,{...receipt,state:'complete',
-    result:{success:false,contentItems:[{type:'inputText',text:'The interrupted GitHub resource read failed before returning a result.'}]},
-    reconciliation:{reason:'interrupted_github_read_failed',mode,previousState:receipt.state,ticketId:run.ticketId,
+    result:{success:false,contentItems:[{type:'inputText',text:proof.kind==='denied_job_reads'?'This assignment cannot read the prior job. No output was returned.':'The interrupted GitHub resource read failed before returning a result.'}]},
+    reconciliation:{reason:proof.kind==='denied_job_reads'?'prior_assignment_job_read_denied':'interrupted_github_read_failed',mode,previousState:receipt.state,ticketId:run.ticketId,
      assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,at:this.now()},
    })
   }
@@ -435,7 +439,7 @@ export class RouterGoals {
   // The old adapter turn still has an interrupted journal. Start a new model session on the same task.
   const {threadId,turnId,error,failure,result,toolsVersion,toolsDigest,waitingForWriter,webFetchReplay,...retained}=run
   const session=store.get<object>('model-session',threadId!)
-  store.put('model-session',threadId!,{...session,readRecovery:{turnId,at:this.now()}})
+  store.put('model-session',threadId!,{...session,[proof.kind==='denied_job_reads'?'deniedJobReadRecovery':'readRecovery']:{turnId,at:this.now()}})
   const thread=store.get<PluginThread>('backend-plugin-thread',threadId!)
   if(thread&&thread.state!=='failed')store.put('backend-plugin-thread',thread.id,{...thread,state:'failed',lastFailure:{code:'process_failed',at:this.now()}})
   store.db.prepare(`UPDATE jobs SET state='done',error=NULL WHERE kind='execute' AND state='uncertain'
@@ -1022,7 +1026,7 @@ export class RouterGoals {
       if(!task||task.ended||!report||!['blocked','failed'].includes(report.state)||store.get('goal-delivery',task.id))continue
       this.host.scopes.checkTask(task.id,c,true)
       const needsRecovery=node.failure?.kind==='uncertain'||run?.phase==='uncertain'||run?.failure?.readOnlyHistory
-      const recovered=needsRecovery&&!task.undelivered.length?this.interruptedRead(task,run):undefined
+      const recovered=needsRecovery&&!task.undelivered.length?this.interruptedRead(task,run,true):undefined
       if(needsRecovery&&!recovered)throw Error('Reconcile the current task or its effects before resuming')
       if(recovered)this.settleInterruptedRead(recovered,c,'requested')
       if(!this.effectsSettled(task.id))throw Error('Reconcile the current task or its effects before resuming')
@@ -1031,7 +1035,7 @@ export class RouterGoals {
       this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
       this.host.retry(task.id)
       const continuation=recovered?readContinuation(recovered.proof):{
-       instruction:'Continue the existing task from its retained work and check the outstanding blocker against the current request.'
+       instruction:'The host has resumed this goal. Continue this node’s assigned work from its retained files and receipts. Goal revisions and resume commands belong to the Router. Report the evidence for the node’s acceptance criteria or its remaining concrete blocker.'
       }
       this.host.engine.note(task.id,JSON.stringify({...continuation,previousReport:report.summary,userInput:c.trigger.text}))
       allowNewTaskInputs(store,task.id,prior)

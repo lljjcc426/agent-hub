@@ -8,6 +8,7 @@ import {readSchema} from '../resources.ts'
 import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
 import {stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
+import {jobInput,type WorkItem} from '../work.ts'
 import type {ThreadStore} from './api.ts'
 import {bundledEngineId} from './bundled-opencode.ts'
 import {openCodeReadOnlyTools} from '../../plugins/backend-opencode/native-tools.ts'
@@ -26,9 +27,9 @@ const sessionSchema=z.object({
   tools:z.array(z.object({id:callId,name:z.string(),args:z.json(),result:resultSchema.optional()})),
  })).nonempty(),
 })
-type GithubRead={id:string;receipt:PluginToolEffect}
-type InterruptedRead={kind:'github';interrupted:GithubRead[]}
- |{kind:'web_batch';replay:WebBatchReplay;urls:string[];batches:string[][];interrupted:GithubRead[]}
+type InterruptedCallback={id:string;receipt:PluginToolEffect}
+type InterruptedRead={kind:'github';interrupted:InterruptedCallback[]}
+ |{kind:'web_batch';replay:WebBatchReplay;urls:string[];batches:string[][];interrupted:InterruptedCallback[]}
  |{kind:'read_only'}
 
 export type RecordedRouterCall={name:string;args:unknown;receiptId:string;receipt:PluginToolEffect}
@@ -260,6 +261,55 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
  return {thread,root,session,last}
 }
 
+/** Compare the native journal and the host ledger before opening a fresh
+ * Worker session. Native operations outside the bridge need separate review. */
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'){
+ try{
+  const bound=boundWorkerSession(store,stateDir,run)
+  if(!bound)return
+  const {thread,session,root,last}=bound
+  if(mode==='cancelled'?(thread.state!=='interrupted'||thread.lastFailure?.code!=='cancelled'):
+    (thread.state!=='failed'||thread.lastFailure?.code!=='outcome_unknown'||last.state!=='interrupted'))return
+  const effects=new Set(thread.effectIds),turns=new Set<string>()
+  const calls:{tool:string;effectId:string;success:boolean}[]=[],denied:InterruptedCallback[]=[]
+  if(effects.size!==thread.effectIds.length)return
+  for(const turn of session.turns){
+   if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'||operations(root,turn.id).length)return
+   if(!turn.nativeToolsDisabled&&privateText(join(root,turn.id+'.ready'),32)!=='ready')return
+   turns.add(turn.id)
+   for(const call of turn.tools){
+    const effectId=stableDigest([thread.id,turn.id,call.id]),record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
+    if(call.name.startsWith('opencode/')||!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
+    if(call.result){
+     if(record.state!=='complete'||record.result?.success!==call.result.success||
+       record.result.permission==='pending'||record.result.permission==='uncertain')return
+     if(turn===last)calls.push({tool:call.name,effectId,success:call.result.success})
+     continue
+    }
+    if(mode!=='denied_reads'||turn!==last||call.name!=='superagent_job'||record.state!=='running'||record.result||
+      record.failure?.operation!=='tool'||record.failure.reason!=='exception')return
+    const input=jobInput.safeParse(call.args)
+    if(!input.success||input.data.action!=='read')return
+    const job=store.get<WorkItem>('work',input.data.id)
+    if(!job||job.id!==input.data.id||job.ticketId!==run.ticketId||job.cwd!==run.cwd||job.agentId||
+      !job.assignmentId||job.assignmentId===run.assignmentId||!job.endedAt||!['completed','failed'].includes(job.state))return
+    denied.push({id:effectId,receipt:record})
+   }
+  }
+  if(!effects.size&&(mode==='cancelled'?calls.length:denied.length)&&stoppedWriter(root))return {calls,denied}
+ }catch{/* Missing history keeps the original reconciliation fence. */}
+}
+
+export function recordedWorkerCalls(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
+ return accountedWorkerTurn(store,stateDir,run,'cancelled')?.calls
+}
+
+export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
+ if(run.phase!=='uncertain'||run.waitingForWriter)return
+ const proof=accountedWorkerTurn(store,stateDir,run,'denied_reads')
+ if(proof)return {kind:'denied_job_reads' as const,interrupted:proof.denied,calls:proof.calls}
+}
+
 export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):InterruptedRead|undefined{
  if(run.phase!=='uncertain'&&!run.failure?.readOnlyHistory)return
  try{
@@ -268,7 +318,7 @@ export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,state
   const {thread,root,session,last}=bound
   const effects=new Set(thread.effectIds),turnIds=new Set<string>()
   if(effects.size!==thread.effectIds.length)return
-  const interrupted:GithubRead[]=[]
+  const interrupted:InterruptedCallback[]=[]
   let lastBatchCalls:ReturnType<typeof operations>=[]
   let nativeRead=false
   for(const turn of session.turns){

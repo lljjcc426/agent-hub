@@ -191,8 +191,8 @@ it('requires terminal, matching native and host receipts before replacing a canc
  expect(proof()).toBeUndefined()
 })
 
-it('recovers only refused reads of a previous assignment with all other tool outcomes recorded',()=>{
- const h=host(),f=interruptedArtifact(h),s=h.store
+it('preserves proven denied log reads and their original report across a paused restart',async()=>{
+ const path=root(),h=host(path),f=interruptedArtifact(h),s=h.store
  const journal=JSON.parse(readFileSync(f.session,'utf8')),turn=journal.turns[0]
  const job={id:'old-job',kind:'shell',ticketId:f.ticketId,cwd:f.run.cwd,assignmentId:'previous',state:'completed',endedAt:10}
  const call={id:'number:3',name:'superagent_job',args:{id:job.id,action:'read'}}
@@ -212,8 +212,17 @@ it('recovers only refused reads of a previous assignment with all other tool out
  call.args.action='stop';bind();expect(proof()).toBeUndefined()
  call.args.action='wait';bind();expect(proof()).toBeUndefined()
  call.args.action='read';bind()
+ const completed=s.get<PluginToolEffect>('backend-plugin-tool',f.thread.effectIds[0]!)!
  s.put('backend-plugin-tool',f.thread.effectIds[0]!,{state:'running'})
  expect(proof()).toBeUndefined()
+ s.put('backend-plugin-tool',f.thread.effectIds[0]!,completed)
+ const before=s.tickets.get(f.ticketId)
+ s.put('settings','paused',true)
+ await h.close()
+ const next=host(path)
+ expect(next.store.get('run',f.ticketId)).toEqual(f.run)
+ expect(next.store.tickets.get(f.ticketId)).toEqual(before)
+ expect(next.store.get<PluginToolEffect>('backend-plugin-tool',f.receiptId)?.state).toBe('running')
 })
 
 it.each(['start','interrupted'] as const)('preserves only a proven parked %s under a private source hold',async kind=>{

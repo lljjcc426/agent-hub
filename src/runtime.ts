@@ -90,7 +90,7 @@ import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
 import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
-import {recordedWorkerCalls} from './backends/opencode-read-recovery.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads} from './backends/opencode-read-recovery.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
 import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
@@ -344,6 +344,13 @@ export class Runtime {
       if(this.paused&&legacyAnsweredGoalReply(this.store,run)){
         this.recoverAnsweredQuestionsOnResume=true
         continue
+      }
+      // A held assignment with a recorded terminal report and only refused
+      // log reads has nothing to reconstruct during a paused release readback.
+      if(this.paused&&run.phase==='uncertain'){
+        const assignment=this.store.tickets.get(run.ticketId)?.assignments.at(-1)
+        if(assignment?.id===run.assignmentId&&assignment.state==='running'&&assignment.report?.state==='blocked'&&
+          refusedWorkerJobReads(this.store,config.stateDir,run))continue
       }
       if (run.phase === 'running' || run.phase === 'starting' || run.phase === 'background' || run.phase==='interrupted' || run.phase === 'uncertain' || run.phase === 'delivering' || run.phase==='merging') {
         this.store.put('run', run.ticketId, { ...run, phase: 'uncertain', error: run.phase==='uncertain'&&run.error?run.error:'Host stopped during execution; inspect native history and workspace before retry' })

@@ -14,6 +14,7 @@ import type {ToolSpec} from './model.ts'
 import type {ToolResult} from './chat-permissions.ts'
 import {remoteCommitHistory,type CommitHistory} from './chat-commit-trail.ts'
 import {githubCliToken} from './github-cli.ts'
+import {GithubReadCache,type GithubReadOptions} from './github-read-cache.ts'
 import {githubApiPath,githubArguments,githubEvidence,githubRestVerb,githubToolArguments,githubToolConnection,
  githubToolHeaders,githubToolName,githubToolOutput,githubWritePath,githubReadTools,githubWriteTools} from './github-tools.ts'
 import {githubChangePull,githubCheckReviewThread,githubNodeId,githubPullControl,githubReviewThreads} from './github-review.ts'
@@ -79,6 +80,7 @@ type Plan=WritePlan|GitPlan
 
 export class GithubConnector {
  private readonly reader=new GithubReader()
+ private readonly cliReadCredentials=new GithubReadCache(1,4096)
  private catalog?:{key:string;tools:Tool[]}
  private readonly nativeCatalogs=new Map<boolean,{key:string;tools:Tool[]}>()
  private repositoryChoices?:{id:string;at:number;names:string[]}
@@ -94,24 +96,33 @@ export class GithubConnector {
   return {status,account,tools,checkedAt,source:connection.source??'token'}
  }
  connected(){return !!this.current()}
- private async access(signal?:AbortSignal):Promise<Access>{
+ private async access(signal?:AbortSignal,read?:Omit<GithubReadOptions,'signal'>):Promise<Access>{
   const connection=this.current()
   if(!connection)throw new GithubError('unconfigured')
   try{
-   const token=connection.source==='cli'?await githubCliToken(connection.account,signal)
+   const token=connection.source==='cli'?(read?await this.cliReadCredentials.read(connection.id,{...read,signal},async activeSignal=>{
+    const data=await githubCliToken(connection.account,activeSignal)
+    return {data,bytes:Buffer.byteLength(data),freshnessMs:5000}
+   }):await githubCliToken(connection.account,signal))
     :managedSecrets(this.host.config.stateDir)[secretName(connection.id)]
    if(!token)throw new GithubError('auth_required')
    const access={connection,token}
    this.live(access)
    return access
   }catch(error){
-   if(error instanceof GithubError&&['auth_required','cli_unavailable'].includes(error.code)&&this.current()?.id===connection.id)
-    this.authFailure={id:connection.id,status:error.code}
+   if(error instanceof GithubError&&['auth_required','cli_unavailable'].includes(error.code))
+    this.rememberAuthFailure(connection,error.code)
    throw error
   }
  }
  private live(access:Access){
   if(this.current()?.id!==access.connection.id)throw new GithubError('conflict')
+ }
+ private rememberAuthFailure(connection:Connection,status:GithubError['code']){
+  if(this.current()?.id!==connection.id)return
+  this.cliReadCredentials.clear()
+  this.reader.clearReads()
+  this.authFailure={id:connection.id,status}
  }
  async connect(input:unknown,authorize:()=>void){
   authorize()
@@ -154,6 +165,8 @@ export class GithubConnector {
   return connection.id+(connection.source==='cli'?':'+stableDigest(token):'')
  }
  private closeCatalogs(){
+  this.cliReadCredentials.clear()
+  this.reader.clearReads()
   for(const entry of [this.catalog,...this.nativeCatalogs.values()]){
    if(entry)void this.host.toolConnections.closeManaged(entry.key)
   }
@@ -199,7 +212,7 @@ export class GithubConnector {
    if(!allowPrivate)return githubFailure(new GithubError('access_denied'))
    let access:Access|undefined
    try{
-    access=await this.access(signal)
+    access=await this.access(signal,{check,fresh:parsed.data.fresh})
     const authorized=()=>{check();this.live(access!)}
     authorized()
     const result=await this.readConnected(parsed.data,access,authorized,signal)
@@ -210,25 +223,28 @@ export class GithubConnector {
     signal?.throwIfAborted()
     check()
     if(access&&this.current()?.id!==access.connection.id)return githubFailure(new GithubError('conflict'))
-    if(access&&error instanceof GithubError&&error.code==='auth_required')
-     this.authFailure={id:access.connection.id,status:'auth_required'}
-    return githubFailure(error instanceof GithubError?error:connectionFailure(error))
+    const failure=error instanceof GithubError?error:connectionFailure(error)
+    if(access&&failure.code==='auth_required')this.rememberAuthFailure(access.connection,failure.code)
+    return githubFailure(failure)
    }
   }
   let used:Connection|undefined
   const result=await this.reader.read(parsed.data,async(_,action)=>{
    if(action==='compare'&&!allowPrivate)throw new GithubError('access_denied')
    if(action!=='compare'&&(!allowPrivate||!this.current()))return
-   const access=await this.access(signal)
+   const access=await this.access(signal,{check,fresh:parsed.data.fresh})
    check()
    used=access.connection
    return access.token
-  },signal)
+  },signal,()=>{
+   check()
+   if(used&&this.current()?.id!==used.id)throw new GithubError('conflict')
+  })
   check()
   if(used&&this.current()?.id!==used.id)return githubFailure(new GithubError('conflict'))
   if(used){
    const statuses=result.contentItems.map(item=>item.type==='inputText'?item.text:'').join('')
-   if(statuses.includes('"status":"auth_required"'))this.authFailure={id:used.id,status:'auth_required'}
+   if(statuses.includes('"status":"auth_required"'))this.rememberAuthFailure(used,'auth_required')
    else if(result.success)this.authFailure=undefined
   }
   return result
@@ -240,7 +256,11 @@ export class GithubConnector {
   if(entry?.key!==key){
    if(entry)void this.host.toolConnections.closeManaged(entry.key)
    try{
-    const tools=await this.host.toolConnections.inspectManaged(key,config,headers,signal)
+    const tools=await this.reader.reuse(['mcp-catalog',key],access.token,{signal,check:()=>this.live(access)},
+     (activeSignal,authorize)=>this.reader.schedule(access.token,activeSignal,()=>{
+      authorize()
+      return this.host.toolConnections.inspectManaged(key,config,headers,activeSignal).catch(error=>{throw connectionFailure(error)})
+     }))
     this.live(access)
     entry={key,tools:tools.filter(tool=>readOnly?tool.annotations?.readOnlyHint===true:
      tool.annotations?.readOnlyHint!==true&&Object.hasOwn(tool.inputSchema.properties??{},'owner')&&Object.hasOwn(tool.inputSchema.properties??{},'repo'))}
@@ -254,6 +274,7 @@ export class GithubConnector {
  }
  private async readConnected(input:z.output<typeof githubReadSchema>,access:Access,check:()=>void,signal?:AbortSignal){
   const {action,tool,offset,number}=input,repository=githubRepository(input.repository)!
+  const options={signal,check,fresh:input.fresh}
   if(action==='catalog'){
    if(tool){
     const readOnly=githubReadTools.includes(tool)
@@ -273,22 +294,29 @@ export class GithubConnector {
    const path=input.apiPath.replace(/^\//,'')
    const match=/^repos\/([^/]+\/[^/?]+)(?:[/?]|$)/.exec(path)
    if(match&&githubRepository(match[1]!)!==repository)throw new GithubError('invalid_request')
-   const data=await this.reader.api(path,access.token,{format:input.format,beforeSend:check},signal)
+   const data=await this.reader.readRest(path,access.token,{...options,format:input.format})
    return githubEvidence({repository,path},data,offset)
   }
   if(action==='review_threads'){
    if(!number)throw new GithubError('invalid_request')
-   const data=await githubReviewThreads(this.reader,access.token,repository,number,input.cursor,signal)
+   const data=await this.reader.reuse(['review-threads',repository,number,input.cursor],access.token,options,
+    (activeSignal,authorize)=>githubReviewThreads(this.reader,access.token,repository,number,input.cursor,activeSignal,authorize))
    return githubEvidence({repository,number,cursor:data.pageInfo?.endCursor,hasNextPage:!!data.pageInfo?.hasNextPage},data.nodes,offset)
   }
   if(!tool)throw new GithubError('invalid_request')
   const catalog=await this.getNativeTools(access,true,signal)
   const match=catalog.tools.find(item=>item.name===tool)
   if(!match)throw new GithubError('unsupported')
-  const response=await this.host.toolConnections.invokeManaged(catalog.key,catalog.config,catalog.headers,match,
-   githubToolArguments(match,repository,input.arguments??{}),check,signal)
-  if(response.invalid)throw new GithubError('invalid_request')
-  return githubEvidence({repository,tool},githubToolOutput(response.result),offset)
+  const args=githubToolArguments(match,repository,input.arguments??{})
+  const data=await this.reader.reuse(['mcp-read',catalog.key,tool,args],access.token,options,(activeSignal,authorize)=>
+   this.reader.schedule(access.token,activeSignal,async()=>{
+    authorize()
+    const response=await this.host.toolConnections.invokeManaged(catalog.key,catalog.config,catalog.headers,match,args,authorize,activeSignal)
+     .catch(error=>{throw connectionFailure(error)})
+    if(response.invalid)throw new GithubError('invalid_request')
+    return githubToolOutput(response.result)
+   }))
+  return githubEvidence({repository,tool},data,offset)
  }
  async permissions(input:unknown,check:()=>void){
   check()
@@ -441,7 +469,9 @@ export class GithubConnector {
    }
    check();this.live(plan.access)
    if(!result)return 'pending'
-   return this.host.permissions.confirmEffect(id,result)?'settled':'unavailable'
+   const settled=this.host.permissions.confirmEffect(id,result)
+   if(settled)this.reader.clearReads()
+   return settled?'settled':'unavailable'
   }catch(error){
    return error instanceof GithubError&&['auth_required','access_denied','unconfigured','conflict'].includes(error.code)?'unavailable':'pending'
   }
@@ -460,16 +490,20 @@ export class GithubConnector {
     throw error
    }
   }
-  if(plan.name==='github_git'){
-   try{
-    const result=await githubGit(plan.args,plan.revision,access.connection.account,access.token,current,signal)
-    return result.status==='uncertain'?uncertain(result):githubResult(result)
-   }catch(error){
-    signal?.throwIfAborted()
-    return githubFailure(error instanceof GithubError?error:new GithubError('unavailable'))
+  try{
+   if(plan.name==='github_git'){
+    try{
+     const result=await githubGit(plan.args,plan.revision,access.connection.account,access.token,current,signal)
+     return result.status==='uncertain'?uncertain(result):githubResult(result)
+    }catch(error){
+     signal?.throwIfAborted()
+     return githubFailure(error instanceof GithubError?error:new GithubError('unavailable'))
+    }
    }
+   return await this.write(plan,current,signal)
+  }finally{
+   if(plan.name==='github_write'||plan.args.action==='push')this.reader.clearReads()
   }
-  return this.write(plan,current,signal)
  }
  private async write(plan:WritePlan,check:()=>void,signal?:AbortSignal):Promise<ToolResult>{
   const {args,access}=plan,{connection,token}=access
@@ -516,7 +550,7 @@ export class GithubConnector {
    return output?githubResult({...receipt(args),...output,status:'complete'}):uncertain(receipt(args))
   }catch(error){
    if(connection.id===this.current()?.id&&(error instanceof GithubError&&error.code==='auth_required'||error instanceof OperationError&&error.code==='auth_required'))
-    this.authFailure={id:connection.id,status:'auth_required'}
+    this.rememberAuthFailure(connection,'auth_required')
    if(!sent){
     signal?.throwIfAborted()
     return githubFailure(error instanceof GithubError?error:connectionFailure(error))
@@ -612,10 +646,11 @@ export class GithubConnector {
 }
 
 function connectionFailure(error:unknown){
+ if(error instanceof GithubError)return error
  if(error instanceof OperationError){
   if(error.code==='auth_required')return new GithubError('auth_required')
   if(error.code==='provider_rejected')return new GithubError('access_denied')
-  if(error.code==='rate_limited')return new GithubError('rate_limited')
+  if(error.code==='rate_limited')return new GithubError('rate_limited',60)
  }
  return new GithubError('unavailable')
 }

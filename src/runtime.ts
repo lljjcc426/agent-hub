@@ -46,7 +46,7 @@ import {ToolConnections} from './tool-connections.ts'
 import {OfficeMcp} from './office-mcp.ts'
 import {pairedOfficeBot} from './office-groups.ts'
 import {GithubConnector,githubWriteSpec} from './github-connector.ts'
-import {githubReadSchema,githubReadSpec} from './github-read.ts'
+import {githubPublicReadSpec,githubReadSchema,githubReadSpec} from './github-read.ts'
 import {GithubError,githubFailure} from './github-errors.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
@@ -767,7 +767,12 @@ export class Runtime {
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
   routerToolCatalog(){return [chatStatusTool,codeModeTool,...managementSpecs,routerReadSpec,chatReactionSpec,routerFileTool,...chatArtifactSpecs,workspaceBrowserSpec,...(this.config.work.network?[githubReadSpec,githubWriteSpec]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
-  availableWorkerSpecs(){return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&(s.name!=='superagent_artifact'||this.delegation.enabled)&&(!s.name.startsWith('github_')||this.config.work.network))}
+  availableWorkerSpecs({githubConnector=true,network=true}:{githubConnector?:boolean;network?:boolean}={}){
+    return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&
+      (s.name!=='superagent_artifact'||this.delegation.enabled)&&
+      (!s.name.startsWith('github_')||this.config.work.network&&network&&(githubConnector||s.name===githubReadSpec.name)))
+      .map(s=>!githubConnector&&s.name===githubReadSpec.name?githubPublicReadSpec:s)
+  }
   private async runAgent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>{
     const owner:WorkOwner={ticketId:item.ticketId,assignmentId:item.assignmentId,cwd:item.cwd,sandbox:item.sandbox,agentId:item.id,depth:item.depth+1,network:item.network}
     const ticket=this.replanning.executionView(taskView(this.store,this.store.tickets.get(item.ticketId)!))
@@ -781,7 +786,7 @@ export class Runtime {
       const inheritsParent=!this.config.execution.roles.subagent||backendId===parent?.backendId
       const options=inheritsParent?parent?.agentOptions:undefined
       let result
-      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools:this.availableWorkerSpecs(),onTool:(name,args)=>this.workerTools.call(owner,name,args),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
+      try{result=await this.runModel({activity:{ticketId:item.ticketId,agentId:item.id,workerId:parent?.workerId,sourceId:ticket.mandate.actor.source,triggerId:ticket.origin.triggerId},role:'subagent',allowNativeTools:this.config.work.network&&owner.network!==false,backendId,options:options??{},cwd:owner.cwd,sandbox:owner.sandbox,model:threadId?undefined:this.config.models.subagent??(inheritsParent?parent?.model??this.config.models.worker:undefined),threadId,title:'Subagent: '+ticket.title,schema:reportSchema,instructions,input,signal,managed:true,privateState:this.config.stateDir,attachments:this.chat.uploads.taskPaths(ticket.id),archiveOnComplete:true,tools:this.availableWorkerSpecs({githubConnector:false,network:owner.network!==false}),onTool:(name,args)=>this.workerTools.call(owner,name,args,undefined,undefined,signal),onThread:id=>{threadId=id;this.store.put('work',item.id,{...this.store.get<WorkItem>('work',item.id)!,threadId:id})},onCapabilities:cap=>this.store.put('capabilities',item.id,{ticketId:item.ticketId,agentId:item.id,...cap}),onActive:control=>{this.controls.set(key,control);this.controlRevisions.set(key,revision)}})}
       finally{this.controls.delete(key);this.controlRevisions.delete(key)}
       const output=report.parse(JSON.parse(result.text));threadId=result.threadId
       this.store.put('transcript',result.turnId,{ticketId:item.ticketId,agentId:item.id,threadId,turnId:result.turnId,text:result.text,at:Date.now()})
@@ -1600,14 +1605,13 @@ export class Runtime {
       run.agentOptions=agentOptions
       const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
-      const fullAccess=builtInChat&&this.chat.permissionActor(ticket.origin.triggerId,ticket.id)?.mode==='full'
+      const chatActor=this.chat.permissionActor(ticket.origin.triggerId,ticket.id)
+      const fullAccess=builtInChat&&chatActor?.mode==='full'
       const chatDelivery=builtInChat||!!delegated&&this.chat.canDeliverWorkerFiles(ticket.id)
       const schema=chatDelivery?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
-      const specs=this.availableWorkerSpecs().filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)
-        && (s.name!=='superagent_desktop'||builtInChat)
-        && (!s.name.startsWith('github_')||owner.network!==false&&!delegatedTask)
-        && (!['github_write','github_git'].includes(s.name)||this.github.connected()))
+      const specs=this.availableWorkerSpecs({githubConnector:!!chatActor&&this.github.connected(),network:owner.network!==false&&!delegatedTask})
+        .filter(s=>(s.name!=='superagent_artifact'||!!delegatedTask)&&(s.name!=='superagent_desktop'||builtInChat))
       const toolsDigest=digest(JSON.stringify(fullAccess?specs.map(withoutPendingNotice):specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')

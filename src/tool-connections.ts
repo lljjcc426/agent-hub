@@ -144,7 +144,10 @@ export class ToolConnections {
     bound.throwIfAborted()
     beforeSend()
     try{return {result:await client.callTool({name:tool.name,arguments:input},undefined,{signal:bound,timeout:config.timeoutMs})} as const}
-    catch(error){void this.closeManaged(id);throw error}
+    catch(error){
+      if(!signal?.aborted)void this.closeManaged(id)
+      throw toolFailure('tool_initialize',error,bound)
+    }
   }
   async closeManaged(id:string){await this.closeClient('@managed:'+id)}
   private async closeClient(key:string){

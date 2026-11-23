@@ -19,7 +19,7 @@ export class ToolDispatch {
   private readonly abortQueued=()=>{
     for(const entry of this.waiting.splice(0))entry.reject(this.signal?.reason)
   }
-  constructor(private readonly signal?:AbortSignal){}
+  constructor(private readonly signal?:AbortSignal,private readonly concurrency=toolParallelism){}
 
   run<T>(shared: boolean, work: () => T | Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -38,7 +38,7 @@ export class ToolDispatch {
   }
 
   private admit() {
-    while (!this.exclusive && this.active < toolParallelism) {
+    while (!this.exclusive && this.active < this.concurrency) {
       const next = this.waiting[0]
       if (!next || !next.shared && this.active > 0) break
       this.waiting.shift()

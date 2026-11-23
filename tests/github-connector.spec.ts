@@ -46,7 +46,9 @@ function legacyConnection(host:Runtime){
 
 it('returns exact unified diffs and pages the files and large patches in an authorized comparison',async()=>{
  const largePatch=patch+'\n'+' '.repeat(7970)+'🙂\n+last line\n'
+ let requests=0
  const reader=new GithubReader(async(input,init)=>{
+  requests++
   const url=new URL(String(input))
   expect(url.origin).toBe('https://api.github.com')
   expect(url.pathname).toBe('/repos/'+repository+'/compare/'+sha+'...feature%2Fchange')
@@ -72,6 +74,187 @@ it('returns exact unified diffs and pages the files and large patches in an auth
  expect(focused.files[0].nextPatchOffset).toBeGreaterThan(0)
  expect(next.files[0].nextPatchOffset).toBeNull()
  expect(focused.files[0].patch+next.files[0].patch).toBe(largePatch)
+ expect(requests).toBe(1)
+})
+
+it('shares authenticated REST and native MCP reads and serves subsequent pages from the same response',async()=>{
+ const diff='@@ -1 +1 @@\n'+'+evidence content\n'.repeat(2600)
+ const fetcher=vi.fn<typeof fetch>().mockImplementation(async(input,init)=>{
+  expect(new URL(String(input)).pathname).toBe('/repos/'+repository+'/pulls/1')
+  expect(new Headers(init?.headers).get('authorization')).toBe('Bearer '+token)
+  expect(new Headers(init?.headers).get('accept')).toBe('application/vnd.github.diff')
+  return new Response(diff,{headers:{'cache-control':'private, max-age=30'}})
+ })
+ vi.stubGlobal('fetch',fetcher)
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ legacyConnection(host)
+ const inspect=vi.spyOn(host.toolConnections,'inspectManaged').mockResolvedValue([{
+  name:'pull_request_read',annotations:{readOnlyHint:true},
+  inputSchema:{type:'object',properties:{owner:{type:'string'},repo:{type:'string'}}},
+ }])
+ const invoke=vi.spyOn(host.toolConnections,'invokeManaged').mockImplementation(async(_id,_config,_headers,_tool,_input,authorize)=>{
+  authorize()
+  return {result:{content:[{type:'text',text:diff}]}}
+ })
+ const api={action:'api',apiPath:'repos/'+repository+'/pulls/1',format:'diff'}
+ const mcp={action:'tool',tool:'pull_request_read',arguments:{method:'get_diff',pullNumber:1}}
+ for(const request of [api,mcp]){
+  const read=(offset=0)=>host.github.read({repository,...request,offset},true,()=>{}).then(output)
+  const first=await Promise.all(Array.from({length:16},()=>read()))
+  expect(first.every(page=>page.text===first[0].text)).toBe(true)
+  let text=first[0].text, offset=first[0].nextOffset
+  while(offset!==null){
+   const page=await read(offset)
+   text+=page.text
+   offset=page.nextOffset
+  }
+  expect(text).toBe(diff)
+ }
+ expect(fetcher).toHaveBeenCalledTimes(1)
+ expect(inspect).toHaveBeenCalledTimes(1)
+ expect(invoke).toHaveBeenCalledTimes(1)
+ expect(output(await host.github.read({repository,...mcp},false,()=>{}))).toMatchObject({status:'access_denied'})
+ expect(invoke).toHaveBeenCalledTimes(1)
+})
+
+it('partitions snapshots by credential and response format and revalidates expired data with ETag',async()=>{
+ const epoch=Date.now()
+ let now=epoch
+ const time=vi.spyOn(Date,'now').mockImplementation(()=>now)
+ cleanups.push(async()=>{time.mockRestore()})
+ const requests:{auth:string|null;accept:string|null;etag:string|null}[]=[]
+ let denied=false
+ const reader=new GithubReader(async(_input,init)=>{
+  const h=new Headers(init?.headers),etag=h.get('if-none-match'),auth=h.get('authorization'),accept=h.get('accept')
+  requests.push({auth,accept,etag})
+  if(denied)return new Response(null,{status:403})
+  if(etag)return new Response(null,{status:304,headers:{'cache-control':'private, max-age=1'}})
+  if(accept==='application/vnd.github.diff')return new Response(patch,{headers:{'cache-control':'no-store'}})
+  return Response.json({visibility:auth===null?'public':auth.endsWith('_other')?'other':'owner'},
+   {headers:{etag:'"fixture"','cache-control':'private, max-age=1'}})
+ })
+ const path='repos/'+repository+'/pulls?state=open&per_page=20'
+ expect(await reader.readRest(path,token)).toEqual({visibility:'owner'})
+ expect(await reader.readRest('repos/'+repository+'/pulls?per_page=20&state=open',token)).toEqual({visibility:'owner'})
+ expect(await reader.readRest(path,token+'_other')).toEqual({visibility:'other'})
+ expect(await reader.readRest(path,undefined)).toEqual({visibility:'public'})
+ expect(await reader.readRest(path,token,{format:'diff'})).toBe(patch)
+ expect(await reader.readRest(path,token,{format:'diff'})).toBe(patch)
+ expect(requests).toHaveLength(5)
+ now+=1100
+ expect(await reader.readRest(path,token)).toEqual({visibility:'owner'})
+ expect(requests.at(-1)).toMatchObject({auth:'Bearer '+token,etag:'"fixture"'})
+ expect(await reader.readRest(path,token,{fresh:true})).toEqual({visibility:'owner'})
+ expect(requests).toHaveLength(7)
+ denied=true
+ await expect(reader.readRest(path,token,{fresh:true})).rejects.toMatchObject({code:'access_denied'})
+ await expect(reader.readRest(path,token)).rejects.toMatchObject({code:'access_denied'})
+ expect(requests).toHaveLength(9)
+})
+
+it('cancels individual coalesced callers promptly and checks authority before returning shared data',async()=>{
+ let release!:()=>void
+ const ready=new Promise<void>(r=>{release=r}),controller=new AbortController()
+ const fetcher=vi.fn<typeof fetch>().mockImplementation(async(_input,init)=>{
+  await ready
+  expect(init?.signal?.aborted).toBe(false)
+  return json({value:'authorized evidence'})
+ })
+ const reader=new GithubReader(fetcher),path='repos/'+repository+'/pulls/1'
+ let permitted=true
+ const check=()=>{if(!permitted)throw Error('scope revoked')}
+ const primary=reader.readRest(path,token,{signal:controller.signal})
+ const revoked=reader.readRest(path,token,{check})
+ const retained=reader.readRest(path,token)
+ const primaryError=expect(primary).rejects.toThrow('cancelled by caller')
+ const revokedError=expect(revoked).rejects.toThrow('scope revoked')
+ controller.abort(Error('cancelled by caller'))
+ await primaryError
+ permitted=false
+ release()
+ await revokedError
+ expect(await retained).toEqual({value:'authorized evidence'})
+ await expect(reader.readRest(path,token,{check})).rejects.toThrow('scope revoked')
+ expect(fetcher).toHaveBeenCalledTimes(1)
+})
+
+it('caps combined GitHub requests and prevents queued reads from sending during Retry-After',async()=>{
+ let active=0,peak=0,calls=0
+ const reader=new GithubReader(async(input)=>{
+  calls++
+  peak=Math.max(peak,++active)
+  const limited=String(input).endsWith('/0')
+  await delay(limited?1:20)
+  active--
+  return limited?new Response('limit',{status:429,headers:{'retry-after':'60'}}):json({id:String(input).split('/').at(-1)})
+ })
+ const selection=Array.from({length:32},(_,i)=>reader.readRest('repos/'+repository+'/issues/'+i,token))
+ const results=await Promise.allSettled(selection)
+ expect(peak).toBe(10)
+ expect(calls).toBe(10)
+ expect(results.filter(r=>r.status==='rejected')).toHaveLength(23)
+ await expect(reader.readRest('repos/'+repository+'/pulls/5',token)).rejects.toMatchObject({code:'rate_limited',retryAfterSeconds:60})
+ expect(calls).toBe(10)
+ expect(await reader.readRest('repos/'+repository+'/pulls/5',undefined)).toEqual({id:'5'})
+})
+
+it('shares cooldown between MCP and REST and advertises only usable GitHub actions to subagents',async()=>{
+ const fetcher=vi.fn<typeof fetch>()
+ vi.stubGlobal('fetch',fetcher)
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ legacyConnection(host)
+ vi.spyOn(host.toolConnections,'inspectManaged').mockResolvedValue([{
+  name:'pull_request_read',annotations:{readOnlyHint:true},inputSchema:{type:'object'},
+ }])
+ const invoke=vi.spyOn(host.toolConnections,'invokeManaged').mockResolvedValue({
+  result:{isError:true,content:[{type:'text',text:'HTTP 429: rate limit'}]},
+ })
+ const githubTools=host.availableWorkerSpecs({githubConnector:false}).filter(s=>s.name.startsWith('github_'))
+ expect(githubTools.map(t=>t.name)).toEqual(['github_read'])
+ expect(githubTools[0]?.inputSchema).toMatchObject({properties:{action:{
+  enum:['overview','files','pull','pulls','issue','checks','branch'],
+ }}})
+ expect(host.availableWorkerSpecs({githubConnector:false,network:false}).some(s=>s.name.startsWith('github_'))).toBe(false)
+ const read=(input:object)=>host.github.read({repository,...input},true,()=>{}).then(output)
+ const mcp={action:'tool',tool:'pull_request_read',arguments:{method:'get_diff',pullNumber:1}}
+ expect(await read(mcp)).toMatchObject({status:'rate_limited',retryAfterSeconds:60})
+ expect(await read(mcp)).toMatchObject({status:'rate_limited',retryAfterSeconds:60})
+ expect(await read({action:'api',apiPath:'repos/'+repository+'/pulls/1'})).toMatchObject({status:'rate_limited',retryAfterSeconds:60})
+ expect(invoke).toHaveBeenCalledTimes(1)
+ expect(fetcher).not.toHaveBeenCalled()
+})
+
+it('reuses CLI credentials for concurrent reads and fetches current data after a connector write',async()=>{
+ let title='Before',gets=0,writes=0
+ const credential=vi.spyOn(githubCli,'githubCliToken').mockResolvedValue(token)
+ cleanups.push(async()=>{credential.mockRestore()})
+ vi.stubGlobal('fetch',async(_input:RequestInfo|URL,init?:RequestInit)=>{
+  if(init?.method==='PATCH'){
+   writes++
+   title=JSON.parse(String(init.body)).title
+  }else gets++
+  return json({number:1,title})
+ })
+ const host=hostFor({async run(){throw Error('Unexpected turn')}})
+ legacyConnection(host)
+ host.store.put('github-access','current',{...host.store.get<object>('github-access','current'),source:'cli'})
+ const check=()=>{}
+ const get=(fresh=false)=>host.github.read({repository,action:'api',apiPath:'repos/'+repository+'/pulls/1',fresh},true,check).then(output)
+ expect(await Promise.all(Array.from({length:20},()=>get()))).toEqual(Array(20).fill(expect.objectContaining({data:{number:1,title:'Before'}})))
+ expect(credential).toHaveBeenCalledTimes(1)
+ expect(gets).toBe(1)
+ const plan=await host.github.prepare('github_write',{repository,action:'api',apiPath:'pulls/1',verb:'PATCH',arguments:{title:'After'}})
+ expect(output(await host.github.execute(plan,check))).toMatchObject({status:'complete'})
+ expect(await get()).toMatchObject({data:{title:'After'}})
+ expect(gets).toBe(2)
+ expect(writes).toBe(1)
+ const n=credential.mock.calls.length
+ await get(true)
+ expect(credential.mock.calls.length).toBe(n+1)
+ expect(gets).toBe(3)
+ host.github.disconnect(check)
+ expect(await get()).toMatchObject({status:'unconfigured'})
+ expect(gets).toBe(3)
 })
 
 it('rejects invalid comparisons and refuses to send a comparison without a connector credential',async()=>{
@@ -173,7 +356,7 @@ it('delegates comparisons with the saved token and answers a new Chat message wh
   expect.objectContaining({repository:'fixture/other',files:[expect.objectContaining({patch})]}),
   expect.objectContaining({status:'not_found'}),
  ])
- expect(outbound).toEqual([repository,repository,'fixture/other','fixture/inaccessible'].map(repo=>'/repos/'+repo+'/compare/'+sha+'...'+mergeSha))
+ expect(outbound).toEqual([repository,'fixture/other','fixture/inaccessible'].map(repo=>'/repos/'+repo+'/compare/'+sha+'...'+mergeSha))
 })
 
 it('uses GitHub repository discovery for commit history and accepts a repository outside the picker',async()=>{

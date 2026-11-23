@@ -6,27 +6,28 @@ export const githubPullControl=z.enum(['ready','draft','auto_merge','resolve_thr
 export const githubNodeId=z.string().min(1).max(200).regex(/^[\w=+/-]+$/)
 const threadFields='id isResolved isOutdated path line comments(first:12){nodes{id databaseId body url author{login} createdAt} pageInfo{hasNextPage endCursor}}'
 
-async function graphql(reader:GithubReader,token:string,query:string,variables:Record<string,unknown>,signal?:AbortSignal,beforeSend?:()=>void){
- const response=await reader.api('graphql',token,{method:'POST',body:{query,variables},beforeSend},signal)
+async function graphql(reader:GithubReader,token:string,query:string,variables:Record<string,unknown>,signal?:AbortSignal,beforeSend?:()=>void,checkRead?:()=>void){
+ const response=await reader.api('graphql',token,{method:'POST',body:{query,variables},beforeSend:beforeSend??checkRead},signal)
  if(response?.errors?.length){
   // A mutation can run even when a field selected for its response fails.
   const rejected=(type:string)=>response.errors.every((error:{type?:string;path?:unknown[]})=>
    error.type===type&&(!beforeSend||error.path?.length===1))
   if(rejected('FORBIDDEN'))throw new GithubError('access_denied',undefined,403)
   if(rejected('NOT_FOUND'))throw new GithubError('not_found',undefined,404)
+  if(!beforeSend&&rejected('RATE_LIMITED'))throw new GithubError('rate_limited',60)
   throw new GithubError('unavailable')
  }
  if(!response?.data||typeof response.data!=='object')throw new GithubError('unavailable')
  return response.data
 }
 
-export async function githubReviewThreads(reader:GithubReader,token:string,repository:string,number:number,after?:string,signal?:AbortSignal){
+export async function githubReviewThreads(reader:GithubReader,token:string,repository:string,number:number,after?:string,signal?:AbortSignal,check?:()=>void){
  const [owner,name]=repository.split('/')
  const result=await graphql(reader,token,`query($owner:String!,$name:String!,$number:Int!,$after:String){
    repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:15,after:$after){
     nodes{${threadFields}} pageInfo{hasNextPage endCursor}
    }}}
-  }`,{owner,name,number,after},signal)
+  }`,{owner,name,number,after},signal,undefined,check)
  const threads=result.repository?.pullRequest?.reviewThreads
  if(!threads)throw new GithubError('not_found')
  return threads

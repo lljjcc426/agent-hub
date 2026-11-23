@@ -249,9 +249,10 @@ function useArrival(id: string, createdAt: number) {
   useEffect(() => { arrivals.seen.add(id); }, [arrivals, id]);
   return fresh || undefined;
 }
-function Timestamp({ at }: { at: Date | number }) {
+function Timestamp({ at, receipt }: { at: Date | number; receipt?: 'sending' | 'read' }) {
   const { lang,L } = useUI();
-  return <MessageTimestamp at={at} lang={lang} L={L}/>;
+  const status=receipt==='sending'?L('Sending','发送中'):receipt==='read'?L('Read','已读'):undefined;
+  return <MessageTimestamp at={at} lang={lang} L={L} status={status}/>;
 }
 function MessageSkill({skill}:{skill?:ChatSkillRef}){
   return skill?<span className="message-skill"><Box size={13}/><span>/{skill.name}</span></span>:null;
@@ -274,6 +275,13 @@ function UserMessage() {
     createdAt = useAuiState((s) => s.message.createdAt),
     arrival = useArrival(id, createdAt.getTime());
   const inline=useAuiState(s=>s.message.metadata.custom?.inlineAnswer===true);
+  const readReceipt=useAuiState(s=>s.message.metadata.custom?.readReceipt===true);
+  const submission=useAuiState(s=>{
+    const pending=s.message.submission;
+    if(pending)return pending.id===s.thread.composer.submission?.id?'preparing':'dispatched';
+  });
+  // Roppo's outbox renders the message after the composer hands it off.
+  if(submission==='dispatched')return null;
   if(inline)return <WorkflowCards anchor={id}/>;
   return (
     <>
@@ -288,7 +296,7 @@ function UserMessage() {
           <MessageActions id={id}/>
         </div>
         <Reactions id={id}/>
-        <Timestamp at={createdAt}/>
+        <Timestamp at={createdAt} receipt={submission==='preparing'?'sending':readReceipt?'read':undefined}/>
       </MessagePrimitive.Root>
       <WorkflowCards anchor={id}/>
     </>
@@ -299,9 +307,9 @@ function OutgoingBubble({message,retry,edit,draftHasContext}:{message:OutgoingMe
   const canEdit=useAuiState(s=>!s.composer.text.trim()&&!s.composer.attachments.length);
   const {stage,input,files,quote,createdAt,skill}=message;
   const waiting=stage==='slow'||stage==='unconfirmed';
-  const status=stage==='sending'?L('Sending…','发送中…'):
-    waiting?L('Delivery not confirmed yet.','还未确认送达。'):
-    stage==='rejected'?L('Message not sent. Your draft is saved.','发送失败，草稿已保留。'):'';
+  const status=stage==='unconfirmed'?L('Delivery not confirmed yet.','还未确认送达。'):
+    stage==='rejected'?L('Message not sent. Your draft is saved.','发送失败，草稿已保留。'):undefined;
+  const receipt=status?undefined:stage==='accepted'?'read':'sending';
   return <div className="message user-message" data-outgoing={stage}>
     <QuotedMessage quote={quote??undefined}/>
     <div className="message-line"><div className="message-surface user-bubble">
@@ -309,11 +317,11 @@ function OutgoingBubble({message,retry,edit,draftHasContext}:{message:OutgoingMe
       {!!files.length&&<div className="message-attachments">{files.map(file=><span key={file.id} className="chat-attachment"><FileText size={22}/><span className="attachment-info"><strong>{file.name}</strong></span></span>)}</div>}
       {input.text&&<div>{input.text}</div>}
     </div></div>
-    {status&&<div className="chat-send-status"><span role="status">{status}</span>
+    {(status||waiting)&&<div className="chat-send-status">{status&&<span role="status">{status}</span>}
       {waiting&&<button type="button" className="text-button" onClick={retry}>{L('Retry send','重试')}</button>}
       {stage==='rejected'&&<button type="button" className="text-button" disabled={!canEdit||draftHasContext} onClick={edit}>{L('Edit message','编辑消息')}</button>}
     </div>}
-    <Timestamp at={createdAt}/>
+    <Timestamp at={createdAt} receipt={receipt}/>
   </div>;
 }
 function UserQuote(){const quote=useAuiState(s=>s.message.metadata.custom?.quote) as ChatQuoteView|undefined;return <QuotedMessage quote={quote}/>}
@@ -1055,10 +1063,8 @@ function Chat(p: ChatProps) {
   };
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
-  const awaitingFirstReply=(run?.state==='queued'||run?.state==='running')&&run.recovery?.state!=='rebuilding'&&
-    !snapshot?.messages.some(message=>message.runId===run.id&&message.role==='assistant'&&!message.recipient);
   const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId
-    ? awaitingFirstReply?L('Received','已收到'):runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
+    ? runLabel(run.state,L,waitingLabel??'',run.recovery) : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
@@ -1241,6 +1247,12 @@ function Chat(p: ChatProps) {
       inlineAnswers.add('user:'+message.decision.replyRunId);
   }
 
+  const awaitingReply = new Set(snapshot?.replyRunIds);
+  if (run?.state==='queued'||run?.state==='running') awaitingReply.add(run.id);
+  for (const message of snapshot?.messages ?? []) {
+    if (message.role==='assistant' && !message.recipient && message.opening!=='received') awaitingReply.delete(message.runId);
+  }
+
   const runtime = useExternalStoreRuntime({
     isRunning: !readonly && !!reply,
     isLoading: loading,
@@ -1253,6 +1265,7 @@ function Chat(p: ChatProps) {
       role: m.role,
       createdAt: new Date(m.createdAt),
       metadata: { custom: {
+        readReceipt: m.role==='user' && !readonly && !around && awaitingReply.has(m.runId),
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
@@ -1700,7 +1713,7 @@ function Chat(p: ChatProps) {
                       {localMessages.map(message=><OutgoingBubble key={message.id} message={message} draftHasContext={!!quote||!!skill}
                         retry={()=>p.sends.retry(message.id)} edit={()=>void editOutgoing(message.id).catch(fail)}/>)}
                       <WorkflowCards anchor="pending"/>
-                      {run&&standaloneStatus&&(showTranscriptDetails||awaitingFirstReply)?<div className="run-activity" aria-live="polite">
+                      {showTranscriptDetails&&run&&standaloneStatus?<div className="run-activity" aria-live="polite">
                         <div className={"run-status "+run.state}><StatusIcon state={run.state}/><span>{standaloneStatus}</span></div>
                       </div>:null}
                     </div>

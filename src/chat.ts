@@ -1324,7 +1324,11 @@ export class ChatSessions {
     const {conversationPlans,goals,tasks}=this.conversationTasks(c)
     const runGoals=runId?goals.filter(g=>this.goalRunId(g)===runId):[]
     const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
-    const replying=this.host.store.db.prepare("SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId') WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running') ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid LIMIT 1").get(id)
+    const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
+      FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
+      WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running')
+      ORDER BY CASE j.state WHEN 'running' THEN 0 ELSE 1 END,j.rowid`).all(id)
+    const replying=replyJobs[0]
     const batch=last?this.rows<MessageBatch>('router-batch','discussion',c.discussion).reverse().find(b=>b.triggerIds.includes(last.triggerId)):undefined
     const jobs=last?this.host.store.db.prepare("SELECT state FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?) OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)").all(last.triggerId,batch?.id??null):[]
     const clarification=batch?.decision?.action==='clarify'?this.host.store.deliveries().find(d=>d.id==='router-clarify:'+batch.id):undefined
@@ -1335,6 +1339,7 @@ export class ChatSessions {
       AND (? IS NULL OR json_extract(body,'$.speaker.id')=? OR json_extract(body,'$.recipient.id')=?)
       ORDER BY json_extract(body,'$.sequence') DESC LIMIT 101`).all(id,JSON.stringify(runtimeRecoveryQuestions),before??Number.MAX_SAFE_INTEGER,runId??null,runId??null,participant??null,participant??null,participant??null).map(r=>JSON.parse(String(r.body)) as Message).reverse()
     const closedRuns=new Set(runs.filter(run=>run.cancelled||run.cancelRequested).map(run=>run.id))
+    const replyRunIds=[...new Set(replyJobs.map(job=>String(job.runId)))].filter(runId=>!closedRuns.has(runId))
     for(const message of messages){
       if(message.decision&&!message.decision.replyRunId&&closedRuns.has(message.runId))
         message.decision={...message.decision,closed:true}
@@ -1431,7 +1436,7 @@ export class ChatSessions {
       }
     }
     const decisions = this.businessDecisions(id,owner,{runIds,workerId:participant===router.id?undefined:participant})
-    return {...result,decisions,earlierCards,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
+    return {...result,decisions,earlierCards,tasks:runId?currentTasks:tasks,schedulingAvailable:this.host.scopes.enabled(),deliveries:this.deliveries.list(id),schedules:this.publicSchedules(c),replyRunIds,reply:replying?{id:String(replying.id),runId:String(replying.runId),state:replying.state==='running'?'running' as const:'queued' as const}:null,browsers:this.host.browser.conversation(owner,id)}
   }
   private handoffs(id:string){
     const rows=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'

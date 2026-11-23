@@ -45,16 +45,17 @@ export function InteractionProvider({children,...value}:React.ComponentProps<typ
   return <Context.Provider value={value}>{children}<SelectionReply/></Context.Provider>
 }
 
-export function MessageTimestamp({at,lang,L}:{at:Date|number;lang:string;L:L}){
+export function MessageTimestamp({at,lang,L,status}:{at:Date|number;lang:string;L:L;status?:string}){
   const id=useId(),panel=useRef<HTMLDivElement>(null)
   const date=new Date(at),iso=date.toISOString()
   const short=new Intl.DateTimeFormat(lang,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date)
+  const label=status?status+' · '+short:short
   const full=new Intl.DateTimeFormat(lang,{
     year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',
   }).format(date)
   return <div className="message-time-control">
     <button type="button" className="message-time-trigger" popoverTarget={id}
-      aria-label={short+' · '+L('Show date and time','查看日期和时间')}
+      aria-label={label+' · '+L('Show date and time','查看日期和时间')}
       aria-controls={id}
       onKeyDown={event=>{
         if(event.key==='Escape'&&panel.current?.matches(':popover-open')){
@@ -63,7 +64,7 @@ export function MessageTimestamp({at,lang,L}:{at:Date|number;lang:string;L:L}){
           panel.current.hidePopover()
         }
       }}>
-      <time className="message-time" dateTime={iso}>{short}</time>
+      <span className="message-time">{status&&status+' · '}<time dateTime={iso}>{short}</time></span>
     </button>
     <div ref={panel} id={id} className="roppo-ui rp-popover message-time-detail" popover="auto">
       <time dateTime={iso}>{full}</time>

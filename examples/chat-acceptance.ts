@@ -1,6 +1,6 @@
 /** Isolated chat acceptance host. `native` uses the signed-in Codex CLI; default uses a model fixture. */
 import {desktopChatFixture} from './chat-fixture-model.ts'
-import {mkdirSync,writeFileSync,readFileSync} from 'node:fs'
+import {existsSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs'
 import {resolve,join} from 'node:path'
 import {randomUUID} from 'node:crypto'
 import {Runtime} from '../src/runtime.ts'
@@ -79,6 +79,10 @@ const model={
       return reply('Research is reviewing the guide.')
     }
     if(text==='Keep going')return reply('Still here.')
+    if(text==='Verify the message receipt'){
+      while(!existsSync(join(root,'allow-send-feedback-reply')))await wait(75)
+      return reply('The first reply is ready.')
+    }
     if(text==='Let me review the release notes before delivery.'){
       return assignFile('Draft the release notes for explicit review')
     }

@@ -1,3 +1,4 @@
+import {ToolResourceUnavailable} from '../src/tool-dispatch.ts'
 import {withCodeMode} from '../src/code-mode.ts'
 import type {PluginToolEffect} from '../src/backends/plugin-process.ts'
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync,readdirSync} from 'node:fs'
@@ -299,4 +300,34 @@ it('blocks a new native call ID after a host effect becomes uncertain in the sam
  await expect(f.registry.run({...f.request,input:'fence',tools:[{type:'function',name:'allowed',description:'test',inputSchema:{type:'object'}}],onTool:async()=>{calls++;throw Object.assign(Error('private error'),{diagnostic:{operation:'tool',reason:'repository_push_unconfirmed'}})}})).rejects.toMatchObject({code:'outcome_unknown'})
  expect(calls).toBe(1)
  expect(f.store.list<any>('backend-plugin-tool')[0].failure).toEqual({operation:'tool',reason:'repository_push_unconfirmed'})
+})
+
+it.each(['receipt-single','receipt-batch'])('finishes a missing receipt read in %s without holding its siblings',async(input)=>{
+ const f=await fixture()
+ const request=withCodeMode({...f.request,input,role:'worker',allowNativeTools:true,
+  tools:[{type:'function',name:'superagent_read',description:'Read existing receipts',inputSchema:{type:'object'}}],
+  isReadOnlyTool:name=>name==='superagent_read',
+  workerInputState:()=>({attemptId:'current',dataRevision:9,current:true}),
+  onTool:async(_name,args)=>{
+   if((args as {resource:string}).resource.endsWith('/1')){
+    await new Promise(r=>setTimeout(r,90))
+    throw new ToolResourceUnavailable('Receipt unavailable')
+   }
+   return {success:true,contentItems:[{type:'inputText',text:'recorded'}]}
+  }
+ })
+ await f.registry.run(request)
+ const [effect]=f.store.list<PluginToolEffect>('backend-plugin-tool')
+ expect(effect?.state).toBe('complete')
+ if(input==='receipt-single'){
+  expect(effect?.result?.success).toBe(false)
+  expect(effect?.result?.contentItems[0]?.text).toContain('resource_unavailable')
+ }else{
+  expect(effect?.children).toHaveLength(16)
+  expect(effect?.children?.every(c=>c.state==='complete')).toBe(true)
+  expect(effect?.children?.filter(c=>c.success)).toHaveLength(15)
+  const responses=JSON.parse(effect!.result!.contentItems[0]!.text!)
+  expect(responses[0].success).toBe(false)
+  expect(responses[0].contentItems[0].text).toContain('resource_unavailable')
+ }
 })

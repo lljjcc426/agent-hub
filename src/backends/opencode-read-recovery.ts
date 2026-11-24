@@ -7,6 +7,8 @@ import {z} from 'zod'
 import {maxWireBytes,toolParallelism} from '../execution-limits.ts'
 import {githubReadSchema} from '../github-read.ts'
 import {readSchema} from '../resources.ts'
+import {knowledgeCommandSchema} from '../knowledge.ts'
+import {skillReadSchema} from '../saved-skills.ts'
 import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
 import {bodyDigest,stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
@@ -49,6 +51,8 @@ export type InterruptedRouterTurn=
 export function isRouterRead(name:string,args:unknown){
  const action=(args as {action?:unknown}|null)?.action
  switch(name){
+  case 'router_skill':return skillReadSchema.safeParse(args).success
+  case 'router_knowledge':return ['list','read','search','versions'].includes(String(action))&&knowledgeCommandSchema.safeParse(args).success
   case 'router_read':return readSchema.safeParse(args).success
   case 'chat_artifact_find':return findChatArtifactInput.safeParse(args).success
   case 'github_read':return githubReadSchema.safeParse(args).success
@@ -81,6 +85,32 @@ function sessionRoot(stateDir:string,thread:PluginThread){
  const root=join(data,'sessions',mapping.folder)
  if(realpathSync(root)!==root)return
  return {root,folder:mapping.folder}
+}
+
+/** Match legacy direct GitHub reads to their original host results. A Code Mode
+ * cell's transformed return value is not the provider response. */
+export function legacyGithubReads(store:Pick<ThreadStore,'get'>,stateDir:string,thread:PluginThread){
+ const reads:{id:string;args:z.infer<typeof githubReadSchema>;digest:string;turnIndex:number;turnCount:number}[]=[]
+ const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',thread.id)
+ if(thread.pluginId!=='opencode-cli'||thread.stateVersion!==1||binding?.harness!==bundledEngineId||
+    binding.id!==thread.backendId||binding.harnessDigest!==thread.digest)return reads
+ try{
+  const loc=sessionRoot(stateDir,thread)
+  if(!loc||!stoppedWriter(loc.root))return reads
+  const session=sessionSchema.parse(JSON.parse(privateText(join(loc.root,'session.json'))))
+  if(session.folder!==loc.folder||session.nativeId!==thread.nativeId||session.cwd!==thread.cwd)return reads
+  const owned=new Set(thread.effectIds)
+  if(new Set(session.turns.map(turn=>turn.id)).size!==session.turns.length)return reads
+  for(const [turnIndex,turn] of session.turns.entries())for(const call of turn.tools){
+   if(call.name!=='github_read')continue
+   const id=stableDigest([thread.id,turn.id,call.id]),args=githubReadSchema.safeParse(call.args)
+   if(!owned.has(id)||!args.success)continue
+   const effect=store.get<PluginToolEffect>('backend-plugin-tool',id)
+   if(effect?.state==='complete'&&effect.result&&effect.fingerprint===stableDigest([call.name,call.args])&&call.result?.success===effect.result.success)
+    reads.push({id,args:args.data,digest:stableDigest(effect.result),turnIndex,turnCount:session.turns.length})
+  }
+  return stoppedWriter(loc.root)?reads:[]
+ }catch{return []}
 }
 
 function stoppedWriter(root:string){
@@ -265,11 +295,28 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
  return {thread,root,session,last}
 }
 
+/** Old Worker cells recorded admissions before invoking each child but left a
+ * throwing read running. A stopped cell has no external effects of its own.
+ * Never replay its source or infer a result for an unacknowledged mutation. */
+function settleReadBatch(record:PluginToolEffect,callId:string,owner:{attemptId:string;dataRevision:number|null}){
+ const children=record.children
+ const owned=(a:PluginToolEffect['admission'])=>a?.stage==='admitted'&&a.attemptId===owner.attemptId&&a.dataRevision===owner.dataRevision
+ if(record.state!=='running'||record.result||record.failure?.operation!=='tool'||record.failure.reason!=='exception'||
+    !owned(record.admission)||!children?.length||!children.some(child=>child.state==='running'))return
+ const prefix=callId+':code:'
+ if(new Set(children.map(child=>child.id)).size!==children.length||children.some(child=>
+    child.name!=='superagent_read'||!child.id.startsWith(prefix)||!/^[1-9]\d*$/.test(child.id.slice(prefix.length))||
+    !/^[a-f0-9]{64}$/.test(child.fingerprint)||!owned(child.admission)||child.permission||
+    (child.state==='complete'?typeof child.success!=='boolean':child.state!=='running'||child.success!==undefined||!!child.resource)))return
+ return {...record,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The previous read batch stopped. Reuse the retained child results. Outstanding reads returned no confirmed result.'}]},
+  children:children.map(child=>child.state==='running'?{...child,state:'complete',success:false}:child)} satisfies PluginToolEffect
+}
+
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input'|'read_batch',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
  try{
-  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'
+  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'||mode==='read_batch'
   const bound=boundWorkerSession(store,stateDir,run,boundary)
   if(!bound)return
   const {thread,session,root,last}=bound
@@ -281,6 +328,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
   }else{
    if(thread.state!=='failed')return
    if(mode==='denied_reads'&&failure?.code!=='outcome_unknown')return
+   if(mode==='read_batch'&&(failure?.code!=='outcome_unknown'||failure.diagnostic?.operation!=='run'||failure.diagnostic.reason!=='exception'))return
    const transport=failure?.diagnostic?.operation==='transport'&&
     (failure.code==='outcome_unknown'&&['timeout','turn_checkpoint'].includes(failure.diagnostic.reason)||
      failure.code==='process_failed'&&failure.diagnostic.reason==='process_exit')
@@ -292,6 +340,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
   }
   const effects=new Set(thread.effectIds),turns=new Set<string>()
   const directEffects=new Map<string,number>()
+  const settledBatches=new Map<string,PluginToolEffect>()
   let hostConfirmed=false
   const calls:{tool:string;effectId:string;success:boolean;callId?:string;action?:string;requestId?:string}[]=[],denied:InterruptedCallback[]=[]
   if(effects.size!==thread.effectIds.length)return
@@ -308,8 +357,15 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
      native.delete(call.id)
      continue
     }
-    const effectId=stableDigest([thread.id,turn.id,call.id]),record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
+    const effectId=stableDigest([thread.id,turn.id,call.id])
+    let record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
     if(!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
+    if(mode==='read_batch'&&turn===last&&!call.result&&call.name==='code_mode'&&handoffAttempt){
+     const settled=settleReadBatch(record,call.id,handoffAttempt)
+     if(!settled)return
+     record=settled
+     settledBatches.set(effectId,settled)
+    }
     if(record.children&&(call.name!=='code_mode'||new Set(record.children.map(child=>child.id)).size!==record.children.length||
        record.children.some(child=>child.state!=='complete'||typeof child.success!=='boolean'||child.permission==='pending'||child.permission==='uncertain')))return
     if(turn===last&&mode==='input'){
@@ -323,7 +379,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
      admission.dataRevision===handoffAttempt.dataRevision&&record.state==='complete'&&record.result&&
      (admission.stage==='admitted'||admission.stage==='not_dispatched'&&!record.result.success)
     if(confirmed&&(!call.result||admission.stage==='not_dispatched'))hostConfirmed=true
-    const result=call.result??(confirmed?record.result:undefined)
+    const result=call.result??(confirmed||settledBatches.has(effectId)?record.result:undefined)
     if(result){
      if(record.state!=='complete'||record.result?.success!==result.success||
        record.result.permission==='pending'||record.result.permission==='uncertain')return
@@ -356,7 +412,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
    }
    if(native.size)return
   }
-  if(!effects.size&&(mode==='input'||(mode==='denied_reads'?denied.length:calls.length))&&(boundary||stoppedWriter(root)))return {calls,denied,failure,directEffects,hostConfirmed}
+  if(!effects.size&&(mode==='input'||(mode==='denied_reads'?denied.length:calls.length))&&(boundary||stoppedWriter(root)))return {calls,denied,failure,directEffects,hostConfirmed,settledBatches}
  }catch{/* Missing history keeps the original reconciliation fence. */}
 }
 
@@ -447,8 +503,14 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
  if(store.db.prepare(`SELECT 1 FROM records WHERE kind IN ('browser-receipt','desktop-receipt','tool-receipt')
     AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(run.ticketId))return
  const provider=event.disposition==='applied'?accountedWorkerTurn(store,stateDir,run,'provider'):undefined
- const handoff=!provider&&inputHandoff(store,run,event)
- const proof=provider??(handoff?accountedWorkerTurn(store,stateDir,run,'input',handoff):undefined)
+ const attempt=store.get<WorkerAttempt>('async-worker-attempt',event.attemptId)
+ const owner=store.get<{ownerEpoch:number;dataRevision:number;state:string}>('task-ownership',run.ticketId)
+ const batch=!provider&&!!event.basis&&owner?.state==='active'&&owner.ownerEpoch===event.basis.ownerEpoch&&owner.dataRevision===event.basis.dataRevision&&event.disposition==='applied'&&event.reason==='current'&&attempt?.ticketId===run.ticketId&&
+  attempt.assignmentId===run.assignmentId&&stableDigest(attempt.basis)===stableDigest(event.basis)&&!store.get('async-worker-revoked',event.attemptId)
+  ?accountedWorkerTurn(store,stateDir,run,'read_batch',{attemptId:event.attemptId,dataRevision:event.basis.dataRevision}):undefined
+ const readBatch=batch?.settledBatches.size?batch:undefined
+ const handoff=!provider&&!readBatch&&inputHandoff(store,run,event)
+ const proof=provider??readBatch??(handoff?accountedWorkerTurn(store,stateDir,run,'input',handoff):undefined)
  if(!proof?.failure)return
  const model=store.get<{activity:string;workerId?:string;agentId?:string;sourceId:string;triggerId:string;scopeId:string;contextId:string}>('model-session',run.threadId!)
  const usage=model&&store.get<{id:string;ticketId:string;role:string;state:string;at:number;endedAt:number;workerId:string;triggerId:string;sourceId:string}>('model-usage',model.activity)
@@ -482,11 +544,11 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
   }else if(!(proof.failure.diagnostic.operation==='transport'&&['turn_checkpoint','timeout'].includes(proof.failure.diagnostic.reason))&&
     !(proof.hostConfirmed&&proof.failure.diagnostic.operation==='run'&&proof.failure.diagnostic.reason==='exception'))return
  }
- const cause=handoff?'input_superseded' as const:proof.failure.diagnostic!.reason
+ const cause=handoff?'input_superseded' as const:readBatch?'settled_read_batch' as const:proof.failure.diagnostic!.reason
  // A hard turn deadline also ends productive work. Only spend another
  // authorized goal turn when a real tool finished in the latter half.
  const productiveDeadline=(cause==='turn_checkpoint'||cause==='timeout')&&recentWorkerProgress(store,model.activity,run.ticketId,usage.at,at)
- return {calls:proof.calls,model,at,cause,productiveDeadline,undispatched:proof.denied,attemptId:handoff?handoff.attemptId:undefined,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
+ return {calls:proof.calls,model,at,cause,productiveDeadline,settledBatches:proof.settledBatches,undispatched:proof.denied,attemptId:handoff?handoff.attemptId:undefined,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
 }
 
 export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){

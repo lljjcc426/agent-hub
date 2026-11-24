@@ -1,3 +1,4 @@
+import {githubRepositorySchema} from './github-read.ts'
 import {isAbsolute,normalize} from 'node:path'
 import {z} from 'zod'
 import type {ExecutionFailure} from './execution-failure.ts'
@@ -14,6 +15,7 @@ export const evidencePath=z.string().min(1).max(1000).refine(
 export const criterionSchema=z.object({
  id,description:z.string().min(1).max(4000),
  files:z.array(evidencePath).max(20).default([]),
+ githubEvidence:z.object({repository:githubRepositorySchema,commit:z.string().regex(/^[a-f0-9]{40}$/i).optional()}).strict().optional(),
  documents:z.array(id).max(20).default([]),
  check:z.discriminatedUnion('kind',[
   z.object({kind:z.literal('file_exists'),path:evidencePath}).strict(),
@@ -32,7 +34,7 @@ export interface GoalNode extends z.infer<typeof nodeSchema> {
  ticketId?:string;delegationId?:string;state:'pending'|'running'|'verifying'|'passed'|'held'|'waiting_dependency';roundId?:string;
  pausedAssignment?:string;repairs:number;recoveries:number;repairStart?:number;refreshFrom?:string;retryAt?:number;failure?:GoalFailure;reason?:string;
  providerWait?:{turnId:string;checkAt:number;jobs:boolean}
- outputReviewDigest?:string;handoffWakeDigest?:string;
+ outputReviewDigest?:string;handoffWakeDigest?:string;acceptedDependencyOutputs?:string;
 }
 export interface GoalFailure {kind:'transient'|'quota'|'environment'|'uncertain'|'unconfirmed_effect'|'quality'|'protocol';reason:string;retryAt?:number}
 export function classifyExecutionFailure(failure:ExecutionFailure,reason:string,now:number,attempt:number):GoalFailure {

@@ -549,3 +549,26 @@ it('preserves a migrated Worker callback only with the completed migration recei
  await deploymentMaintenance(h,{action:'finish',operationId:op})
  expect(s.get('backend-plugin-tool',f.receiptId)).toEqual(f.receipt)
 })
+
+it('accounts for stopped read batches only within their admitted attempt and leaves writes fenced',()=>{
+ const h=host(),s=h.store,f=stoppedCallback(h,'code_mode',{source:'return await tools.superagent_read({resource:"catalog"})'},'worker')
+ const m=s.get<{ticketId:string}>('model-session',f.thread.id)!
+ const run:Run={ticketId:m.ticketId,assignmentId:'assignment',workerId:'one',backendId:'codex',cwd:f.thread.cwd,
+  phase:'uncertain',prepared:true,threadId:f.thread.id,turnId:f.thread.turnId}
+ const identity={ticketId:m.ticketId,assignmentId:run.assignmentId,attemptId:'attempt'}
+ const basis={ownerEpoch:1,dataRevision:3},admission={attemptId:'attempt',dataRevision:3,stage:'admitted' as const}
+ const event={...identity,id:'terminal',kind:'blocked',disposition:'applied',reason:'current',nativeTurnDigest:stableDigest(run.turnId),basis}
+ s.put('async-worker-current',m.ticketId,identity);s.put('async-worker-attempt','attempt',{...identity,basis})
+ s.put('async-worker-terminal','attempt',{...identity,eventId:event.id});s.put('async-worker-event',event.id,event)
+ s.put('backend-plugin-thread',f.thread.id,{...f.thread,lastFailure:{...f.thread.lastFailure,diagnostic:{operation:'run',reason:'exception'}}})
+ s.put('task-ownership',m.ticketId,{...basis,state:'active'})
+ writeFileSync(join(f.journal,f.thread.turnId+'.ready'),'ready')
+ const read={name:'superagent_read',id:'number:1:code:1',state:'running',fingerprint:stableDigest(['superagent_read',{resource:'catalog'}]),admission}
+ const set=(child:object)=>s.put('backend-plugin-tool',f.receiptId,{...f.receipt,admission,children:[child]})
+ const prove=()=>settledProviderTurn(s,h.config.stateDir,run)
+ set(read);expect(prove()?.settledBatches.get(f.receiptId)).toMatchObject({state:'complete',children:[{success:false,state:'complete'}]})
+ expect(s.get<PluginToolEffect>('backend-plugin-tool',f.receiptId)?.state).toBe('running')
+ set({...read,name:'superagent_shell'});expect(prove()).toBeUndefined()
+ set(read);s.put('task-ownership',m.ticketId,{...basis,state:'active',dataRevision:4});expect(prove()).toBeUndefined()
+ s.put('task-ownership',m.ticketId,{...basis,state:'active'});s.put('async-worker-revoked','attempt',{at:Date.now()});expect(prove()).toBeUndefined()
+})

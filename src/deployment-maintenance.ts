@@ -174,6 +174,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    else{
     const wakes=retainedInputWakes(store,run)
     if(!attempt||!wakes)return
+    for(const receiptId of provider!.settledBatches.keys())receipts.push({id:receiptId,threadId:run.threadId,turnId:run.turnId,tool:'code_mode'})
     for(const callback of provider!.undispatched)receipts.push({id:callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_desktop'})
     jobs.push(...wakes);hasProviderCheckpoint=true
    }

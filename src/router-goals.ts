@@ -67,7 +67,7 @@ function readContinuation(proof:ReadRecovery['proof']){
  return {instruction:'Continue the original task in its retained workspace. Retry the recorded webfetch_batch calls. The tool reuses saved excerpts and fetches pages with missing results.',
   ...(proof.batches.length===1?{urls:proof.urls}:{batches:proof.batches})}
 }
-export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. When the user wants to continue earlier work, list goals (including ended ones) before starting anything. Resume a held goal with its existing tasks. For several goals the user wants to continue, use resume_many with one target per requested goal (id, expectedRevision and a distinct stable operationId). Report the outcome of every target, including blockers. To continue an ended local Chat goal, start with continueFrom containing its goalId, revision as expectedRevision, and the ticketId whose retained workspace holds the prior work. Use local nodes. The host reuses that directory; instruct the Worker to inspect it for existing files before asking for an upload or creating a retrieval task. Local Chat nodes share their goal workspace by default; use workspace read-only for readers and worktree only for independent parallel Git edits. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. Use list and inspect to find existing work from this Chat, including goals created during an internal Worker follow-up. Use worker_manage result with the goal ticket IDs to read Worker reports. When the user explicitly asks to cancel the entire task, identify the goal by title or ID and use cancel with its current revision. Cancelling one Worker is insufficient. If remote work is involved, check whether the remote team has confirmed cancellation. Inspect also returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},targets:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},expectedRevision:{type:'integer',minimum:0},operationId:{type:'string'}},required:['id','expectedRevision','operationId']}},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
+export const goalSpecs:ToolSpec[]=[{type:'function',name:'router_goal',description:'Own a long-running user goal across turns and restarts. When the user wants to continue earlier work, list goals (including ended ones) before starting anything. Resume a held goal with its existing tasks. For several goals the user wants to continue, use resume_many with one target per requested goal (id, expectedRevision and a distinct stable operationId). Report the outcome of every target, including blockers. To continue an ended local Chat goal, start with continueFrom containing its goalId, revision as expectedRevision, and the ticketId whose retained workspace holds the prior work. Use local nodes. The host reuses that directory; instruct the Worker to inspect it for existing files before asking for an upload or creating a retrieval task. Local Chat nodes share their goal workspace by default; use workspace read-only for readers and worktree only for independent parallel Git edits. Prefer nodes with exactly one of workerId (local Worker) or teamTargetId (authorized independent team), dependsOn and criterionIds for host scheduling. Remote nodes retain delegation handles and are independently verified; the host never invents a local Worker. Failed remote contracts are held for review rather than repeated. Do not call team_delegate assign or accept for a managed node. Use workspace-relative file paths for evidence and node outputs. For code changes, declare the changed source and test files or a diff so acceptance can inspect the implementation. Review the requested reply as a deliverable; the host routes it after acceptance. Each criterion may declare files, documents and a deterministic check (file_exists, text_contains, json_equals with JSON pointer, or xlsx_cell_equals with sheet, cell, expected and optional numeric sumRange). The host intercepts ready reports, independently verifies immutable artifacts, repairs failed checks on the same open task and completes the goal only after overall acceptance. Use list and inspect to find existing work from this Chat, including goals created during an internal Worker follow-up. Use worker_manage result with the goal ticket IDs to read Worker reports. When the user explicitly asks to cancel the entire task, identify the goal by title or ID and use cancel with its current revision. Cancelling one Worker is insufficient. If remote work is involved, check whether the remote team has confirmed cancellation. Inspect also returns verification rounds and versioned replanning records. After a settled strategy failure the host may request a new execution graph from the Router model and independently review it. Original objective, authority and acceptance criteria are immutable; replanning cannot change them. Do not manually assign tasks already declared in nodes. Start only when the user asks for sustained/multistep work, with an exact authorizationQuote from the current human message, objective and acceptance criteria. For start, use expectedRevision=0 and assign every criterionId to a node, including the content of a requested reply. To replace an immutable goal, start a new explicitly authorized goal with supersedes {goalId,expectedRevision}; this cancels old execution and preserves its history. Optional details nonGoals/inputs/deadline must be exact excerpts from the current human message. Deadline is requested text only, not automatic expiry or extra permission. Mutations require operationId and expectedRevision. Keep plan/nextAction current. wait with needsHuman=false retains a durable wake; needsHuman=true requires a concrete question/reason. Worker completion does not complete the goal. The host completes accepted goals automatically; complete cannot bypass independent verification. pause/resume/cancel and raising maxTurns require a current explicit human. Reaching the turn allowance holds an unresolved goal; never claim success.',inputSchema:{type:'object',properties:{action:{type:'string',enum:goalCommandSchema.shape.action.options},targets:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},expectedRevision:{type:'integer',minimum:0},operationId:{type:'string'}},required:['id','expectedRevision','operationId']}},details:{type:'object',properties:{nonGoals:{type:'array',items:{type:'string'}},inputs:{type:'array',items:{type:'string'}},deadline:{type:'string'}},additionalProperties:false},supersedes:{type:'object',properties:{goalId:{type:'string'},expectedRevision:{type:'integer'}},required:['goalId','expectedRevision'],additionalProperties:false},id:{type:'string'},operationId:{type:'string'},expectedRevision:{type:'integer'},title:{type:'string'},objective:{type:'string'},authorizationQuote:{type:'string'},criteria:{type:'array',items:{type:'object',properties:{id:{type:'string'},description:{type:'string'},githubEvidence:{type:'object',properties:{repository:{type:'string'},commit:{type:'string',description:'Exact 40-character commit for a CI check when known'}},required:['repository'],additionalProperties:false},files:{type:'array',items:{type:'string'}},documents:{type:'array',items:{type:'string'}},check:{type:'object',properties:{kind:{type:'string',enum:['file_exists','text_contains','json_equals','xlsx_cell_equals']},path:{type:'string'},text:{type:'string'},pointer:{type:'string'},sheet:{type:'string'},cell:{type:'string'},sumRange:{type:'string'},expected:{}},required:['kind','path'],additionalProperties:false}},required:['id','description'],additionalProperties:false}},plan:{type:'array',items:{type:'string'}},nextAction:{type:'string'},reason:{type:'string'},wakeAfterSeconds:{type:'integer'},needsHuman:{type:'boolean'},checks:{type:'array',items:{type:'object',properties:{criterionId:{type:'string'},ticketId:{type:'string'},delegationId:{type:'string'},reportAt:{type:'string'},explanation:{type:'string'}},required:['criterionId','reportAt','explanation'],additionalProperties:false}},maxTurns:{type:'integer'},budget:{type:'object',properties:{maxMinutes:{type:'number'},maxUsd:{type:'number'}},additionalProperties:false},maxParallel:{type:'integer'},maxRepairs:{type:'integer'},maxReplans:{type:'integer'},nodes:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},teamTargetId:{type:'string'},dependsOn:{type:'array',items:{type:'string'}},criterionIds:{type:'array',items:{type:'string'}}},required:['id','title','instruction','criterionIds'],additionalProperties:false}}},required:['action'],additionalProperties:false}}]
 
 export class RouterGoals {
  private nextEvidenceCheck=new Map<string,number>()
@@ -525,7 +525,7 @@ export class RouterGoals {
   store.put('run',run.ticketId,{...retained,phase:'idle',webFetchReplay:replay} satisfies Run)
  }
  private automaticReadRecoveryAllowed(g:RouterGoal){
-  return this.host.config.work.autoRecover&&g.managed===true&&!!g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
+  return this.host.config.work.autoRecover&&g.managed===true&&!!g.contract&&!g.supersededBy&&!g.cancelledByUser&&g.turns<g.maxTurns&&g.failures<3
  }
  private workerCanContinue(g:RouterGoal,n:GoalNode,run:Run,task:Ticket){
   const id=run.ticketId,host=this.host
@@ -599,7 +599,7 @@ export class RouterGoals {
    const {activity,scopeId,contextId,workerId,triggerId,sourceId}=provider.model
    const key=activity+':'+callId
    const value={id:key,activity,scopeId,contextId,workerId,triggerId,sourceId,ticketId:id,assignmentId:run.assignmentId,at:provider.at}
-   const effect=store.get<PluginToolEffect>('backend-plugin-tool',effectId)!
+   const effect=provider.settledBatches.get(effectId)??store.get<PluginToolEffect>('backend-plugin-tool',effectId)!
    const readable=!this.host.memory.cleanup.blocked('backend-plugin-tool',effectId,effect)&&!this.host.memory.cleanup.blocked('model-tool-receipt',key,value)
    if(readable&&!store.get('model-tool-receipt',key)){
     receipts.set(key,{...value,result:effect.result})
@@ -611,7 +611,7 @@ export class RouterGoals {
   const continuation=shell?{
    instruction:'Continue the current reviewed task in the retained workspace. The interrupted shell request never started. Inspect existing work and the accepted prerequisite artifacts. Use superagent_artifact_read with each artifact.id. Preserve prior effects.',unstartedRequestId:shell.requestId,
   }:{
-   instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read the exact receipt resources for previous results. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
+   instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read only the exact receipt resources listed here for previous results. IDs are opaque. Use the retained child results directly and do not generate or enumerate receipt IDs. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
    ...(provider?.cause==='input_superseded'?{inputHandoff:'Use the newest admitted user input. The previous activation ended. Its undispatched requests did not run.'}:{}),
    ...(liveJobs.length?{runningJobs:liveJobs.map(job=>({id:job.id,resource:'job/'+job.id}))}:{}),
   }
@@ -624,6 +624,11 @@ export class RouterGoals {
      reconciliation:{reason:'shell_not_dispatched',mode:'automatic',previousState:callback.receipt.state,ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,activityId,at:this.now()}})
     store.audit({type:'backend.tool.reconciled',receiptId:callback.id,reason:'shell_not_dispatched',activityId,ticketId:id,confirmed:false})
    }else{
+    for(const [receiptId,effect] of provider!.settledBatches){
+     const reconciliation={reason:'settled_read_batch',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,at:this.now()}
+     store.put('backend-plugin-tool',receiptId,{...effect,reconciliation})
+     store.audit({type:'backend.tool.reconciled',receiptId,...reconciliation})
+    }
     for(const callback of provider!.undispatched){
      const reconciliation={reason:'input_superseded_before_dispatch',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,attemptId:provider!.attemptId,at:this.now()}
      store.put('backend-plugin-tool',callback.id,{...callback.receipt,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The host declined this observation before dispatch when new input arrived.'}]},reconciliation})
@@ -644,7 +649,7 @@ export class RouterGoals {
    // A provider checkpoint continues the same accepted input. Re-admitting
    // the goal's older trigger here would move the reply away from its owner.
    if(shell){this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)}
-   this.host.engine.report(id,{state:'waiting',summary:provider?.cause==='input_superseded'?'已收到补充。':shell?'正在接续任务。':provider?.cause==='timeout'||provider?.cause==='turn_checkpoint'?'已保留本轮进展，正在接续长任务。':'已保留上一步结果，正在恢复模型连接。',question:null})
+   this.host.engine.report(id,{state:'waiting',summary:provider?.cause==='input_superseded'?'已收到补充。':shell?'正在接续任务。':provider?.cause==='timeout'||provider?.cause==='turn_checkpoint'||provider?.cause==='settled_read_batch'?'已保留本轮进展，正在接续长任务。':'已保留上一步结果，正在恢复模型连接。',question:null})
    this.host.engine.note(id,note)
    return true
   })
@@ -823,6 +828,26 @@ export class RouterGoals {
    }else{n.state='held';n.reason='Remote acceptance needs review: '+round.error}
   }else if(round.state==='stale'){n.state='held';n.reason='Remote acceptance evidence or authority changed'}
  }
+ private dependencyOutputs(g:RouterGoal,n:GoalNode){
+  if(g.project||!n.dependsOn.length)return
+  const outputs:unknown[]=[]
+  for(const id of n.dependsOn){
+   const dep=g.nodes!.find(d=>d.id===id)
+   if(!dep?.roundId||!dep.ticketId||dep.teamTargetId)return
+   const round=this.host.store.get<VerificationRound>('goal-verification',dep.roundId)
+   const delivery=this.host.store.get<GoalDelivery>('goal-delivery',dep.ticketId)
+   if(round?.state!=='passed'||!delivery||!dep.criterionIds.length)return
+   // Only reuse deliveries fully described by deterministic artifacts. Provider
+   // observations, semantic judgments and unversioned reports need a fresh read.
+   const criteria=this.host.verification.criteria(g,dep)
+   if(criteria.some(cr=>!cr.check||cr.documents?.length||cr.githubEvidence||cr.check.kind==='text_contains'&&/^\s*#{1,6}\s/.test(cr.check.text)))return
+   const artifacts=round.snapshot.evidence.filter(e=>e.ticketId===dep.ticketId&&e.kind==='file')
+   if(!artifacts.length||artifacts.some(e=>e.missing))return
+   outputs.push([id,delivery.assignmentId,delivery.report.state,delivery.report.summary,delivery.report.question,delivery.reply,delivery.files,
+    artifacts.map(e=>[e.key,e.artifact?.sha256??stableDigest(e.content)])])
+  }
+  return stableDigest(outputs)
+ }
  private repair(g:RouterGoal,n:GoalNode,round:Pick<VerificationRound,'id'|'checks'>){
   if(n.teamTargetId){n.state='held';n.reason='Remote acceptance needs a reviewed new contract; automatic replay is disabled';this.save(g);return}
   const c=this.context(g),task=this.host.store.tickets.get(n.ticketId!)!
@@ -834,6 +859,7 @@ export class RouterGoals {
   if(Buffer.byteLength(instruction)>this.host.scopes.scope(g.scopeId).contextBytes)throw Error('Repair evidence exceeds context budget')
   this.host.store.atomic(()=>{
    if(this.host.store.get('goal-repair',repairKey))return
+   const inputs=new Map((g.nodes??[]).filter(node=>node.state==='passed'&&node.dependsOn.length).map(node=>[node.id,this.dependencyOutputs(g,node)]))
    const prior=task.inputs.map(i=>i.id)
    this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
    if(task.assignments.at(-1)?.report?.state==='blocked'&&!hasOutstandingQuestion(this.host,task))
@@ -843,8 +869,73 @@ export class RouterGoals {
    this.host.store.put('goal-repair',repairKey,{id:repairKey,roundId:round.id,goalId:g.id,triggerId:g.triggerId,ticketId:task.id,failed,at:this.now()})
    n.repairs++;n.state='running';n.roundId=undefined;n.refreshFrom=undefined;g.finalRoundId=undefined
    const affected=new Set([n.id]);let grew=true
-   while(grew){grew=false;for(const d of g.nodes??[])if(!affected.has(d.id)&&d.dependsOn.some(id=>affected.has(id))){affected.add(d.id);grew=true;if(d.ticketId||d.delegationId){d.state='waiting_dependency';if(!d.refreshFrom||!this.host.store.get('goal-replan',d.refreshFrom))d.refreshFrom=round.id;d.roundId=undefined;d.reason='Prerequisite repair requires refreshing this result'}}}
+   while(grew){grew=false;for(const d of g.nodes??[])if(!affected.has(d.id)&&d.dependsOn.some(id=>affected.has(id))){affected.add(d.id);grew=true;if(d.ticketId||d.delegationId){if(!d.refreshFrom)d.acceptedDependencyOutputs=inputs.get(d.id);d.state='waiting_dependency';if(!d.refreshFrom||!this.host.store.get('goal-replan',d.refreshFrom))d.refreshFrom=round.id;d.roundId=undefined;d.reason='Prerequisite repair requires refreshing this result'}}}
    this.save(g)
+  })
+ }
+ /** Older hosts charged the last node for unattributed overall verdicts.
+  * Recheck a still-authorized open goal once, from the prior accepted deliveries. */
+ private recheckLegacyAcceptance(g:RouterGoal){
+  const store=this.host.store,nodes=g.nodes!,id=g.finalRoundId!
+  const last=store.get<VerificationRound>('goal-verification',id)
+  if(!last||last.evidenceVersion||last.nodeId||last.goalId!==g.id||!['failed','insufficient'].includes(last.state)||
+     !last.checks.some(c=>c.criterionId==='__goal__'&&c.verdict!=='passed')||last.checks.some(c=>c.criterionId!=='__goal__'&&c.verdict!=='passed'))return
+  const held=nodes.filter(n=>n.state!=='passed')
+  if(held.length!==1||held[0]!.roundId!==id||held[0]!.state!=='held'||held[0]!.failure?.kind!=='quality'||g.project||g.replanId||g.cancelledByUser)return
+  const c=this.context(g)
+  for(const n of nodes){
+   if(!n.ticketId||n.teamTargetId||!this.effectsSettled(n.ticketId))return
+   const task=store.tickets.get(n.ticketId)
+   if(!task||task.ended||task.attention||task.undelivered.length||this.host.executionActive(task.id)||
+      store.get('task-continuation',task.id)||unsettledTaskEffects(store,task.id,0))return
+   this.host.scopes.checkTask(task.id,c,true)
+   if(store.db.prepare(`SELECT 1 FROM records s JOIN records t ON t.kind='backend-plugin-thread' AND t.id=s.id
+    JOIN json_each(t.body,'$.effectIds') e LEFT JOIN records r ON r.kind='backend-plugin-tool' AND r.id=e.value
+    WHERE s.kind='model-session' AND json_extract(s.body,'$.ticketId')=? AND json_extract(r.body,'$.state') IS NOT 'complete' LIMIT 1`).get(task.id))return
+  }
+  if(!this.host.verification.current(last,g))return
+  const n=held[0]!
+  const prior=store.list<VerificationRound>('goal-verification').filter(r=>r.goalId===g.id&&r.nodeId===n.id&&r.state==='passed').sort((a,b)=>b.at-a.at).find(r=>this.host.verification.current(r,g))
+  if(!prior)return
+  store.atomic(()=>{
+   n.state='passed';n.roundId=prior.id;n.failure=undefined;n.reason=undefined
+   g.state='active';g.reason=undefined;g.nextAt=undefined;g.finalRoundId=undefined
+   const round=this.host.verification.ensure(g,undefined,true)
+   g.finalRoundId=round.id;this.save(g)
+   store.audit({type:'goal.acceptance_rechecked',goalId:g.id,priorRoundId:id,roundId:round.id})
+  })
+ }
+ private routeAcceptanceGaps(g:RouterGoal,round:VerificationRound){
+  const nodes=g.nodes!,gaps=round.checks.filter(ch=>ch.verdict!=='passed')
+  const owners=new Map<GoalNode,typeof gaps>()
+  for(const gap of gaps){
+   const criteria=gap.criterionId==='__goal__'?gap.repairCriterionIds??[]:[gap.criterionId]
+   let targets=nodes.filter(n=>n.criterionIds.some(id=>criteria.includes(id)))
+   if(g.project)targets=nodes.filter(n=>n.id===g.project!.integration)
+   if(!targets.length&&nodes.length===1)targets=nodes
+   for(const target of targets)owners.set(target,[...(owners.get(target)??[]),gap])
+  }
+  // Repair prerequisites first. Their dependent deliveries will be refreshed
+  // and any remaining gap will be decided against that new version.
+  const byId=new Map(nodes.map(n=>[n.id,n])),ancestors=new Map<string,boolean>()
+  const hasOwnerAncestor=(n:GoalNode):boolean=>{
+   const known=ancestors.get(n.id)
+   if(known!==undefined)return known
+   const found=n.dependsOn.some(id=>owners.has(byId.get(id)!)||hasOwnerAncestor(byId.get(id)!))
+   ancestors.set(n.id,found)
+   return found
+  }
+  this.host.store.atomic(()=>{
+   for(const [n,checks] of owners){
+    if(hasOwnerAncestor(n))continue
+    if(n.repairs-(n.repairStart??0)<(g.maxRepairs??2)){this.repair(g,n,{id:round.id,checks});continue}
+    n.state='held';n.reason='Overall goal acceptance did not pass within the repair allowance';n.failure={kind:'quality',reason:n.reason};n.roundId=round.id
+   }
+   this.save(g)
+   if(nodes.some(n=>n.state==='running'||n.state==='waiting_dependency'))return
+   if(this.host.replanning.consider(g))return
+   g.state='held';g.nextAt=undefined;g.reason=owners.size?'Overall goal acceptance did not pass within the repair allowance':'Overall acceptance needs an attributable evidence gap'
+   this.save(g);this.notice(g,g.reason)
   })
  }
  /** Host-controlled graph scheduling and acceptance; no model decides these transitions. */
@@ -862,6 +953,11 @@ export class RouterGoals {
     ? saved.nodes?.filter(n=>n.state==='held') : undefined
    const evidenceHolds=held&&saved.reason===heldReason(saved.nodes!)&&!saved.project&&
     (this.nextEvidenceCheck.get(saved.id)??0)<=this.now()?held.filter(n=>n.ticketId&&['quality','environment'].includes(n.failure?.kind??'')):[]
+   if(held?.length&&saved.finalRoundId&&saved.reason==='Overall goal acceptance did not pass within the repair allowance'&&(this.nextEvidenceCheck.get(saved.id)??0)<=this.now()){
+    this.nextEvidenceCheck.set(saved.id,this.now()+60_000)
+    try{this.recheckLegacyAcceptance(saved)}catch(error){this.host.store.audit({type:'goal.recheck_unavailable',goalId:saved.id,reason:String(error).slice(0,300)})}
+    continue
+   }
    const checkHeldRead=held?.length&&held.every(n=>n.failure?.kind==='uncertain')&&saved.reason===heldReason(saved.nodes!)
     const confirmed=saved.state==='held'&&saved.reason===heldReason(saved.nodes??[])
      ? saved.nodes?.filter(n=>n.state==='held'&&n.failure?.kind==='unconfirmed_effect'&&n.ticketId&&this.effectsSettled(n.ticketId))
@@ -921,6 +1017,11 @@ export class RouterGoals {
        const dependent=this.host.store.tickets.get(n.ticketId)
        if(!dependent||hasOutstandingQuestion(this.host,dependent)||this.host.approvals.waiting(n.ticketId)||this.host.permissions.forWorker(n.ticketId).length)continue
        if(this.host.replanning.resumeNode(g,n))continue
+       if(n.acceptedDependencyOutputs&&n.acceptedDependencyOutputs===this.dependencyOutputs(g,n)&&this.host.store.get('goal-delivery',n.ticketId)){
+        n.state='verifying';n.refreshFrom=undefined;n.acceptedDependencyOutputs=undefined;n.reason=undefined
+        this.save(g);continue
+       }
+       n.acceptedDependencyOutputs=undefined
        if((n.repairs-(n.repairStart??0))>=(g.maxRepairs??2)){n.state='held';n.reason='Dependent refresh allowance reached'}
        else this.repair(g,n,{id:n.refreshFrom!,checks:n.criterionIds.map(criterionId=>({criterionId,verdict:'failed',explanation:'A prerequisite was repaired. Re-read its accepted evidence and refresh this dependent deliverable.',evidenceIds:[],method:'program'}))})
       }
@@ -1055,10 +1156,7 @@ export class RouterGoals {
        }
       })
      }else if(['failed','insufficient'].includes(round.state)){
-      const failedIds=new Set(round.checks.filter(ch=>ch.verdict!=='passed').map(ch=>ch.criterionId))
-      const target=g.nodes!.find(n=>g.project?n.id===g.project.integration:n.criterionIds.some(id=>failedIds.has(id)))??g.nodes!.at(-1)!
-      if((target.repairs-(target.repairStart??0))<(g.maxRepairs??2))this.repair(g,target,round)
-      else{target.state='held';target.reason='Overall goal acceptance did not pass within the repair allowance';target.failure={kind:'quality',reason:target.reason};target.roundId=round.id;this.save(g);if(!this.host.replanning.consider(g)){g.state='held';g.nextAt=undefined;g.reason=target.reason;this.save(g);this.notice(g,g.reason)}}
+      this.routeAcceptanceGaps(g,round)
      }else if(round.state==='errored'){
       const failure=classifyVerificationFailure(round.error??'Verifier failed',this.now(),g.recoveryAttempts??0)
       if(['transient','quota','protocol'].includes(failure.kind)&&(failure.kind==='protocol'?round.attempts<=2:(g.recoveryAttempts??0)<5)){

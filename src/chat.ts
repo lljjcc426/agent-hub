@@ -66,7 +66,7 @@ type PendingCard =
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
-interface ChatRun {openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
+interface ChatRun {textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -936,6 +936,21 @@ export class ChatSessions {
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(!run)return new Set<string>()
     return new Set(this.host.store.db.prepare("SELECT json_extract(r.body,'$.triggerId') AS id FROM records r JOIN jobs j ON json_extract(j.payload,'$.triggerId')=json_extract(r.body,'$.triggerId') WHERE r.kind='chat-run' AND json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state='pending' AND json_extract(j.payload,'$.messageId') IS NULL").all(run.conversationId).map(r=>String(r.id)).filter(id=>id!==triggerId))
+  }
+  textReplyAttempt(triggerId:string){
+    return this.host.store.get<ChatRun>('chat-run',triggerId)?.textReplyAttempt
+  }
+  claimTextReply(triggerId:string,attempt:NonNullable<ChatRun['textReplyAttempt']>){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run||run.cancelled||run.cancelRequested||run.textReplyAttempt)return false
+    this.host.store.put('chat-run',triggerId,{...run,textReplyAttempt:attempt})
+    return true
+  }
+  hasVisibleAnswer(triggerId:string){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run)return false
+    return !!this.host.store.get<Message>('chat-message','user:'+triggerId)?.agentReactions?.length||
+      this.rows<Message>('chat-message','runId',triggerId).some(m=>m.role==='assistant'&&!m.opening&&(!!m.decision||m.status==='complete'&&!!m.text.trim()))
   }
   reply(jobId:string,triggerId:string,text:string){
     const stream=this.streams.get(jobId);if(stream?.timer)clearTimeout(stream.timer);this.streams.delete(jobId)

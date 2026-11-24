@@ -1,3 +1,4 @@
+import {failedRead} from '../tool-dispatch.ts'
 import {modelToolCalls,maxWireBytes} from '../execution-limits.ts'
 import {WorkerToolNotDispatched,undispatchedToolResult,workerToolChildren} from '../worker-tool-dispatch.ts'
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process'
@@ -236,7 +237,11 @@ export class ProcessBackend implements Model {
           effect.children.push(entry)
           try{
            admit(entry)
-           const value=await run()
+           let value:ToolResult
+           try{value=await run()}catch(error){
+            if(error instanceof WorkerToolNotDispatched||error instanceof ContextBudgetExceeded||closed||request.signal?.aborted||!request.isReadOnlyTool?.(name))throw error
+            value=failedRead(name,error)
+           }
            if(request.retainToolResult)entry.resource='model-tool-receipt/'+await request.retainToolResult(childId,value)
            entry.state='complete';entry.success=value.success;entry.permission=value.permission
            return value
@@ -259,9 +264,7 @@ export class ProcessBackend implements Model {
          if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||effect.children?.some(child=>child.state!=='complete')||!request.isReadOnlyTool?.(p.name)){
           uncertainTool=true;save();throw error
          }
-         outcome={success:false,contentItems:[{type:'inputText',text:JSON.stringify({
-          status:'read_failed',tool:p.name,message:'The read returned no result. Check the arguments or continue with another available read tool.'
-         })}]}
+         outcome=failedRead(p.name,error)
         }
        }finally{inflightTools.delete(id)}
       }

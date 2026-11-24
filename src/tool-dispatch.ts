@@ -1,4 +1,15 @@
 import {toolParallelism} from './execution-limits.ts'
+import type {ToolResult} from './chat-permissions.ts'
+
+export class ToolResourceUnavailable extends Error {}
+
+export function failedRead(tool:string,error:unknown):ToolResult {
+  const unavailable=error instanceof ToolResourceUnavailable
+  return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+    status:unavailable?'resource_unavailable':'read_failed',tool,
+    message:unavailable?'This receipt is unavailable. Use an exact resource reference returned by the host.':'The read returned no result. Check its arguments or continue with another authorized source.',
+  })}]}
+}
 
 // These host tools only read scoped resources. Unclassified tools take the
 // exclusive path, including externally advertised MCP tools and browser input.

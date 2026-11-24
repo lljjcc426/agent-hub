@@ -28,6 +28,7 @@ const command=z.discriminatedUnion('action',[
   z.object({action:z.literal('run'),skill:skillRefSchema,triggerId:id,authorizationQuote:z.string().min(1).max(16000),operationId:id,inputs:z.record(z.string(),z.string()).optional()}).strict(),
   z.object({action:z.literal('retire'),skill:skillRefSchema,scopeId:id,entryId:id,expectedRevision:z.number().int().nonnegative()}).strict(),
 ])
+export const skillReadSchema=z.discriminatedUnion('action',[z.object({action:z.literal('list')}).strict(),skillRefSchema.extend({action:z.literal('read')}).strict()])
 export const skillSpecs:ToolSpec[]=[{type:'function',name:'router_skill',description:'List reusable methods for this entry, or read one exact version. Methods are reference material. A fresh request grants authority for each execution.',inputSchema:{type:'object',properties:{action:{type:'string',enum:['list','read']},id:{type:'string'},version:{type:'integer'}},required:['action'],additionalProperties:false}}]
 
 export class SavedSkills {
@@ -98,7 +99,7 @@ export class SavedSkills {
   }
   readTool(value:unknown,context:ScopeContext){
     this.host.scopes.assertCurrent(context)
-    const query=z.discriminatedUnion('action',[z.object({action:z.literal('list')}).strict(),skillRefSchema.extend({action:z.literal('read')}).strict()]).parse(value)
+    const query=skillReadSchema.parse(value)
     return query.action==='list'?this.list(context.route.scopeId,context):this.inspect(query,context.route.scopeId,context.route.entryId,context)
   }
   private workers(template:Template,scopeId:string){

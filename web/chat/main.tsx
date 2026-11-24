@@ -211,7 +211,6 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
     code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
     code.startsWith("attachment_")?attachmentError(code,L):
-    code==='sent_refresh_failed'?L('Message sent. Syncing replies…','消息已发送，正在同步回复…'):
     code === "conversation_busy"
       ? L("This conversation is still running.", "当前会话仍在运行。")
       : code === "conversation_missing"
@@ -1100,7 +1099,6 @@ function Chat(p: ChatProps) {
       return {...data, messages, approvals, decisions:[...decisions.values()], hasMore:messages[0]?.sequence === 1 ? false : data.hasMore};
     });
     setLoading(false);
-    setError(code=>code==='sent_refresh_failed'?'':code);
     const received=new Set(messages.flatMap(m=>m.clientMessageId?[m.clientMessageId]:[]));
     confirm(id,received);
     const saved = savedPending(id);
@@ -1114,9 +1112,8 @@ function Chat(p: ChatProps) {
     if(!id||!accepted||readonly||around)return;
     const controller=new AbortController();
     const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(5000)]);
-    void refreshCurrent.current(signal).catch(()=>{
-      if(alive.current&&!controller.signal.aborted)setError('sent_refresh_failed');
-    });
+    // The message is already accepted. The conversation stream and poll retry this read.
+    void refreshCurrent.current(signal).catch(()=>{});
     return ()=>controller.abort();
   },[id,accepted,readonly,around]);
   useEffect(() => {

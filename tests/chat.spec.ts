@@ -115,6 +115,9 @@ it('answers new Chat messages while a previous operation remains unconfirmed acr
   }
   expect(input.continuity.recovery.pending).toEqual([{tool:'worker_manage',receiptId}])
   expect(r.threadId).toBeUndefined()
+  for(const [name,args] of [['router_knowledge',{action:'search',query:'review'}],['router_skill',{action:'list'}]] as const){
+   expect((await r.onTool!(name,args,'inspect-'+name)).success).toBe(true)
+  }
   const read=await r.onTool!('worker_manage',{action:'list'},'list')
   expect(read.success).toBe(true)
   const write=await r.onTool!('worker_manage',{action:'assign',id:'research',requestId:'new-id',revision:0,text:'Check the issue'},'repeat')
@@ -2020,4 +2023,21 @@ it('pages retained approval history across tied timestamps and looks up older re
   expect(()=>h.chat.approvalRecord(c.id,'owner','foreign')).toThrow()
   expect(()=>h.chat.approvalHistory(c.id,'other')).toThrow()
   expect(()=>h.chat.approvalRecord(c.id,'other','record-00')).toThrow()
+})
+
+it.each([true,false])('answers an explicit question once with a text-only recovery (model replies %s)',async(replies)=>{
+ let calls=0
+ const f=fixture(async r=>{
+  if(++calls===1)return {reply:' '}
+  expect(r.tools??[]).toHaveLength(0)
+  expect(r.onTool).toBeUndefined()
+  expect(r.threadId).toBeUndefined()
+  return {reply:replies?'在，我收到了。':' '}
+ }),c=f.h.chat.create('owner')
+ const {runId}=send(f.h,c.id,'你还在吗？')
+ await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')
+ const answer=f.h.chat.view(c.id,'owner').messages.filter(m=>m.runId===runId&&m.role==='assistant'&&m.text.trim())
+ expect(calls).toBe(2);expect(answer).toHaveLength(1)
+ expect(answer[0]!.text).toBe(replies?'在，我收到了。':'我在，已收到你这条消息。')
+ expect(f.h.store.tickets.list()).toHaveLength(0)
 })

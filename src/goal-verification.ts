@@ -11,19 +11,31 @@ import type {WorkerReport} from './vendor/dsh-core/index.ts'
 import type {Run} from './store.ts'
 import {stableDigest} from './sources.ts'
 import {scopeBudget} from './context-budget.ts'
+import {githubRepository,githubReadSchema} from './github-read.ts'
+import {legacyGithubReads} from './backends/opencode-read-recovery.ts'
+import type {PluginThread,PluginToolEffect} from './backends/plugin-process.ts'
+import type {ContextManifest} from './router-memory.ts'
 import {inlineEvidenceBudget,evidenceAccess,type GoalEvidence as Evidence} from './goal-evidence.ts'
 import type {DelegationBinding} from './delegation/goals.ts'
 import {taskView} from './task-context.ts'
 import {AcceptanceEvidenceTooLarge,type EvidenceOverflow} from './goal-acceptance.ts'
 
 export interface GoalDelivery {id:string;goalId:string;ticketId:string;triggerId:string;scopeId:string;assignmentId:string;report:WorkerReport;retainedOutputs?:{digest:string;reportedAt:string};reply?:string;files?:string[];inputRevision:number;at:number}
-interface Snapshot {contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
-export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];method:'program'|'agent'}
-export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];handoffEvidence?:true;delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
+interface Snapshot {version?:2;contract:string;tasks:{ticketId:string;assignmentId:string;reportHash:string;inputRevision:number}[];delegations?:DelegationBinding[];evidence:Evidence[];finalCommit?:string}
+export interface VerificationCheck {criterionId:string;verdict:'passed'|'failed'|'insufficient';explanation:string;evidenceIds:string[];repairCriterionIds?:string[];method:'program'|'agent'}
+export interface VerificationRound {id:string;goalId:string;nodeId?:string;triggerId:string;scopeId:string;entryId:string;ticketIds:string[];evidenceVersion?:2;handoffEvidence?:true;delegationIds?:string[];state:'pending'|'running'|'passed'|'failed'|'insufficient'|'errored'|'stale';snapshot:Snapshot;checks:VerificationCheck[];attempts:number;error?:string;at:number;finishedAt?:number;threadId?:string}
 // Bounds retained snapshots. Model input and evidence pages have their own context budgets.
 const snapshotLimitMiB=2
 const snapshotLimitBytes=snapshotLimitMiB*1024*1024
-const verdict=z.object({checks:z.array(z.object({criterionId:z.string(),verdict:z.enum(['passed','failed','insufficient']),explanation:z.string().min(1).max(8000),evidenceIds:z.array(z.string()).min(1)}).strict()).min(1)}).strict()
+const verdict=z.object({checks:z.array(z.object({criterionId:z.string(),verdict:z.enum(['passed','failed','insufficient']),explanation:z.string().min(1).max(8000),evidenceIds:z.array(z.string()).min(1),repairCriterionIds:z.array(z.string()).max(50).optional()}).strict()).min(1)}).strict()
+function contentCriterion(cr:GoalCriterion){
+ return !!cr.githubEvidence||!cr.check||cr.check.kind==='text_contains'&&/^\s*#{1,6}\s+\S/u.test(cr.check.text)
+}
+function matchesGithub(e:Evidence,cr:GoalCriterion){
+ const rule=cr.githubEvidence,p=e.provider
+ return !!rule&&!!p&&p.success&&p.repository===githubRepository(rule.repository)&&
+  (!rule.commit||p.commit===rule.commit.toLowerCase())&&e.criterionIds.includes(cr.id)
+}
 const operational=(e:Evidence)=>e.kind==='execution'||e.kind==='report'&&e.key==='watchdog-observation'
 const requiredEvidence=(e:Evidence,criterionId:string)=>(e.kind==='file'||e.kind==='document'||e.key==='admitted-followups'||e.key==='chat-file-handoff'||operational(e)&&criterionId==='__goal__')&&(criterionId==='__goal__'||e.criterionIds.includes(criterionId))
 
@@ -136,14 +148,64 @@ export class GoalVerification {
   }
   return items
  }
- private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean;includeHandoffs?:boolean}={}):Snapshot {
+ private githubEvidence(ticketId:string,assignmentId:string,scopeId:string):Omit<Evidence,'id'|'hash'|'criterionIds'>[]{
+  const store=this.host.store,items:Omit<Evidence,'id'|'hash'|'criterionIds'>[]=[]
+  if(store.get('task-continuation',ticketId))return items
+  const modern=new Set<string>()
+  const add=(kind:'backend-plugin-tool'|'model-tool-receipt',id:string,raw:unknown,digest:string,contextId:string,activity:string,at:number,success:boolean)=>{
+   const parsed=githubReadSchema.safeParse(raw)
+   if(!contextId||!activity||!parsed.success)return
+   const query=parsed.data,repository=githubRepository(query.repository)!
+   const path=query.action==='api'?query.apiPath?.split('?')[0]:undefined
+   const prefix='/repos/'+repository+'/commits/'
+   const ref=query.action==='checks'?query.ref:path?.toLowerCase().startsWith(prefix)&&/\/(check-runs|status)$/.test(path)?path.slice(prefix.length).split('/')[0]:undefined
+   const commit=ref&&/^[a-f0-9]{40}$/i.test(ref)?ref.toLowerCase():undefined
+   items.push({kind:'provider',ticketId,key:'github_read '+JSON.stringify(query),content:'',provider:{kind,id,digest,activity,contextId,at,repository,commit,success}})
+  }
+  const rows=store.db.prepare("SELECT body FROM records WHERE kind='model-tool-receipt' AND id GLOB 'github-read:*' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? ORDER BY id").all(ticketId,assignmentId)
+  for(const row of rows){
+   const r=JSON.parse(String(row.body))
+   if(r.scopeId!==scopeId||!r.githubRead||!r.result||this.host.memory.cleanup.blocked('model-tool-receipt',r.id,r))continue
+   modern.add(r.activity);add('model-tool-receipt',r.id,r.githubRead,stableDigest(r.result),r.contextId,r.activity,r.at,r.result.success)
+  }
+  if(!store.db.prepare("SELECT 1 FROM records WHERE kind='execution-call' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.name')='github_read' LIMIT 1").get(ticketId))return items
+  const sessions=store.db.prepare("SELECT body FROM records WHERE kind='model-session' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL ORDER BY id").all(ticketId)
+  const task=store.tickets.get(ticketId),assignment=task?.assignments.find(a=>a.id===assignmentId)
+  for(const row of sessions){
+   const m=JSON.parse(String(row.body))
+   if(task?.assignments.length!==1||modern.has(m.activity)||m.scopeId!==scopeId||!m.workerId||!assignment||m.ephemeral||!m.contextId||!Number.isFinite(m.at)||m.at<Date.parse(assignment.createdAt)||assignment.endedAt&&m.at>Date.parse(assignment.endedAt))continue
+   const thread=store.get<PluginThread>('backend-plugin-thread',m.threadId)
+   if(!thread||m.cwd!==thread.cwd||thread.id!==m.threadId)continue
+   const usage=store.get<{sessionKey?:string}>('model-usage',m.activity)
+   if(!usage?.sessionKey)continue
+   const turns=store.db.prepare("SELECT body FROM records WHERE kind='model-usage' AND json_extract(body,'$.sessionKey')=? ORDER BY json_extract(body,'$.at'),id").all(usage.sessionKey).map(row=>JSON.parse(String(row.body)))
+   if(turns.some((u,i)=>u.ticketId!==ticketId||u.agentId||u.workerId!==m.workerId||u.sourceId!==m.sourceId||
+      u.triggerId!==m.triggerId||!u.endedAt||Object.keys(u.attempts??{}).length!==1||i>0&&turns[i-1].endedAt>u.at))continue
+   for(const r of legacyGithubReads(store,this.host.config.stateDir,thread)){
+    if(r.turnCount!==turns.length)continue
+    const u=turns[r.turnIndex],value=store.get<PluginToolEffect>('backend-plugin-tool',r.id)
+    if(value&&!this.host.memory.cleanup.blocked('backend-plugin-tool',r.id,value))add('backend-plugin-tool',r.id,r.args,r.digest,m.contextId,u.id,u.endedAt,value.result!.success)
+   }
+  }
+  return items
+ }
+ private providerContent(e:Evidence){
+  const p=e.provider!,store=this.host.store
+  const record=store.get<{result?:unknown;ticketId?:string;contextId?:string;activity?:string}>(p.kind,p.id)
+  const context=store.get<ContextManifest>('context-manifest',p.contextId)
+  if(!e.ticketId||!record?.result||!context||store.get('task-continuation',e.ticketId)||this.host.memory.cleanup.blocked(p.kind,p.id,record)||
+     stableDigest(record.result)!==p.digest||p.kind==='model-tool-receipt'&&(record.ticketId!==e.ticketId||record.contextId!==p.contextId||record.activity!==p.activity))throw Error('Provider receipt changed or is unavailable')
+  this.host.memory.validate(context)
+  return JSON.stringify({request:e.key,...(p.kind==='model-tool-receipt'?{observedAt:p.at}:{sessionRecordedAt:p.at}),result:record.result})
+ }
+ private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean;includeHandoffs?:boolean;legacyCriteria?:boolean;providerSnapshot?:Evidence[]}={}):Snapshot {
   const c=this.host.goals.context(g),criteria=this.criteria(g,node)
   const closure=(ids:string[])=>{const selected=new Set(ids);let grew=true;while(grew){grew=false;for(const n of g.nodes??[])if(selected.has(n.id))for(const id of n.dependsOn)if(!selected.has(id)){selected.add(id);grew=true}}return selected}
   // A dependent result may describe work performed by its prerequisites. Include
   // their host records and source fingerprints, not just the downstream report.
   const selected=closure(node?[node.id]:g.nodes?.map(n=>n.id)??[])
   const nodes=(g.nodes??[]).filter(n=>selected.has(n.id))
-  const semanticAncestors=criteria.filter(cr=>!cr.check).map(cr=>{
+  const semanticAncestors=criteria.filter(cr=>options.legacyCriteria?!cr.check:contentCriterion(cr)).map(cr=>{
    const owners=node?[node.id]:(g.nodes??[]).filter(n=>n.criterionIds.includes(cr.id)).map(n=>n.id),ancestors=new Set<string>()
    for(const owner of owners)for(const id of closure([owner]))if(id!==owner)ancestors.add(id)
    return {id:cr.id,ancestors}
@@ -198,6 +260,9 @@ export class GoalVerification {
     if(!node&&n.id===g.project.integration)finalCommit=code.head
     add({kind:'execution',ticketId:n.ticketId,key:'project-commit',content:JSON.stringify({base:g.project.base,head:code.head,parents:code.parents,test:code.test,diffStat:code.diffStat,diff:code.diff}),criterionIds:citeIds(ids)})
    }
+   if(options.providerSnapshot){
+    for(const {id,hash,...e} of options.providerSnapshot.filter(e=>e.kind==='provider'&&e.ticketId===n.ticketId))add(e)
+   }else for(const e of this.githubEvidence(n.ticketId,proposal.assignmentId,g.scopeId))add({...e,criterionIds:citeIds(ids)})
    let execution=this.execution(n.ticketId)
    if(proposal.files?.length){
     const chatDeliveries=proposal.files.map(id=>JSON.parse(this.host.chat.fileEvidence(n.ticketId!,id).content))
@@ -231,7 +296,7 @@ export class GoalVerification {
     add({kind:'document',ticketId:n.ticketId,key:documentId,content:doc.content,revision:doc.revision,criterionIds:citeIds(assigned.filter(cr=>cr.documents?.includes(documentId)).map(cr=>cr.id))})
    }
   }
-  return {contract:stableDigest({objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
+  return {...(options.legacyCriteria?{}:{version:2 as const}),contract:stableDigest({objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
  }
  current(round:VerificationRound,g:RouterGoal,options:{readOnly?:boolean}={}):boolean {
   const compare=()=>{
@@ -240,15 +305,24 @@ export class GoalVerification {
    if(options.readOnly&&!this.host.store.get('router-route',g.triggerId))return false
    // Compare a retained round against its original evidence sources. Newly created
    // rounds discover handoffs; rereading old rounds must not rewrite their history.
-   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,{...options,includeHandoffs:round.handoffEvidence===true}))===stableDigest(round.snapshot)
+   for(const id of new Set(round.checks.flatMap(check=>check.evidenceIds))){
+    const evidence=round.snapshot.evidence.find(e=>e.id===id)
+    if(evidence?.provider)this.providerContent(evidence)
+   }
+   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,{...options,includeHandoffs:round.handoffEvidence===true,legacyCriteria:!round.evidenceVersion,providerSnapshot:round.snapshot.evidence}))===stableDigest(round.snapshot)
   }
   try{return options.readOnly?this.host.scopes.readOnly(()=>this.host.memory.readOnly(compare)):compare()}catch{return false}
  }
  ensure(g:RouterGoal,node?:GoalNode,requireSettled=false):VerificationRound {
+  const lastId=node?node.roundId:g.finalRoundId,last=lastId?this.host.store.get<VerificationRound>('goal-verification',lastId):undefined
+  if(last?.evidenceVersion===2&&last.state!=='stale'&&last.nodeId===node?.id&&last.goalId===g.id&&(!requireSettled||last.ticketIds.every(id=>this.host.goals.effectsSettled(id)))&&this.current(last,g)){
+   if(last.state==='pending')this.host.store.db.prepare("UPDATE jobs SET state='pending' WHERE id=? AND state IN ('done','failed')").run('goal-verify:'+last.id)
+   return last
+  }
   const snapshot=this.snapshot(g,node,requireSettled),id='verify-'+stableDigest([g.id,node?.id??'goal',snapshot])
   const prior=this.host.store.get<VerificationRound>('goal-verification',id);if(prior){if(prior.state==='pending')this.host.store.db.prepare("UPDATE jobs SET state='pending' WHERE id=? AND state IN ('done','failed')").run('goal-verify:'+id);return prior}
   if(snapshot.tasks.some(t=>!this.host.goals.effectsSettled(t.ticketId)))throw Error('Task has unfinished or uncertain effects')
-  const round:VerificationRound={id,handoffEvidence:true,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}
+  const round:VerificationRound={id,evidenceVersion:2,handoffEvidence:true,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}
   this.host.store.atomic(()=>{this.host.store.put('goal-verification',id,round);this.host.store.enqueue('goal-verify:'+id,'goal-verify',{roundId:id,goalId:g.id,triggerId:g.triggerId,discussion:g.discussion})})
   return round
  }
@@ -287,27 +361,27 @@ export class GoalVerification {
    save({state:'running',attempts:round.state==='running'?round.attempts:round.attempts+1})
    const node=round.nodeId?g.nodes?.find(n=>n.id===round!.nodeId):undefined,criteria=this.criteria(g,node)
    const checks=criteria.filter(cr=>cr.check).map(cr=>this.program(cr,round!.snapshot))
-   const semanticCriteria=criteria.filter(cr=>!cr.check)
+   const semanticCriteria=criteria.filter(contentCriterion)
    const finalCommit=round.snapshot.finalCommit
    if(finalCommit)for(const cr of semanticCriteria){
     const missing=round.snapshot.evidence.filter(e=>e.kind==='file'&&e.commit===finalCommit&&e.missing&&cr.files.includes(e.key))
     if(missing.length)checks.push({criterionId:cr.id,verdict:'failed',explanation:'Required file missing from final commit: '+missing.map(e=>e.key).join(', '),evidenceIds:missing.map(e=>e.id),method:'program'})
    }
-   const semantic=semanticCriteria.map(cr=>({id:cr.id,description:cr.description}))
+   const semantic:{id:string;description:string;githubEvidence?:GoalCriterion['githubEvidence']}[]=semanticCriteria.map(cr=>({id:cr.id,description:cr.description,...(cr.githubEvidence?{githubEvidence:cr.githubEvidence}:{})}))
    if(!node)semantic.push({id:'__goal__',description:'The combined deliverables satisfy the original overall objective and every stated constraint: '+g.objective})
    if(semantic.length&&checks.every(c=>c.verdict==='passed')){
     const snapshot=round.snapshot
-    const stage=node?{kind:'node',node:{id:node.id,title:node.title,instruction:node.instruction},otherNodes:g.nodes?.filter(n=>n.id!==node.id).map(n=>({id:n.id,title:n.title,criterionIds:n.criterionIds}))}:{kind:'overall',...(finalCommit?{finalCommit}:{})}
+    const stage=node?{kind:'node',node:{id:node.id,title:node.title,instruction:node.instruction},otherNodes:g.nodes?.filter(n=>n.id!==node.id).map(n=>({id:n.id,title:n.title,criterionIds:n.criterionIds}))}:{kind:'overall',owners:g.nodes?.map(n=>({id:n.id,title:n.title,criterionIds:n.criterionIds})),...(finalCommit?{finalCommit}:{})}
     // Use short round-local references for every task. Ledger records retain the full evidence hashes.
     const presented=snapshot.evidence.map((e,i)=>({...e,id:'e'+(i+1)}))
     const toStored=new Map(presented.map((e,i)=>[e.id,snapshot.evidence[i]!.id])),toPresented=new Map([...toStored].map(([alias,stored])=>[stored,alias]))
     const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:presented.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:presented.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
     const previous=round.attempts>1?this.host.store.get<{error?:string}>('goal-verification-attempt',round.id+':'+(round.attempts-1))?.error:undefined
     const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),evidence:presented.map(({content,...meta})=>meta)}
-    const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
+    const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)),e=>this.providerContent(e))
     const result=await this.host.runGoalVerifier(g,id,{
      input:access.input(modelInput),
-     schema:{type:'object',properties:{checks:{type:'array',minItems:semantic.length,maxItems:semantic.length,items:{type:'object',properties:{criterionId:{type:'string',enum:semantic.map(c=>c.id)},verdict:{type:'string',enum:['passed','failed','insufficient']},explanation:{type:'string'},evidenceIds:{type:'array',minItems:1,items:{type:'string'}}},required:['criterionId','verdict','explanation','evidenceIds'],additionalProperties:false}}},required:['checks'],additionalProperties:false},
+     schema:{type:'object',properties:{checks:{type:'array',minItems:semantic.length,maxItems:semantic.length,items:{type:'object',properties:{criterionId:{type:'string',enum:semantic.map(c=>c.id)},verdict:{type:'string',enum:['passed','failed','insufficient']},explanation:{type:'string'},evidenceIds:{type:'array',minItems:1,items:{type:'string'}},repairCriterionIds:{type:'array',items:{type:'string',enum:g.criteria.map(c=>c.id)}}},required:['criterionId','verdict','explanation','evidenceIds'],additionalProperties:false}}},required:['checks'],additionalProperties:false},
      tools:access.tools,onTool:access.onTool,
     })
     if(this.host.shuttingDown)return false
@@ -323,6 +397,19 @@ export class GoalVerification {
      if(ch.evidenceIds.some(id=>!read.has(id)||ch.criterionId!=='__goal__'&&!snapshot.evidence.find(e=>e.id===id)?.criterionIds.includes(ch.criterionId)))throw Error('Verification protocol: Verifier cited evidence it did not inspect for this criterion')
      const required=snapshot.evidence.filter(e=>requiredEvidence(e,ch.criterionId))
      if(ch.verdict==='passed'&&required.some(e=>e.missing||!read.has(e.id)||!ch.evidenceIds.includes(e.id)))throw Error('Verification protocol: Verifier skipped required artifact evidence')
+     const criterion=criteria.find(c=>c.id===ch.criterionId)
+     if(ch.verdict==='passed'&&criterion?.githubEvidence&&!snapshot.evidence.some(e=>ch.evidenceIds.includes(e.id)&&matchesGithub(e,criterion))){
+      ch.verdict='insufficient'
+      ch.explanation='The claim requires an inspected GitHub receipt for '+criterion.githubEvidence.repository+(criterion.githubEvidence.commit?' at '+criterion.githubEvidence.commit:'')+'. Inspect the matching source or obtain the missing evidence.'
+     }
+     for(const e of snapshot.evidence)if(e.provider&&ch.evidenceIds.includes(e.id))this.providerContent(e)
+     if(ch.repairCriterionIds){
+      if(ch.repairCriterionIds.some(id=>!g.criteria.some(c=>c.id===id))||new Set(ch.repairCriterionIds).size!==ch.repairCriterionIds.length)throw Error('Verification protocol: unknown or duplicate repair criterion')
+      if(ch.verdict==='passed'||ch.criterionId!=='__goal__')delete ch.repairCriterionIds
+     }
+     // A matching heading satisfies a format precondition. Keep the content verdict.
+     const format=checks.findIndex(check=>check.criterionId===ch.criterionId&&check.verdict==='passed')
+     if(format!==-1)checks.splice(format,1)
      checks.push({...ch,method:'agent'})
     }
     save({threadId:result.threadId})

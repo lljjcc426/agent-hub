@@ -24,7 +24,7 @@ export const replanProposalSchema=z.object({reason:z.string().min(1).max(4000),e
 type Proposal=z.infer<typeof replanProposalSchema>
 const reviewSchema=z.object({approved:z.boolean(),explanation:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200)}).strict()
 interface WorkerCapability {id:string;backend:string;tools:string[];sandboxDriver:string;network:boolean;sourceSandbox:string}
-interface ReplanSnapshot {contract:GoalContract;goalRevision:number;planRevision:number;nodes:GoalNode[];failureNodeIds:string[];evidence:GoalEvidence[];workerCapabilities?:WorkerCapability[]}
+interface ReplanSnapshot {contract:GoalContract;goalRevision:number;planRevision:number;nodes:GoalNode[];failureNodeIds:string[];overallGap?:{roundId:string;checks:import('./goal-verification.ts').VerificationCheck[]};evidence:GoalEvidence[];workerCapabilities?:WorkerCapability[]}
 export interface ReplanRound {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;state:'pending'|'planning'|'reviewing'|'approved'|'applied'|'rejected'|'errored'|'stale';snapshot:ReplanSnapshot;snapshotHash:string;proposal?:Proposal;review?:z.infer<typeof reviewSchema>;error?:string;plannerThread?:string;reviewerThread?:string;contextIds?:string[];at:number;appliedAt?:number}
 const activeStates=new Set(['pending','planning','reviewing','approved'])
 const strings={type:'array',items:{type:'string'}}
@@ -65,6 +65,12 @@ export class GoalReplanning {
   if(stableDigest(this.host.routerIngress.authority(c.triggerId))!==stableDigest(c.mandate))throw Error('Original goal authorization changed')
   return c
  }
+ private overallGap(g:RouterGoal){
+  if(!g.finalRoundId||!g.nodes?.every(n=>n.state==='passed'))return
+  const round=this.host.store.get<import('./goal-verification.ts').VerificationRound>('goal-verification',g.finalRoundId)
+  if(!round||round.goalId!==g.id||round.nodeId||!['failed','insufficient'].includes(round.state)||!this.host.verification.current(round,g))return
+  return {roundId:round.id,checks:round.checks.filter(c=>c.verdict!=='passed')}
+ }
  private snapshot(g:RouterGoal,includeCapabilities=true):ReplanSnapshot {
   const contract=this.contract(g)
   if(!g.managed||!g.nodes?.length||!['active','waiting'].includes(g.state))throw Error('Goal cannot autonomously replan in its current state')
@@ -81,7 +87,8 @@ export class GoalReplanning {
    const options=agentOptionsSchema.parse(mergeOptions(defaults,profile))
    return {id:w.id,backend:w.backend,tools:localTools.filter(t=>!options.tools||options.tools.includes(t.name)).map(t=>t.name).sort(),sandboxDriver:this.host.config.work.sandboxDriver,network:this.host.config.work.network,sourceSandbox:source.sandbox}
   }).sort((a,b)=>a.id.localeCompare(b.id)):undefined
-  return {contract,goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds:g.nodes.filter(n=>n.state==='held').map(n=>n.id),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
+  const overallGap=this.overallGap(g)
+  return {contract,...(overallGap?{overallGap}:{}),goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds:g.nodes.filter(n=>n.state==='held').map(n=>n.id),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
  }
  private waitingForAnswer(g:RouterGoal){
   return g.nodes?.some(node=>{
@@ -107,7 +114,7 @@ export class GoalReplanning {
   if(g.nodes?.some(n=>n.teamTargetId)||this.waitingForAnswer(g))return false
   if(!g.contract||(g.replans??0)>=(g.maxReplans??(g.project?.policy.budget?Infinity:0))||g.replanId)return false
   const failures=g.nodes?.filter(n=>n.state==='held')??[]
-  if(!failures.length)return false
+  if(!failures.length&&!this.overallGap(g))return false
   for(const n of failures){
    const task=n.ticketId?this.host.store.tickets.get(n.ticketId):undefined
    if(!task||task.ended||!this.host.goals.effectsSettled(task.id))return false
@@ -131,7 +138,7 @@ export class GoalReplanning {
   return true
  }
  private candidate(g:RouterGoal,r:ReplanRound,p:Proposal){
-  const nodes=structuredClone(g.nodes!),byId=new Map(nodes.map(n=>[n.id,n])),affected=new Set(r.snapshot.failureNodeIds)
+  const nodes=structuredClone(g.nodes!),byId=new Map(nodes.map(n=>[n.id,n])),affected=new Set(r.snapshot.overallGap?p.changes.map(edit=>edit.id):r.snapshot.failureNodeIds)
   let grew=true;while(grew){grew=false;for(const n of nodes)if(!affected.has(n.id)&&n.dependsOn.some(id=>affected.has(id))){affected.add(n.id);grew=true}}
   if(new Set(p.changes.map(n=>n.id)).size!==p.changes.length)throw Error('Duplicate plan change')
   for(const edit of p.changes){const n=byId.get(edit.id);if(!n||!affected.has(n.id))throw Error('Only failed work and its dependents may change');n.instruction=edit.instruction;n.dependsOn=edit.dependsOn}
@@ -167,7 +174,7 @@ export class GoalReplanning {
     // Old persisted rounds did not carry this field. Preserve their original
     // snapshot hash while checking a fresh capability view around each call.
     const capabilities=r!.snapshot.workerCapabilities??this.snapshot(g).workerCapabilities!
-    const modelInput={kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},workerCapabilities:capabilities,nodes:r!.snapshot.nodes,failedNodeIds:r!.snapshot.failureNodeIds,evidence:r!.snapshot.evidence.map(({content,...meta})=>meta),requiredEvidenceIds:r!.snapshot.evidence.map(e=>e.id),...(mode==='review'?{proposal:r!.proposal}:{})}
+    const modelInput={kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},workerCapabilities:capabilities,nodes:r!.snapshot.nodes,failedNodeIds:r!.snapshot.failureNodeIds,...(r!.snapshot.overallGap?{unassignedGap:r!.snapshot.overallGap}:{}),evidence:r!.snapshot.evidence.map(({content,...meta})=>meta),requiredEvidenceIds:r!.snapshot.evidence.map(e=>e.id),...(mode==='review'?{proposal:r!.proposal}:{})}
     const access=evidenceAccess(r!.snapshot.evidence,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{this.current(r!)},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
     const result=await this.host.runGoalPlanner(g,r!,mode,{input:access.input(modelInput),schema:mode==='plan'?proposalOutput:reviewOutput,tools:access.tools,onTool:access.onTool})
     this.current(r!)

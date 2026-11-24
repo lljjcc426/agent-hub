@@ -1018,3 +1018,88 @@ it('enumerates only current operator artifact versions without side effects and 
   f.h.memory.cleanup.apply(planHistory(f.h.store,f.config.stateDir,'team','catalog-erase',Date.now()));expect(artifactCatalog(f.h).items).toEqual([])
  }finally{http.server.closeAllConnections();await new Promise<void>(r=>http.server.close(()=>r()))}
 })
+
+it.each([[false,false],[false,true],[true,false],[true,true]])('repairs the CI owner with a heading-only check %s and reversed nodes %s',async(semantic,reversed)=>{
+ const f=fixture((r,attempt)=>{
+  const n=f.goal().nodes!.find(n=>n.ticketId===r.activity?.ticketId)!
+  writeFileSync(join(r.cwd,n.id+'.md'),'## Report'+(n.id==='pr'&&attempt>1?' checked pinned CI':''))
+  return ready(n.id+' report')
+ },async(r,input)=>{
+  for(const item of input.evidence)await r.onTool!('goal_evidence',{id:item.id},item.id)
+  let evidence='';try{evidence=readFileSync(join(f.root,'pr.md'),'utf8')}catch{}
+  return {checks:input.criteria.map((c:{id:string})=>({
+   criterionId:c.id,verdict:['ci','__goal__'].includes(c.id)&&!evidence.includes('checked pinned CI')?'insufficient':'passed',
+   explanation:'The PR requires pinned CI evidence. The branch inventory is independent.',
+   evidenceIds:input.evidence.filter((e:{criterionIds:string[]})=>c.id==='__goal__'||e.criterionIds.includes(c.id)).map((e:{id:string})=>e.id)
+  }))}
+ })
+ const nodes=[{id:'pr',title:'PR',instruction:'Verify the PR CI',workerId:'one',criterionIds:['ci']},{id:'branches',title:'Branches',instruction:'Inventory the branches',workerId:'two',criterionIds:['inventory']}]
+ f.start({maxRepairs:1,maxReplans:0,nodes:reversed?nodes.reverse():nodes,
+  criteria:[{id:'ci',description:'Use the matching CI result',files:['pr.md'],...(semantic?{}:{check:{kind:'text_contains',path:'pr.md',text:'## Report'}})},
+   {id:'inventory',description:'Inventory report',check:{kind:'text_contains',path:'branches.md',text:'## Report'}}]})
+ await until(f,()=>['held','completed'].includes(f.goal().state))
+ const g=f.goal(),pr=g.nodes!.find(n=>n.id==='pr')!,branch=g.nodes!.find(n=>n.id==='branches')!
+ expect([g.state,f.attempts.get(pr.ticketId!),f.attempts.get(branch.ticketId!)]).toEqual(['completed',2,1])
+})
+
+it('requires a read and cited provider result for the requested repository and commit',async()=>{
+ const commit='a'.repeat(40),previous='b'.repeat(40),inspected:string[]=[]
+ const f=fixture(async(r,attempt)=>{
+  await r.onTool!('github_read',{action:'checks',repository:'example/repo',ref:attempt===1?previous:commit},'inspect-ci')
+  return ready('Reviewed CI')
+ },async(r,input)=>{
+  for(const e of input.evidence){
+   const result=await r.onTool!('goal_evidence',{id:e.id},e.id)
+   if(e.kind==='provider'){
+    const body=JSON.parse(JSON.parse(result.contentItems[0]!.text!).content)
+    expect(JSON.parse(body.result.contentItems[0].text).results[0].data.runs[0].conclusion).toBe('failure')
+    inspected.push(e.provider.commit)
+   }
+  }
+  return {checks:input.criteria.map((c:any)=>({criterionId:c.id,verdict:'passed',explanation:'CI checked',evidenceIds:input.evidence.map((e:any)=>e.id)}))}
+ })
+ f.h.config.work.network=true
+ f.h.github.read=async(raw)=>({success:true,contentItems:[{type:'inputText',text:JSON.stringify({repository:'example/repo',ref:(raw as {ref:string}).ref,results:[{target:'check_runs',ok:true,data:{total:1,runs:[{name:'tests',status:'completed',conclusion:'failure'}]}}]})}]})
+ f.start({criteria:[{id:'ci',description:'Inspect CI at the fixed head',githubEvidence:{repository:'example/repo',commit}}],
+  nodes:[{id:'pr',title:'PR',instruction:'Review CI',workerId:'one',criterionIds:['ci']}]})
+ await until(f,()=>f.goal().state==='completed'||f.goal().state==='held')
+ expect(f.goal().state).toBe('completed')
+ expect(f.goal().nodes![0]!.repairs).toBe(1)
+ expect(inspected).toContain(previous);expect(inspected).toContain(commit)
+ const round=f.rounds().find(r=>!r.nodeId&&r.state==='passed')!
+ const source=round.snapshot.evidence.find(e=>e.provider?.commit===commit)!.provider!
+ f.h.store.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(source.kind,source.id)
+ expect(f.h.verification.current(round,f.goal())).toBe(false)
+})
+
+it.each([false,true])('routes an overall-only gap to every named independent owner (reversed %s)',async reversed=>{
+ const f=fixture((r,attempt)=>{const id=f.goal().nodes!.find(n=>n.ticketId===r.activity!.ticketId)!.id;writeFileSync(join(r.cwd,id+'.md'),'report '+attempt);return ready()},async(r,input)=>{
+  for(const e of input.evidence)await r.onTool!('goal_evidence',{id:e.id},e.id)
+  const missing=readFileSync(join(f.root,'pr.md'),'utf8')==='report 1'
+  return {checks:input.criteria.map((c:any)=>({criterionId:c.id,verdict:missing?'insufficient':'passed',explanation:'The PR and CI claims need supporting results.',
+   ...(missing?{repairCriterionIds:['pr','ci']}:{}),evidenceIds:input.evidence.map((e:any)=>e.id)}))}
+ })
+ const ids=['pr','ci','branches'];if(reversed)ids.reverse()
+ f.start({criteria:ids.map(id=>({id,description:id,check:{kind:'file_exists',path:id+'.md'}})),
+  nodes:ids.map((id,i)=>({id,title:id,instruction:'Record '+id,workerId:i%2?'two':'one',criterionIds:[id]})),maxRepairs:1,maxReplans:0})
+ await until(f,()=>f.goal().state==='completed')
+ expect(Object.fromEntries(f.goal().nodes!.map(n=>[n.id,n.repairs]))).toEqual({pr:1,ci:1,branches:0})
+})
+
+it('reuses an accepted dependent result when repair leaves its declared input unchanged',async()=>{
+ let overall=0
+ const f=fixture(r=>{
+  const n=f.goal().nodes!.find(node=>node.ticketId===r.activity!.ticketId)!
+  writeFileSync(join(r.cwd,n.id+'.txt'),'retained')
+  return ready(n.id)
+ },async(r,input)=>{
+  for(const e of input.evidence)await r.onTool!('goal_evidence',{id:e.id},e.id)
+  const first=++overall===1
+  return {checks:[{criterionId:'__goal__',verdict:first?'insufficient':'passed',explanation:first?'Check the upstream delivery.':'Upstream evidence confirmed.',
+   ...(first?{repairCriterionIds:['a']}:{}),evidenceIds:input.evidence.map((e:any)=>e.id)}]}
+ })
+ f.start({criteria:['a','b'].map(id=>({id,description:id,check:{kind:'file_exists',path:id+'.txt'}})),
+  nodes:[{id:'a',title:'A',instruction:'Record A',workerId:'one',criterionIds:['a']},{id:'b',title:'B',instruction:'Record B',dependsOn:['a'],workerId:'two',criterionIds:['b']}]})
+ await until(f,()=>f.goal().state==='completed')
+ expect(f.goal().nodes!.map(n=>f.attempts.get(n.ticketId!))).toEqual([2,1])
+})

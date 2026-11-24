@@ -10,7 +10,7 @@ export function pendingWaitLabel(snapshot:Snapshot,L:Localize,participant?:strin
  if(!run)return
  // A follow-up can own the goal while its open request still belongs to the
  // original Worker assignment. Match that exact ticket across turns.
- const resumedTasks=new Set((snapshot.plans??[]).filter(plan=>plan.runId===run.id).flatMap(plan=>plan.ticketIds))
+ const resumedTasks=new Set([...(run.questionTicketIds??[]),...(snapshot.plans??[]).filter(plan=>plan.runId===run.id).flatMap(plan=>plan.ticketIds)])
  const items=(snapshot.pendingCards??[]).filter(card=>{
    if(card.kind==='approval')return (card.request.runId===run.id||resumedTasks.has(card.request.ticketId)) && (!participant||participant===card.request.workerId)
    if(card.kind==='question')return (card.question.runId===run.id||resumedTasks.has(card.question.ticketId)) && (!participant||participant===card.question.workerId)

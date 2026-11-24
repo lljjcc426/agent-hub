@@ -1,3 +1,4 @@
+import type {PermissionAction} from '../chat-permissions.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -6,7 +7,7 @@ import {maxWireBytes,toolParallelism} from '../execution-limits.ts'
 import {githubReadSchema} from '../github-read.ts'
 import {readSchema} from '../resources.ts'
 import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
-import {stableDigest} from '../sources.ts'
+import {bodyDigest,stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
 import type {Ticket} from '../vendor/dsh-core/index.ts'
 import {jobInput,type WorkItem} from '../work.ts'
@@ -311,9 +312,8 @@ export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:str
  if(proof)return {kind:'denied_job_reads' as const,interrupted:proof.denied,calls:proof.calls}
 }
 
-/** Prove that the failed host callback never admitted a shell job. A command
- * always commits its work row and request key atomically before starting a runner. */
-export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run){
+/** Bind the one interrupted host call to its stopped writer, complete journal and audit interval. */
+function stoppedWorkerTool(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run,name:'superagent_shell'|'superagent_desktop'){
  if(run.phase!=='uncertain'||run.waitingForWriter)return
  try{
   const bound=boundWorkerSession(store,stateDir,run)
@@ -326,9 +326,8 @@ export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:strin
      usage.id!==model.activity||usage.workerId!==model.workerId||usage.triggerId!==model.triggerId||usage.sourceId!==model.sourceId||
      usage.ticketId!==run.ticketId||!(usage.endedAt>=thread.lastFailure.at))return
   const callbacks=stoppedOpenCodeCallbacks(store,stateDir,thread)
-  if(callbacks.length!==1||callbacks[0]!.name!=='superagent_shell')return
-  const callback=callbacks[0]!,args=z.object({requestId:z.string().min(1),command:z.string().min(1),yieldMs:z.number().optional()}).strict().safeParse(callback.args)
-  if(!args.success)return
+  if(callbacks.length!==1||callbacks[0]!.name!==name)return
+  const callback=callbacks[0]!
   const remaining=new Set(thread.effectIds)
   if(remaining.size!==thread.effectIds.length||new Set(session.turns.map(turn=>turn.id)).size!==session.turns.length)return
   for(const turn of session.turns){
@@ -356,9 +355,9 @@ export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:strin
   if(remaining.size)return
   const calls=store.db.prepare(`SELECT id,json_extract(body,'$.startedAt') AS started,json_extract(body,'$.endedAt') AS ended
    FROM records WHERE kind='execution-call' AND json_extract(body,'$.parentId')=? AND json_extract(body,'$.kind')='tool'
-   AND json_extract(body,'$.name')='superagent_shell' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL
+   AND json_extract(body,'$.name')=? AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL
    AND json_extract(body,'$.workerId')=? AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.sourceId')=?
-   AND json_extract(body,'$.state')='failed'`).all(model.activity,run.ticketId,model.workerId,model.triggerId,model.sourceId)
+   AND json_extract(body,'$.state')='failed'`).all(model.activity,name,run.ticketId,model.workerId,model.triggerId,model.sourceId)
   if(calls.length!==1)return
   const call=calls[0]!,started=Number(call.started),ended=Number(call.ended)
   const assignment=store.get<Ticket>('ticket',run.ticketId)?.assignments.at(-1)
@@ -373,13 +372,42 @@ export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:strin
   const startSeq=Number(events[0]!.seq),endSeq=Number(events[1]!.seq)
   const coverage=store.db.prepare('SELECT count(*) AS n FROM audit WHERE seq BETWEEN ? AND ?').get(startSeq,endSeq)
   if(coverage?.n!==endSeq-startSeq+1)return
-  const key=[run.ticketId,run.assignmentId,'root',args.data.requestId].join(':')
+  if(stoppedWriter(root))return {callback,activityId:String(call.id),started,ended,startSeq,endSeq}
+ }catch{/* An incomplete or ambiguous journal cannot establish non-execution. */}
+}
+
+/** A shell command commits its work row and request key before starting a runner. */
+export function unstartedWorkerShell(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run){
+ const proof=stoppedWorkerTool(store,stateDir,run,'superagent_shell')
+ if(!proof)return
+ const {callback,activityId,startSeq,endSeq}=proof
+ const args=z.object({requestId:z.string().min(1),command:z.string().min(1),yieldMs:z.number().optional()}).strict().safeParse(callback.args)
+ if(!args.success)return
+ const key=[run.ticketId,run.assignmentId,'root',args.data.requestId].join(':')
   if(store.get('work-request',key)!==undefined||store.db.prepare(`SELECT 1 FROM records WHERE kind='work' AND
     json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? AND json_extract(body,'$.command')=? LIMIT 1`).get(run.ticketId,run.assignmentId,args.data.command)||
      store.db.prepare(`SELECT 1 FROM audit WHERE seq BETWEEN ? AND ? AND json_extract(body,'$.entity')='work'
       AND json_extract(body,'$.ticketId')=? LIMIT 1`).get(startSeq,endSeq,run.ticketId))return
-  if(stoppedWriter(root))return {callback,activityId:String(call.id),requestId:args.data.requestId}
- }catch{/* An incomplete or ambiguous journal cannot establish non-execution. */}
+ return {callback,activityId,requestId:args.data.requestId}
+}
+
+/** Older desktop calls rejected host-owned arguments before creating a desktop receipt or contacting the driver. */
+export function rejectedDesktopCall(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run){
+ const proof=stoppedWorkerTool(store,stateDir,run,'superagent_desktop')
+ if(!proof)return
+ const input=proof.callback.args
+ const parsed=z.object({action:z.literal('launch_app'),requestId:z.string().min(1),arguments:z.record(z.string(),z.unknown())}).strict().safeParse(input)
+ if(!parsed.success||typeof parsed.data.arguments.session!=='string')return
+ const actions=store.db.prepare(`SELECT body FROM records WHERE kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=?
+  AND json_extract(body,'$.tool')='superagent_desktop' AND json_extract(body,'$.phase')='uncertain'`).all(run.ticketId)
+ if(actions.length!==1)return
+ const action=JSON.parse(String(actions[0]!.body)) as PermissionAction
+ if(!action?.id||!action.approved||action.receipt||!action.actor||action.actor.agentId||action.actor.workerId!==run.workerId||
+    stableDigest(action.args)!==stableDigest(input)||action.facts?.action!=='launch_app'||
+    !(proof.started<=action.createdAt&&action.createdAt<=proof.ended))return
+ const receiptId=bodyDigest([run.ticketId,run.assignmentId,'',parsed.data.requestId])
+ if(store.get('desktop-receipt',receiptId)!==undefined)return
+ return {...proof,action}
 }
 
 export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run):InterruptedRead|undefined{

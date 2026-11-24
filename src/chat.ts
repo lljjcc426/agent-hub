@@ -24,6 +24,7 @@ import type {ExecutionCall,ExecutionContext} from './execution-activity.ts'
 import {bodyDigest,stableDigest} from './sources.ts'
 import {partialReply} from './partial-reply.ts'
 import type {RouterGoal} from './router-goals.ts'
+import type {RouterDispatch} from './router-handoff.ts'
 import type {EntryBinding,RouterRoute,ScopeContext} from './router-scope.ts'
 import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
@@ -1018,6 +1019,7 @@ export class ChatSessions {
     if(query?.questionId)records=[lookup(query.questionId)]
     else if(query?.currentOnly)records=Array.from(tasks.keys()).flatMap(ticketId=>{
       const questionId=store.tickets.get(ticketId)?.attention?.id
+      if(questionId&&store.get<Run>('run',ticketId)?.phase==='uncertain')return []
       return questionId?[lookup(questionId)]:[]
     })
     else records=store.list<RecordRef>('business-decision')
@@ -1122,8 +1124,9 @@ export class ChatSessions {
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
       const node=nodes.get(d.ticketId),reviewing=!!node?.reviewing&&!t?.ended&&!t?.attention
       const attention=t?.attention
-      const decision=attention&&this.host.store.get<{status:string}>('business-decision',attention.id)
-      const question=attention&&(!decision||decision.status==='pending')&&!isRuntimeRecoveryQuestion(attention.question)?attention.question:undefined
+      const decision=attention&&r?.phase!=='uncertain'&&!isRuntimeRecoveryQuestion(attention.question)
+        ?this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>businessDecision(this.host,attention.id))):undefined
+      const question=decision?.status==='pending'&&decision.ticketId===d.ticketId&&decisionActorMatches(this.host,decision.id,{source:c.sourceId,id:c.actor})?decision.question:undefined
       const executing=reviewing||['starting','running','background','delivering','merging'].includes(r?.phase??'')
       const held=node?.held||r?.phase==='uncertain'||report?.state==='blocked'
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':executing?'running':question?'waiting':
@@ -1305,7 +1308,11 @@ export class ChatSessions {
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
     const {conversationPlans,goals,tasks}=this.conversationTasks(c)
-    const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id):[]
+    const dispatch=last&&this.host.store.get<{triggerId:string;discussion:string;items:RouterDispatch[]}>('router-dispatch','router:'+last.id)
+    const heldTargets=dispatch&&dispatch.triggerId===last?.id&&dispatch.discussion===c.discussion&&
+      !this.host.memory.cleanup.blocked('router-dispatch','router:'+last!.id,dispatch)
+      ?new Set(dispatch.items.filter(item=>item.kind==='question').map(item=>item.id)):undefined
+    const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id||heldTargets?.has(g.id)):[]
     const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
     const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
       FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
@@ -1395,7 +1402,7 @@ export class ChatSessions {
     const sessionRouterPlans=workerView?visiblePlans.filter(plan=>!plan.workerId&&!plan.ticketId):undefined
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
     const handoffs=withPending?this.handoffs(id):[]
-    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(blockedReason?{blockedReason}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(heldTargets?.size?{questionTicketIds:runGoals.filter(g=>heldTargets.has(g.id)).flatMap(g=>g.taskIds)}:{}),...(blockedReason?{blockedReason}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue

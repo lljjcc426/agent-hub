@@ -1,6 +1,6 @@
 import {unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {recoverGoalEvidence} from './goal-evidence-recovery.ts'
-import {hasOutstandingQuestion} from './business-decisions.ts'
+import {businessDecision,captureReportedQuestion,decisionActorMatches,decisionAsker,hasOutstandingQuestion} from './business-decisions.ts'
 import {z} from 'zod'
 import {startCodeProject,type GoalProject,type CodeReceipt} from './project-code.ts'
 import {projectBudget} from './project-budget.ts'
@@ -20,7 +20,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
-import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
+import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads,rejectedDesktopCall,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {AcceptanceEvidenceTooLarge,acceptanceRetryTarget,type AcceptanceRetryResult,type AcceptanceRetryStatus,type EvidenceOverflow} from './goal-acceptance.ts'
 import {ChatError} from './chat-errors.ts'
@@ -32,7 +32,7 @@ const resumeTargets=z.array(resumeTarget).min(1).max(20).refine(items=>
  new Set(items.map(item=>item.id)).size===items.length&&new Set(items.map(item=>item.operationId)).size===items.length,
  'Each goal needs its own ID and operation ID')
 const resumeMany=z.object({action:z.literal('resume_many'),targets:resumeTargets}).strict()
-export interface GoalResumeOutcome {id:string;title:string;resumed:boolean;state?:RouterGoal['state'];reason?:string;taskIds?:string[]}
+export interface GoalResumeOutcome {id:string;title:string;resumed:boolean;pendingQuestion?:string;state?:RouterGoal['state'];reason?:string;taskIds?:string[]}
 const criterion=criterionSchema
 const verification=z.object({criterionId:id,ticketId:id.optional(),delegationId:id.optional(),reportAt:id,explanation:z.string().min(1).max(4000)}).strict().refine(v=>!!v.ticketId!==!!v.delegationId,'A check needs its actual task or delegation reference')
 export const goalCommandSchema=z.object({action:z.enum(['list','inspect','start','update','wait','complete','pause','resume','resume_many','cancel']),targets:resumeTargets.optional(),id:id.optional(),details:goalDetailsSchema.optional(),supersedes:z.object({goalId:id,expectedRevision:z.number().int().min(0)}).strict().optional(),continueFrom:z.object({goalId:id,ticketId:id,expectedRevision:z.number().int().min(0)}).strict().optional(),operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),title:z.string().min(1).max(300).optional(),objective:z.string().min(1).max(16000).optional(),authorizationQuote:z.string().min(1).max(16000).optional(),criteria:z.array(criterion).min(1).max(50).optional(),plan:z.array(z.string().min(1).max(4000)).max(100).optional(),nextAction:z.string().min(1).max(4000).optional(),reason:z.string().min(1).max(4000).optional(),wakeAfterSeconds:z.number().int().min(10).max(86400).optional(),needsHuman:z.boolean().optional(),checks:z.array(verification).max(50).optional(),maxTurns:z.number().int().min(1).max(10000).optional(),nodes:z.array(nodeSchema).min(1).max(100).optional(),budget:z.object({maxMinutes:z.number().positive().max(43200).optional(),maxUsd:z.number().positive().optional()}).strict().refine(b=>b.maxMinutes!==undefined||b.maxUsd!==undefined,'Set a time or cost limit').optional(),maxParallel:z.number().int().min(1).max(10).optional(),maxRepairs:z.number().int().min(0).max(10).optional(),maxReplans:z.number().int().min(0).max(5).optional()}).strict()
@@ -383,6 +383,68 @@ export class RouterGoals {
  }
  effectsSettled(ticketId:string){
   return this.effectsSettledAtPhase(ticketId,'idle')
+ }
+ /** Old resume commands could retire an unanswered assignment, then fail before desktop dispatch.
+  * Restore a fresh question only after accounting for the failed turn. No tool or model is replayed. */
+ restoreQuestionAfterRejectedDesktop(run:Run){
+  const {store}=this.host,id=run.ticketId
+  if(run.phase!=='uncertain'||!this.host.permissions.hasUnconfirmedEffect(id)||this.host.executionActive(id))return false
+  const task=store.tickets.get(id),attention=task?.attention,previous=task?.assignments.at(-2),current=task?.assignments.at(-1)
+  if(!task||task.ended||task.undelivered.length||!attention||current?.id!==run.assignmentId||current.state!=='running'||
+     current.report?.state!=='blocked'||previous?.endedReason!=='retried'||previous.report?.state!=='blocked')return false
+  const decision=businessDecision(this.host,attention.id),asker=decisionAsker(this.host,task)
+  const saved=store.get<{basisPolicy?:string;terms:unknown;originTriggerId?:string}>('business-decision',attention.id)
+  if(!asker||saved?.basisPolicy!=='chat'||saved.terms!==null||saved.originTriggerId!==asker.id||
+     decision?.status!=='stale'||decision.ticketId!==id||decision.question!==attention.question||
+     previous.report.summary!==decision.summary||!previous.startedAt||!previous.endedAt||
+     !(Date.parse(previous.startedAt)<=decision.createdAt&&decision.createdAt<=Date.parse(previous.endedAt))||
+     !decisionActorMatches(this.host,decision.id,asker.actor)||store.get('question-answer',bodyDigest([id,decision.id])))return false
+  const goal=this.forTask(id),node=goal?.nodes?.find(n=>n.ticketId===id)
+  if(!goal||goal.state!=='held'||!goal.managed||goal.project||goal.supersededBy||goal.replanId||goal.acceptanceOverflow||
+     !node||node.state!=='held'||node.failure?.kind!=='uncertain'||!goal.nodes!.every(n=>n===node||n.state==='passed')||
+     store.get('goal-delivery',id)||store.get('task-continuation',id))return false
+  const proof=rejectedDesktopCall(store,this.host.config.stateDir,run)
+  if(!proof||proof.action.actor.triggerId!==goal.triggerId||proof.action.actor.runId!==goal.triggerId)return false
+  const attempt=store.get<{assignmentId:string;attemptId:string}>('async-worker-current',id)
+  if(attempt){
+   const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
+   if(attempt.assignmentId!==run.assignmentId||terminal?.ticketId!==id||terminal.assignmentId!==run.assignmentId)return false
+  }
+  const failure=classifyGoalFailure(decision.summary,this.now(),0)
+  if(!['environment','quality'].includes(failure.kind))return false
+  try{return store.atomic(()=>{
+   const context=this.context(goal)
+   this.host.scopes.checkTask(id,context,true)
+   if(!context.trigger.human||!decisionActorMatches(this.host,decision.id,context.trigger.actor))return false
+   const receipt={success:false,contentItems:[{type:'inputText' as const,text:'The desktop launch was rejected before dispatch because the request supplied a host-managed session.'}]}
+   const reconciliation={reason:'desktop_not_dispatched',activityId:proof.activityId,ticketId:id,assignmentId:run.assignmentId,
+    threadId:run.threadId,turnId:run.turnId,at:this.now()}
+   store.put('chat-permission',proof.action.id,{...proof.action,phase:'complete',receipt,reconciliation})
+   store.put('backend-plugin-tool',proof.callback.id,{...proof.callback.receipt,state:'complete',result:receipt,reconciliation})
+   // Any other unresolved operation rolls the entire repair back, including both receipts.
+   const otherEffect=store.db.prepare(`SELECT 1 FROM records s JOIN records t ON t.kind='backend-plugin-thread' AND t.id=s.id
+    JOIN json_each(t.body,'$.effectIds') e LEFT JOIN records r ON r.kind='backend-plugin-tool' AND r.id=e.value
+    WHERE s.kind='model-session' AND json_extract(s.body,'$.ticketId')=? AND json_extract(r.body,'$.state') IS NOT 'complete'
+    UNION ALL SELECT 1 FROM records WHERE kind IN ('browser-receipt','desktop-receipt') AND json_extract(body,'$.ticketId')=?
+    AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id,id)
+   if(otherEffect||!this.effectsSettledAtPhase(id,'uncertain')||unsettledTaskEffects(store,id,0))throw Error('Other pending effects')
+   const {threadId,turnId,error,result,failure:oldFailure,toolsVersion,toolsDigest,waitingForWriter,...retained}=run
+   store.put('run',id,{...retained,phase:'idle'})
+   const summary=decision.summary
+   this.host.engine.report(id,{state:'blocked',summary,question:null})
+   const renewed=this.host.engine.report(id,{state:'blocked',summary,question:decision.question,askedBy:attention.triggerId})
+   node.reason=failure.reason;node.failure=failure
+   store.put('router-goal',goal.id,{...goal,revision:goal.revision+1,nextAt:undefined,reason:heldReason(goal.nodes!)})
+   captureReportedQuestion(this.host,renewed,attention.id,null)
+   const next=renewed.attention&&businessDecision(this.host,renewed.attention.id)
+   if(!next||next.status!=='pending'||next.id===decision.id||!decisionActorMatches(this.host,next.id,asker.actor))throw Error('Question could not be renewed')
+   // This exact assignment already ran to its terminal event. Preserve later inputs and unrelated jobs.
+   store.db.prepare(`UPDATE jobs SET state='done' WHERE id=? AND kind='execute' AND state='pending' AND attempts=0
+    AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?`).run('execute:'+run.assignmentId+':initial',id,run.assignmentId)
+   store.audit({type:'backend.tool.reconciled',...reconciliation,receiptId:proof.callback.id,permissionId:proof.action.id,
+    previousQuestionId:decision.id,questionId:next.id,confirmed:false})
+   return true
+  })}catch{return false}
  }
  /** Resume the one node held by this answered report, preserving its assignment and contract. */
  resumeAnsweredQuestion(ticketId:string,summary:string,context:ScopeContext,recoverStartup=false){
@@ -958,8 +1020,8 @@ export class RouterGoals {
     const goal=this.get(target.id)
     if(!goal||!this.accessible(goal,c)||!this.sourcesValid(goal))return {id:target.id,title:target.id,resumed:false,reason:'Goal unavailable'}
     try{
-     const result:RouterGoal=this.command({action:'resume',...target},c,manifest)
-     return {id:result.id,title:result.title,resumed:result.state==='active',state:result.state,reason:result.reason,taskIds:result.taskIds}
+     const result:RouterGoal & {pendingQuestion?:string}=this.command({action:'resume',...target},c,manifest)
+     return {id:result.id,title:result.title,resumed:result.state==='active'&&!result.pendingQuestion,state:result.state,reason:result.reason,taskIds:result.taskIds,...(result.pendingQuestion?{pendingQuestion:result.pendingQuestion}:{})}
     }catch(error){return {id:target.id,title:goal.title,resumed:false,state:goal.state,reason:error instanceof Error?error.message:String(error)}}
    })
    return {outcomes}
@@ -987,7 +1049,9 @@ export class RouterGoals {
   const store=this.host.store,key=stableDigest([c.route.scopeId,c.route.entryId,c.actor,x.operationId]),fingerprint=stableDigest(x)
   const result=store.atomic(()=>{
    const receipt=store.get<any>('goal-receipt',key)
-   if(receipt){if(receipt.fingerprint!==fingerprint)throw Error('operationId reused with different content');const current=this.list(c).find(g=>g.id===receipt.goalId);if(!current)throw Error('Goal receipt unavailable');return current}
+   if(receipt){if(receipt.fingerprint!==fingerprint)throw Error('operationId reused with different content');const current=this.list(c).find(g=>g.id===receipt.goalId);if(!current)throw Error('Goal receipt unavailable')
+    const pending=receipt.questionId&&businessDecision(this.host,receipt.questionId)
+    return pending?.status==='pending'&&current.taskIds.includes(pending.ticketId)&&decisionActorMatches(this.host,pending.id,c.trigger.actor)?{...current,pendingQuestion:pending.question}:current}
    const candidate=x.supersedes?this.get(x.supersedes.goalId):undefined
    const prior=candidate&&this.accessible(candidate,c)?candidate:undefined
    if(x.supersedes){
@@ -1080,9 +1144,36 @@ export class RouterGoals {
      // identity into a new human anchor or bypass an expired/revoked grant.
      const automationOrigin=g.contract?.triggerId&&(this.host.webhooks.ownsTrigger(g.contract.triggerId)||this.host.proactive.runForTrigger(g.contract.triggerId)?.spec.skill)?g.contract.triggerId:undefined
      if(automationOrigin)this.host.routerIngress.authority(automationOrigin)
+     // Preserve the assignment and the reviewed answer target across a generic resume.
+     const waiting=new Map<string,{id:string;question:string}>()
+     for(const node of g.nodes??[]){
+      if(node.state!=='held'||!node.ticketId||!this.host.chat.hasContext({ticketId:node.ticketId}))continue
+      const attention=store.tickets.get(node.ticketId)?.attention
+      const decision=attention&&businessDecision(this.host,attention.id)
+      if(decision?.status==='pending'&&decision.ticketId===node.ticketId){
+       if(store.get<Run>('run',node.ticketId)?.phase==='uncertain')throw Error('Reconcile the current task or its effects before resuming')
+       if(!decisionActorMatches(this.host,decision.id,c.trigger.actor))throw Error('The current assignment is awaiting its owner’s answer')
+       this.host.scopes.checkTask(node.ticketId,c,true)
+       waiting.set(node.id,decision)
+      }
+     }
+     const nodes=g.nodes??[],deferred=new Set(waiting.keys())
+     // An independent branch may resume. Keep the unanswered branch and its downstream assignments parked.
+     for(const id of deferred)for(const node of nodes)if(node.dependsOn.includes(id))deferred.add(node.id)
+     const runnable=nodes.some(n=>!deferred.has(n.id)&&n.state!=='passed'&&n.dependsOn.every(id=>nodes.some(p=>p.id===id&&p.state==='passed')))
+     if(waiting.size&&!runnable){
+      const question=waiting.values().next().value!
+      if(g.state==='paused'&&!g.project?.review){
+       g={...g,state:'held',reason:heldReason(g.nodes!),nextAt:undefined,revision:g.revision+1}
+       store.put('router-goal',g.id,g)
+      }
+      store.put('goal-receipt',key,{scopeId:g.scopeId,entryId:g.entryId,triggerId:c.trigger.id,goalId:g.id,fingerprint,questionId:question.id,result:g})
+      return {...this.visibleGoal(g),pendingQuestion:question.question}
+     }
      if(g.project&&!g.project.triggerIds.includes(c.trigger.id))g.project.triggerIds.push(c.trigger.id)
      g.replanId=undefined
      for(const node of g.nodes??[]){
+      if(deferred.has(node.id))continue
       const run=node.ticketId?store.get<Run>('run',node.ticketId):undefined
       const pausedAssignment=node.pausedAssignment??(g.project&&g.state==='paused'&&node.state==='running'&&run?.phase==='idle'?run.assignmentId:undefined)
       if(pausedAssignment&&node.ticketId){
@@ -1117,7 +1208,7 @@ export class RouterGoals {
       allowNewTaskInputs(store,task.id,prior)
      }
      for(const id of [g.finalRoundId,...(g.nodes??[]).map(n=>n.roundId)].filter((id):id is string=>!!id)){const round=store.get<VerificationRound>('goal-verification',id);if(round?.state==='errored'){store.put('goal-verification',id,{...round,state:'pending',error:undefined,finishedAt:undefined});store.jobState('goal-verify:'+id,'pending')}}
-     g={...g,acceptanceOverflow:undefined,triggerId:automationOrigin??c.trigger.id,bindingRevision:this.host.scopes.binding(c.route.entryId).revision,failures:0,turns:0,recovery:undefined,recoveryAttempts:0,nodes:g.nodes?.map(n=>n.state==='held'?{...n,state:n.ticketId||n.delegationId?'running' as const:'pending' as const,reason:undefined,retryAt:undefined,recoveries:0,failure:undefined}:n)}
+     g={...g,acceptanceOverflow:undefined,triggerId:automationOrigin??c.trigger.id,bindingRevision:this.host.scopes.binding(c.route.entryId).revision,failures:0,turns:0,recovery:undefined,recoveryAttempts:0,nodes:g.nodes?.map(n=>n.state==='held'&&!deferred.has(n.id)?{...n,state:n.ticketId||n.delegationId?'running' as const:'pending' as const,reason:undefined,retryAt:undefined,recoveries:0,failure:undefined}:n)}
     }
     g={...g,state:'active',reason:undefined,nextAt:this.now()+(x.wakeAfterSeconds??60)*1000}
    }

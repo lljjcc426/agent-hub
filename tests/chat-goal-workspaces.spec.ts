@@ -13,6 +13,7 @@ import {Runtime} from '../src/runtime.ts'
 import type {Run} from '../src/store.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import {deploymentMaintenance,deploymentBlockers} from '../src/deployment-maintenance.ts'
+import {pendingWaitLabel} from '../web/chat/companion-state.ts'
 import {handedOffFiles} from '../src/chat-file-handoff.ts'
 
 const roots:string[]=[],hosts=new Set<Runtime>()
@@ -437,6 +438,91 @@ it('keeps a genuine missing-input question on one task across scheduler ticks an
  expect(attempts).toBe(2)
  expect(f.host.goals.get(goal.id)?.taskIds).toEqual([task])
  expect(f.host.chat.businessDecisions(f.chat.id,owner)).toEqual([expect.objectContaining({id:answer.id,status:'answered'})])
+},30000)
+
+it.each(['resume','resume_many'])('keeps an unanswered decision attached when Chat requests %s',async action=>{
+ let command:Record<string,unknown>|undefined,attempts=0,received:any
+ const question='Which isolated desktop can be used?'
+ const f=fixture(async r=>{
+  if(r.role==='router'){
+   if(command){const requested=command;command=undefined;received=await tool(r,'router_goal',requested)}
+   return {reply:''}
+  }
+  attempts++
+  return attempts===1?{...ready('The desktop remains unavailable'),state:'blocked',question}:ready()
+ })
+ const goal=f.start('Verify the desktop')
+ const h=f.host,s=h.store
+ await f.until(()=>h.goals.get(goal.id)?.state==='held'&&!h.activeExecutions)
+ const g=h.goals.get(goal.id)!,id=g.taskIds[0]!,before=s.tickets.get(id)!
+ const view=()=>h.chat.view(f.chat.id,owner,undefined,undefined,undefined,undefined,undefined,true)
+ const [card]=view().pendingCards
+ expect(card?.kind).toBe('question')
+ const target={id:g.id,operationId:randomUUID(),expectedRevision:g.revision}
+ command=action==='resume'?{action,...target}:{action,targets:[target]}
+ const run=f.send('继续')
+ await f.until(()=>received!==undefined&&!h.activeExecutions&&s.db.prepare("SELECT state FROM jobs WHERE id=?").get('router:'+run)?.state==='done')
+ expect((action==='resume'?received:received.outcomes[0]).pendingQuestion).toBe(question)
+ expect(s.tickets.get(id)).toEqual(before)
+ expect(h.goals.get(g.id)).toEqual(g)
+ expect(view().run?.state).toBe('waiting')
+ expect(view().pendingCards).toEqual([card])
+ expect(pendingWaitLabel(view(),en=>en)).toBe('Awaiting your answer')
+ expect(s.get<any>('router-dispatch','router:'+run)?.items).toContainEqual({kind:'question',id:g.id,label:g.title,reason:question})
+ expect(attempts).toBe(1)
+ // A residual question must not hide an uncertain execution.
+ const kept=s.get<Run>('run',id)!
+ s.put('run',id,{...kept,phase:'uncertain'})
+ expect(view().workers.flatMap(w=>w.tasks).find(t=>t.id===id)).toMatchObject({state:'blocked',question:undefined})
+ expect(view().pendingCards).toEqual([])
+ s.put('run',id,kept)
+ if(card?.kind!=='question')throw Error('Missing decision card')
+ h.chat.decide(f.chat.id,owner,{action:'answer',id:card.question.id,version:card.question.version,requestId:randomUUID(),text:'Use the isolated test desktop'})
+ await f.until(()=>h.goals.get(g.id)?.state==='completed')
+ expect(attempts).toBe(2)
+},30000)
+
+it('resumes independent work while a Chat decision holds its branch',async()=>{
+ const counts=new Map<string,number>()
+ const f=fixture(async r=>{
+  if(r.role==='router')return {reply:''}
+  const task=r.activity!.ticketId!,node=f.host.goals.forTask(task)!.nodes!.find(n=>n.ticketId===task)!
+  const count=(counts.get(node.id)??0)+1
+  counts.set(node.id,count)
+  if(node.id==='desktop'&&count===1)return {...ready('Missing the test environment'),state:'blocked',question:'Which desktop?'}
+  if(node.id==='docs'&&count===1)return {...ready('Local document unavailable'),state:'blocked'}
+  return ready()
+ })
+ const node=(id:string,workerId:string,dependsOn:string[]=[])=>({id,title:id,instruction:id,workerId,criterionIds:['verification'],dependsOn})
+ const started=f.start('Verify platform and docs',{maxReplans:0,nodes:[node('desktop','builder'),node('docs','reviewer'),node('package','parallel',['desktop'])]})
+ await f.until(()=>f.host.goals.get(started.id)?.state==='held'&&!f.host.activeExecutions)
+ const goal=f.host.goals.get(started.id)!,ticket=goal.nodes![0]!.ticketId!,original=f.host.store.tickets.get(ticket)!
+ const resume=f.host.goals.command({action:'resume',id:goal.id,expectedRevision:goal.revision,operationId:randomUUID()},f.context(f.send('继续')))
+ expect(resume.state).toBe('active')
+ await f.until(()=>f.host.goals.get(goal.id)?.state==='held'&&!f.host.activeExecutions)
+ expect(counts.get('docs')).toBe(2);expect(counts.get('desktop')).toBe(1);expect(counts.has('package')).toBe(false)
+ expect(f.host.store.tickets.get(ticket)).toEqual(original)
+ expect(f.host.chat.businessDecisions(f.chat.id,owner)[0]?.status).toBe('pending')
+},30000)
+
+it('returns invalid desktop inputs to the Worker before permission or native dispatch',async()=>{
+ const results:boolean[]=[]
+ const f=fixture(async r=>{
+  if(r.role==='router')return {reply:''}
+  for(const args of [{session:'named desktop'},{steps:[{prompt:true}]}]){
+   const result=await r.onTool!('superagent_desktop',{action:'launch_app',arguments:args,requestId:randomUUID()},randomUUID())
+   results.push(result.success)
+   expect(result.contentItems[0]?.text).toContain('Roppo supplies the desktop session')
+  }
+  return ready('Finished the remaining checks')
+ })
+ const prepare=vi.spyOn(f.host.desktop.runtime,'prepare')
+ const g=f.start('Inspect the desktop tool arguments')
+ await f.until(()=>f.host.goals.get(g.id)?.state==='completed')
+ expect(results).toEqual([false,false])
+ expect(prepare).not.toHaveBeenCalled()
+ expect(f.host.store.list('desktop-receipt')).toEqual([])
+ expect(f.host.store.list('chat-permission')).toEqual([])
 },30000)
 
 it('shows the cause of a held prerequisite when a previously dispatched ticket is waiting on it',async()=>{

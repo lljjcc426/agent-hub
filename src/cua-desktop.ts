@@ -20,7 +20,20 @@ const recordings = ['start_recording', 'stop_recording', 'get_recording_state'] 
 const nativeTools = [...observations, ...interactions, ...recordings]
 type NativeAction = typeof nativeTools[number]
 const actions = ['schema', ...nativeTools] as const
-const inputs = z.record(z.string(), z.unknown())
+const argumentHelp = 'Roppo supplies the desktop session, output paths and permission settings. A session name cannot select an isolated OS desktop.'
+const reserved = new Set(['session','screenshot_out_file','output_dir','prompt','probe_direct_capture'])
+function hasHostArgument(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  return Object.entries(value).some(([key,item]) => reserved.has(key) || hasHostArgument(item))
+}
+export function desktopArgumentError(args: Record<string,unknown>) {
+  if (JSON.stringify(args).length > 100_000) return 'Desktop arguments exceed the size limit.'
+  if (hasHostArgument(args)) return argumentHelp
+}
+const inputs = z.record(z.string(), z.unknown()).superRefine((args,ctx)=>{
+  const message=desktopArgumentError(args)
+  if(message)ctx.addIssue({code:'custom',message})
+})
 const desktopInput = z.object({
   action:z.enum(actions),
   arguments:inputs.optional(),
@@ -32,7 +45,7 @@ type DesktopInput = z.infer<typeof desktopInput>
 export const desktopNeedsApproval = (action: unknown) => interactions.some(value => value === action) || action === 'start_recording'
 export const desktopToolDefinition = {
   name:'superagent_desktop',
-  description:'Control native desktop apps using the Roppo desktop runtime. Use superagent_browser for websites. Use schema with arguments.tool to read the exact desktop tool schema first. Discover apps and windows, then prefer get_window_state with include_screenshot:false for structured observation. For a window PNG set include_screenshot:true; get_desktop_state captures the primary display. Both return a task attachment; set inlineImage only if the model accepts images. Start_recording records the primary display and stops at durationMs (default 60 seconds) or when stopped. Stop_recording returns the finalized MP4 attachment. Verify the visible result after actions. If desktop permissions are missing, direct the user to Settings > Browser > Desktop control. Reuse requestId for identical inputs. Inspect uncertain actions before issuing a new write.',
+  description:'Control native desktop apps using the Roppo desktop runtime. Use superagent_browser for websites. Use schema with arguments.tool to read the installed driver schema first. Omit host-managed fields such as session. A session name does not select a separate OS desktop. Discover apps and windows, then prefer get_window_state with include_screenshot:false for structured observation. For a window PNG set include_screenshot:true; get_desktop_state captures the primary display. Both return a task attachment; set inlineImage only if the model accepts images. Start_recording records the primary display and stops at durationMs (default 60 seconds) or when stopped. Stop_recording returns the finalized MP4 attachment. Verify the visible result after actions. If desktop permissions are missing, direct the user to Settings > Browser > Desktop control. Reuse requestId for identical inputs. Inspect uncertain actions before issuing a new write.',
   validator:desktopInput,
   schema:{type:'object',additionalProperties:false,required:['action','requestId'],properties:{
     action:{type:'string',enum:actions},
@@ -50,13 +63,6 @@ const sessionName = (owner:WorkOwner) => 'roppo-' + bodyDigest(binding(owner)).s
 const connectionId = 'cua-driver'
 const elapsed = 60_000
 const output = (value:unknown,success=true):ToolResult => ({success,contentItems:[{type:'inputText',text:JSON.stringify(value)}]})
-const reserved = new Set(['session','screenshot_out_file','output_dir','prompt','probe_direct_capture'])
-
-function hasHostArgument(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false
-  return Object.entries(value).some(([key,item]) => reserved.has(key) || hasHostArgument(item))
-}
-
 export class CuaDesktop {
   private recording?: Recording
   private readonly calls = new Map<string, {fingerprint:string; result:Promise<ToolResult>}>()
@@ -81,7 +87,7 @@ export class CuaDesktop {
     const tool = tools.find(tool => tool.name === name)
     if(!tool)throw new BrowserError('cua_driver_tool_missing','The installed Cua Driver does not advertise '+name+'.',503)
     const call = await this.host.toolConnections.invokeManaged(connectionId,config,{},tool,args,check,signal)
-    if('invalid' in call)throw new BrowserError('cua_driver_arguments','Arguments did not match Cua Driver. Use schema to read the installed tool contract.',400)
+    if('invalid' in call)return {ok:false,images:[],value:{code:'cua_driver_arguments',message:'The action was not sent. Check the installed tool schema.'}}
     const result = call.result
     const content = 'content' in result && Array.isArray(result.content) ? result.content : []
     const structured = result.structuredContent
@@ -94,13 +100,13 @@ export class CuaDesktop {
   async call(owner: WorkOwner, input: DesktopInput, check:()=>void, signal?:AbortSignal):Promise<ToolResult> {
     check()
     const {action}=input, args=input.arguments ?? {}
-    if(JSON.stringify(args).length>100_000 || hasHostArgument(args))
-      throw new BrowserError('cua_driver_arguments','Use Cua Driver operation arguments. Roppo supplies sessions, output paths and permission settings.',400)
+    const invalid=desktopArgumentError(args)
+    if(invalid)return output({code:'cua_driver_arguments',message:invalid},false)
     if(action==='schema'){
       const config=await this.config()
       check()
       const tools=await this.host.toolConnections.inspectManaged(connectionId,config,{},signal)
-      return output({provider:'cua-driver',tools:args.tool ? tools.filter(t=>t.name===args.tool) : tools.map(t=>t.name)})
+      return output({provider:'cua-driver',hostManagedArguments:[...reserved],tools:args.tool ? tools.filter(t=>t.name===args.tool) : tools.map(t=>t.name)})
     }
     if(!desktopNeedsApproval(action))return this.perform(owner,input,check,signal)
     const id=bodyDigest([...binding(owner),input.requestId]),fingerprint=stableDigest(input)

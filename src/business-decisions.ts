@@ -74,6 +74,16 @@ export function captureBusinessDecision(host:Runtime,ticket:Ticket,terms?:Decisi
  const record:DecisionRecord={schema:1,originTriggerId:asker.id,id,ticketId:ticket.id,question:ticket.attention.question,summary,version,basis:version,basisPolicy,actor:asker.actor,terms:currentTerms,createdAt,expiresAt:basisPolicy==='chat'?null:createdAt+(currentTerms?.validForSeconds??86400)*1000,status:'pending',reason:null,target:{label:currentTerms?.target.label??ticket.title,version:currentTerms?.target.version??version,amount:currentTerms?.amount??null,recipient:currentTerms?.recipient??null},answer:null,admissionSeq:Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
  host.store.put('business-decision',id,record)
 }
+/** Commit the question and its admission boundary together, including when renewing a stale Chat question. */
+export function captureReportedQuestion(host:Runtime,ticket:Ticket,previousId?:string,terms?:DecisionTerms|null){
+ captureBusinessDecision(host,ticket,terms)
+ const attention=ticket.attention
+ if(!attention||attention.id===previousId)return
+ const admissionSeq=Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)
+ host.store.put('question-answer-boundary',bodyDigest([ticket.id,attention.id]),{
+  ticketId:ticket.id,questionId:attention.id,questionDigest:bodyDigest(attention.question),createdAt:Date.now(),admissionSeq,
+ })
+}
 export function businessDecision(host:Runtime,id:string,now=Date.now()):BusinessDecisionView|undefined {
  const d=readDecision(host,id);if(!d)return
  const chat=inChat(host,d)

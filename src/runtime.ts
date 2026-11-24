@@ -15,7 +15,7 @@ import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
 import {setTimeout as delay} from 'node:timers/promises'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
-import {captureBusinessDecision,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
+import {captureReportedQuestion,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
 import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
 import {capturedOutputs} from './goal-evidence-recovery.ts'
@@ -342,7 +342,7 @@ export class Runtime {
       reconcileBackendReceipts(this.store,config.stateDir)
     }
     for (const run of this.store.list<Run>('run')) {
-      if(artifactHolds?.has(run.ticketId))continue
+      if(artifactHolds?.has(run.ticketId)||this.goals.restoreQuestionAfterRejectedDesktop(run))continue
       if(this.paused&&legacyAnsweredGoalReply(this.store,run)){
         this.recoverAnsweredQuestionsOnResume=true
         continue
@@ -483,13 +483,7 @@ export class Runtime {
           if(channel)this.store.outbox.send({id:'failure:'+bodyDigest([ticketId,latestAssignment(ticket)?.id,value.state,reply]),ticketId,channel,kind:'reply',text:reply})
         }
       }
-      captureBusinessDecision(this,ticket,value.decision)
-      if(ticket.attention&&ticket.attention.id!==previous?.id){
-        // Durable ordering fence for explicit business replies. Unlike optional
-        // provenance, this is committed atomically with the question and reply.
-        const admissionSeq=Number(this.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)
-        this.store.put('question-answer-boundary',bodyDigest([ticketId,ticket.attention.id]),{ticketId,questionId:ticket.attention.id,questionDigest:bodyDigest(ticket.attention.question),createdAt:Date.now(),admissionSeq})
-      }
+      captureReportedQuestion(this,ticket,previous?.id,value.decision)
     })
   }
   private bindWorkerEventMessages(receipt:WorkerEventReceipt,previous:Set<string>,previousGoalDelivery?:string|null){
@@ -1406,15 +1400,17 @@ export class Runtime {
               const result=this.store.atomic(()=>{
                 const output=this.goals.command(args,scoped,packet?.manifest)
                 if(action==='start'||action==='resume'){
-                  const goal=output as RouterGoal
-                  if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:'plan',id:goal.id,label:goal.title})
-                  if(action==='resume')refreshTaskRevisions(goal.taskIds)
+                  const goal=output as RouterGoal & {pendingQuestion?:string}
+                  if(action==='resume'&&goal.pendingQuestion)saveDispatch({kind:'question',id:goal.id,label:goal.title,reason:goal.pendingQuestion})
+                  else if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:action==='resume'?'resumed':'plan',id:goal.id,label:goal.title})
+                  if(action==='resume'&&!goal.pendingQuestion)refreshTaskRevisions(goal.taskIds)
                 }else if(action==='resume_many'){
                   const outcomes:GoalResumeOutcome[]=output.outcomes
                   const resumed=outcomes.filter(item=>item.resumed)
                   refreshTaskRevisions(resumed.flatMap(item=>item.taskIds??[]))
-                  if(resumed.length){
-                    for(const item of outcomes)saveDispatch({kind:item.resumed?'resumed':'blocked',id:item.id,label:item.title,reason:item.reason})
+                  for(const item of outcomes){
+                    if(item.pendingQuestion)saveDispatch({kind:'question',id:item.id,label:item.title,reason:item.pendingQuestion})
+                    else if(resumed.length)saveDispatch({kind:item.resumed?'resumed':'blocked',id:item.id,label:item.title,reason:item.reason})
                   }
                 }
                 return output

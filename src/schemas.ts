@@ -51,7 +51,7 @@ export const reportSchema = {
 }
 
 const inquiryReplies=z.array(z.object({inquiryId:z.string().min(1),text:z.string().min(1)}).strict()).max(64)
-export const chatReport=report.extend({inquiryReplies:inquiryReplies.optional(),files:z.array(z.string().min(1).max(1800)).max(chatUploadLimits.maxFiles).optional()})
+export const chatReport=report.extend({inquiryReplies:inquiryReplies.optional().catch([]),files:z.array(z.string().min(1).max(1800)).max(chatUploadLimits.maxFiles).optional()})
 export const chatReportSchema={...reportSchema,properties:{...reportSchema.properties,files:{type:'array',maxItems:chatUploadLimits.maxFiles,items:{type:'string'},description:'Final files for the Chat user, as paths relative to the task workspace. Use an empty array when there is no file to deliver.'}},required:[...reportSchema.required,'files']}
 
 export const inquiryChatReportSchema={

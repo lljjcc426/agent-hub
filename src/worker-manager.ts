@@ -90,7 +90,7 @@ export class WorkerManager {
  }
  private callNow(value:unknown,context?:RouterContext):any{
   const input=workerCommandSchema.parse(value),host=this.host
-  if(input.expectReply&&(input.action!=='send'||input.questionId||!context?.trigger?.human||!host.store.get('chat-run',context.trigger.id)))
+  if(input.expectReply&&(input.action!=='send'||input.questionId||!context?.trigger?.human||!host.chat.personalManagement(context)||!host.store.get('chat-run',context.trigger.id)))
    throw Error('An inquiry needs a human Chat follow-up to an existing task')
   if(input.decisionVersion&&!input.questionId)throw Error('decisionVersion requires questionId')
   if(input.questionId!==undefined){

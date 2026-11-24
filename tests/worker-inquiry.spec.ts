@@ -39,6 +39,7 @@ const secondAnswer = 'The offline bundle is available in the release directory.'
 
 interface Scenario {
   expectReply: boolean
+  recover?: (request: ModelRequest, data: {question: string; report: {summary: string}}) => string | Promise<string>
   owner?: string
   managed?: boolean
   retrySend?: boolean
@@ -77,7 +78,13 @@ async function fixture(scenario: Scenario) {
     r.onTurn?.(turnId)
     const data = JSON.parse(r.input)
     let response: object
-    if (r.role === 'worker') {
+    if (data.kind === 'inquiry_readback') {
+      expect(r.role).toBe('worker')
+      expect(r.threadId).toBeUndefined()
+      expect(r.allowNativeTools).toBe(false)
+      expect(r.onTool).toBeUndefined()
+      response = {reply: await scenario.recover?.(r, data) ?? ''}
+    } else if (r.role === 'worker') {
       const inputs: WorkerInput[] = data.inputs
       const call = workerTurns.length
       const turn = { id: turnId, text: '', inputs, threadId }
@@ -326,15 +333,25 @@ it('does not expose the pending answer after permission to return this task to t
   expect(f.view().some(m => m.text === replay.reply)).toBe(false)
 })
 
-it('keeps a wrongly addressed answer internal rather than assigning it to the only visible question', async () => {
-  const f = await fixture({ expectReply:true, worker:async () => ({ ...waiting, reply:'General update',
-    inquiryReplies:[{inquiryId:'belongs-to-another-ask',text:'Unrelated answer'}] }) })
-  f.send(firstQuestion)
-  await until(f.h, () => f.results().length === 2)
-  for(let n=0;n<3;n++) await f.h.tick()
-  expect(f.readyForAnswer).toHaveLength(0)
+it.each(['empty','misaddressed'])('recovers a %s answer from the saved Worker report without another user event or work execution', async mode => {
+  let recoveries = 0
+  const summary = 'Mac offline check completed at 09:13.'
+  const f = await fixture({ expectReply:true, worker:async () => ({ ...waiting, summary, reply:mode === 'empty' ? '' : 'General update',
+    inquiryReplies:mode === 'empty' ? [] : [{inquiryId:'belongs-to-another-ask',text:'Unrelated answer'}] }),
+    recover:(_request, data) => {
+      recoveries++
+      expect(data.question).toBe(firstQuestion)
+      expect(data.report.summary).toBe(summary)
+      expect(JSON.stringify(data)).not.toMatch(/General update|Unrelated answer/)
+      return 'The Mac offline check completed at 09:13.'
+    } })
+  const ask = f.send(firstQuestion)
+  await until(f.h, () => f.view().some(m => m.runId === ask.runId && m.text === 'The Mac offline check completed at 09:13.'))
   expect(f.view().some(m => ['General update','Unrelated answer'].includes(m.text))).toBe(false)
-  expect(f.h.store.list<{delivered?:boolean}>('worker-inquiry').map(q => !!q.delivered)).toEqual([false])
+  expect(f.h.store.list<{delivered?:boolean}>('worker-inquiry').map(q => !!q.delivered)).toEqual([true])
+  expect(recoveries).toBe(1)
+  expect(f.workerTurns).toHaveLength(2)
+  expect(f.h.store.tickets.get(f.ticketId)?.assignments.at(-1)?.report?.state).toBe('waiting')
 })
 
 it('answers a question about a running goal node without passing its independent acceptance or minting a delivery', async () => {
@@ -351,6 +368,38 @@ it('answers a question about a running goal node without passing its independent
   expect(after.state).not.toBe('completed')
   expect(f.h.store.list('goal-delivery')).toHaveLength(0)
   expect(f.h.store.tickets.get(f.ticketId)!.assignments.at(-1)!.report!.state).toBe('waiting')
+})
+
+it('returns an already accepted final answer through the original ready delivery once', async () => {
+  const f = await fixture({expectReply:true, worker:async () => ({...waiting, state:'ready', reply:'Platform checks complete.'})})
+  const ask = f.send(firstQuestion)
+  await until(f.h, () => f.view().some(m => m.runId === ask.runId && !m.recipient && m.text === 'Platform checks complete.'))
+  expect(f.view().filter(m => !m.recipient && m.text === 'Platform checks complete.')).toHaveLength(1)
+  expect(f.readyForAnswer).toHaveLength(1)
+  expect(f.h.store.list<{delivered?:boolean}>('worker-inquiry')[0]?.delivered).toBe(true)
+})
+
+it('delivers a progress answer and preserves it when the composing Router is unavailable', async () => {
+  const f = await fixture({expectReply:true, worker:async () => ({...waiting, state:'waiting', reply:'Mac offline check completed.'}),
+    routerAnswer: async () => {throw Error('temporary model error')} })
+  vi.spyOn(f.h.work,'active').mockImplementation((ticketId,assignmentId) => ticketId===f.ticketId
+    ? [{id:'original-job',ticketId,assignmentId,cwd:f.config.stateDir,sandbox:'read-only',depth:0,kind:'shell',state:'running',createdAt:1,notify:'auto'}] : [])
+  const ask = f.send(firstQuestion)
+  await until(f.h, () => f.view().some(m => m.runId === ask.runId && m.text === 'Mac offline check completed.'))
+  expect(f.workerTurns).toHaveLength(2)
+  expect(f.h.store.tickets.get(f.ticketId)?.ended).toBeUndefined()
+})
+
+it('keeps the saved report available after its single read-only recovery budget is spent', async () => {
+  let reads=0
+  const f = await fixture({expectReply:true, worker:async () => ({...waiting, reply:'', inquiryReplies:[]}),
+    recover: () => { reads++;throw Error('temporary model error') }})
+  const ask = f.send(firstQuestion)
+  await until(f.h, () => f.view().some(m => m.runId === ask.runId && m.text === 'Latest task update: '+waiting.summary))
+  const q = f.h.store.list<{delivered?:boolean;readbackStarted?:boolean}>('worker-inquiry')[0]
+  expect(q).toMatchObject({readbackStarted:true,delivered:true})
+  expect(reads).toBe(1)
+  expect(Number(f.h.store.db.prepare('PRAGMA user_version').get()!.user_version)).toBe(19)
 })
 
 it('deduplicates a retried send from the same user message along with its Worker input and visible answer', async () => {

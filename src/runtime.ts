@@ -1,5 +1,5 @@
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
-import {finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
+import {authorizedQuestion,readInquiryReport,finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
 import {ApiUsage} from './api-usage.ts'
 
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
@@ -451,8 +451,9 @@ export class Runtime {
     try{await live.delivery}finally{live.delivery=undefined}
   }
   /** Keep reports and the messages requiring a person's attention in one durable transaction. */
-  private reportWork(ticketId:string,value:WorkerReport & {decision?:DecisionTerms|null},reply?:string,accepted=false,files?:string[]):void {
-    this.store.atomic(()=>{
+  private reportWork(ticketId:string,value:WorkerReport & {decision?:DecisionTerms|null},reply?:string,accepted=false,files?:string[]):string|undefined {
+    return this.store.atomic(()=>{
+      let finalMessageId:string|undefined
       if(value.state==='ready'&&this.permissions.hasUnconfirmedEffect(ticketId)){
         if(accepted)throw Error(unconfirmedEffectMessage)
         if(!this.verification.capture(ticketId,value,reply,files))
@@ -475,6 +476,7 @@ export class Runtime {
       }
       else if(reply&&value.state==='ready'){
         const result=this.engine.reply({purpose:value.answers?'answer':'result',ticketId,...(value.answers?{triggerId:value.answers}:{}),text:reply})
+        finalMessageId=result.id
         // A published file already carries this handoff. Text results count only on delivery to the Router inbox.
         if(!result.reused&&!publishedFiles)this.store.db.prepare(`UPDATE outbox SET body=json_set(body,'$.taskResult',1)
           WHERE id=? AND status='pending' AND json_extract(body,'$.channel.address.routerInbox') IS NOT NULL`).run(result.id)
@@ -493,6 +495,7 @@ export class Runtime {
         }
       }
       captureReportedQuestion(this,ticket,previous?.id,value.decision)
+      return finalMessageId
     })
   }
   private bindWorkerEventMessages(receipt:WorkerEventReceipt,previous:Set<string>,previousGoalDelivery?:string|null){
@@ -643,7 +646,7 @@ export class Runtime {
     const manifest=request.contextId?this.store.get<ContextManifest>('context-manifest',request.contextId):context.ticketId?this.store.get<{manifest:ContextManifest}>('task-context',context.ticketId)?.manifest:undefined
     const scopeId=manifest?.scopeId??(context.ticketId?this.scopes.ownership(context.ticketId)?.scopeId:undefined)??(context.triggerId?this.store.get<any>('router-route',context.triggerId)?.scopeId:undefined)
     if(scopeId)request={...request,contextBudget:scopeBudget(this.scopes.scope(scopeId).contextBytes)}
-    if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:options})}
+    if(role==='worker'&&context.ticketId&&!request.ephemeral){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:options})}
     if(request.onTool&&(role==='router'||role==='worker')&&this.chat.hasContext(context)){
       const invoke=request.onTool
       request={...request,tools:[...(request.tools??[]),chatStatusTool,publicPlanTool],onTool:async(name,args,callId)=>{
@@ -673,7 +676,7 @@ export class Runtime {
         return result
       }}
     }
-    if(role==='worker'&&context.ticketId){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
+    if(role==='worker'&&context.ticketId&&!request.ephemeral){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
     request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools);this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
     const activity=this.activity.begin(role,role,context)
@@ -1290,7 +1293,7 @@ export class Runtime {
     if(this.store.get('router-result',job.id)||messageId&&this.store.get('router-read',messageId))return
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
     const inquiry=reportMessage?.inquiryId?this.store.get<WorkerInquiry>('worker-inquiry',reportMessage.inquiryId):undefined
-    if(reportMessage?.inquiryId&&(!inquiry||inquiry.delivered||inquiry.latestMessageId!==messageId||this.workerMessageEvent(reportMessage.id,reportMessage.ticketId)===false)){
+    if(reportMessage?.inquiryId&&(!inquiry||inquiry.delivered||inquiry.latestMessageId!==messageId||!this.workerMessageEvent(reportMessage.id,reportMessage.ticketId)||!authorizedQuestion(this,inquiry))){
       this.store.put('router-read',reportMessage.id,{discussion,reason:'inquiry_no_longer_current'})
       return
     }
@@ -1367,7 +1370,7 @@ export class Runtime {
       if(typeof m.ticketId!=='string'||!m.ticketId||this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
       if(m.inquiryId){
         const inquiry=this.store.get<WorkerInquiry>('worker-inquiry',m.inquiryId)
-        if(!inquiry||m.id!==messageId||inquiry.delivered||inquiry.latestMessageId!==m.id||inquiry.triggerId!==triggerId||inquiry.ticketId!==m.ticketId||inquiry.discussion!==discussion)return false
+        if(!inquiry||!this.workerMessageEvent(m.id,m.ticketId)||!authorizedQuestion(this,inquiry)||m.id!==messageId||inquiry.delivered||inquiry.latestMessageId!==m.id||inquiry.triggerId!==triggerId||inquiry.ticketId!==m.ticketId||inquiry.discussion!==discussion)return false
       }
       const owner=this.taskAuthority(m.ticketId)
       if(this.store.get<TaskContinuation>('task-continuation',m.ticketId)?.priorMessages.includes(m.id))return false
@@ -1649,12 +1652,21 @@ export class Runtime {
       }
       const textAttempt=browserRun&&this.chat.textReplyAttempt(triggerId)
       if(textAttempt?.jobId===job.id)result={threadId:textAttempt.threadId,turnId:textAttempt.turnId,text:'{"reply":""}'}
+      else if(inquiry&&reportMessage?.inquiryReadback){
+        validateReplyContext()
+        const reply=await readInquiryReport(this,inquiry,reportMessage,chinese,controller.signal,r=>this.runModel(r,triggerId))
+        validateReplyContext()
+        result={threadId:'',turnId:'inquiry-readback:'+job.id,text:JSON.stringify({reply})}
+      }
       else if(rebuildAfterDispatch)result=dispatchReply()
       else try{result=await execute(request)}catch(error){
         if(dispatches().length&&!controller.signal.aborted){
           validateReplyContext()
           result=dispatchReply()
           rebuildAfterDispatch=true
+        }else if(inquiry&&reportMessage?.text?.trim()&&!controller.signal.aborted){
+          validateReplyContext()
+          result={threadId:'',turnId:'inquiry-reply:'+job.id,text:JSON.stringify({reply:reportMessage.text})}
         }else{
           const code=backendFailure(error)?.code
           if(recovery||!retryHere||!code||!['process_failed','outcome_unknown','transient'].includes(code))throw error
@@ -1699,12 +1711,12 @@ export class Runtime {
         this.store.put('router-result',job.id,{discussion,threadId:result.threadId,turnId:result.turnId,reply:output.reply})
         this.chat.reply(job.id,triggerId,output.reply)
         if(inquiry&&this.store.get('chat-message','reply:'+job.id))
-          finishInquiry(this,inquiry)
+          finishInquiry(this,this.store.get<WorkerInquiry>('worker-inquiry',inquiry.id)!)
         if(scoped&&packet&&!quiet&&!followups){
           this.continuity.finish(scoped,job.id,output.reply,[...authorityInputs],packet.manifest.id,knowledgeRefs)
           this.agentMemory.recordDocuments(scoped,knowledgeRefs.filter(ref=>output.reply.includes(ref.documentId)),job.id)
           const saved=this.store.get<any>('router-session',sessionKey)
-          this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
+          if(!inquiry||result.threadId)this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
         if(handoff?.yielded||rebuildAfterDispatch){
           // An interrupted native tool turn may reject resume. Rebuild from the
@@ -2053,6 +2065,7 @@ export class Runtime {
       const rawOutput:unknown=JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
       const output=chatOutput??report.parse(rawOutput)
+      const reportedState=output.state
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
@@ -2136,9 +2149,11 @@ export class Runtime {
           }
         }
         if(handoffDigest)this.store.put('worker-handoff-evidence',ticket.id,{ticketId:ticket.id,assignmentId,digest:handoffDigest})
-        this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
-        if(!pending&&!superseded&&!background&&output.state==='waiting'&&!question)
-          queueInquiryReplies(this,receipt,inputs,previousInquiries,chatOutput?.inquiryReplies,output.reply)
+        const finalMessageId=this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
+        if(hasInquiry&&!pending&&!superseded&&!question&&['waiting','ready'].includes(output.state)){
+          const finalHeld=reportedState==='ready'&&(!finalMessageId||output.state!=='ready')
+          queueInquiryReplies(this,receipt,inputs,previousInquiries,finalHeld?[]:chatOutput?.inquiryReplies,finalHeld?'':output.reply,finalMessageId)
+        }
         run.phase = background?'background':'idle'; run.threadId = result.threadId; run.result = output.reply; persist(true)
         const updated = this.store.tickets.get(ticket.id)!
         if (pending&&(!handoff||superseded)) this.queueInputs(updated, latestAssignment(updated)!)
@@ -2253,7 +2268,11 @@ export class Runtime {
           if(!chatDecisionDelivery(this,message)){
             this.store.put('router-inbox',message.id,{...message,...(workerEvent?{workerEvent}:{})})
             const delegated=message.ticketId&&(this.store.get<any>('task-routing',message.ticketId)??this.store.get<any>('worker-assignment',message.ticketId))
-            if(delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at)this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
+            const question=message.inquiryId?this.store.get<WorkerInquiry>('worker-inquiry',message.inquiryId):undefined
+            if(question){
+              if(question.latestMessageId===message.id&&!question.delivered&&authorizedQuestion(this,question))
+                this.store.enqueue('router:result:'+message.id,'router',{discussion:question.discussion,triggerId:question.triggerId,messageId:message.id})
+            }else if(!message.inquiryId&&delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at)this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
           }
           this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)
         });blocked.delete(channel)}catch{this.store.audit({type:'router.inbox-retry',id:message.id})}

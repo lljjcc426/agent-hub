@@ -3,7 +3,7 @@ import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
 import {z} from 'zod'
-import {businessDecision,assertBusinessDecision,decisionActorMatches,isRuntimeRecoveryQuestion,runtimeRecoveryQuestions,type BusinessDecisionView} from './business-decisions.ts'
+import {businessDecision,assertBusinessDecision,decisionActorMatches,hasOutstandingQuestion,isRuntimeRecoveryQuestion,runtimeRecoveryQuestions,type BusinessDecisionView} from './business-decisions.ts'
 import {rememberFileHandoff} from './chat-file-handoff.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
 import {allowNewTaskInputs} from './task-context.ts'
@@ -1111,6 +1111,7 @@ export class ChatSessions {
         title:n.title,held:goalHeld||n.state==='held',awaitingDependency:!goalHeld&&n.state==='waiting_dependency',
         reason:goalHeld&&n.state==='waiting_dependency'?(g.reason??n.reason):(n.reason??g.reason),
         passed:n.state==='passed',reviewing:g.state==='active'&&n.state==='verifying',
+        providerWait:(g.state==='active'||g.state==='waiting')&&n.state==='running'?n.providerWait:undefined,
       }] as const)
     }))
     return this.host.store.list<Delegation>('worker-assignment').map(d=>({...d,...this.host.taskAuthority(d.ticketId)!})).filter(d=>{
@@ -1127,7 +1128,8 @@ export class ChatSessions {
       const decision=attention&&r?.phase!=='uncertain'&&!isRuntimeRecoveryQuestion(attention.question)
         ?this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>businessDecision(this.host,attention.id))):undefined
       const question=decision?.status==='pending'&&decision.ticketId===d.ticketId&&decisionActorMatches(this.host,decision.id,{source:c.sourceId,id:c.actor})?decision.question:undefined
-      const executing=reviewing||['starting','running','background','delivering','merging'].includes(r?.phase??'')
+      const recovering=node?.providerWait&&r?.phase==='uncertain'&&r.turnId===node.providerWait.turnId&&t&&!hasOutstandingQuestion(this.host,t)?node.providerWait:undefined
+      const executing=reviewing||!!recovering||['starting','running','background','delivering','merging'].includes(r?.phase??'')
       const held=node?.held||r?.phase==='uncertain'||report?.state==='blocked'
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':executing?'running':question?'waiting':
         node?.passed&&r?.phase!=='uncertain'?'completed':node?.awaitingDependency&&r?.phase!=='uncertain'?'waiting':held?'blocked':report?.state==='failed'?'failed':r?.phase==='human'||report?.state==='waiting'?'waiting':report?.state==='ready'?'completed':'queued'
@@ -1140,7 +1142,8 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question,blockedReason,summary:report?.summary??undefined}
+      const summary=recovering?(recovering.jobs?'正在等待已启动的后台作业完成。':'正在重连模型并保留已完成的操作。'):report?.summary
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question,blockedReason,summary}
     })
   }
   private conversationTasks(c:Conversation){

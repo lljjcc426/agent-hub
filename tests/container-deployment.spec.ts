@@ -11,7 +11,7 @@ import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
 import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from '../src/backends/opencode-read-recovery.ts'
 import {ExecutionTrace} from '../src/execution-trace.ts'
-import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
+import {heldArtifactReads,unsettledTaskEffects} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
 import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
@@ -259,6 +259,20 @@ it('requires matching terminal callbacks and accounted native reads after a prov
  saveReceipt('complete');journal('bash');expect(proof()).toBeUndefined()
  journal('websearch');writeFileSync(join(f.journal,thread.turnId+'.operations'),'');expect(proof()).toBeUndefined()
  journal('websearch');s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...failure,code:'outcome_unknown'}});expect(proof()).toBeUndefined()
+})
+
+it('allows only a known root shell of the same assignment to finish before provider continuation',()=>{
+ const s=host().store,ticketId='retained-worker',assignmentId='current'
+ const shell={id:'building',kind:'shell',state:'running',ticketId,assignmentId}
+ s.put('work',shell.id,shell)
+ const blocked=()=>unsettledTaskEffects(s,ticketId,0,assignmentId)
+ expect(unsettledTaskEffects(s,ticketId,0)).toBe(true)
+ expect(blocked()).toBe(false)
+ for(const change of [{assignmentId:'previous'},{agentId:'child'},{kind:'agent'},{state:'interrupted'}]){
+  s.put('work',shell.id,{...shell,...change});expect(blocked()).toBe(true)
+ }
+ s.put('work',shell.id,shell)
+ s.put('chat-permission','unconfirmed',{actor:{ticketId},phase:'uncertain'});expect(blocked()).toBe(true)
 })
 
 it('preserves proven denied log reads and their original report across a paused restart',async()=>{

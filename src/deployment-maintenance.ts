@@ -166,6 +166,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    if(!run.threadId||!run.turnId||ticket.attention||assignment.report?.state!=='blocked')return
    for(const inputId of ticket.undelivered){
     const input=ticket.inputs.find(item=>item.id===inputId)
+    if(provider&&input?.kind==='note')continue
     const trigger=input?.kind==='trigger'&&store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',input.triggerId)
     if(!trigger||!trigger.human||!trigger.actor||JSON.stringify([trigger.actor.source,trigger.actor.id])!==goal.actor)return
    }

@@ -9,17 +9,18 @@ import type {Ticket} from './vendor/dsh-core/index.ts'
 type RecoveryStore=Pick<Store,'db'|'get'|'list'|'deliveries'>
 type ArtifactReadHold={run:Run;proof:ArtifactReadProof}
 
-export function unsettledTaskEffects(store:Pick<Store,'db'>,id:string,since:number){
+export function unsettledTaskEffects(store:Pick<Store,'db'>,id:string,since:number,awaitedShellAssignment?:string){
  return !!store.db.prepare(`SELECT 1 FROM records WHERE
   (json_extract(body,'$.ticketId')=? AND (
-    (kind='work' AND (json_extract(body,'$.state') IN ('starting','running')
+    (kind='work' AND ((json_extract(body,'$.state') IN ('starting','running') AND NOT
+      (? IS NOT NULL AND json_extract(body,'$.assignmentId') IS ? AND json_extract(body,'$.kind') IS 'shell' AND json_extract(body,'$.agentId') IS NULL))
       OR (json_extract(body,'$.state')='interrupted' AND coalesce(json_extract(body,'$.endedAt'),?)>=?)))
     OR (kind='execution-call' AND json_extract(body,'$.state')='running')
     OR (kind='workflow-action' AND json_extract(body,'$.state') IN ('pending','applying','uncertain'))
     OR (kind='approval' AND (json_extract(body,'$.status')='pending'
       OR (json_extract(body,'$.key') IS NOT NULL AND json_extract(body,'$.status')='resolved' AND coalesce(json_extract(body,'$.delivered'),0)=0)))))
   OR (kind='chat-permission' AND json_extract(body,'$.actor.ticketId')=? AND
-    json_extract(body,'$.phase') IN ('pending','approved','executing','uncertain')) LIMIT 1`).get(id,since,since,id)
+    json_extract(body,'$.phase') IN ('pending','approved','executing','uncertain')) LIMIT 1`).get(id,awaitedShellAssignment??null,awaitedShellAssignment??null,since,since,id)
 }
 
 function hasOtherTaskWork(store:RecoveryStore,run:Run){

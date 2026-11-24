@@ -119,6 +119,16 @@ it('shows the answered task in its decision run even when a retained route point
  expect(view().tasks.map(t=>t.id)).toEqual([ticketId])
  expect(view().run?.state).toBe('running')
  expect(host.chat.view(chat.id,owner).run?.state).toBe('running')
+ const goal=host.goals.get(f.goal.id)!
+ const turnId='retained-provider-turn'
+ const nodes=goal.nodes!.map(n=>n.ticketId===ticketId?{...n,state:'running' as const,
+  providerWait:{turnId,checkAt:Date.now()+5000,jobs:true}}:n)
+ host.store.put('router-goal',goal.id,{...goal,state:'active',nodes})
+ host.store.put('run',ticketId,{...run,phase:'uncertain',turnId})
+ expect(view().tasks[0]).toMatchObject({state:'running',summary:'正在等待已启动的后台作业完成。'})
+ expect(view().run?.state).toBe('running')
+ host.store.put('run',ticketId,{...run,phase:'uncertain',turnId:'another-turn'})
+ expect(view().tasks[0]?.state).toBe('blocked')
  const ticket=host.store.tickets.get(ticketId)!
  host.store.put('ticket',ticketId,{...ticket,ended:{by:'executor',outcome:'completed',at:new Date().toISOString()}})
  expect(view().run?.state).toBe('completed')

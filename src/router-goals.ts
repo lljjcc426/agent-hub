@@ -461,10 +461,13 @@ export class RouterGoals {
     reason:undefined,nextAt:undefined,revision:goal.revision+1})
   return true
  }
- private effectsSettledAtPhase(ticketId:string,phase:'idle'|'uncertain'){
+ private effectsSettledAtPhase(ticketId:string,phase:'idle'|'uncertain',awaitedShellAssignment?:string){
   if(this.host.permissions.hasUnconfirmedEffect(ticketId)||!repositoryEffectsSettled(this.host.store,ticketId)||this.host.workflows.unsettled(ticketId))return false
   const run=this.host.store.get<Run>('run',ticketId)
-  return !run||run.phase===phase&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state))&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
+  if(!run)return true
+  const unfinished=this.host.work.list(ticketId).some(w=>['starting','running'].includes(w.state)&&
+   (!awaitedShellAssignment||w.assignmentId!==awaitedShellAssignment||w.kind!=='shell'||w.agentId))
+  return run.phase===phase&&!this.host.activity.list().some(a=>a.ticketId===ticketId&&a.state==='running')&&!unfinished&&!this.host.toolConnections.receipts(ticketId).some(r=>r.state!=='complete')&&!this.host.store.deliveries().some(d=>d.ticketId===ticketId&&!['sent','dropped'].includes(d.status))
  }
  private interruptedRead(task:Ticket,run:Run|undefined,requested=false):ReadRecovery|undefined{
   const {store}=this.host
@@ -530,8 +533,8 @@ export class RouterGoals {
   if(run?.phase!=='uncertain'||!task||task.ended||task.assignments.at(-1)?.id!==run.assignmentId||task.assignments.at(-1)?.report?.state!=='blocked'||
     hasOutstandingQuestion(this.host,task)||!this.host.scopes.taskRunnable(id)||
     !this.host.webhooks.taskExecutionAllowed(id)||this.host.webhooks.continuations.pending(id,run.assignmentId)||
-    n.dependsOn.some(dep=>g.nodes!.find(d=>d.id===dep)?.state!=='passed')||!this.effectsSettledAtPhase(id,'uncertain')||
-    unsettledTaskEffects(store,id,0))return false
+    n.dependsOn.some(dep=>g.nodes!.find(d=>d.id===dep)?.state!=='passed')||!this.effectsSettledAtPhase(id,'uncertain',run.assignmentId)||
+    unsettledTaskEffects(store,id,0,run.assignmentId))return false
   const wakes=retainedInputWakes(store,run)
   if(!wakes)return false
   const attempt=store.get<{assignmentId:string;attemptId:string}>('async-worker-current',id)
@@ -543,7 +546,8 @@ export class RouterGoals {
     JOIN json_each(t.body,'$.effectIds') e LEFT JOIN records r ON r.kind='backend-plugin-tool' AND r.id=e.value
     WHERE s.kind='model-session' AND json_extract(s.body,'$.ticketId')=? AND s.id<>?
     AND json_extract(r.body,'$.state') IS NOT 'complete' LIMIT 1`).get(id,run.threadId??''))return false
-  const shell=!wakes.length?unstartedWorkerShell(store,this.host.config.stateDir,run):undefined
+  const awaitingJobs=this.host.work.list(id).some(job=>job.state==='starting'||job.state==='running')
+  const shell=!awaitingJobs&&!wakes.length?unstartedWorkerShell(store,this.host.config.stateDir,run):undefined
   const provider=shell?undefined:settledProviderTurn(store,this.host.config.stateDir,run)
   if(!shell&&!provider)return false
   this.host.scopes.checkTask(id,c,true)
@@ -551,8 +555,6 @@ export class RouterGoals {
   if(manifest)this.host.memory.validate(manifest)
   if(provider){
    if(provider.model.scopeId!==g.scopeId||!manifest||provider.model.contextId!==manifest.id||!attempt)return false
-   const retry=classifyExecutionFailure({code:'transient',stage:'provider',retryAfterMs:provider.retryAfterMs},'',provider.at,n.recoveries)
-   if(this.now()<retry.retryAt!)return false
   }
   const worker=workerProfiles(this.host.config).find(p=>p.id===run.workerId)
   if(!worker||worker.backend!==run.backendId||worker.state==='paused'||
@@ -560,6 +562,20 @@ export class RouterGoals {
   const model=worker.model??this.host.config.backends[worker.backend]?.model??this.host.config.models.worker
   if(run.model&&run.model!==model)return false
   this.host.model.describe?.(run.threadId)
+  if(provider){
+   const now=this.now(),retry=classifyExecutionFailure({code:'transient',stage:'provider',retryAfterMs:provider.retryAfterMs},'',provider.at,n.recoveries)
+   const jobDeadline=provider.at+this.host.config.work.backgroundTimeoutMs
+   if(awaitingJobs&&now>=jobDeadline)return false
+   if(awaitingJobs||now<retry.retryAt!){
+    // The old turn is accounted for. Wait in the existing goal and leave the
+    // shell runners alone until the host has their terminal results.
+    n.providerWait={turnId:run.turnId!,jobs:awaitingJobs,checkAt:Math.min(now+5000,awaitingJobs?jobDeadline:retry.retryAt!)}
+    n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined
+    if(g.state==='held'){g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++}
+    this.save(g)
+    return true
+   }
+  }
   const prerequisites=n.dependsOn.flatMap(dep=>{
    const node=g.nodes!.find(d=>d.id===dep)!,round=store.get<VerificationRound>('goal-verification',node.roundId!)
    if(!round||round.state!=='passed'||!this.host.verification.current(round,g))throw Error('Prerequisite evidence changed before Worker recovery')
@@ -598,7 +614,7 @@ export class RouterGoals {
    store.put('model-session',run.threadId!,{...session,[shell?'shellDispatchRecovery':'providerRecovery']:{turnId:run.turnId,at:this.now()}})
    const {threadId,turnId,error,failure,result,waitingForWriter,toolsVersion,toolsDigest,...retained}=run
    store.put('run',id,{...retained,phase:'idle'})
-   n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.recoveries++
+   n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.providerWait=undefined;n.recoveries++
    g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
    // A provider checkpoint continues the same accepted input. Re-admitting
    // the goal's older trigger here would move the reply away from its owner.
@@ -926,6 +942,8 @@ export class RouterGoals {
       if(run?.phase==='running'||run?.phase==='starting'||task.undelivered.length&&run?.phase!=='uncertain')continue
       if(run?.phase==='uncertain'){
        if(this.host.executionActive(task.id))continue
+       if(n.providerWait&&n.providerWait.turnId===run.turnId&&n.providerWait.checkAt>this.now())continue
+       n.providerWait=undefined
        if(this.recoverStoppedWorker(g,n,c))continue
        if(this.recoverInterruptedReads(g,c,[n]))continue
       }

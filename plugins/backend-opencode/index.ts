@@ -1,6 +1,7 @@
 import {modelSteps} from '../../src/execution-limits.ts'
 import {workspaceTools,nativeTools} from './native-tools.ts'
 import {workspaceGuard} from './workspace.ts'
+import {compactionPlugin,completedAnswer} from './compaction.ts'
 import {join} from 'node:path'
 import {existsSync,realpathSync} from 'node:fs'
 import {DatabaseSync} from 'node:sqlite'
@@ -25,7 +26,7 @@ function batchReport(part:any){
  return report.success?report.data:undefined
 }
 export const opencodeDriver:CliDriver={
- workspaceTools,nativeTools,workspaceGuard,
+ workspaceTools,nativeTools,workspaceGuard,completedAnswer,
  taskListTool:'todowrite',
  id:'opencode-cli',version:'1.19.5',credentialEnvs:['ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','OPENCODE_API_KEY'],
  anonymous:config=>config.authMode==='anonymous'&&!config.baseUrl&&/^opencode\/(?:[a-z0-9.-]+-free|big-pickle)$/.test(config.model??''),
@@ -66,10 +67,12 @@ export const opencodeDriver:CliDriver={
    ?'\nFor public text research, use websearch to discover official or primary sources. Read known URLs directly with webfetch for one page or webfetch_batch for several pages. Batch independent URLs, reuse successful excerpts, and check that the returned content supports each citation. If a URL is missing, use the official documentation index or search to find its current address. Use the browser only for pages that need authenticated access, interaction, or rendering to retrieve the required content. With supplied URLs and an independent search, emit any required roppo_chat_opening, websearch and webfetch_batch together in the first response. Wait for search results only when the URLs must be discovered first.'
    :'')
   const adapters={'openai-chat':'@ai-sdk/openai-compatible','openai-responses':'@ai-sdk/openai',anthropic:'@ai-sdk/anthropic'}
+  const limit=config.apiProtocol?request.harnessModelWindow:undefined
+  const plugins=[...(guardPlugin?[guardPlugin]:[]),...(limit?[compactionPlugin(root)]:[])]
   const providerOptions=config.apiProtocol?{npm:adapters[config.apiProtocol],name:'Roppo API',models:{[selected]:{
-   name:selected,...(toolImages?{attachment:true,modalities:{input:['text','image'],output:['text']}}:{})}},
+   name:selected,...(limit?{limit}:{}),...(toolImages?{attachment:true,modalities:{input:['text','image'],output:['text']}}:{})}},
    options:{apiKey:'roppo-loopback',baseURL:endpoint(config.baseUrl)}}:{options:{baseURL:endpoint(config.baseUrl)}}
-  const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:guardPlugin?[guardPlugin]:[],instructions:[],compaction:{auto:false},watcher:{ignore:['**']},permission,
+  const settings={...(config.apiProtocol||request.opencodeNativeTools?.network===false?{lsp:false,formatter:false}:{}),model,small_model:model,enabled_providers:[provider],default_agent:'roppo',autoupdate:false,share:'disabled',plugin:plugins,instructions:[],compaction:{auto:!!limit},watcher:{ignore:['**']},permission,
    agent:{...(request.managed?{title:{disable:true}}:{}),roppo:{mode:'primary',prompt:agentPrompt,steps:request.options?.maxSteps??modelSteps.default,tools,permission}},
    // The first browser call may include provisioning Chromium on a fresh host.
    mcp:{roppo:{type:'remote',url:mcp.url,headers:{Authorization:'Bearer '+mcp.token},oauth:false,enabled:true,timeout:300_000}},
@@ -77,14 +80,14 @@ export const opencodeDriver:CliDriver={
   privateFile(config.apiProtocol?join(root,'config','opencode','opencode.json'):join(root,'opencode.json'),JSON.stringify(settings))
   const env={...isolatedEnvironment(root),OPENCODE_DISABLE_DEFAULT_PLUGINS:'1',...(config.apiProtocol?{npm_config_offline:'true',npm_config_fetch_retries:'0',npm_config_registry:'http://127.0.0.1:1/',OPENCODE_DISABLE_MODELS_FETCH:'1',OPENCODE_DISABLE_LSP_DOWNLOAD:'1'}:{}),...(config.apiProtocol?{}:{OPENCODE_CONFIG:join(root,'opencode.json'),OPENCODE_CONFIG_CONTENT:JSON.stringify(settings)}),OPENCODE_DISABLE_PROJECT_CONFIG:'1',OPENCODE_DISABLE_AUTOUPDATE:'1',OPENCODE_DISABLE_CLAUDE_CODE:'1',OPENCODE_DISABLE_EXTERNAL_SKILLS:'1'}
   if (allowed.includes('websearch')) Object.assign(env,{OPENCODE_ENABLE_EXA:'1'})
-  const args=['run',...(guardPlugin?[]:['--pure']),'--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]
+  const args=['run',...(plugins.length?[]:['--pure']),'--format','json','--dir',join(root,'work'),'--agent','roppo','--model',model,...(nativeId?['--session',nativeId]:[])]
   const variant=request.options?.parameters?.variant;if(variant)args.push('--variant',String(variant))
   return {args,env,stdin:prompt}
  },
  event(value){
   if(value.type==='error')return {error:JSON.stringify(value.error)}
   return {session:value.sessionID,...(value.type==='text'?{text:value.part?.text}:{}),...(value.type==='tool_use'?{tool:value.part?.tool,callId:value.part?.callID,toolError:value.part?.state?.status==='error',batch:batchReport(value.part)}:{}),
-   ...(value.type==='step_finish'&&value.part?.tokens?{usage:{id:value.part.id,inputTokens:value.part.tokens.input+(value.part.tokens.cache?.read??0)+(value.part.tokens.cache?.write??0),outputTokens:value.part.tokens.output,reasoningOutputTokens:value.part.tokens.reasoning,cachedInputTokens:value.part.tokens.cache?.read}}:{}),...(value.type==='step_finish'&&value.part?.reason==='stop'?{done:true}:{})}
+   ...(value.type==='step_finish'&&value.part?.tokens?{usage:{id:value.part.id,inputTokens:value.part.tokens.input+(value.part.tokens.cache?.read??0)+(value.part.tokens.cache?.write??0),outputTokens:value.part.tokens.output,reasoningOutputTokens:value.part.tokens.reasoning,cachedInputTokens:value.part.tokens.cache?.read}}:{}),...(value.type==='step_finish'&&value.part?.reason==='stop'?{done:true,stopMessage:value.part.messageID}:{})}
  },
  toolName:name=>name.startsWith('roppo_')?name.slice('roppo_'.length):undefined,
 }

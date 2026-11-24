@@ -31,6 +31,35 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+it.each([false,true])('rebuilds a rejected Chat context once and preserves a completed write (write=%s)',async write=>{
+ let count=0,writes=0
+ const {h}=fixture(async r=>{
+  count++
+  if(count===1)return {reply:'Initial answer'}
+  if(count===2){
+   if(write){
+    const id=JSON.parse(r.input).trigger.id
+    const receipt=await r.onTool!('router_journal',{action:'record',operationId:'one-write',kind:'requirement',text:'draft only',sourceIds:[id]},'call')
+    expect(receipt.success).toBe(true);writes++
+   }
+   throw new BackendPluginError('context_budget_exceeded','fixture',{operation:'run',reason:'provider_status',effectFree:true})
+  }
+  if(!write){expect(r.threadId).toBeUndefined();expect(JSON.parse(r.input).continuity.mode).toBe('rebuild')}
+  return {reply:'Verified answer'}
+ })
+ h.scopes.command({action:'scope.put',operationId:'scope',expectedRevision:0,scope:{id:'team',tenantId:'local',name:'Team',managers:[JSON.stringify(['local','operator'])],workerIds:['research','review'],sourceIds:['local'],backendIds:['codex']}})
+ const chat=h.chat.create('owner')
+ send(h,chat.id,'Start the task')
+ await settle(h,()=>h.chat.view(chat.id,'owner').run?.state==='completed')
+ const current=send(h,chat.id,'draft only')
+ await settle(h,()=>h.chat.view(chat.id,'owner').run?.state===(write?'failed':'completed'))
+ if(write){
+  expect(count).toBe(2);expect(writes).toBe(1)
+  send(h,chat.id,'An independent question')
+  await settle(h,()=>h.chat.view(chat.id,'owner').run?.state==='completed')
+ }else expect(h.chat.view(chat.id,'owner').messages.filter(m=>m.runId===current.runId&&m.text==='Verified answer')).toHaveLength(1)
+ expect(count).toBe(3)
+})
 async function assignFileWork(request:ModelRequest,text:string){
   const assignment=await request.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'file-work',text},'assign')
   expect(assignment.success).toBe(true)

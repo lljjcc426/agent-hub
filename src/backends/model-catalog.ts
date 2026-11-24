@@ -1,8 +1,17 @@
-import type {ApiDefinition} from '../backend-config.ts'
+import {modelWindowSchema,type ApiDefinition} from '../backend-config.ts'
 import {apiHeaders} from './api-request.ts'
 
 type CatalogEndpoint = Pick<ApiDefinition,'kind'|'baseUrl'|'apiKeyEnv'|'headers'|'headerEnv'>
 const maxModels=1000
+
+export function catalogModelWindow(rows:unknown[],model:string){
+  const row=catalogRecord(rows.find(row=>catalogIds(row).includes(model)))
+  if(!row)return
+  const limit=catalogRecord(row.limit),provider=catalogRecord(row.top_provider)
+  const parsed=modelWindowSchema.safeParse({context:row.context_window??row.context_length??limit?.context,
+    output:row.max_output_tokens??provider?.max_completion_tokens??limit?.output})
+  if(parsed.success)return parsed.data
+}
 
 export function catalogRecord(value:unknown):Record<string,unknown>|undefined {
   return value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : undefined

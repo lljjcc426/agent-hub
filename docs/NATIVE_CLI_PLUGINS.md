@@ -25,6 +25,23 @@ output-token limits are rejected. Claude accepts native `parameters.effort` valu
 `low`, `medium`, `high`, `xhigh`, `max`; conflicting generic effort is rejected.
 Gemini and OpenCode reject generic effort; OpenCode exposes its native `variant`.
 
+## Long-running Roppo conversations
+
+For a managed API connection using the bundled OpenCode adapter 1.6 or later,
+set `compaction` to `{}` to discover token limits from that connection’s model
+catalog. To supply verified limits explicitly, set
+`"compaction": {"models": {"your-model-id": {"context": 131072, "output": 8192}}}`
+on the API backend. These example values must match the selected model.
+An explicit map applies only to its named models. Add `"discover": true` to
+also consult the catalog for other models. An omitted setting, `false`, or missing
+model limits leaves native summarization disabled. Existing sessions retain
+their pinned adapter. Output is also bounded by the connection's configured cap.
+
+Scoped Router turns can page original messages through `router_read` with
+`journal` and `journal/<id>`. Router and Worker readers can list their own
+retained results with `model-tool-receipts`. Use original messages for exact
+instructions and operation receipts to verify outcomes after a summary.
+
 ## Package and configure
 
 From the repository, for each selected adapter:

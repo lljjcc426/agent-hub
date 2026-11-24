@@ -1,8 +1,16 @@
 import {afterEach, expect, it, vi} from 'vitest'
-import {apiModelCatalog, selectableModelIds} from '../src/backends/model-catalog.ts'
+import {apiModelCatalog,catalogModelWindow, selectableModelIds} from '../src/backends/model-catalog.ts'
 import {catalogReasoning} from '../src/model-capabilities.ts'
 
 afterEach(() => vi.unstubAllGlobals())
+
+it('enables compaction only for the selected model with valid token limits',()=>{
+ const rows=[{id:'router',context_length:8192,top_provider:{max_completion_tokens:1024}},{id:'worker',limit:{context:32768,output:4096}},
+  {id:'unknown',context_window:65536},{id:'invalid',context_window:1024,max_output_tokens:2048}]
+ expect(catalogModelWindow(rows,'router')).toEqual({context:8192,output:1024})
+ expect(catalogModelWindow(rows,'worker')).toEqual({context:32768,output:4096})
+ for(const id of ['unknown','invalid','other'])expect(catalogModelWindow(rows,id)).toBeUndefined()
+})
 
 it.each([
   ['openai-responses','https://api.openai.com/v1','https://api.openai.com/v1/models','authorization','Bearer fixture-key'],

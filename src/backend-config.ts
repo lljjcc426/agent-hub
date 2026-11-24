@@ -31,11 +31,16 @@ export const agentOptionsSchema=z.object({
 export type AgentOptions=z.infer<typeof agentOptionsSchema>
 const parameters=parametersSchema.prefault({})
 export const backendLimitsSchema=z.object({timeoutMs:z.number().int().min(1000).max(maxTurnMs).optional(),maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).optional(),maxSteps:z.number().int().min(1).max(modelSteps.max).optional(),maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).optional()}).strict()
+export const modelWindowSchema=z.object({
+ context:z.number().int().positive().safe(),output:z.number().int().min(64).safe(),
+}).strict().refine(limit=>limit.output<limit.context,'Output reserve must fit inside the context window')
+export type ModelWindow=z.infer<typeof modelWindowSchema>
 export const apiBackendDefinition=z.object({
   kind:z.enum(['openai-responses','openai-chat','anthropic']),limits:backendLimitsSchema.optional(),label:z.string().trim().min(1).max(100).optional(),baseUrl:apiBase,model:z.string().min(1),apiKeyEnv:envName.optional(),
   images:z.boolean().default(false),maxSteps:z.number().int().min(1).max(modelSteps.max).default(modelSteps.default),
   maxToolCalls:z.number().int().min(1).max(modelToolCalls.max).default(modelToolCalls.default),
   maxContextBytes:z.number().int().min(4096).max(maxWireBytes).default(32_000_000),
+  compaction:z.union([z.literal(false),z.object({models:z.record(z.string().min(1),modelWindowSchema).optional(),discover:z.boolean().optional()}).strict()]).optional(),
   maxOutputTokens:z.number().int().min(64).max(maxOutputTokens).default(8192),
   requestTimeoutMs:z.number().int().min(100).max(1_800_000).default(300_000),
   outputFormat:z.enum(['prompt','json-object','json-schema']).default('prompt'),parameters,

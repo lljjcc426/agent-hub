@@ -1,4 +1,5 @@
 import {openHarnessProvider} from './harness-provider.ts'
+import {apiModelCatalog,catalogModelWindow} from './model-catalog.ts'
 import {probeSandbox,type SandboxDriver} from '../sandbox.ts'
 import {hostPrivateFiles} from '../private-files.ts'
 import {join,resolve} from 'node:path'
@@ -27,6 +28,21 @@ export class BackendRegistry implements Model {
  private sandboxCheck?:{driver:SandboxDriver;codex:string;available:Promise<boolean>}
  private bundled?:Promise<BackendPackage>
  private writers=new Set<string>()
+ private windowCatalog=new Map<string,{key:string;expires:number;rows:Promise<unknown[]>}>()
+ private async modelWindow(id:string,d:ApiDefinition,model:string,subject?:string,credential?:()=>Promise<string>){
+  if(!d.compaction)return
+  const explicit=d.compaction.models
+  if(explicit&&Object.hasOwn(explicit,model))return explicit[model]
+  if(!(d.compaction.discover??!explicit))return
+  const env=[d.apiKeyEnv,...Object.values(d.headerEnv??{})].map(ref=>ref&&process.env[ref])
+  const key=stableDigest([d.kind,d.baseUrl,d.headers,d.headerEnv,d.apiKeyEnv,env,subject])
+  let entry=this.windowCatalog.get(id)
+  if(!entry||entry.key!==key||entry.expires<=Date.now()){
+   const rows=(async()=>apiModelCatalog(d,await credential?.(),3000))().catch(()=>[])
+   entry={key,rows,expires:Date.now()+120_000};this.windowCatalog.set(id,entry)
+  }
+  return catalogModelWindow(await entry.rows,model)
+ }
  constructor(private config:Config,private store:ThreadStore){validateBackendSelection(config)}
  selected(role:'router'|'worker'|'subagent'='worker'){return (role==='router'?this.config.execution.router?.backend:undefined)??this.config.execution.roles[role]??this.config.execution.backend}
  supportsChatOpening(threadId?:string,backendId?:string){
@@ -152,7 +168,7 @@ export class BackendRegistry implements Model {
   const options=boundedBackendOptions(id,definition,r.options??(role==='router'?this.config.execution.router:undefined),this.config.turnTimeoutMs)
   const profile=role==='worker'?this.config.execution.workers?.find(w=>w.id===r.activity?.workerId):role==='router'?this.config.execution.router:undefined
   const profileBackend=profile?.backend??this.selected(role)
-  const {allowNativeTools,coordinationTurn,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
+  const {allowNativeTools,coordinationTurn,nativeTool:ignored,harnessWorkspace:unusedWorkspace,harnessProviderUrl:unusedProvider,harnessModelWindow:unusedWindow,harnessPrivateFiles:unusedFiles,opencodeNativeTools:unusedOpenCode,...activation}=r
   const managed=r.managed===true&&!r.ephemeral
   const coordinator=managed&&role==='router'&&coordinationTurn===true
   const nativeWorker=managed&&role==='worker'&&allowNativeTools===true
@@ -192,6 +208,8 @@ export class BackendRegistry implements Model {
     const timebox=options.timeoutMs??this.config.turnTimeoutMs
     const checkpointAt=engineId===bundledEngineId&&role==='worker'&&r.workerCheckpointReady
      ?Date.now()+timebox-Math.min(timebox/10,d.requestTimeoutMs,30_000):undefined
+    const window=pkg&&supportsOpenCodeTools(pkg.manifest,6)?await this.modelWindow(id,d,model,authorization?.account,authorization?.credential):undefined
+    if(window)d.maxOutputTokens=Math.min(d.maxOutputTokens,window.output)
     harnessProvider=await openHarnessProvider(d,model,r,authorization?.credential,checkpointAt)
     // Only ordinary assigned work can access task files. The task sandbox and tool grant still apply.
     const canRead=interactive&&r.tools?.some(t=>t.name==='superagent_read')
@@ -200,6 +218,7 @@ export class BackendRegistry implements Model {
     const configuration=r.onConfiguration
     r.onModel?.(model)
     r={...r,role,model,harnessProviderUrl:harnessProvider.url,harnessWorkspace:workspace,harnessCheckpointed:harnessProvider.checkpointed,
+     ...(window?{harnessModelWindow:{context:window.context,output:d.maxOutputTokens}}:{}),
      harnessPrivateFiles:[resolve(this.config.stateDir),...hostPrivateFiles()].map(p=>existsSync(p)?realpathSync.native(p):p),
      onConfiguration:value=>configuration?.({...value,requested:options,sent:{...value.sent,parameters:d.parameters,
       maxOutputTokens:d.maxOutputTokens,maxToolCalls:d.maxToolCalls,maxSteps:d.maxSteps}})}

@@ -17,7 +17,7 @@ import {isParallelRead} from '../../src/tool-dispatch.ts'
 export {cliFailure} from './errors.ts'
 
 type Turn={id:string;input:string;instructions:string;state:'running'|'completed'|'interrupted';text:string;protocolBytes:number;nativeToolsDisabled?:true;tools:{id:string;name:string;args:unknown;result?:unknown}[]}
-type Session={format:1;folder:string;nativeId?:string;cwd:string;cliVersion:string;turns:Turn[]}
+type Session={format:1;folder:string;nativeId?:string;cwd:string;cliVersion:string;turns:Turn[];needsContextRebuild?:true}
 const exec=promisify(execFile)
 export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(raw,{dataDirectory}){
  const config=raw as unknown as CliConfig
@@ -70,6 +70,7 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    const account=auth();if(!account&&(!driver.anonymous?.(config)||request.managed))throw new BackendAdapterError('auth_required')
    if(config.authMode==='anonymous'&&request.model&&request.model!==config.model)throw new BackendAdapterError('unsupported')
    const initial=request.threadId?locate(request.threadId,request.cwd):undefined
+   if(initial?.session?.needsContextRebuild)throw new BackendAdapterError('context_budget_exceeded',{operation:'run',reason:'exception',effectFree:true})
    const folder=initial?.session?.folder??randomUUID(),root=initial?.root??join(dataDirectory,'sessions',folder)
    mkdirSync(root,{recursive:true,mode:0o700});const unlock=lock(root)
    const session:Session=initial?.session??{format:1,folder,cwd:realpathSync(request.cwd),cliVersion:config.cliVersion,turns:[]}
@@ -88,6 +89,9 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    let child:ReturnType<typeof spawn>|undefined,bridge:Awaited<ReturnType<typeof toolBridge>>|undefined,failure:unknown,done=false,buffer='',stderr='',outputBytes=0
    let repeatedBatches=0
    let repeatedTargets=''
+   const nativeCompaction=!!request.harnessModelWindow&&!!config.apiProtocol&&!!driver.completedAnswer
+   const stops=new Set<string>()
+   const retainedNative:Promise<unknown>[]=[]
    const toolImages=driver.id==='opencode-cli'&&config.apiProtocol==='openai-responses'
    const guard=(config.apiProtocol&&request.harnessWorkspace||request.opencodeNativeTools)?driver.workspaceGuard?.(root,{...request,cwd:session.cwd},turn.id):undefined
    const readHistory=()=>{
@@ -103,6 +107,12 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
    const fail=(error:unknown)=>{failure??=error;child?.kill('SIGKILL')}
    const budget=(phase:string,extra?:unknown)=>{
     if(!request.contextBudget)return
+    // The wire bridge checks each complete inference and every pending tool
+    // result. Archived native events are audit history, not active model input.
+    if(nativeCompaction){
+     if(phase==='cli-input')checkBudget({instructions:request.instructions,schema:request.schema,tools:request.tools,input:turn.input},request.contextBudget,'native-protocol',phase,request.onBudget,true)
+     return
+    }
     // Deliberately conservative native protocol accounting: all prior public
     // input/output, full tool receipts and counted (unexposed) native events.
     const protocol={instructions:request.instructions,schema:request.schema,tools:request.tools??[],turns:session.turns,extra}
@@ -128,6 +138,16 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      const call={id,name,args} as Turn['tools'][number];turn.tools.push(call);save()
      let result=await request.onTool(name,args,id)
      if(request.requiresChatOpening&&name==='chat_opening'&&result.success)privateFile(join(root,turn.id+'.opening'),'delivered')
+     const reader=request.tools?.find(tool=>tool.name==='router_read'||tool.name==='superagent_read')?.name
+     // The native summarizer sees only the leading 2,000 characters of an old
+     // tool output. Put the host reference ahead of the live result.
+     if(nativeCompaction&&reader&&request.retainToolResult&&name!==reader&&
+       !['chat_opening','superagent_status','chat_plan'].includes(name)&&result.contentItems.every(item=>item.type==='inputText')&&
+       (!isParallelRead(name)||protocolBytes(result)>2000)){
+      const retained=receiptReference(result,await request.retainToolResult(name+':'+id,result),reader)
+      result=request.contextBudget&&protocolBytes([retained.contentItems,result.contentItems])>request.contextBudget.toolReserveBytes
+       ?retained:{...result,contentItems:[...retained.contentItems,...result.contentItems]}
+     }
      if(request.contextBudget&&protocolBytes(result)>request.contextBudget.toolReserveBytes){
       if(result.contentItems.some(c=>c.type==='inputImage')){
        const receiptId=await request.retainToolResult?.(id,result)
@@ -171,6 +191,11 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
       if(!event.callId||!op&&!event.toolError)throw new BackendAdapterError('invalid_output')
       const batch=event.batch,success=!event.toolError&&(!batch||batch.items.some(item=>item.status==='completed'))
       turn.tools.push({id:event.callId,name:'opencode/'+event.tool,args:op?.path===undefined?{}:{path:op.path},result:{success}})
+      const output=value.part?.state?.output??value.part?.state?.error
+      if(nativeCompaction&&request.retainToolResult&&typeof output==='string'&&
+       (output.length>2000||!openCodeReadOnlyTools.has(event.tool!))){
+       retainedNative.push(Promise.resolve(request.retainToolResult('opencode/'+event.tool+':'+event.callId,{success,contentItems:[{type:'inputText',text:output}]})).catch(fail))
+      }
       if(batch&&request.onNativeToolBatch)request.onNativeToolBatch(batch)
       else request.onProgress?.('opencode/'+(success?'completed/':'failed/')+event.tool)
       const targets=batch&&batch.items.every(item=>item.status==='skipped'||item.reused)?batch.items.map(item=>item.target).sort().join(','):''
@@ -186,9 +211,10 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
      if(event.tool&&!nativeTool&&!nativeTask&&!request.tools?.some(t=>t.name===driver.toolName(event.tool!)))throw new BackendAdapterError('unsupported')
      if(event.tool)turn.text=''
      if(event.model)request.onModel?.(event.model)
-     if(event.text)turn.text+=event.text
+     if(event.text&&!nativeCompaction)turn.text+=event.text
      if(event.final!==undefined)turn.text=event.final
      if(event.done)done=true
+     if(nativeCompaction&&event.stopMessage)stops.add(event.stopMessage)
      save();budget('cli-output')
     }
     child.stdout!.on('data',chunk=>{try{outputBytes+=chunk.length;if(outputBytes>maxWireBytes)throw new BackendAdapterError('invalid_output');buffer+=decoder.write(chunk);let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);accept(line)}}catch(error){fail(error)}})
@@ -197,8 +223,16 @@ export function createCliPlugin(driver:CliDriver):BackendPlugin{return {create(r
     const code=await new Promise<number|null>((resolve,reject)=>{child!.once('error',()=>reject(new BackendAdapterError('process_failed')));child!.once('close',resolve);child!.stdin!.end(prepared.stdin)})
     buffer+=decoder.end();stderr+=errorDecoder.end()
     if(buffer.trim())try{accept(buffer)}catch(error){fail(error)}
-    if(failure)throw failure
-    if(code!==0)throw new BackendAdapterError(cliFailure(stderr),{operation:'run',reason:'process_exit',exitCode:code})
+    await Promise.all(retainedNative)
+    if(nativeCompaction&&session.nativeId&&done){
+     const auxiliaryFailure=failure instanceof BackendAdapterError&&failure.diagnostic?.reason==='provider_status'&&!request.signal?.aborted
+     if(!failure||auxiliaryFailure){
+      turn.text=driver.completedAnswer!(root,session.nativeId,stops,auxiliaryFailure)??''
+      if(auxiliaryFailure&&turn.text.trim())session.needsContextRebuild=true
+     }
+    }
+    if(failure&&!session.needsContextRebuild)throw failure
+    if(code!==0&&!session.needsContextRebuild)throw new BackendAdapterError(cliFailure(stderr),{operation:'run',reason:'process_exit',exitCode:code})
     if(!session.nativeId||!done||!turn.text.trim())throw new BackendAdapterError('invalid_output')
     turn.state='completed';save()
     request.onOutput?.({id:turn.id,type:'start',phase:'answer'});request.onOutput?.({id:turn.id,type:'delta',phase:'answer',text:turn.text});request.onOutput?.({id:turn.id,type:'end',phase:'answer'})

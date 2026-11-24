@@ -4,7 +4,7 @@ export interface CliConfig {
  apiProtocol?:'openai-responses'|'openai-chat'|'anthropic'
  baseUrl?:string;provider?:string;authMode?:'credentials'|'anonymous'
 }
-export interface NativeEvent {session?:string;model?:string;text?:string;final?:string;done?:boolean;error?:string;tool?:string;callId?:string;toolError?:boolean;batch?:import('../../src/backends/native-tool-batch.ts').NativeToolBatch;usage?:import('../../src/model-usage.ts').ModelUsage}
+export interface NativeEvent {session?:string;model?:string;text?:string;final?:string;done?:boolean;stopMessage?:string;error?:string;tool?:string;callId?:string;toolError?:boolean;batch?:import('../../src/backends/native-tool-batch.ts').NativeToolBatch;usage?:import('../../src/model-usage.ts').ModelUsage}
 export interface LaunchContext {
  config:CliConfig;root:string;cwd:string;nativeId?:string;newId:string
  guardPlugin?:string;request:ModelRequest;mcp:{url:string;token:string};prompt:string;toolImages:boolean
@@ -22,5 +22,6 @@ export interface CliDriver {
  event(value:any):NativeEvent
  toolName(native:string):string|undefined
  discoverSession?(root:string):string|undefined
+ completedAnswer?(root:string,session:string,stops:Iterable<string>,failedSummary?:boolean):string|undefined
  auth?(directory:string,config:CliConfig):{identity:string;files:{source:string;target:string}[]}|undefined
 }

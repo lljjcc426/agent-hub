@@ -7,7 +7,7 @@ import type {ApiDefinition} from '../backend-config.ts'
 import type {ModelRequest} from '../model.ts'
 import {checkBudget,ContextBudgetExceeded} from '../context-budget.ts'
 import {apiHeaders,apiOutputFormat} from './api-request.ts'
-import {apiCheckFailure,apiResponseError,retryableInferenceStatus,type ApiResponseError} from './api-errors.ts'
+import {apiCheckFailure,apiResponseError,providerContextOverflow,retryableInferenceStatus,type ApiResponseError} from './api-errors.ts'
 
 const rejectedImageCodes=new Set([
  'unsupported_image','unsupported_image_format','unsupported_image_type',
@@ -127,12 +127,12 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
      await delay(wait,undefined,{signal})
     }
    }
-   let response=await send()
+   let response=await send(),rejection:ApiResponseError|undefined
    // The provider explicitly rejected this model request before returning a
    // completion. Retry the same step with the affected tool results expressed as text.
    if(d.kind==='openai-responses'&&[400,415,422].includes(response.status)&&Array.isArray(body.input)&&body.input.some(hasToolImage)){
-    const parsed=await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined)
-    const rejected=rejectedToolImages(parsed,body.input)
+    rejection=await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined)
+    const rejected=rejectedToolImages(rejection,body.input)
     if(rejected){
      if(rejected==='all')rejectAllToolImages=true
      else for(const id of rejected)rejectedImageCalls.add(id)
@@ -140,15 +140,16 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
      wire=encode()
      if(!wire){res.writeHead(413).end();return}
      r.onBackendIssue?.({code:'unsupported',willRetry:true,httpStatus:response.status})
-     response=await send()
+     response=await send();rejection=undefined
     }
    }
    if(!response.ok||!response.body){
     const retryAfter=response.headers.get('retry-after')
-    const parsed=response.status===429?await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined):undefined
+    const parsed=rejection??(!response.bodyUsed&&[400,413,422,429].includes(response.status)?await apiResponseError(response,[],AbortSignal.any([signal,AbortSignal.timeout(2000)])).catch(()=>undefined):undefined)
     res.writeHead(response.ok?502:response.status,{
      ...(retryAfter&&retryAfter.length<=100?{'retry-after':retryAfter}:{}),
      ...(parsed&&apiCheckFailure(parsed).code==='api_quota_exhausted'?{'x-roppo-provider-code':'quota_exhausted'}:{}),
+     ...(providerContextOverflow(parsed)?{'x-roppo-provider-code':'context_budget_exceeded'}:{}),
     }).end()
     if(!response.bodyUsed)await response.body?.cancel()
     return

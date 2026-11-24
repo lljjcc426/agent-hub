@@ -61,7 +61,8 @@ export async function wireBridge(upstream:string,driver:CliDriver,r:ModelRequest
       if(finished)return
       finished=true;clearTimeout(timer)
       const httpStatus=response.statusCode??502
-      const classified=response.headers['x-roppo-provider-code']==='quota_exhausted'&&httpStatus===429?'quota_exhausted':cliFailure(httpStatus+' '+errorBody)
+      const classified=httpStatus===413||r.harnessProviderUrl&&[400,422].includes(httpStatus)&&response.headers['x-roppo-provider-code']==='context_budget_exceeded'?'context_budget_exceeded':
+       response.headers['x-roppo-provider-code']==='quota_exhausted'&&httpStatus===429?'quota_exhausted':cliFailure(httpStatus+' '+errorBody)
       const code=classified==='process_failed'&&(httpStatus===408||httpStatus>=500)?'transient':classified
       const retryHeader=response.headers['retry-after']
       const retry=retryHeader===undefined?NaN:/^\d+$/.test(retryHeader)?Number(retryHeader)*1000:Date.parse(retryHeader)-Date.now()

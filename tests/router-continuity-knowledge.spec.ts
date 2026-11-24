@@ -108,6 +108,77 @@ it('partitions native history by actor and entry and rotates after knowledge cha
  docId='';f.receive('Different actor',{actor:'bob'});await until(f.h,()=>f.h.store.list('router-result').length===3)
  expect(f.calls[2]!.threadId).toBeUndefined();expect(JSON.parse(f.calls[2]!.input).continuity.history).toHaveLength(1)
 })
+it('rebuilds long conversations with retrievable originals, the latest correction and scoping on every page',async()=>{
+ const f=fixture()
+ const {revision,epoch,routerId,...scope}=f.h.scopes.scope('team')
+ f.h.scopes.command({action:'scope.put',operationId:'context-budget',expectedRevision:revision,scope:{...scope,contextBytes:16000}})
+ const original='第一份资料 '+('🌲原文'.repeat(2500))+' RECEIPT-AT-END'
+ const first=f.receive(original)
+ await until(f.h,()=>f.h.store.list('router-result').length===1)
+ const originalRef=JSON.parse(f.calls[0]!.input).original.resource
+ const originalPage=await tool(f.calls[0]!,'router_read',{resource:originalRef,offset:0,limit:300})
+ expect(originalPage.nextOffset).toBeGreaterThan(0)
+ const receipts=await tool(f.calls[0]!,'router_read',{resource:'model-tool-receipts'})
+ expect(JSON.parse(receipts.text)).toContainEqual(expect.objectContaining({resource:originalRef}))
+ for(let i=0;i<4;i++){
+  f.receive('材料 '+i+' '+('工作记录'.repeat(800)))
+  await until(f.h,()=>f.h.store.list('router-result').length===i+2)
+ }
+ const correction=f.receive('只分析，不发送。')
+ await until(f.h,()=>f.h.store.list('router-result').length===6)
+ f.h.continuity.command({action:'record',kind:'requirement',text:'只分析，不发送。',sourceIds:[correction.triggerId],operationId:'draft-only'},f.context(correction))
+ await f.restart()
+ const key=f.h.continuity.key(f.context(first)),previous=f.h.store.get<any>('router-session',key)
+ f.h.store.put('router-session',key,{...previous,inputBytes:20_000})
+ const now=f.receive('继续')
+ await until(f.h,()=>f.h.store.list('router-result').length===7)
+ const call=f.calls.at(-1)!,packet=JSON.parse(call.input)
+ expect(call.threadId).toBeUndefined()
+ expect(packet.trigger.text).toBe('继续')
+ expect(packet.continuity.requirements[0].text).toBe('只分析，不发送。')
+ expect(packet.continuity.archive.resource).toBe('journal')
+ const index=await f.h.resources.read({resource:'journal'},{routerTriggerId:now.triggerId})
+ const resource=JSON.parse(index.text).find((e:any)=>e.preview.startsWith('第一份资料')).resource
+ const page=await f.h.resources.read({resource,offset:original.indexOf('RECEIPT'),limit:100},{routerTriggerId:now.triggerId})
+ expect(page.text).toBe('RECEIPT-AT-END');expect(page.nextOffset).toBeNull()
+ const other=f.receive('另一个话题',{group:'g2'})
+ await until(f.h,()=>f.h.store.list('router-result').length===8)
+ await expect(f.h.resources.read({resource,cursor:page.cursor},{routerTriggerId:other.triggerId})).rejects.toThrow()
+ await expect(f.h.resources.read({resource:originalRef},{routerTriggerId:other.triggerId})).rejects.toThrow()
+ const old=f.h.memory.ingest(f.context(first))
+ f.h.memory.command(f.context(first),{action:'source.delete',id:old.id,expectedRevision:old.version,operationId:'forget-original'})
+ await expect(f.h.resources.read({resource,cursor:page.cursor},{routerTriggerId:now.triggerId})).rejects.toThrow()
+ await expect(f.h.resources.read({resource:originalRef},{routerTriggerId:now.triggerId})).rejects.toThrow()
+})
+it('pages a long Worker mandate through its assignment and keeps the original private to that assignment',async()=>{
+ const mandate='Review only. '+('a'.repeat(24_000))+' MIDDLE-49 '+('b'.repeat(24_000))+' END-713'
+ let resource='',full='',ticketId='',assignmentId='',instructions='',activeInput=''
+ const f=fixture(async(r,input)=>{
+  if(r.role==='router'&&input.kind!=='worker_result'){
+   await tool(r,'worker_manage',{action:'assign',id:'one',text:mandate,revision:0,requestId:'long-work'})
+   return {reply:''}
+  }
+  if(r.role!=='worker')return
+  activeInput=r.input;instructions=r.instructions
+  resource=input.original.resource;ticketId=input.task.ticketId;assignmentId=input.task.assignmentId
+  const index=await tool(r,'superagent_read',{resource:'model-tool-receipts'})
+  expect(JSON.parse(index.text)).toContainEqual(expect.objectContaining({resource}))
+  let offset:number|null=0
+  while(offset!==null){
+   const page=await tool(r,'superagent_read',{resource,offset,limit:11_000})
+   full+=page.text;offset=page.nextOffset
+  }
+  return {state:'ready',summary:'Verified MIDDLE-49 and END-713',reply:'Verified',question:null,handbacks:[]}
+ })
+ const {revision,epoch,routerId,...scope}=f.h.scopes.scope('team')
+ f.h.scopes.command({action:'scope.put',operationId:'worker-context-budget',expectedRevision:revision,scope:{...scope,contextBytes:96_000}})
+ const parent=f.receive('Inspect the long material')
+ await until(f.h,()=>f.h.store.tickets.list().some(t=>t.ended))
+ expect(activeInput).not.toContain('MIDDLE-49');expect(instructions).not.toContain('MIDDLE-49')
+ expect(JSON.parse(full).mandate.scope).toContain(mandate)
+ await expect(f.h.resources.read({resource},{ticketId,assignmentId:assignmentId+'-different'})).rejects.toThrow()
+ await expect(f.h.resources.read({resource},{routerTriggerId:parent.triggerId})).rejects.toThrow()
+})
 it('activates explicit memory once while inferred facts remain candidates and forgotten facts stay suppressed',async()=>{
  const f=fixture(),a=f.receive('记住：我希望始终使用中文回复。')
  await until(f.h,()=>f.h.store.list('router-result').length===1)

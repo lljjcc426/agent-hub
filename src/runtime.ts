@@ -14,6 +14,7 @@ import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
 import {setTimeout as delay} from 'node:timers/promises'
+import {randomUUID} from 'node:crypto'
 import {retainDeliveryReceipt} from './delivery-evidence.ts'
 import {captureReportedQuestion,changedDecisionTerms,chatDecisionDelivery,repeatsChatAnswer,migrateBusinessDecisions,recoverAnsweredGoalQuestions,legacyAnsweredGoalReply,legacyExecutionQuestion,interruptedExecutionQuestion,failedStartupQuestion,isRuntimeRecoveryQuestion,type DecisionTerms} from './business-decisions.ts'
 import {handedOffFiles,prepareFileHandoff} from './chat-file-handoff.ts'
@@ -83,6 +84,8 @@ import {RouterMemory,memoryToolSpecs,type ContextManifest} from './router-memory
 import {AgentMemory} from './agent-memory.ts'
 import type {EmbedMemory} from './memory-vectors.ts'
 import {fitResourcePage,protocolBytes,receiptReference,scopeBudget,ContextBudgetExceeded} from './context-budget.ts'
+import {workingInputBudget,projectWorkingInput} from './working-context.ts'
+import {providerContextOverflow} from './backends/api-errors.ts'
 import {executionEvidenceNotice} from './execution-output.ts'
 import {GoalArtifacts} from './goal-artifacts.ts'
 import {heldArtifactReads,reconcileArtifactReads} from './artifact-read-recovery.ts'
@@ -705,6 +708,23 @@ export class Runtime {
         return result
       }}
     }
+    const workerReader=role==='worker'&&context.ticketId&&receiptAssignment&&request.tools?.some(tool=>tool.name==='superagent_read')
+    const routerRebuild=request.tools?.some(tool=>tool.name==='router_read')?request.rebuildWorkingInput:undefined
+    const inputBudget=request.contextBudget?workingInputBudget(request.contextBudget.maxBytes,protocolBytes({instructions:request.instructions,tools:request.tools,schema:request.schema})):undefined
+    const workerInput=request.input
+    const workerProjection=(max:number)=>{
+      let value
+      try{value=JSON.parse(workerInput)}catch{value={request:workerInput}}
+      if(!value||typeof value!=='object')value={request:workerInput}
+      const id=activity+':worker-input'
+      this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result:value})
+      const latest=value.inputs?.at(-1),current=latest?.event?.text??latest?.text??value.mandate?.scope??value.request??request.title??''
+      const projected=projectWorkingInput(value,'model-tool-receipt/'+id,max-300,'superagent_read',typeof current==='string'?current:'')
+      projected.task={ticketId:context.ticketId,assignmentId:receiptAssignment,resource:'ticket/'+context.ticketId+'/assignment',inputs:'ticket/'+context.ticketId+'/inputs',jobs:'jobs',operations:'model-tool-receipts',toolCalls:'tool-calls'}
+      return JSON.stringify(projected)
+    }
+    if(workerReader&&inputBudget!==undefined&&Buffer.byteLength(workerInput)>inputBudget)
+      request.input=workerProjection(Math.max(512,inputBudget))
     const onBackend=request.onBackend,onModel=request.onModel,onTool=request.onTool
     request={...request,onBackend:id=>{this.activity.update(activity,{backend:id});this.usage.update(activity,{backend:id});onBackend?.(id)},onModel:model=>{this.activity.update(activity,{model});this.usage.update(activity,{model});onModel?.(model)},...(role==='router'&&onTool?{onTool:(name,args,callId)=>this.activity.tool(name,context,()=>onTool(name,args,callId),activity,chatToolDetails(name,args))}:{})}
     if(fullAccess&&request.onTool){
@@ -724,7 +744,7 @@ export class Runtime {
         }
         return dispatch.run(isParallelRead(name),()=>{
           signal?.throwIfAborted()
-          if(!isParallelRead(name))invokedEffect=true
+          if(!isParallelRead(name)&&name!==chatStatusTool.name&&!(role==='router'&&isRouterRead(name,args)))invokedEffect=true
           const call=()=>name===codeModeTool.name?this.activity.tool(name,context,()=>invoke(name,args,id),activity):invoke(name,args,id)
           return handoff?handoff.tool(call):call()
         })
@@ -733,9 +753,11 @@ export class Runtime {
     this.activity.update(activity,{backend:request.backendId,model:request.model})
     try{
     let threadId=request.threadId
-    const originalInput=request.input
+    let originalInput=request.input
+    let rebuilt=false
     for(let attempt=0;;attempt++){
       let turnId:string|undefined
+      let nativeRequests=0
       enforceBudget()
       this.usage.attempt(activity,attempt,'running')
       if(threadId||attempt>0)this.usage.update(activity,{sessionKey:threadId?stableDigest([request.backendId,threadId]):undefined})
@@ -745,7 +767,10 @@ export class Runtime {
           input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
           model:threadId?undefined:request.model??(role==='router'&&!request.useConnectionDefault?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
-          onBudget:receipt=>{this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)},
+          onBudget:receipt=>{
+            if(receipt.phase==='before-native-request'&&receipt.status==='within_budget')nativeRequests++
+            this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)
+          },
           onUsage:value=>{if(this.usage.record(activity,attempt,value)&&(role==='worker'||role==='router'))this.chat.usageChanged(activity);const g=project();if(g?.project?.policy.budget)this.goals.holdBudget(g);request.onUsage?.(value)},
           onThread:id=>{threadId=id;this.usage.update(activity,{sessionKey:stableDigest([request.backendId,id])});this.store.put('model-session',id,{threadId:id,cwd:request.cwd,ephemeral:request.ephemeral??false,activity,...context,scopeId,contextId:manifest?.id,at:Date.now()});request.onThread?.(id)},
           onTurn:id=>{turnId=id;request.onTurn?.(id)},
@@ -766,8 +791,28 @@ export class Runtime {
           return {threadId,turnId,text:JSON.stringify({reply:handoff.reply()})}
         }
         this.usage.attempt(activity,attempt,request.signal?.aborted?'interrupted':'failed')
-        if(error instanceof ContextBudgetExceeded){this.store.put('context-rebuild',context.ticketId??activity,{...context,activity,threadId,scopeId,state:'held',reason:error.code,receipt:error.receipt,at:Date.now()});throw error}
         const typed=backendFailure(error)
+        if(typed?.code==='context_budget_exceeded'||providerContextOverflow(error)){
+          const phase=error instanceof ContextBudgetExceeded?error.receipt.phase:undefined
+          const firstNativeRequest=usingOpenCode&&(phase==='before-native-request'&&nativeRequests===0||phase==='harness-provider'&&nativeRequests===1)
+          const beforeEffects=!turnId||typed?.diagnostic?.effectFree||phase==='cli-input'||firstNativeRequest||
+            usingOpenCode&&role==='router'&&request.coordinationTurn||threadId?.startsWith('api:')
+          if(!rebuilt&&!invokedEffect&&beforeEffects&&!request.signal?.aborted&&(routerRebuild||workerReader)){
+            if(manifest)this.memory.validate(manifest)
+            const compactBytes=Math.max(512,Math.min(4096,inputBudget??4096))
+            const fresh=routerRebuild?.(compactBytes)??workerProjection(compactBytes)
+            if(request.threadId||Buffer.byteLength(fresh)<Buffer.byteLength(request.input)){
+              this.store.audit({type:'context.rebuilt',activity,role,threadId,ticketId:context.ticketId,reason:'context_budget_exceeded'})
+              if(threadId&&this.model instanceof BackendRegistry){
+                const bound=this.store.get<{id:string;harnessModel?:string}>('backend-binding',threadId)
+                request={...request,backendId:bound?.id??request.backendId,model:bound?.harnessModel??request.model}
+              }
+              request={...request,input:fresh,threadId:undefined};originalInput=fresh;threadId=undefined;rebuilt=true;continue
+            }
+          }
+          this.store.put('context-rebuild',context.ticketId??activity,{...context,activity,threadId,scopeId,state:'held',reason:'context_budget_exceeded',receipt:error instanceof ContextBudgetExceeded?error.receipt:undefined,at:Date.now()})
+          throw error
+        }
         const transient=typed?typed.code==='transient':error instanceof TransientModelError||/HTTP (408|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection reset|stream disconnected|temporar(?:y|ily)|error sending request/i.test(String(error))
         if(request.signal?.aborted||invokedEffect||attempt>=3||!transient||
          typed&&(role==='worker'||turnId&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
@@ -805,13 +850,20 @@ export class Runtime {
     while(parent){const agent=this.store.get<WorkItem>('work',parent);if(++depth>16||!agent||agent.ticketId!==owner.ticketId||agent.assignmentId!==owner.assignmentId||agent.state!=='running')return false;parent=agent.agentId}
     return true
   }
+  private workerPromptMandate(ticket:Ticket){
+    const owner=this.scopes.ownership(ticket.id)
+    if(!owner||protocolBytes(ticket.mandate.scope)<=workingInputBudget(this.scopes.scope(owner.scopeId).contextBytes)/2)return ticket.mandate.scope
+    // The activation already contains the full mandate or an owned reference.
+    // Duplicating a long mandate in fixed instructions can alone exhaust the window.
+    return {resource:'ticket/'+ticket.id+'/assignment',notice:'Read the full immutable mandate in the activation input or its original resource before acting.'}
+  }
   async refreshWork(owner:WorkOwner){
     const key=owner.agentId?'agent:'+owner.agentId:owner.ticketId,control=this.controls.get(key),revision=this.settings.current().revision
     if(!control?.refresh||this.controlRevisions.get(key)===revision)return
     const ticket=this.replanning.executionView(taskView(this.store,this.store.tickets.get(owner.ticketId)!))
     const goal=this.goals.forTask(ticket.id),node=goal?.nodes?.find(n=>n.ticketId===ticket.id)
     const project=goal?.project&&node?this.projectCode.promptContext(goal,node):undefined
-    const instructions=composeExecutionPrompt(this.config,{role:owner.agentId?'subagent':'worker',environment:{cwd:owner.cwd,ticketId:ticket.id,agentName:workerProfiles(this.config).find(w=>w.id===this.store.get<Run>('run',ticket.id)?.workerId)?.label??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id)),...(owner.agentId?{subagent:true}:{})},policyVersion:ticket.mandate.policyVersion,delegated:!!this.store.get('worker-assignment',ticket.id),managedGoal:!!goal?.managed,project}).text+'\nLive host prompt revision '+revision+'. This replaces earlier team and built-in prompt text while preserving the immutable mandate and tool permissions.'
+    const instructions=composeExecutionPrompt(this.config,{role:owner.agentId?'subagent':'worker',environment:{cwd:owner.cwd,ticketId:ticket.id,agentName:workerProfiles(this.config).find(w=>w.id===this.store.get<Run>('run',ticket.id)?.workerId)?.label??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:owner.agentId?ticket.mandate.scope:this.workerPromptMandate(ticket),matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id)),...(owner.agentId?{subagent:true}:{})},policyVersion:ticket.mandate.policyVersion,delegated:!!this.store.get('worker-assignment',ticket.id),managedGoal:!!goal?.managed,project}).text+'\nLive host prompt revision '+revision+'. This replaces earlier team and built-in prompt text while preserving the immutable mandate and tool permissions.'
     await control.refresh(instructions)
     this.controlRevisions.set(key,revision)
     this.store.put('prompt-use',key+':'+revision,{ticketId:ticket.id,agentId:owner.agentId,revision,at:Date.now(),digest:digest(instructions),injected:true})
@@ -1324,7 +1376,19 @@ export class Runtime {
       this.continuity.capture(scoped,[triggerId,...(batchInputs??[]).map(t=>t.id)])
     }
     if(scoped)await this.agentMemory.prepare(scoped,trigger.text)
-    const packet=scoped?this.memory.build(scoped,{...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),tasks:scopedTasks,goals:this.goals.list(scoped),currentGoalId:this.goals.forInput(triggerId)?.id},backendIdentity):undefined
+    const rawInput={...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),tasks:scopedTasks,goals:scoped?this.goals.list(scoped):[],currentGoalId:this.goals.forInput(triggerId)?.id}
+    const configuredRouter=profile??this.config.execution.router
+    const routerBackend=this.config.backends[configuredRouter?.backend??this.config.execution.roles.router??this.config.execution.backend]
+    const toolFilter=configuredRouter?.tools??routerBackend?.defaults?.tools
+    const canReadHistory=!candidates&&!followups&&allowedTools.has('router_read')&&(!toolFilter||toolFilter.includes('router_read'))&&!this.delegation.authority(triggerId)
+    const packetBudget=scoped&&canReadHistory?Math.floor(workingInputBudget(this.scopes.scope(scoped.route.scopeId).contextBytes)*0.55):undefined
+    const originalId=packetBudget&&protocolBytes(rawInput)>packetBudget-256?'context-input:'+randomUUID():undefined
+    const visibleInput=originalId?projectWorkingInput(rawInput,'model-tool-receipt/'+originalId,packetBudget!-256,'router_read',trigger.text):rawInput
+    const packet=scoped?this.memory.build(scoped,visibleInput,backendIdentity,packetBudget):undefined
+    if(originalId&&scoped&&packet){
+      this.memory.bindInputs(scoped,packet.manifest,[...authorityInputs])
+      this.store.put('model-tool-receipt',originalId,{id:originalId,triggerId,scopeId:scoped.route.scopeId,contextId:packet.manifest.id,at:Date.now(),result:rawInput})
+    }
     if(packet&&scoped)this.agentMemory.recordManifest(scoped,packet.manifest)
     if(packet&&batchId)this.memory.inherit(packet.manifest,this.proactive.batchManifest(batchId))
     if(packet)for(const task of scopedTasks){const owner=this.scopes.ownership(task.ticketId)!;if(!packet.manifest.taskOwners.some(ref=>ref.id===task.ticketId))packet.manifest.taskOwners.push({id:task.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});if(task.report?.at)readReports.set(task.ticketId,task.report.at)}
@@ -1335,7 +1399,7 @@ export class Runtime {
       conversationId:recoveryChat.conversationId,discussion,cwd:source.cwd,backendIdentity
     }):undefined
     let recovery=inspectRecovery()
-    let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence):undefined
+    let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence,{paged:canReadHistory}):undefined
     const sessionKey=continuity?.key??packet?.manifest.sessionKey??discussion,previous=this.store.get<any>('router-session',sessionKey)
     const threadId=recovery?undefined:scoped?continuity?.reuse:!chatBinding||previous?.backendIdentity===backendIdentity?previous?.threadId:undefined
     const knowledgeRefs:{documentId:string;revision:number}[]=[]
@@ -1409,7 +1473,7 @@ export class Runtime {
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
-              const result=await this.resources.read(args,{routerTriggerId:triggerId})
+              const result=await this.resources.read(args,{routerTriggerId:triggerId},packet?.manifest)
               return result?.kind==='image'?{success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}:{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
             }
             if(name==='router_skill'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.skills.readTool(args,scoped))}]}
@@ -1440,7 +1504,12 @@ export class Runtime {
             if(name==='router_knowledge'&&scoped){
               const output=this.knowledge.command(args,scoped)
               for(const item of this.knowledge.references(output,scoped)){const old=knowledgeRefs.find(ref=>ref.documentId===item.documentId);if(old)old.revision=item.revision;else knowledgeRefs.push(item)}
-              if(packet){packet.manifest.knowledge=knowledgeRefs;this.store.put('context-manifest',packet.manifest.id,packet.manifest)}
+              if(packet){
+                const current=new Map(packet.manifest.knowledge?.map(ref=>[ref.documentId,ref]))
+                for(const ref of knowledgeRefs)current.set(ref.documentId,ref)
+                packet.manifest.knowledge=[...current.values()]
+                this.store.put('context-manifest',packet.manifest.id,packet.manifest)
+              }
               return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(output)}]}
             }
             if(name==='router_manage'&&scoped)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.proactive.command(args,scoped))}]}
@@ -1524,6 +1593,18 @@ export class Runtime {
           +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups,
+        ...(scoped&&packet&&canReadHistory?{rebuildWorkingInput:(maxBytes:number)=>{
+          validateReplyContext()
+          let retryPacket=packet
+          const packetBytes=Math.max(256,Math.floor(maxBytes*0.45))
+          if(Buffer.byteLength(packet.input)>packetBytes){
+            const source=JSON.parse(packet.input),id='context-input:'+packet.manifest.id
+            this.store.put('model-tool-receipt',id,{id,triggerId,scopeId:scoped.route.scopeId,contextId:packet.manifest.id,at:Date.now(),result:source})
+            retryPacket={...packet,input:JSON.stringify(projectWorkingInput(source,'model-tool-receipt/'+id,packetBytes,'router_read',trigger.text))}
+          }
+          continuity=this.continuity.prepare(scoped,retryPacket,backendIdentity,recovery?.evidence,{paged:true,fresh:true,targetBytes:maxBytes})
+          return decorateInput(modelInput())
+        }}:{}),
         onTool:async(name,args)=>{
           const value=await checkedRouterTool(name,args)
           if(browserRun&&value.success&&isRouterRead(name,args)){
@@ -1566,7 +1647,7 @@ export class Runtime {
           validateReplyContext()
           recovery=inspectRecovery()
           if(!recovery)throw error
-          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence)
+          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence,{paged:canReadHistory})
           result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
         }
       }
@@ -1845,7 +1926,7 @@ export class Runtime {
       const identityChanged=!!saved?.threadId&&(profile?.backend!==saved.backendId||!!profile?.model&&profile.model!==saved.model)
       const agentOptions=identityChanged||saved?.rebuild?saved?.agentOptions:profile?agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape))):undefined
       run.agentOptions=agentOptions
-      const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:ticket.mandate.scope,matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text+
+      const instructions=composeExecutionPrompt(this.config,{role:'worker',environment:{cwd:run.cwd,ticketId:ticket.id,agentName:profile?.label??run.workerId??'Worker',replyLocale:this.chat.locale(this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId),mandate:this.workerPromptMandate(ticket),matchedRules:this.config.rules.filter(r=>ticket.mandate.basis.rules?.includes(r.id))},policyVersion:ticket.mandate.policyVersion,delegated:!!delegated,managedGoal:!!projectGoal?.managed,project}).text+
         (workspace?.workspace.source&&workspace.mode!=='worktree'?'\nThis is the previous task’s retained workspace. Read the existing manifests, source baselines and original files here before requesting uploads or recreating outputs. Candidate files still require the current goal’s validation.':'')
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
       const chatActor=this.chat.permissionActor(ticket.origin.triggerId,ticket.id)

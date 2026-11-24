@@ -343,7 +343,7 @@ export class ProcessBackend implements Model {
          delete diagnostic.readOnlyHistory
          if(pkg.manifest.id!=='codex-cli')delete diagnostic.effectFree
         }
-        waiter.reject(code==='context_budget_exceeded'&&lastBudget?new ContextBudgetExceeded(lastBudget):new BackendPluginError(code,this.id,diagnostic))
+        waiter.reject(code==='context_budget_exceeded'&&lastBudget?.status==='exceeded'?new ContextBudgetExceeded(lastBudget):new BackendPluginError(code,this.id,diagnostic))
        }else waiter.resolve(m.result)
       }
      }catch(error){fail(error instanceof ContextBudgetExceeded?error:new BackendPluginError('invalid_output',this.id))}

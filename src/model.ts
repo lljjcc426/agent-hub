@@ -17,6 +17,8 @@ export interface ModelRequest {
   onUsage?:(usage:import('./model-usage.ts').ModelUsage)=>void
   contextBudget?:import('./context-budget.ts').ContextBudget
   contextId?:string
+  /** Host callback to rebuild this same task after an evidenced size rejection. */
+  rebuildWorkingInput?:(maxBytes:number)=>string
   onBudget?:(receipt:import('./context-budget.ts').BudgetReceipt)=>void
   retainToolResult?:(callId:string,result:unknown)=>string|Promise<string>
   options?:AgentOptions
@@ -54,6 +56,7 @@ export interface ModelRequest {
   opencodeWebPages?:import('./backends/opencode-web-checkpoint.ts').WebPageCheckpoint[]
   /** Ephemeral host transport, only supplied to the selected OpenCode adapter. */
   harnessProviderUrl?:string
+  harnessModelWindow?:import('./backend-config.ts').ModelWindow
   /** Host-only callbacks for a managed goal's handoff between inference steps. */
   workerCheckpointReady?:()=>boolean
   /** The provider accepted a real task inference containing these inputs. */

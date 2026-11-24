@@ -12,6 +12,10 @@ export class ApiResponseError extends Error {
   super(['HTTP '+status,code,parameter].filter(Boolean).join(' · '))
  }
 }
+export function providerContextOverflow(error:unknown){
+ return error instanceof ApiResponseError&&(error.status===413||
+  [400,422].includes(error.status)&&['context_length_exceeded','context_window_exceeded','prompt_too_long','input_too_long'].includes(error.code??''))
+}
 
 /** Retain diagnostic identifiers, never provider messages that can echo credentials or prompts. */
 export async function apiResponseError(response:Response,secrets:string[],signal?:AbortSignal){

@@ -28,7 +28,9 @@ const nativeEvents=sequence.slice(0,-1).map(([name])=>'opencode/completed/'+name
 const webPaths=['/article-one','/article-two']
 const webRequests=new Map<string,{start:number;end:number}>()
 let checkParallelFetch=false,requestedFetch=false
-let modelFailure:'auth_required'|'rate_limited'|'quota_exhausted'|undefined
+let compactionTrace:{summary:boolean;sawPrior:boolean}[]|undefined
+let failSummary=false,compactionChat=false
+let modelFailure:'auth_required'|'rate_limited'|'quota_exhausted'|'context_budget_exceeded'|undefined
 let loop=false,batchesIssued=0,unavailableRequests=0
 const report=JSON.stringify({state:'ready',summary:'Updated and verified endpoint',reply:'Verified the endpoint change.',question:null,askedBy:null,decision:null,handbacks:[]})
 const server=createServer(async(req,res)=>{
@@ -54,19 +56,23 @@ const server=createServer(async(req,res)=>{
   assert.equal(input.model,'sample')
   const path=req.url!.split('?')[0]
   protocols.add(path!)
-  const answer=JSON.stringify({answer:'done'})
+  const summary=!!compactionTrace&&!input.tools?.length
+  if(compactionTrace)compactionTrace.push({summary,sawPrior:raw.includes('INTERNAL_COMPACTION_FIXTURE')})
+  const text=summary?'INTERNAL_COMPACTION_FIXTURE':'done'
+  const answer=compactionChat?JSON.stringify({reply:summary?text:'Chat reply '+compactionTrace!.filter(step=>!step.summary).length}):JSON.stringify({answer:text})
+  if(summary&&failSummary){res.writeHead(429,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'rate_limit_exceeded'}}));return}
   if(path==='/v1/messages'||path==='/v1/responses'){
    const anthropic=path.endsWith('/messages')
    if(anthropic){assert.equal(req.headers['x-api-key'],'fixture-api-key');assert.equal(input.max_tokens,1024)}
    else{assert.equal(req.headers.authorization,subscription?'Bearer fixture-plan-token':'Bearer fixture-api-key');assert.equal(input.max_output_tokens,1024);assert.equal(input.store,false)}
    if(input.tools?.length){
     const names=input.tools.map((t:any)=>t.name)
-    for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert.equal(names.includes(name),!subscription,name)
+    for(const name of ['read','bash','websearch','webfetch','webfetch_batch','task','todowrite'])assert.equal(names.includes(name),!subscription&&!compactionChat,name)
    }
    if(modelFailure&&input.tools?.length){
-    const status=modelFailure==='auth_required'?401:429
+    const status=modelFailure==='auth_required'?401:modelFailure==='context_budget_exceeded'?400:429
     res.writeHead(status,{'content-type':'application/json',...(modelFailure==='rate_limited'?{'retry-after':'7'}:{})})
-    res.end(JSON.stringify({error:{code:modelFailure==='quota_exhausted'?'insufficient_quota':modelFailure}}))
+    res.end(JSON.stringify({error:{code:modelFailure==='quota_exhausted'?'insufficient_quota':modelFailure==='context_budget_exceeded'?'context_length_exceeded':modelFailure}}))
     return
    }
    res.writeHead(200,{'content-type':'text/event-stream'})
@@ -102,7 +108,8 @@ const server=createServer(async(req,res)=>{
      assert(!raw.includes('Unrelated garden inventory'))
     }
     const item={type:'message',id:'msg_sample',role:'assistant',status:'completed',content:[{type:'output_text',text:answer,annotations:[]}]}
-    const response={id:'resp_sample',object:'response',model:'sample',created_at:1,status:'completed',output:[item],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+    const inputTokens=compactionTrace&&!summary?7900:10
+    const response={id:'resp_sample',object:'response',model:'sample',created_at:1,status:'completed',output:[item],usage:{input_tokens:inputTokens,output_tokens:5,total_tokens:inputTokens+5}}
     event('response.created',{response:{...response,status:'in_progress',output:[]}})
     event('response.output_item.added',{output_index:0,item:{...item,status:'in_progress',content:[]}})
     event('response.output_text.delta',{item_id:item.id,output_index:0,content_index:0,delta:answer})
@@ -140,8 +147,11 @@ const server=createServer(async(req,res)=>{
     if(text.includes('worker_result'))reply='The endpoint check is complete.'
     else if(text.includes('Are you looking?')){
      assert(stalledRouter&&waitingWorker)
-     assert(text.includes('I assigned this to one.'))
      reply='The Worker is still checking.'
+    }else if(text.includes('Any progress?')){
+     assert(stalledRouter&&waitingWorker)
+     assert(text.includes('one')&&text.includes('endpoint.txt'))
+     reply='The endpoint check is running.'
     }else{
      assert(text.includes('Check endpoint.txt'))
      next=['roppo_worker_manage',{action:'assign',revision:0,requestId:'endpoint-check',id:'one',text:'Read endpoint.txt and report what it contains.'}]
@@ -246,14 +256,53 @@ try{
   }
  }
  checkParallelFetch=false
+ const compact=config.backends['openai-responses'];assert(compact?.kind==='openai-responses')
+ compact.compaction={models:{sample:{context:8192,output:1024}}}
+ compactionTrace=[]
+ let compactThread:string|undefined
+ for(let i=0;i<4;i++){
+  const res=await registry.run({...request,backendId:'openai-responses',threadId:compactThread,sandbox:'read-only',input:'Read the next item '+i,signal:AbortSignal.timeout(15000)})
+  compactThread=res.threadId
+  assert.deepEqual(JSON.parse(res.text),{answer:'done'})
+ }
+ assert.equal(compactionTrace.filter(step=>step.summary).length,4)
+ assert.equal(compactionTrace.filter(step=>!step.summary).length,4)
+ assert(compactionTrace.some(step=>!step.summary&&step.sawPrior))
+ console.log(JSON.stringify({scenario:'native compaction',answers:4,summaries:4,resumedWithSummary:true}))
+ failSummary=true
+ const delivered=await registry.run({...request,backendId:'openai-responses',threadId:compactThread,sandbox:'read-only',input:'Finish this item',signal:AbortSignal.timeout(20000)})
+ assert.deepEqual(JSON.parse(delivered.text),{answer:'done'})
+ await assert.rejects(registry.run({...request,backendId:'openai-responses',threadId:compactThread,sandbox:'read-only',signal:AbortSignal.timeout(20000)}),
+  error=>error instanceof BackendPluginError&&error.code==='context_budget_exceeded'&&error.diagnostic?.effectFree===true)
+ failSummary=false
+ compactionChat=true;compactionTrace=[]
+ const compactHost=await Runtime.create(configSchema.parse({...config,stateDir:join(root,'compacted-chat'),
+  execution:{backend:'openai-responses',router:{mode:'host',backend:'openai-responses'},workers:[{id:'one',backend:'openai-responses'}],management:{enabled:true}}}))
+ try{
+  const chat=compactHost.chat.create('alice')
+  for(let i=1;i<=2;i++){
+   const run=compactHost.chat.send(chat.id,'alice',{clientMessageId:randomUUID(),text:'Check item '+i})
+   const view=()=>compactHost.chat.view(chat.id,'alice')
+   const deadline=Date.now()+25_000
+   while(view().run?.state!=='completed'&&view().run?.state!=='failed'&&Date.now()<deadline){await compactHost.tick();await new Promise(done=>setTimeout(done,25))}
+   assert.equal(view().run?.state,'completed')
+   assert.equal(view().messages.filter(m=>m.runId===run.runId&&m.text==='Chat reply '+i).length,1)
+   assert(!view().messages.some(m=>m.text.includes('INTERNAL_COMPACTION_FIXTURE')))
+  }
+  assert.equal(compactionTrace.filter(step=>step.summary).length,2)
+  assert.equal(compactionTrace.filter(step=>!step.summary).length,2)
+  assert(compactionTrace.some(step=>!step.summary&&step.sawPrior))
+  console.log(JSON.stringify({scenario:'personal Chat compaction',userTurns:2,deliveredReplies:2,internalSummaries:2}))
+ }finally{compactionChat=false;await compactHost.close()}
+ compactionTrace=undefined;delete compact.compaction
  const failureRequest={...request,backendId:'openai-responses',sandbox:'read-only' as const}
- for(const code of ['auth_required','rate_limited','quota_exhausted'] as const){
+ for(const code of ['auth_required','rate_limited','quota_exhausted','context_budget_exceeded'] as const){
   modelFailure=code
   await assert.rejects(registry.run({...failureRequest,signal:AbortSignal.timeout(15_000)}),error=>{
    assert(error instanceof BackendPluginError)
    assert.equal(error.code,code)
    assert.equal(error.diagnostic?.effectFree,true)
-   assert.equal(error.diagnostic?.httpStatus,code==='auth_required'?401:429)
+   assert.equal(error.diagnostic?.httpStatus,code==='auth_required'?401:code==='context_budget_exceeded'?400:429)
    assert.equal(error.diagnostic?.retryAfterMs,code==='rate_limited'?7000:undefined)
    return true
   })
@@ -268,7 +317,7 @@ try{
  assert.deepEqual(loopBatches.map(batch=>batch.items.map(item=>item.status)),[['failed','failed'],['failed','failed'],['skipped','skipped'],['skipped','skipped']])
  assert.equal(unavailableRequests-before,4)
  console.log(JSON.stringify({scenario:'repeated HTTP 503',httpRequests:unavailableRequests-before,modelBatches:batchesIssued-issuedBefore,stopped:'read_loop'}))
- console.log(JSON.stringify({scenario:'provider errors',codes:['auth_required','rate_limited','quota_exhausted'],retryAfterMs:7000,verified:true}))
+ console.log(JSON.stringify({scenario:'provider errors',codes:['auth_required','rate_limited','quota_exhausted','context_budget_exceeded'],retryAfterMs:7000,verified:true}))
  const api=config.backends['openai-responses'];assert(api?.kind==='openai-responses')
  config.backends.plan={...api,baseUrl:'https://api.openai.com/v1',apiKeyEnv:undefined,subscription:{provider:'chatgpt',account:'sample',owner:{source:'local',actor:'alice'},backgroundAuthorized:true}}
  config.execution.router!.backend='plan'
@@ -278,7 +327,7 @@ try{
  subscription=true
  globalThis.fetch=(target,options)=>originalFetch(String(target)==='https://api.openai.com/v1/responses'?url+'/responses':target,options)
  try{
-  const response=await registry.run({...request,role:'router',allowNativeTools:undefined,coordinationTurn:true,backendId:'plan',sandbox:'read-only',principal:{source:'local',actor:'alice'}})
+  const response=await registry.run({...request,role:'router',allowNativeTools:undefined,coordinationTurn:true,backendId:'plan',sandbox:'read-only',principal:{source:'local',actor:'alice'},signal:AbortSignal.timeout(30_000)})
   assert.deepEqual(JSON.parse(response.text),{answer:'done'})
  }finally{globalThis.fetch=originalFetch;subscription=false}
  assert.deepEqual([...protocols].sort(),['/v1/chat/completions','/v1/messages','/v1/responses'])
@@ -323,7 +372,7 @@ try{
   await tickUntil(()=>stalledRouter&&waitingWorker)
   const statusAt=Date.now()
   const status=send('Any progress?')
-  assert(view().messages.some(m=>m.runId===status.runId&&m.text==='one is working on it.'))
+  await tickUntil(()=>view().messages.some(m=>m.runId===status.runId&&m.text==='The endpoint check is running.'))
   console.log(JSON.stringify({scenario:'Task status while the Router provider is stalled',statusMs:Date.now()-statusAt}))
   const followupAt=Date.now()
   send('Are you looking?')

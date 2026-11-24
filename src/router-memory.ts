@@ -1,4 +1,5 @@
 import {resourcePage,memoryCapacity} from './execution-limits.ts'
+import {protocolBytes} from './context-budget.ts'
 import {z} from 'zod'
 import {addPersonalReset,applyPersonalReset} from './personal-memory-reset.ts'
 import {randomUUID} from 'node:crypto'
@@ -419,25 +420,27 @@ export class RouterMemory {
   if(r.cleanup)this.cleanup.apply(r.cleanup)
   this.scopes.bump(r.tenantId);this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash})
  }
- build(c:ScopeContext,input:unknown,backend:string):{input:string;manifest:ContextManifest}{
+ build(c:ScopeContext,input:unknown,backend:string,inputBudget?:number):{input:string;manifest:ContextManifest}{
   this.scopes.assertCurrent(c);const s=this.scopes.scope(c.route.scopeId),required=JSON.stringify(input)
-  if(Buffer.byteLength(required)>s.contextBytes)throw Error('Current request exceeds context budget; shorten it before retrying')
+  const max=Math.min(inputBudget??s.contextBytes,s.contextBytes)
+  if(Buffer.byteLength(required)>max)throw Error('Current request exceeds context budget; shorten it before retrying')
   const retrieval=this.recall?.(c,c.trigger.text.slice(0,200))??this.query(c,{query:c.trigger.text.slice(0,200),limit:20}),items=retrieval.items
   // Explicitly referenced or recent facts remain discoverable when the whole request is not a useful search phrase.
   const candidates=this.recall?items:items.length?items:this.query(c,{limit:20}).items
-  const learning=this.learning?.(c)
+  let learning=this.learning?.(c)
+  if(inputBudget&&protocolBytes({...input as object,memory:{facts:[],learning,status:'partial'}})>max)learning=undefined
   const facts:typeof candidates=[];let rendered=JSON.stringify({...input as object,memory:{facts,learning,status:'complete'}}),truncated=false
-  for(const fact of candidates){const next=JSON.stringify({...input as object,memory:{facts:[...facts,fact],learning,status:'complete'}});if(Buffer.byteLength(next)>s.contextBytes-1024){truncated=true;continue}facts.push(fact);rendered=next}
+  for(const fact of candidates){const next=JSON.stringify({...input as object,memory:{facts:[...facts,fact],learning,status:'complete'}});if(Buffer.byteLength(next)>max-1024){truncated=true;continue}facts.push(fact);rendered=next}
   const outline=renderMemory(facts.map(f=>({id:f.id,kind:f.kind??'fact',content:(f.learning?('['+(f.learning.inferred&&!f.protected?'Tentative; ':'')+(f.learning.discussion?'This discussion; ':'')+(f.learning.condition||'This entry')+'] '):'')+f.content})))
   rendered=JSON.stringify({...input as object,memory:{facts,learning,status:retrieval.status==='partial'?'partial':truncated?'truncated':'complete',...(retrieval.reason?{reason:retrieval.reason}:{})}})
   const withOutline=JSON.stringify({...JSON.parse(rendered),memory:{...JSON.parse(rendered).memory,outline}})
-  if(Buffer.byteLength(withOutline)<=s.contextBytes)rendered=withOutline
+  if(Buffer.byteLength(withOutline)<=max)rendered=withOutline
   const personalization=this.personalization?.(c,facts)
   if(personalization){
    const enriched=JSON.stringify({...JSON.parse(rendered),memory:{...JSON.parse(rendered).memory,personalization}})
-   if(Buffer.byteLength(enriched)<=s.contextBytes)rendered=enriched
+   if(Buffer.byteLength(enriched)<=max)rendered=enriched
   }
-  if(Buffer.byteLength(rendered)>s.contextBytes)throw Error('Context budget is insufficient for the request envelope')
+  if(Buffer.byteLength(rendered)>max)throw Error('Context budget is insufficient for the request envelope')
   const manifest:ContextManifest={id:'context-'+randomUUID(),triggerId:c.trigger.id,actor:c.actor,tenantId:c.route.tenantId,scopeId:s.id,entryId:c.route.entryId,routerId:s.routerId,epoch:c.route.epoch,generation:this.generation(s.id),facts:facts.map(f=>({id:f.id,revision:f.revision})),evidence:facts.flatMap(f=>f.sources.map(e=>({id:e.id,version:e.version}))),taskOwners:c.route.taskId?[{id:c.route.taskId,epoch:c.route.ownerEpoch!,dataRevision:this.scopes.ownership(c.route.taskId)?.dataRevision??1}]:[],bytes:Buffer.byteLength(rendered),truncated,retrieval:{status:retrieval.status,...(retrieval.reason?{reason:retrieval.reason}:{})},at:Date.now(),backend,sessionKey:stableDigest([s.routerId,c.route.entryId,c.route.discussion,c.route.epoch,backend])}
   this.store.put('context-manifest',manifest.id,manifest);return {input:rendered,manifest}
  }

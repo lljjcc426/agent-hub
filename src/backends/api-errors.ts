@@ -42,3 +42,8 @@ export function apiCheckFailure(error:unknown):{code:string;detail?:string}{
  const text=String(error)
  return {code:/Subscription sign-in/.test(text)?'subscription_sign_in_required':/environment variable/.test(text)?'api_key_required':/schema|budget|output|usable response|invalid JSON|incomplete/.test(text)?'model_reply_invalid':'connection_failed'}
 }
+
+/** These statuses reject an individual inference request before streaming a result. */
+export function retryableInferenceStatus(status:number|undefined){
+ return status===408||status===500||status===502||status===503||status===504
+}

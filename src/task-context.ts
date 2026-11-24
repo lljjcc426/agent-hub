@@ -9,6 +9,17 @@ export function consumedInputWake(jobId:string,assignmentId:string,ticket:Ticket
  return jobId.startsWith(prefix)&&/^[a-f0-9]{64}$/.test(jobId.slice(prefix.length))
 }
 
+/** These unclaimed jobs only ask execute() to read the current undelivered
+ * inputs. Their payload carries no tool command or earlier input to replay. */
+export function retainedInputWakes(store:Pick<Store,'db'>,run:Run){
+ const rows=store.db.prepare(`SELECT id,kind,state,attempts,json_extract(payload,'$.ticketId') AS ticket,
+  json_extract(payload,'$.assignmentId') AS assignment FROM jobs WHERE state IN ('pending','running','blocked','uncertain')
+  AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?)`).all(run.ticketId,run.assignmentId)
+ const prefix='execute:'+run.assignmentId+':'
+ if(rows.every(row=>row.kind==='execute'&&row.state==='pending'&&row.attempts===0&&row.ticket===run.ticketId&&
+    row.assignment===run.assignmentId&&String(row.id).startsWith(prefix)&&/^[a-f0-9]{64}$/.test(String(row.id).slice(prefix.length))))return rows.map(row=>String(row.id))
+}
+
 /** A projection for a fresh session. The core ticket and its immutable Mandate
  * remain the audit record; quarantined text is never silently re-authorized. */
 export interface TaskContinuation {

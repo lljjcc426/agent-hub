@@ -1,4 +1,5 @@
 import type {PermissionAction} from '../chat-permissions.ts'
+import type {WorkerEventReceipt} from '../async-worker-inbox.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -13,6 +14,7 @@ import type {Ticket} from '../vendor/dsh-core/index.ts'
 import {jobInput,type WorkItem} from '../work.ts'
 import type {ThreadStore} from './api.ts'
 import {bundledEngineId} from './bundled-opencode.ts'
+import {retryableInferenceStatus} from './api-errors.ts'
 import {openCodeReadOnlyTools} from '../../plugins/backend-opencode/native-tools.ts'
 import type {PluginThread,PluginToolEffect} from './plugin-process.ts'
 import {maxWebPageCheckpointBytes,maxWebReplayPages,webBatchUrls,webPageCheckpointSchema,webPageDirectory,webPageFile,
@@ -265,27 +267,47 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
 
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'){
  try{
   const bound=boundWorkerSession(store,stateDir,run)
   if(!bound)return
   const {thread,session,root,last}=bound
-  if(mode==='cancelled'?(thread.state!=='interrupted'||thread.lastFailure?.code!=='cancelled'):
-    (thread.state!=='failed'||thread.lastFailure?.code!=='outcome_unknown'||last.state!=='interrupted'))return
+  const failure=thread.lastFailure
+  if(mode==='cancelled'){
+   if(thread.state!=='interrupted'||failure?.code!=='cancelled')return
+  }else{
+   if(thread.state!=='failed'||last.state!=='interrupted')return
+   if(mode==='denied_reads'&&failure?.code!=='outcome_unknown')return
+   if(mode==='provider'&&(failure?.code!=='transient'||failure.diagnostic?.operation!=='run'||
+      failure.diagnostic.reason!=='provider_status'||!retryableInferenceStatus(failure.diagnostic.httpStatus)))return
+  }
   const effects=new Set(thread.effectIds),turns=new Set<string>()
-  const calls:{tool:string;effectId:string;success:boolean}[]=[],denied:InterruptedCallback[]=[]
+  const calls:{tool:string;effectId:string;success:boolean;callId?:string;action?:string;requestId?:string}[]=[],denied:InterruptedCallback[]=[]
   if(effects.size!==thread.effectIds.length)return
   for(const turn of session.turns){
-   if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'||operations(root,turn.id).length)return
+   if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'||new Set(turn.tools.map(c=>c.id)).size!==turn.tools.length)return
+   const journal=operations(root,turn.id),native=new Map(journal.map(op=>[op.id,op.tool]))
+   if(native.size!==journal.length||native.size&&(mode!=='provider'||turn.nativeToolsDisabled))return
    if(!turn.nativeToolsDisabled&&privateText(join(root,turn.id+'.ready'),32)!=='ready')return
    turns.add(turn.id)
    for(const call of turn.tools){
+    if(call.name.startsWith('opencode/')){
+     const tool=call.name.slice('opencode/'.length)
+     if(!call.result||native.get(call.id)!==tool||!openCodeReadOnlyTools.has(tool))return
+     native.delete(call.id)
+     continue
+    }
     const effectId=stableDigest([thread.id,turn.id,call.id]),record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
-    if(call.name.startsWith('opencode/')||!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
+    if(!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
     if(call.result){
      if(record.state!=='complete'||record.result?.success!==call.result.success||
        record.result.permission==='pending'||record.result.permission==='uncertain')return
-     if(turn===last)calls.push({tool:call.name,effectId,success:call.result.success})
+     if(turn===last){
+      const args=mode==='provider'?call.args as Record<string,unknown>|null:null
+      calls.push({tool:call.name,effectId,success:call.result.success,
+       ...(mode==='provider'?{callId:call.id}:{}),
+       ...(typeof args?.action==='string'?{action:args.action}:{}),...(typeof args?.requestId==='string'?{requestId:args.requestId}:{})})
+     }
      continue
     }
     if(mode!=='denied_reads'||turn!==last||call.name!=='superagent_job'||record.state!=='running'||record.result||
@@ -297,13 +319,34 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
       !job.assignmentId||job.assignmentId===run.assignmentId||!job.endedAt||!['completed','failed'].includes(job.state))return
     denied.push({id:effectId,receipt:record})
    }
+   if(native.size)return
   }
-  if(!effects.size&&(mode==='cancelled'?calls.length:denied.length)&&stoppedWriter(root))return {calls,denied}
+  if(!effects.size&&(mode==='denied_reads'?denied.length:calls.length)&&stoppedWriter(root))return {calls,denied,failure}
  }catch{/* Missing history keeps the original reconciliation fence. */}
 }
 
 export function recordedWorkerCalls(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
  return accountedWorkerTurn(store,stateDir,run,'cancelled')?.calls
+}
+
+export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string,run:Run){
+ if(run.phase!=='uncertain'||run.waitingForWriter)return
+ const current=store.get<{ticketId:string;assignmentId:string;attemptId:string}>('async-worker-current',run.ticketId)
+ const terminal=current&&store.get<{eventId:string}>('async-worker-terminal',current.attemptId)
+ const event=terminal&&store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
+ if(!run.turnId||current?.ticketId!==run.ticketId||current.assignmentId!==run.assignmentId||!event||event.id!==terminal!.eventId||
+    event.attemptId!==current.attemptId||event.ticketId!==run.ticketId||event.assignmentId!==run.assignmentId||
+    event.kind!=='blocked'||event.disposition!=='applied'||event.nativeTurnDigest!==stableDigest(run.turnId))return
+ if(store.db.prepare(`SELECT 1 FROM records WHERE kind IN ('browser-receipt','desktop-receipt','tool-receipt')
+    AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(run.ticketId))return
+ const proof=accountedWorkerTurn(store,stateDir,run,'provider')
+ if(!proof?.failure)return
+ const model=store.get<{activity:string;workerId?:string;agentId?:string;sourceId:string;triggerId:string;scopeId:string;contextId:string}>('model-session',run.threadId!)
+ const usage=model&&store.get<{id:string;ticketId:string;role:string;state:string;endedAt:number;workerId:string;triggerId:string;sourceId:string}>('model-usage',model.activity)
+ if(!model?.workerId||model.workerId!==run.workerId||model.agentId||usage?.role!=='worker'||usage.state!=='failed'||
+    usage.id!==model.activity||usage.ticketId!==run.ticketId||usage.workerId!==model.workerId||usage.triggerId!==model.triggerId||usage.sourceId!==model.sourceId||
+    !(usage.endedAt>=proof.failure.at))return
+ return {calls:proof.calls,model,at:proof.failure.at,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
 }
 
 export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){

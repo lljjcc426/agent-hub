@@ -4,11 +4,11 @@ import type {Runtime} from './runtime.ts'
 import {marketBlockers} from './plugin-market.ts'
 import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {retainedBackendReceipts} from './backend-receipt-recovery.ts'
-import {refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
+import {refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import type {PluginThread} from './backends/plugin-process.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
-import {consumedInputWake} from './task-context.ts'
+import {consumedInputWake,retainedInputWakes} from './task-context.ts'
 import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
 import {legacyAnsweredGoalReply,type BusinessDecisionView} from './business-decisions.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
@@ -111,6 +111,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
     OR (kind='goal-wake' AND json_extract(body,'$.state') IN ('queued','running'))) LIMIT 1`).get(goal.id))return
  const finalHold=rejectedOverallRound(store,goal)
  const ids=new Set<string>()
+ let hasProviderCheckpoint=false
  for(const node of nodes){
   const id=node.ticketId
   if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
@@ -124,14 +125,17 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
   const refused=run&&node.state==='held'&&node.failure?.kind==='uncertain'?refusedWorkerJobReads(store,stateDir,run):undefined
   const shell=run&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?unstartedWorkerShell(store,stateDir,run):undefined
-  if(node===activeNode&&!shell||node.failure?.kind==='uncertain'&&!refused&&!shell)return
-  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!shell||run.waitingForWriter||
+  const provider=run&&!shell&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
+   node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?settledProviderTurn(store,stateDir,run):undefined
+  const stopped=shell||provider
+  if(node===activeNode&&!stopped||node.failure?.kind==='uncertain'&&!refused&&!stopped)return
+  if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!stopped||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
   const parked=sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
-  if((node.state==='running'||shell)&&(!parked&&!shell||owner.originEntry!==goal.entryId||
+  if((node.state==='running'||stopped)&&(!parked&&!stopped||owner.originEntry!==goal.entryId||
    store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor))return
   if(!parked&&(assignment.state!=='running'||run.assignmentId!==assignment.id||owner.state!=='active'))return
-  if(ticket.undelivered.length&&(!waitingOnDependency&&!parked&&!shell||
+  if(ticket.undelivered.length&&(!waitingOnDependency&&!parked&&!stopped||
    !ticket.undelivered.every(inputId=>ticket.inputs.some(input=>input.id===inputId))))return
   try{if(!statSync(run.cwd).isDirectory())return}catch{return}
   if(run.threadId&&store.get<PluginThread>('backend-plugin-thread',run.threadId)?.state==='running')return
@@ -158,14 +162,19 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    const terminal=store.get<{ticketId:string;assignmentId:string}>('async-worker-terminal',attempt.attemptId)
    if(attempt.assignmentId!==assignment.id||terminal?.ticketId!==id||terminal.assignmentId!==assignment.id)return
   }
-  if(shell){
+  if(stopped){
    if(!run.threadId||!run.turnId||ticket.attention||assignment.report?.state!=='blocked')return
    for(const inputId of ticket.undelivered){
     const input=ticket.inputs.find(item=>item.id===inputId)
     const trigger=input?.kind==='trigger'&&store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',input.triggerId)
     if(!trigger||!trigger.human||!trigger.actor||JSON.stringify([trigger.actor.source,trigger.actor.id])!==goal.actor)return
    }
-   receipts.push({id:shell.callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_shell'})
+   if(shell)receipts.push({id:shell.callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_shell'})
+   else{
+    const wakes=retainedInputWakes(store,run)
+    if(!attempt||!wakes)return
+    jobs.push(...wakes);hasProviderCheckpoint=true
+   }
    continue
   }
   if(node===finalHold){
@@ -196,7 +205,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
  }
  // Older overall quality holds kept their last active goal timestamp. It cannot
  // dispatch a quality-held node; queued wakes and active rounds were checked above.
- if(goal.nextAt!==undefined&&!finalHold&&(!receipts.length||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
+ if(goal.nextAt!==undefined&&!finalHold&&(!receipts.length&&!hasProviderCheckpoint||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
  if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
  return {ids:[...ids],jobs,receipts}
 }

@@ -2,11 +2,12 @@ import {createServer} from 'node:http'
 import {randomBytes} from 'node:crypto'
 import {Readable,Transform} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
+import {setTimeout as delay} from 'node:timers/promises'
 import type {ApiDefinition} from '../backend-config.ts'
 import type {ModelRequest} from '../model.ts'
 import {checkBudget,ContextBudgetExceeded} from '../context-budget.ts'
 import {apiHeaders,apiOutputFormat} from './api-request.ts'
-import {apiCheckFailure,apiResponseError,type ApiResponseError} from './api-errors.ts'
+import {apiCheckFailure,apiResponseError,retryableInferenceStatus,type ApiResponseError} from './api-errors.ts'
 
 const rejectedImageCodes=new Set([
  'unsupported_image','unsupported_image_format','unsupported_image_type',
@@ -57,6 +58,7 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
   }
   const disconnected=new AbortController()
   res.once('close',()=>{if(!res.writableEnded)disconnected.abort()})
+  const deadline=Date.now()+d.requestTimeoutMs
   const signal=AbortSignal.any([lifetime.signal,disconnected.signal,AbortSignal.timeout(d.requestTimeoutMs),...(r.signal?[r.signal]:[])])
   try{
    const chunks:Buffer[]=[]
@@ -94,13 +96,29 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    let headers:Record<string,string>
    try{headers=apiHeaders(d,await credential?.())}
    catch{res.writeHead(401).end();return}
-   const send=()=>fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})
-   let response=await send().catch(error=>{
-    // A reset before the response arrives cannot have executed a host tool.
-    // Keep the same model step and deadline without resuming a native tool turn.
-    if(!taskStep||signal.aborted||!['ECONNRESET','UND_ERR_SOCKET'].includes(error?.cause?.code))throw error
-    return send()
-   })
+   // Retry only the inference POST, before any response stream reaches the CLI.
+   // A tool result in this payload is evidence, never a new tool invocation.
+   let retries=0
+   const send=async()=>{
+    for(;;){
+     let result:Response|undefined
+     try{result=await fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})}
+     catch(error){
+      const cause=(error as Error)?.cause as NodeJS.ErrnoException|undefined
+      if(retries||!taskStep||signal.aborted||!['ECONNRESET','UND_ERR_SOCKET'].includes(cause?.code??''))throw error
+     }
+     if(result&&(!retryableInferenceStatus(result.status)||retries>=2))return result
+     const header=result?.headers.get('retry-after')??''
+     const requested=/^\d+$/.test(header)?Number(header)*1000:Date.parse(header)-Date.now()
+     const wait=Math.max(Number.isNaN(requested)?0:requested,500*2**retries)
+     if(result&&(wait>10_000||Date.now()+wait>=deadline))return result
+     await result?.body?.cancel()
+     r.onBackendIssue?.({code:'transient',willRetry:true,...(result?{httpStatus:result.status}:{})})
+     retries++
+     await delay(wait,undefined,{signal})
+    }
+   }
+   let response=await send()
    // The provider explicitly rejected this model request before returning a
    // completion. Retry the same step with the affected tool results expressed as text.
    if(d.kind==='openai-responses'&&[400,415,422].includes(response.status)&&Array.isArray(body.input)&&body.input.some(hasToolImage)){

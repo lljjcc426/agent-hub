@@ -429,6 +429,36 @@ it('retries one pre-response connection reset inside the same harness model step
  }finally{await gateway.close();server.closeAllConnections();await new Promise<void>(ok=>server.close(()=>ok()))}
 })
 
+it.each([
+ {statuses:[502,503,200],status:200},
+ {statuses:[504,504,504],status:504},
+ {statuses:[503],status:503,retryAfter:'60'},
+ {statuses:[403],status:403},
+])('keeps returned tool results in the same inference step for $statuses',async({statuses,status,retryAfter})=>{
+ const bodies:string[]=[],issues=vi.fn()
+ const server=createServer(async(req,res)=>{
+  const chunks:Buffer[]=[]
+  for await(const chunk of req)chunks.push(chunk)
+  const next=statuses[bodies.length]??500
+  bodies.push(Buffer.concat(chunks).toString())
+  if(next===200)res.writeHead(200,{'content-type':'text/event-stream'}).end('data: [DONE]\n\n')
+  else res.writeHead(next,retryAfter?{'retry-after':retryAfter}:{}).end()
+ })
+ await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok))
+ const backend=apiBackendDefinition.parse({kind:'openai-responses',baseUrl:'http://127.0.0.1:'+(server.address() as {port:number}).port,model:'test',maxSteps:1})
+ const gateway=await openHarnessProvider(backend,'test',{...request,onBackendIssue:issues})
+ try{
+  const item={type:'function_call_output',call_id:'finished-command',output:'job completed'}
+  const response=await fetch(gateway.url+'/responses',{method:'POST',body:JSON.stringify({stream:true,model:'test',tools:[{type:'function'}],input:[item]})})
+  expect(response.status).toBe(status);await response.text()
+  expect(bodies).toHaveLength(statuses.length)
+  expect(new Set(bodies).size).toBe(1)
+  expect(JSON.parse(bodies[0]!).input).toEqual([item])
+  expect(issues.mock.calls.map(([issue])=>issue)).toEqual(statuses.slice(0,-1).map(httpStatus=>({code:'transient',willRetry:true,httpStatus})))
+  if(retryAfter)expect(response.headers.get('retry-after')).toBe(retryAfter)
+ }finally{await gateway.close();server.closeAllConnections();await new Promise<void>(ok=>server.close(()=>ok()))}
+})
+
 it('binds subscription harness runs to the authorized principal and original signed-in account',async()=>{
  const root=mkdtempSync(join(tmpdir(),'harness-account-')),stateDir=join(root,'state')
  const config=configSchema.parse({stateDir,work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},backends:{

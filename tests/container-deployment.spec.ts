@@ -9,7 +9,7 @@ import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
-import {recordedWorkerCalls,refusedWorkerJobReads,unstartedWorkerShell} from '../src/backends/opencode-read-recovery.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from '../src/backends/opencode-read-recovery.ts'
 import {ExecutionTrace} from '../src/execution-trace.ts'
 import {heldArtifactReads} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
@@ -226,6 +226,39 @@ it('requires both a stopped session and uninterrupted host admission history to 
  s.db.exec("DELETE FROM records WHERE kind='work' AND id='possibly-launched'")
  s.put('execution-call',other.id,{...other,state:'failed',endedAt:at+1})
  expect(check()).toBeUndefined()
+})
+
+it('requires matching terminal callbacks and accounted native reads after a provider rejection',()=>{
+ const h=host(),s=h.store,f=stoppedCallback(h,'superagent_desktop',{action:'launch_app',requestId:'launch-once'},'worker')
+ const {thread}=f,model=s.get<{ticketId:string}>('model-session',thread.id)!
+ const run:Run={ticketId:model.ticketId,assignmentId:'first',workerId:'one',backendId:'codex',cwd:thread.cwd,
+  phase:'uncertain',prepared:true,threadId:thread.id,turnId:thread.turnId}
+ const failure={code:'transient',at:thread.lastFailure!.at,diagnostic:{operation:'run',reason:'provider_status',httpStatus:502}}
+ const owner={ticketId:run.ticketId,assignmentId:run.assignmentId,attemptId:'provider-attempt'}
+ const event={...owner,id:'provider-stop',kind:'blocked',disposition:'applied',nativeTurnDigest:stableDigest(run.turnId)}
+ s.put('async-worker-current',run.ticketId,owner)
+ s.put('async-worker-terminal',owner.attemptId,{...owner,eventId:event.id})
+ s.put('async-worker-event',event.id,event)
+ s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:failure})
+ const result={success:true,contentItems:[]}
+ const saveReceipt=(state:string,extra={})=>s.put('backend-plugin-tool',f.receiptId,{...f.receipt,state,result:{...result,...extra}})
+ const journal=(tool:string)=>{
+  const turn=f.native.turns[0]!
+  writeFileSync(join(f.journal,turn.id+'.operations'),JSON.stringify({id:'native-call',tool}))
+  writeFileSync(f.session,JSON.stringify({...f.native,turns:[{...turn,tools:[
+   {...turn.tools[0],result},{id:'native-call',name:'opencode/'+tool,args:{},result},
+  ]}]}))
+ }
+ writeFileSync(join(f.journal,thread.turnId+'.ready'),'ready')
+ const proof=()=>settledProviderTurn(s,h.config.stateDir,run)
+ journal('websearch');expect(proof()).toBeUndefined()
+ saveReceipt('complete');expect(proof()?.calls).toMatchObject([{tool:'superagent_desktop',action:'launch_app',requestId:'launch-once',success:true}])
+ s.put('async-worker-event',event.id,{...event,nativeTurnDigest:stableDigest('another-turn')});expect(proof()).toBeUndefined()
+ s.put('async-worker-event',event.id,event)
+ saveReceipt('complete',{permission:'uncertain'});expect(proof()).toBeUndefined()
+ saveReceipt('complete');journal('bash');expect(proof()).toBeUndefined()
+ journal('websearch');writeFileSync(join(f.journal,thread.turnId+'.operations'),'');expect(proof()).toBeUndefined()
+ journal('websearch');s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...failure,code:'outcome_unknown'}});expect(proof()).toBeUndefined()
 })
 
 it('preserves proven denied log reads and their original report across a paused restart',async()=>{

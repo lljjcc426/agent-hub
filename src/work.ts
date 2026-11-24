@@ -191,6 +191,11 @@ export class WorkManager {
  }
  read(owner:WorkOwner,id:string,offset=0,limit=resourcePage.defaultCharacters){return this.view(this.own(owner,id),offset,limit)}
  active(ticketId:string,assignmentId:string){return this.decode(this.autoByAssignment.all(ticketId,assignmentId))}
+ ownsRunningShell(item:WorkItem){
+  const child=this.runners.get(item.id)
+  return item.kind==='shell'&&item.state==='running'&&!!child?.pid&&child.pid===item.pid&&
+   child.exitCode===null&&child.signalCode===null&&!child.killed
+ }
  async tick(){
   if(this.hooks.expired){
    const due=this.live().filter(w=>w.deadline&&Date.now()>=w.deadline&&!w.agentId)

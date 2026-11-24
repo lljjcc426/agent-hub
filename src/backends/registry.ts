@@ -189,14 +189,17 @@ export class BackendRegistry implements Model {
     Object.assign(binding,{harness:engineId,harnessIdentity:engine.identity,harnessModel:model,...(engineId===bundledEngineId?{harnessDigest:engine.digest}:{})})
     const authorization=d.subscription?this.harnessSubscription(id,d.subscription,r.principal,previous):undefined
     if(authorization)binding.harnessAccount=authorization.account
-    harnessProvider=await openHarnessProvider(d,model,r,authorization?.credential)
+    const timebox=options.timeoutMs??this.config.turnTimeoutMs
+    const checkpointAt=engineId===bundledEngineId&&role==='worker'&&r.workerCheckpointReady
+     ?Date.now()+timebox-Math.min(timebox/10,d.requestTimeoutMs,30_000):undefined
+    harnessProvider=await openHarnessProvider(d,model,r,authorization?.credential,checkpointAt)
     // Only ordinary assigned work can access task files. The task sandbox and tool grant still apply.
     const canRead=interactive&&r.tools?.some(t=>t.name==='superagent_read')
     const canEdit=role==='worker'&&r.sandbox==='workspace-write'&&r.tools?.some(t=>t.name==='superagent_shell')
     const workspace=canRead?(canEdit?'edit':'read'):undefined
     const configuration=r.onConfiguration
     r.onModel?.(model)
-    r={...r,role,model,harnessProviderUrl:harnessProvider.url,harnessWorkspace:workspace,
+    r={...r,role,model,harnessProviderUrl:harnessProvider.url,harnessWorkspace:workspace,harnessCheckpointed:harnessProvider.checkpointed,
      harnessPrivateFiles:[resolve(this.config.stateDir),...hostPrivateFiles()].map(p=>existsSync(p)?realpathSync.native(p):p),
      onConfiguration:value=>configuration?.({...value,requested:options,sent:{...value.sent,parameters:d.parameters,
       maxOutputTokens:d.maxOutputTokens,maxToolCalls:d.maxToolCalls,maxSteps:d.maxSteps}})}

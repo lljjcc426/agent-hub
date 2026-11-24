@@ -20,7 +20,7 @@ import type {Run} from './store.ts'
 import {DELEGATED_GOALS_DB_SCHEMA} from './store.ts'
 import {allowNewTaskInputs,retainedInputWakes} from './task-context.ts'
 import type {GoalContract} from './goal-replanning.ts'
-import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads,rejectedDesktopCall,settledProviderTurn,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
+import {previouslyRecoveredRead,proveInterruptedOpenCodeRead,refusedWorkerJobReads,rejectedDesktopCall,settledProviderTurn,unstartedWorkerShell,workerCheckpointReady} from './backends/opencode-read-recovery.ts'
 import type {PluginThread,PluginToolEffect} from './backends/plugin-process.ts'
 import {AcceptanceEvidenceTooLarge,acceptanceRetryTarget,type AcceptanceRetryResult,type AcceptanceRetryStatus,type EvidenceOverflow} from './goal-acceptance.ts'
 import {ChatError} from './chat-errors.ts'
@@ -523,17 +523,28 @@ export class RouterGoals {
   store.put('run',run.ticketId,{...retained,phase:'idle',webFetchReplay:replay} satisfies Run)
  }
  private automaticReadRecoveryAllowed(g:RouterGoal){
-  return this.host.config.work.autoRecover&&g.managed&&g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
+  return this.host.config.work.autoRecover&&g.managed===true&&!!g.contract&&!g.supersededBy&&g.turns<g.maxTurns&&g.failures<3
+ }
+ private workerCanContinue(g:RouterGoal,n:GoalNode,run:Run,task:Ticket){
+  const id=run.ticketId,host=this.host
+  return this.automaticReadRecoveryAllowed(g)&&!g.project&&host.artifacts.canCapture(g)&&!task.ended&&
+   task.assignments.at(-1)?.id===run.assignmentId&&!host.store.get('task-continuation',id)&&!host.store.get('goal-delivery',id)&&
+   !hasOutstandingQuestion(host,task)&&host.scopes.taskRunnable(id)&&host.webhooks.taskExecutionAllowed(id)&&
+   !host.webhooks.continuations.pending(id,run.assignmentId)&&n.dependsOn.every(dep=>g.nodes!.find(d=>d.id===dep)?.state==='passed')
+ }
+ canCheckpointWorker(run:Run){
+  const host=this.host,id=run.ticketId,g=this.forTask(id),n=g?.nodes?.find(node=>node.ticketId===id),task=host.store.tickets.get(id)
+  return !!g&&g.state==='active'&&n?.state==='running'&&!!task&&this.workerCanContinue(g,n,run,task)&&
+   !host.permissions.hasUnconfirmedEffect(id)&&repositoryEffectsSettled(host.store,id)&&!host.workflows.unsettled(id)&&
+   !host.work.list(id).some(j=>(j.state==='starting'||j.state==='running')&&(j.assignmentId!==run.assignmentId||j.agentId||j.cwd!==run.cwd||!host.work.ownsRunningShell(j)))&&
+   workerCheckpointReady(host.store,host.config.stateDir,run)
  }
  private recoverStoppedWorker(g:RouterGoal,n:GoalNode,c:ScopeContext){
   const id=n.ticketId,store=this.host.store
-  if(!id||!this.automaticReadRecoveryAllowed(g)||g.project||!this.host.artifacts.canCapture(g)||n.recoveries>=5||
-     this.host.executionActive(id)||store.get('task-continuation',id)||store.get('goal-delivery',id))return false
+  if(!id||this.host.executionActive(id))return false
   const run=store.get<Run>('run',id),task=store.tickets.get(id)
-  if(run?.phase!=='uncertain'||!task||task.ended||task.assignments.at(-1)?.id!==run.assignmentId||task.assignments.at(-1)?.report?.state!=='blocked'||
-    hasOutstandingQuestion(this.host,task)||!this.host.scopes.taskRunnable(id)||
-    !this.host.webhooks.taskExecutionAllowed(id)||this.host.webhooks.continuations.pending(id,run.assignmentId)||
-    n.dependsOn.some(dep=>g.nodes!.find(d=>d.id===dep)?.state!=='passed')||!this.effectsSettledAtPhase(id,'uncertain',run.assignmentId)||
+  if(run?.phase!=='uncertain'||!task||task.assignments.at(-1)?.report?.state!=='blocked'||!this.workerCanContinue(g,n,run,task)||
+    !this.effectsSettledAtPhase(id,'uncertain',run.assignmentId)||
     unsettledTaskEffects(store,id,0,run.assignmentId))return false
   const wakes=retainedInputWakes(store,run)
   if(!wakes)return false
@@ -546,10 +557,10 @@ export class RouterGoals {
     JOIN json_each(t.body,'$.effectIds') e LEFT JOIN records r ON r.kind='backend-plugin-tool' AND r.id=e.value
     WHERE s.kind='model-session' AND json_extract(s.body,'$.ticketId')=? AND s.id<>?
     AND json_extract(r.body,'$.state') IS NOT 'complete' LIMIT 1`).get(id,run.threadId??''))return false
-  const awaitingJobs=this.host.work.list(id).some(job=>job.state==='starting'||job.state==='running')
-  const shell=!awaitingJobs&&!wakes.length?unstartedWorkerShell(store,this.host.config.stateDir,run):undefined
+  const liveJobs=this.host.work.list(id).filter(job=>job.state==='starting'||job.state==='running')
+  const shell=!liveJobs.length&&!wakes.length?unstartedWorkerShell(store,this.host.config.stateDir,run):undefined
   const provider=shell?undefined:settledProviderTurn(store,this.host.config.stateDir,run)
-  if(!shell&&!provider)return false
+  if(!shell&&!provider||n.recoveries>=5&&!provider?.productiveDeadline)return false
   this.host.scopes.checkTask(id,c,true)
   const manifest=store.get<{manifest:ContextManifest}>('task-context',id)?.manifest
   if(manifest)this.host.memory.validate(manifest)
@@ -564,11 +575,11 @@ export class RouterGoals {
   this.host.model.describe?.(run.threadId)
   if(provider){
    const now=this.now(),retry=classifyExecutionFailure({code:'transient',stage:'provider',retryAfterMs:provider.retryAfterMs},'',provider.at,n.recoveries)
+   const awaitingJobs=liveJobs.some(job=>job.cwd!==run.cwd||!['auto','held'].includes(job.notify)||!this.host.work.ownsRunningShell(job))
    const jobDeadline=provider.at+this.host.config.work.backgroundTimeoutMs
    if(awaitingJobs&&now>=jobDeadline)return false
    if(awaitingJobs||now<retry.retryAt!){
-    // The old turn is accounted for. Wait in the existing goal and leave the
-    // shell runners alone until the host has their terminal results.
+    // A saved PID alone does not prove the host still owns this command.
     n.providerWait={turnId:run.turnId!,jobs:awaitingJobs,checkAt:Math.min(now+5000,awaitingJobs?jobDeadline:retry.retryAt!)}
     n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined
     if(g.state==='held'){g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++}
@@ -596,7 +607,8 @@ export class RouterGoals {
   const continuation=shell?{
    instruction:'Continue the current reviewed task in the retained workspace. The interrupted shell request never started. Inspect existing work and the accepted prerequisite artifacts. Use superagent_artifact_read with each artifact.id. Preserve prior effects.',unstartedRequestId:shell.requestId,
   }:{
-   instruction:'Continue the next unfinished step in this same workspace. The model connection stopped after the listed operations returned. Use superagent_read with their exact resource strings for previous results and job IDs. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
+   instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read the exact receipt resources for previous results. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
+   ...(liveJobs.length?{runningJobs:liveJobs.map(job=>({id:job.id,resource:'job/'+job.id}))}:{}),
   }
   const note=JSON.stringify({...continuation,prerequisiteEvidence:prerequisites})
   if(Buffer.byteLength(note)>this.host.scopes.scope(g.scopeId).contextBytes)return false
@@ -608,18 +620,21 @@ export class RouterGoals {
     store.audit({type:'backend.tool.reconciled',receiptId:callback.id,reason:'shell_not_dispatched',activityId,ticketId:id,confirmed:false})
    }else{
     for(const [key,value] of receipts)store.put('model-tool-receipt',key,value)
-    store.audit({type:'worker.provider_recovered',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,recordedCalls:calls!.length})
+    for(const job of liveJobs)if(job.notify==='held')store.put('work',job.id,{...job,notify:'auto',deadline:undefined})
+    store.audit({type:'worker.provider_recovered',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,recordedCalls:calls!.length,cause:provider!.cause,productiveDeadline:provider!.productiveDeadline,runningJobs:liveJobs.map(job=>job.id)})
    }
    const session=store.get<object>('model-session',run.threadId!)!
    store.put('model-session',run.threadId!,{...session,[shell?'shellDispatchRecovery':'providerRecovery']:{turnId:run.turnId,at:this.now()}})
    const {threadId,turnId,error,failure,result,waitingForWriter,toolsVersion,toolsDigest,...retained}=run
    store.put('run',id,{...retained,phase:'idle'})
-   n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.providerWait=undefined;n.recoveries++
+   n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.providerWait=undefined
+   if(provider?.productiveDeadline)g.turns++
+   else n.recoveries++
    g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
    // A provider checkpoint continues the same accepted input. Re-admitting
    // the goal's older trigger here would move the reply away from its owner.
    if(shell){this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)}
-   this.host.engine.report(id,{state:'waiting',summary:shell?'已核实上一条命令未启动，正在继续处理。':'已保留上一步结果，正在恢复模型连接。',question:null})
+   this.host.engine.report(id,{state:'waiting',summary:shell?'已核实上一条命令未启动，正在继续处理。':provider?.cause==='timeout'||provider?.cause==='turn_checkpoint'?'已保留本轮进展，正在接续长任务。':'已保留上一步结果，正在恢复模型连接。',question:null})
    this.host.engine.note(id,note)
    return true
   })

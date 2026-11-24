@@ -1839,6 +1839,7 @@ export class Runtime {
       const result = await this.runModel({
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
         role:'worker',allowNativeTools:!delegatedTask,options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
+        workerCheckpointReady:builtInChat&&localNode?()=>currentWorkerAttempt(this,attempt)&&this.goals.canCheckpointWorker(run):undefined,
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
         webFetchReplay:saved?.webFetchReplay,

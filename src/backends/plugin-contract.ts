@@ -26,7 +26,7 @@ export type BackendErrorCode=typeof backendErrorCodes[number]
 // provider messages, tool arguments or credential-bearing exception text.
 export const backendDiagnosticSchema=z.object({
  operation:z.enum(['initialize','probe','run','history','purge','expose','catalog','control','tool','transport']),
- reason:z.enum(['exception','timeout','process_exit','spawn_error','rpc_rejected','provider_status','repeated_read','repository_push_unconfirmed']),
+ reason:z.enum(['exception','timeout','turn_checkpoint','process_exit','spawn_error','rpc_rejected','provider_status','repeated_read','repository_push_unconfirmed']),
  nativeMethod:z.enum(['initialize','account/read','thread/start','thread/resume','thread/read','thread/archive','thread/unarchive','thread/delete','thread/inject_items','turn/start','turn/steer','turn/interrupt','config/read','model/list']).optional(),
  rpcCode:z.number().int().optional(),exitCode:z.number().int().nullable().optional(),
  httpStatus:z.number().int().min(400).max(599).optional(),

@@ -30,9 +30,12 @@ it('keeps a command after its caller returns, deduplicates starts and sends one 
  const f=fixture(),command='sleep 0.3; printf hello; printf result > result.txt'
  const first=await f.manager.shell(f.owner,command,'same',0)
  expect(first.state).toBe('running')
+ expect(f.manager.ownsRunningShell(first)).toBe(true)
+ expect(f.manager.ownsRunningShell({...first,pid:process.pid})).toBe(false)
  const second=await f.manager.shell(f.owner,command,'same',0)
  expect(second.id).toBe(first.id)
  expect((await settle(f,first.id)).state).toBe('completed')
+ expect(f.manager.ownsRunningShell(first)).toBe(false)
  await Promise.all([f.manager.tick(),f.manager.tick()])
  expect(f.wakes).toHaveLength(1)
  expect(readFileSync(join(f.cwd,'result.txt'),'utf8')).toBe('result')

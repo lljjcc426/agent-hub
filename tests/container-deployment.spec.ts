@@ -9,7 +9,7 @@ import {Store,MAX_DB_SCHEMA,type Run} from '../src/store.ts'
 import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
-import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from '../src/backends/opencode-read-recovery.ts'
+import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell,workerCheckpointReady} from '../src/backends/opencode-read-recovery.ts'
 import {ExecutionTrace} from '../src/execution-trace.ts'
 import {heldArtifactReads,unsettledTaskEffects} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
@@ -259,6 +259,29 @@ it('requires matching terminal callbacks and accounted native reads after a prov
  saveReceipt('complete');journal('bash');expect(proof()).toBeUndefined()
  journal('websearch');writeFileSync(join(f.journal,thread.turnId+'.operations'),'');expect(proof()).toBeUndefined()
  journal('websearch');s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...failure,code:'outcome_unknown'}});expect(proof()).toBeUndefined()
+ const timedOut={code:'outcome_unknown',at:failure.at,diagnostic:{operation:'transport',reason:'timeout'}}
+ s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:timedOut})
+ const saved=JSON.parse(readFileSync(f.session,'utf8'));saved.turns[0].state='running'
+ writeFileSync(f.session,JSON.stringify(saved))
+ expect(proof()).toMatchObject({cause:'timeout',productiveDeadline:false})
+ s.put('backend-plugin-thread',thread.id,{...thread,state:'running',lastFailure:undefined})
+ const active={...run,phase:'running' as const}
+ expect(workerCheckpointReady(s,h.config.stateDir,active)).toBe(false)
+ const modelSession=s.get<{activity:string}>('model-session',thread.id)!
+ const usage=s.get<object>('model-usage',modelSession.activity)!
+ s.put('model-usage',modelSession.activity,{...usage,at:failure.at-3_600_000})
+ s.put('execution-call','finished',{parentId:modelSession.activity,ticketId:run.ticketId,kind:'tool',name:'superagent_desktop',state:'completed',endedAt:failure.at-10})
+ expect(workerCheckpointReady(s,h.config.stateDir,active)).toBe(true)
+ saveReceipt('running');expect(workerCheckpointReady(s,h.config.stateDir,active)).toBe(false)
+ saveReceipt('complete');s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:timedOut})
+ expect(proof()?.productiveDeadline).toBe(true)
+ s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...timedOut,diagnostic:{operation:'transport',reason:'turn_checkpoint'}}})
+ expect(proof()).toMatchObject({cause:'turn_checkpoint',productiveDeadline:true})
+ writeFileSync(join(f.journal,'writer.lock'),String(process.pid));expect(proof()).toBeUndefined()
+ rmSync(join(f.journal,'writer.lock'));saveReceipt('running');expect(proof()).toBeUndefined()
+ saveReceipt('complete');s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...timedOut,code:'process_failed',diagnostic:{operation:'transport',reason:'process_exit'}}})
+ expect(proof()).toMatchObject({cause:'process_exit',productiveDeadline:false})
+ s.put('backend-plugin-thread',thread.id,{...thread,lastFailure:{...timedOut,code:'cancelled'}});expect(proof()).toBeUndefined()
 })
 
 it('allows only a known root shell of the same assignment to finish before provider continuation',()=>{

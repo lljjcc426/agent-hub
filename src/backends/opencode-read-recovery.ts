@@ -243,7 +243,7 @@ export function retainedWebPages(store:Pick<ThreadStore,'get'>,stateDir:string,r
 /** Match the interrupted bridge call to the host's receipt and account for every native operation.
  * The adapter's writer lock and private journal belong to the old session, whose contents are retained.
  */
-function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
+function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,liveBoundary=false){
  if(!run.prepared||!run.threadId||!run.turnId||!run.backendId)return
  const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
  const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',run.threadId)
@@ -256,7 +256,7 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
 
  if(realpathSync(run.cwd)!==thread.cwd||!statSync(run.cwd).isDirectory())return
  const location=sessionRoot(stateDir,thread)
- if(!location||!stoppedWriter(location.root))return
+ if(!location||!liveBoundary&&!stoppedWriter(location.root))return
  const {root,folder}=location
  const session=sessionSchema.parse(JSON.parse(privateText(join(root,'session.json'))))
  const last=session.turns.at(-1)!
@@ -267,18 +267,27 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
 
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'){
  try{
-  const bound=boundWorkerSession(store,stateDir,run)
+  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'
+  const bound=boundWorkerSession(store,stateDir,run,boundary)
   if(!bound)return
   const {thread,session,root,last}=bound
   const failure=thread.lastFailure
-  if(mode==='cancelled'){
+  if(boundary){
+   if(thread.state!=='running'||last.state!=='running')return
+  }else if(mode==='cancelled'){
    if(thread.state!=='interrupted'||failure?.code!=='cancelled')return
   }else{
-   if(thread.state!=='failed'||last.state!=='interrupted')return
+   if(thread.state!=='failed')return
    if(mode==='denied_reads'&&failure?.code!=='outcome_unknown')return
-   if(mode==='provider'&&(failure?.code!=='transient'||failure.diagnostic?.operation!=='run'||
+   const transport=failure?.diagnostic?.operation==='transport'&&
+    (failure.code==='outcome_unknown'&&['timeout','turn_checkpoint'].includes(failure.diagnostic.reason)||
+     failure.code==='process_failed'&&failure.diagnostic.reason==='process_exit')
+   // A killed writer cannot close its native journal. Its lock, every native
+   // operation and every callback must still match the host's durable ledger.
+   if(last.state!=='interrupted'&&!(mode==='provider'&&transport&&last.state==='running'))return
+   if(mode==='provider'&&!transport&&(failure?.code!=='transient'||failure.diagnostic?.operation!=='run'||
       failure.diagnostic.reason!=='provider_status'||!retryableInferenceStatus(failure.diagnostic.httpStatus)))return
   }
   const effects=new Set(thread.effectIds),turns=new Set<string>()
@@ -287,7 +296,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
   for(const turn of session.turns){
    if(turns.has(turn.id)||turn!==last&&turn.state!=='completed'||new Set(turn.tools.map(c=>c.id)).size!==turn.tools.length)return
    const journal=operations(root,turn.id),native=new Map(journal.map(op=>[op.id,op.tool]))
-   if(native.size!==journal.length||native.size&&(mode!=='provider'||turn.nativeToolsDisabled))return
+   if(native.size!==journal.length||native.size&&(!checkpoint||turn.nativeToolsDisabled))return
    if(!turn.nativeToolsDisabled&&privateText(join(root,turn.id+'.ready'),32)!=='ready')return
    turns.add(turn.id)
    for(const call of turn.tools){
@@ -303,9 +312,9 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
      if(record.state!=='complete'||record.result?.success!==call.result.success||
        record.result.permission==='pending'||record.result.permission==='uncertain')return
      if(turn===last){
-      const args=mode==='provider'?call.args as Record<string,unknown>|null:null
+      const args=checkpoint?call.args as Record<string,unknown>|null:null
       calls.push({tool:call.name,effectId,success:call.result.success,
-       ...(mode==='provider'?{callId:call.id}:{}),
+       ...(checkpoint?{callId:call.id}:{}),
        ...(typeof args?.action==='string'?{action:args.action}:{}),...(typeof args?.requestId==='string'?{requestId:args.requestId}:{})})
      }
      continue
@@ -321,12 +330,29 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
    }
    if(native.size)return
   }
-  if(!effects.size&&(mode==='denied_reads'?denied.length:calls.length)&&stoppedWriter(root))return {calls,denied,failure}
+  if(!effects.size&&(mode==='denied_reads'?denied.length:calls.length)&&(boundary||stoppedWriter(root)))return {calls,denied,failure}
  }catch{/* Missing history keeps the original reconciliation fence. */}
 }
 
 export function recordedWorkerCalls(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){
  return accountedWorkerTurn(store,stateDir,run,'cancelled')?.calls
+}
+
+// Acknowledgements and status messages do not establish recent task progress.
+function recentWorkerProgress(store:Pick<Store,'db'>,activity:string,ticketId:string,start:number,at:number){
+ return start<at&&!!store.db.prepare(`SELECT 1 FROM records WHERE kind='execution-call'
+  AND json_extract(body,'$.parentId')=? AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.kind')='tool'
+  AND json_extract(body,'$.state')='completed' AND json_extract(body,'$.name') NOT IN ('superagent_ack','superagent_status','superagent_plan')
+  AND json_extract(body,'$.endedAt') BETWEEN ? AND ? LIMIT 1`).get(activity,ticketId,start+(at-start)/2,at)
+}
+
+/** Preflight at the next inference boundary. Resumption independently requires a stopped writer. */
+export function workerCheckpointReady(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run){
+ if(run.phase!=='running'||!run.threadId)return false
+ const model=store.get<{activity:string}>('model-session',run.threadId)
+ const usage=model&&store.get<{at:number}>('model-usage',model.activity)
+ return !!model&&!!usage&&recentWorkerProgress(store,model.activity,run.ticketId,usage.at,Date.now())&&
+  !!accountedWorkerTurn(store,stateDir,run,'boundary')?.calls.some(call=>call.success)
 }
 
 export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string,run:Run){
@@ -342,11 +368,15 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
  const proof=accountedWorkerTurn(store,stateDir,run,'provider')
  if(!proof?.failure)return
  const model=store.get<{activity:string;workerId?:string;agentId?:string;sourceId:string;triggerId:string;scopeId:string;contextId:string}>('model-session',run.threadId!)
- const usage=model&&store.get<{id:string;ticketId:string;role:string;state:string;endedAt:number;workerId:string;triggerId:string;sourceId:string}>('model-usage',model.activity)
+ const usage=model&&store.get<{id:string;ticketId:string;role:string;state:string;at:number;endedAt:number;workerId:string;triggerId:string;sourceId:string}>('model-usage',model.activity)
  if(!model?.workerId||model.workerId!==run.workerId||model.agentId||usage?.role!=='worker'||usage.state!=='failed'||
     usage.id!==model.activity||usage.ticketId!==run.ticketId||usage.workerId!==model.workerId||usage.triggerId!==model.triggerId||usage.sourceId!==model.sourceId||
     !(usage.endedAt>=proof.failure.at))return
- return {calls:proof.calls,model,at:proof.failure.at,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
+ const cause=proof.failure.diagnostic!.reason,at=proof.failure.at
+ // A hard turn deadline also ends productive work. Only spend another
+ // authorized goal turn when a real tool finished in the latter half.
+ const productiveDeadline=(cause==='turn_checkpoint'||cause==='timeout')&&recentWorkerProgress(store,model.activity,run.ticketId,usage.at,at)
+ return {calls:proof.calls,model,at,cause,productiveDeadline,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
 }
 
 export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){

@@ -121,6 +121,23 @@ it('transports mixed MCP images and gives malformed images a non-fatal tool resu
  }finally{await bridge.close()}
 })
 
+it('hands off at a verified inference boundary before admitting another network request',async()=>{
+ const calls=vi.fn(),ready=vi.fn(()=>false)
+ const server=createServer((_req,res)=>{calls();res.writeHead(200,{'content-type':'text/event-stream'}).end('data: [DONE]\n\n')})
+ await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok))
+ const backend=apiBackendDefinition.parse({kind:'openai-responses',baseUrl:'http://127.0.0.1:'+(server.address() as {port:number}).port,model:'test'})
+ const gateway=await openHarnessProvider(backend,'test',{...request,workerCheckpointReady:ready},undefined,Date.now()-1)
+ const limited=await openHarnessProvider({...backend,maxSteps:1},'test',{...request,workerCheckpointReady:ready},undefined,Date.now()-1)
+ const step=async(url=gateway.url)=>{const r=await fetch(url+'/responses',{method:'POST',body:JSON.stringify({stream:true,model:'test',tools:[{type:'function'}]})});await r.text();return r.status}
+ try{
+  expect(await step()).toBe(200);expect(ready).not.toHaveBeenCalled()
+  expect(await step()).toBe(200);expect(gateway.checkpointed()).toBe(false)
+  ready.mockReturnValue(true);expect(await step()).toBe(409);expect(gateway.checkpointed()).toBe(true)
+  expect(await step()).toBe(409);expect(calls).toHaveBeenCalledTimes(2)
+  expect(await step(limited.url)).toBe(200);expect(await step(limited.url)).toBe(400);expect(limited.checkpointed()).toBe(false)
+ }finally{await limited.close();await gateway.close();server.closeAllConnections();await new Promise<void>(ok=>server.close(()=>ok()))}
+})
+
 it.each([
  {code:'image_not_supported'},
  {code:'invalid_image',param:'input[0].output[1].image_url'},

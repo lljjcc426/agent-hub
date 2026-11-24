@@ -44,12 +44,12 @@ function textOnlyToolOutputs(input:unknown,rejectAll:boolean,rejected:ReadonlySe
 }
 
 /** One private loopback endpoint per activation. Only the host authenticates upstream. */
-export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRequest,credential?:()=>Promise<string>){
+export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRequest,credential?:()=>Promise<string>,checkpointAt?:number){
  const prefix='/'+randomBytes(32).toString('hex')
  const path={'openai-chat':'/chat/completions','openai-responses':'/responses',anthropic:'/messages'}[d.kind]
  const upstream=d.baseUrl.replace(/\/+$/,'')+path
  const lifetime=new AbortController()
- let port=0,steps=0,failure:unknown,rejectAllToolImages=false
+ let port=0,steps=0,failure:unknown,rejectAllToolImages=false,checkpointed=false
  const rejectedImageCalls=new Set<string>()
  const server=createServer(async(req,res)=>{
   if(req.method!=='POST'||req.headers.host!=='127.0.0.1:'+port||req.headers.origin||req.url?.split('?')[0]!==prefix+path){
@@ -72,6 +72,9 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    if(input?.model!==model||input.previous_response_id||input.conversation||input.stream!==true){res.writeHead(400).end();return}
    // OpenCode can make auxiliary title requests without the task schema or tools.
    const taskStep=Array.isArray(input.tools)&&input.tools.length>0
+   if(taskStep&&steps>0&&steps<d.maxSteps&&checkpointAt!==undefined&&Date.now()>=checkpointAt&&(checkpointed||r.workerCheckpointReady?.())){
+    checkpointed=true;res.writeHead(409).end();return
+   }
    if(taskStep&&++steps>d.maxSteps){failure=Error('Model step limit reached');res.writeHead(400).end();return}
    const body={...input,...d.parameters,...(taskStep?apiOutputFormat(d,r.schema):{})}
    if(d.kind==='openai-chat'){
@@ -167,7 +170,7 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
   server.once('error',fail)
   server.listen(0,'127.0.0.1',()=>{port=(server.address() as {port:number}).port;ok()})
  })
- return {url:'http://127.0.0.1:'+port+prefix,failure:()=>failure,async close(){
+ return {url:'http://127.0.0.1:'+port+prefix,failure:()=>failure,checkpointed:()=>checkpointed,async close(){
   lifetime.abort()
   server.closeAllConnections()
   await new Promise<void>(ok=>server.close(()=>ok()))

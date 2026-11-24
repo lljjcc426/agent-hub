@@ -54,6 +54,9 @@ export interface ModelRequest {
   opencodeWebPages?:import('./backends/opencode-web-checkpoint.ts').WebPageCheckpoint[]
   /** Ephemeral host transport, only supplied to the selected OpenCode adapter. */
   harnessProviderUrl?:string
+  /** Host-only callbacks for a managed goal's handoff between inference steps. */
+  workerCheckpointReady?:()=>boolean
+  harnessCheckpointed?:()=>boolean
   harnessWorkspace?:'read'|'edit'
   harnessPrivateFiles?:string[]
   /** Host-owned grant for the bundled or configured OpenCode adapter. */

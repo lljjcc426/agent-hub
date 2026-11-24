@@ -112,7 +112,14 @@ export class ProcessBackend implements Model {
    }
    record.state='completed';this.save(record)
    return {threadId:record.id,turnId:result.turnId,text}
-  }catch(error){record.state=request.signal?.aborted?'interrupted':'failed';record.lastFailure={at:Date.now(),code:error instanceof BackendPluginError?error.code:'process_failed',...(error instanceof BackendPluginError&&error.diagnostic?{diagnostic:error.diagnostic}:{})};this.save(record);throw error}
+  }catch(error){
+   if(this.hostHarness&&!request.signal?.aborted&&request.harnessCheckpointed?.()&&error instanceof BackendPluginError&&
+      (error.diagnostic?.reason==='provider_status'&&error.diagnostic.httpStatus===409||error.diagnostic?.operation==='transport'&&error.diagnostic.reason==='timeout'))
+    error=new BackendPluginError('outcome_unknown',this.id,{operation:'transport',reason:'turn_checkpoint'})
+   record.state=request.signal?.aborted?'interrupted':'failed'
+   record.lastFailure={at:Date.now(),code:error instanceof BackendPluginError?error.code:'process_failed',...(error instanceof BackendPluginError&&error.diagnostic?{diagnostic:error.diagnostic}:{})}
+   this.save(record);throw error
+  }
   finally{await transport?.close()}
  }
  async history(threadId:string,cwd:string){return this.inspect('history',threadId,cwd)}

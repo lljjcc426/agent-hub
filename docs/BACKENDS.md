@@ -77,7 +77,8 @@ AgentHub 的客户端入口、任务来源和执行后端独立。MCP 客户端�
 - `maxOutputTokens` 默认 8192。Chat 默认使用 `max_completion_tokens`；仅支持旧字段的兼容服务设置 `chatTokenField: "max_tokens"`。Responses 使用 `max_output_tokens`，Anthropic 使用 `max_tokens`。
 - `outputFormat` 默认 `prompt`：提示模型输出 JSON，并用本地 schema 校验；失败最多修正两次。`json-schema` 额外启用供应商结构化输出；`json-object` 启用 OpenAI JSON 模式。Anthropic 的 `json-object` 与 prompt 模式相同，使用本地校验。模板的 json-schema 要求所选模型支持该功能，否则改用 prompt。
 - `images` 默认 false。启用前确认模型支持图片。图片保持协议要求的工具结果顺序；未启用时不向模型发送图片字节。纯文本工具仍可使用。
-- 每轮默认最多 64 次模型请求、256 次工具调用，单请求/响应默认上限 16 MB，HTTP 超时 120 秒；整个 turn 还有 `turnTimeoutMs`。超限会失败并保留历史，需要明确处理上下文，不会自动丢弃历史或转发给其他模型。
+- `maxSteps` 和 `maxToolCalls` 分别限制每轮模型请求和工具调用次数，`maxContextBytes` 限制单次传输大小。每次 HTTP 请求受后端的 `requestTimeoutMs` 限制，整个 turn 受 `turnTimeoutMs` 限制。超限时保留历史和模型绑定。
+- 启用自动恢复的私聊托管目标使用内置 OpenCode 执行时，若单轮时限将到、近期有实际工具进展且回执齐全，宿主会在下一次请求模型前交接。旧会话停止后，调度器再次核对原任务、权限、执行记录和剩余轮数，再由同一执行者接续。后台命令有可核验的宿主进程时可按原作业 ID 接管。缺少回执、存在未确认操作或预算已耗尽时保留阻塞状态。
 
 `models` 资源同时列出后端和角色分配。API 返回 `configuredOnly=true`；它是配置清单，不是远端模型发现或凭据验证。setup 只检查环境变量存在和本地依赖，也会明确返回 `remoteVerified=false`。
 

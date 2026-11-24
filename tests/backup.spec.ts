@@ -106,3 +106,22 @@ it('refuses to roll back asynchronous Worker event deduplication receipts',async
  await expect(restoreState(config,captured)).rejects.toThrow('Async Worker event receipts advanced')
  const reread=new Store(file);try{expect(reread.get('async-worker-event','event')).toMatchObject({disposition:'applied'})}finally{reread.close()}
 })
+
+it('upgrades on the first inquiry and rejects a restore that would send an already delivered answer again',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'restore-worker-inquiry-'));roots.push(root)
+ const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]})
+ const file=join(config.stateDir,'state.sqlite'),initial=new Store(file)
+ initial.requireAsyncWorkerSchema();initial.close()
+ const opened=new Store(file);opened.close()
+ const legacy=join(root,'legacy');await backupState(config,legacy)
+ expect(verifyBackup(legacy).schema).toBe(18)
+ const current=new Store(file),ask={id:'inquiry',ticketId:'task',triggerId:'question',discussion:'chat'}
+ current.atomic(()=>{current.requireWorkerInquirySchema();current.put('worker-inquiry',ask.id,ask)});current.close()
+ await expect(restoreState(config,legacy)).rejects.toThrow('Worker inquiries advanced')
+ const pending=join(root,'pending');await backupState(config,pending)
+ expect(verifyBackup(pending).schema).toBe(19)
+ expect((await restoreState(config,pending)).restored).toBe(true)
+ const delivered=new Store(file);delivered.put('worker-inquiry',ask.id,{...ask,delivered:true});delivered.close()
+ await expect(restoreState(config,pending)).rejects.toThrow('Worker inquiries advanced')
+ const kept=new Store(file);try{expect(kept.get('worker-inquiry',ask.id)).toMatchObject({delivered:true})}finally{kept.close()}
+})

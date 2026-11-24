@@ -137,10 +137,12 @@ export class ChatSessions {
   /** Resolve a contact request only from the user's persisted Chat message and accessible task ownership. */
   directInquiryTicket(context:RouterContext, query:StatusQuestion, tasks:readonly InquiryTask[]){
     const trigger=context.trigger
-    if(!trigger?.human||!query.contact||query.workerIds.length>1||!this.personalManagement(context))return
+    if(!trigger?.human||!query.contact||!this.personalManagement(context))return
     const run=this.host.store.get<ChatRun>('chat-run',trigger.id)
     const user=run&&this.host.store.get<Message>('chat-message','user:'+run.id)
-    if(!user||user.role!=='user'||!run||run.cancelled||run.cancelRequested||run.feedback||user.skill||user.attachments?.length)return
+    if(!run||run.cancelled||run.cancelRequested||run.feedback||!user||user.role!=='user'||user.runId!==run.id||
+      user.conversationId!==run.conversationId||user.text!==trigger.text||user.skill||user.attachments?.length||
+      this.host.memory.cleanup.blocked('chat-message',user.id,user))return
     let ticketId=query.ticketId
     if(user.quote){
       const quoted=this.host.store.get<Message>('chat-message',user.quote.messageId)
@@ -155,7 +157,7 @@ export class ChatSessions {
       if(!quotedTicket||ticketId&&ticketId!==quotedTicket)return
       ticketId=quotedTicket
     }
-    if(!ticketId&&!query.workerIds.length)return
+    if(!ticketId&&query.workerIds.length!==1)return
     const matches=tasks.filter(t=>{
       if(ticketId&&t.ticketId!==ticketId||query.workerIds.length&&!query.workerIds.includes(t.workerId))return false
       const owner=this.host.taskAuthority(t.ticketId)

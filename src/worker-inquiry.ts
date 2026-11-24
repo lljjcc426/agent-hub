@@ -1,9 +1,11 @@
 import type { Runtime } from './runtime.ts'
-import type { WorkerEventReceipt } from './async-worker-inbox.ts'
+import { isDeliverable, type WorkerEventReceipt } from './async-worker-inbox.ts'
 import type { ModelRequest, ModelResult } from './model.ts'
 import { workerProfiles } from './worker-pool.ts'
 import type { Delivery, Run } from './store.ts'
-import type { TicketInput } from './vendor/dsh-core/index.ts'
+import type { Ticket, TicketInput, Trigger } from './vendor/dsh-core/index.ts'
+import { taskView } from './task-context.ts'
+import { statusQuestion } from './router-inquiry-context.ts'
 import { stableDigest } from './sources.ts'
 
 export interface WorkerInquiry {
@@ -14,6 +16,7 @@ export interface WorkerInquiry {
   latestMessageId?: string
   delivered?: boolean
   readbackStarted?: boolean
+  checkpoint?: {assignmentId:string; ownerEpoch?:number}
 }
 interface InquiryReply { inquiryId: string; text: string }
 interface OpenInquiries { ticketId: string; ids: string[] }
@@ -43,6 +46,8 @@ export function authorizedQuestion(host: Runtime, inquiry: WorkerInquiry) {
   const origin = host.store.triggers.get(inquiry.triggerId)
   const run = host.store.get<{cancelled?: boolean; cancelRequested?: boolean}>('chat-run', inquiry.triggerId)
   if (!origin || !run || run.cancelled || run.cancelRequested || host.taskAuthority(inquiry.ticketId)?.discussion !== inquiry.discussion) return
+  if (inquiry.checkpoint && (host.store.tickets.get(inquiry.ticketId)?.assignments.at(-1)?.id !== inquiry.checkpoint.assignmentId ||
+      host.scopes.ownership(inquiry.ticketId)?.ownerEpoch !== inquiry.checkpoint.ownerEpoch)) return
   try {
     host.routerIngress.authority(inquiry.triggerId, inquiry.discussion)
     const scope = host.scopes.contextForTask(origin, inquiry.discussion, inquiry.ticketId)
@@ -52,6 +57,51 @@ export function authorizedQuestion(host: Runtime, inquiry: WorkerInquiry) {
     }
     return origin
   } catch { return }
+}
+
+/** A status request must not invalidate a running attempt, reopen a completed task or erase an acceptance proposal. */
+export function askAtCheckpoint(host:Runtime, inquiry:WorkerInquiry, trigger:Trigger, ticket:Ticket, worker:{id:string;label?:string}) {
+  const run=host.store.get<Run>('run',ticket.id)
+  const active=host.executionActive(ticket.id), retained=!!host.store.get('goal-delivery',ticket.id)
+  if (!active && !retained && !ticket.ended && !ticket.attention && run?.phase!=='background') return
+  // Two detailed questions already sharing an interactive inquiry turn can be answered together.
+  // A question about business work, in any language, waits for that work's accepted checkpoint.
+  if (active && !retained && !ticket.ended && !ticket.attention && run?.phase!=='background' &&
+      host.executingInquiryTurn(ticket.id) &&
+      !statusQuestion(trigger.text,[worker],[{ticketId:ticket.id,workerId:worker.id,title:ticket.title}])) return
+  if (!authorizedQuestion(host,inquiry)) throw Error('The original Chat can no longer read this task')
+  const assignment=taskView(host.store,ticket).assignments.at(-1)
+  const current=host.store.get<{attemptId:string;assignmentId:string}>('async-worker-current',ticket.id)
+  const terminal=current && host.store.get<{eventId:string}>('async-worker-terminal',current.attemptId)
+  const event=terminal && host.store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
+  const available=assignment?.report && event && isDeliverable(host,event) ? event : undefined
+  const willReport=active && current?.assignmentId===assignment?.id && !terminal && !!current
+  if (!assignment || ticket.ended?.by==='human' || (!available && !willReport)) {
+    // Older databases may have no event provenance. The Router can still describe the authorized dated status.
+    return {status:'recorded_status',ticketId:ticket.id,triggerId:trigger.id,phase:ticket.ended?'ended':run?.phase,
+      notice:'Read worker_manage result to report the latest authorized status and its date. No new work or contact was started.'}
+  }
+  const checkpoint={assignmentId:assignment.id,ownerEpoch:host.scopes.ownership(ticket.id)?.ownerEpoch}
+  const origin=host.store.triggers.get(ticket.origin.triggerId)
+  if(!origin)throw Error('Original task trigger unavailable')
+  recordInquiry(host,{...inquiry,checkpoint})
+  host.store.triggers.save({...trigger,id:inquiry.id,threads:origin.threads,channel:origin.channel,meta:{...trigger.meta,delegatedBy:'router',parentTrigger:trigger.id}})
+  if (available) queueInquiryReplies(host,available,[],[{inquiryId:inquiry.id}],[],'')
+  return {status:'queued',ticketId:ticket.id,inquiryId:inquiry.id}
+}
+
+function checkpointSummary(report:{state:string;summary:string}) {
+  return ['blocked','failed'].includes(report.state) ? '' : report.summary.replace(/^Managed background work is running\. /u,'')
+}
+
+export function answerCheckpointInquiries(host:Runtime,event:WorkerEventReceipt) {
+  const open=host.store.get<OpenInquiries>('worker-inquiry-open',event.ticketId)
+  if (!open?.ids.length) return
+  const waiting=open.ids.flatMap(id=>{
+    const ask=host.store.get<WorkerInquiry>('worker-inquiry',id)
+    return ask?.checkpoint?.assignmentId===event.assignmentId && !ask.delivered ? [{inquiryId:id}] : []
+  })
+  if(waiting.length)queueInquiryReplies(host,event,[],waiting,[],'')
 }
 
 /** Only offer earlier questions still visible in this authorized projection of the same ticket. */
@@ -97,10 +147,10 @@ export function queueInquiryReplies(host: Runtime, event: WorkerEventReceipt, in
     const readback = !text.trim()
     if (readback) {
       const task = host.store.tickets.get(event.ticketId)
-      const report = task?.assignments.at(-1)?.report
+      const report = task && taskView(host.store,task).assignments.at(-1)?.report
       if (!report) continue
       // A misaddressed reply is never evidence for another user question.
-      text = report.summary
+      text = inquiry.checkpoint ? checkpointSummary(report) : report.summary
     }
     const id = 'worker-inquiry-reply:' + stableDigest([inquiry.id, event.id])
     if (host.store.get('router-inbox', id)) continue
@@ -125,13 +175,13 @@ export async function readInquiryReport(host: Runtime, inquiry: WorkerInquiry, m
   if (!origin || !question || !task) throw Error('Inquiry sources are unavailable')
   const source = host.sources.get(origin.source)!.config
   const run = host.store.get<Run>('run', task.id)
-  const report = task.assignments.at(-1)?.report
+  const report = taskView(host.store,task).assignments.at(-1)?.report
   const owner = host.store.get<{workerId:string}>('worker-assignment', task.id)
   const worker = workerProfiles(host.config).find(w => w.id === owner?.workerId)
-  const summary = report?.summary.trim() || message.text
+  const summary = (inquiry.checkpoint && report ? checkpointSummary(report) : report?.summary.trim()) || message.text
   const fallback = summary ? (chinese ? '最近一次任务记录：' : 'Latest task update: ') + summary
     : chinese ? '这项任务还没有新的已核实进展。' : 'There is no newly verified update on this task.'
-  if (inquiry.readbackStarted || !worker || !report) return fallback
+  if (inquiry.readbackStarted || !summary || !worker || !report) return fallback
   // The claim survives restart. A recovery only reads the report and never advances the task.
   host.store.put('worker-inquiry', inquiry.id, {...inquiry, readbackStarted:true})
   try {

@@ -1,6 +1,6 @@
 import {inquiryInventory,inquiryInventoryBytes,statusQuestion} from './router-inquiry-context.ts'
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
-import {authorizedQuestion,readInquiryReport,finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
+import {answerCheckpointInquiries,authorizedQuestion,readInquiryReport,finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
 import {ApiUsage} from './api-usage.ts'
 
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
@@ -137,6 +137,10 @@ export class Runtime {
   get activeExecutions(){return this.controllers.size}
   schedulerStatus(){return schedulerStatus(this,[...this.runningJobs.keys()],[...this.controllers.keys()])}
   executionActive(id:string){return this.controllers.has(id)}
+  executingInquiryTurn(ticketId:string){
+    const work=this.liveInputs.get(ticketId)?.inputs.filter(i=>i.kind!=='trigger'||!i.context)
+    return !!work?.length&&work.every(i=>!!inquiryForInput(this,i))
+  }
   interruptForWatchdog(id:string){this.controllers.get(id)?.abort(Error('Watchdog recovery requested'))}
   interruptForAutomation(id:string){this.controllers.get(id)?.abort(Error('Automation authorization or execution state stopped'));this.toolConnections.cancel(id);this.approvals.cancel(id)}
   interruptGoalReviews(goalId:string){
@@ -500,6 +504,7 @@ export class Runtime {
     })
   }
   private bindWorkerEventMessages(receipt:WorkerEventReceipt,previous:Set<string>,previousGoalDelivery?:string|null){
+    answerCheckpointInquiries(this,receipt)
     for(const message of this.store.deliveries())if(!previous.has(message.id)&&message.ticketId===receipt.ticketId)this.store.put('async-worker-message',message.id,{ticketId:receipt.ticketId,eventId:receipt.id,attemptId:receipt.attemptId})
     const delivery=this.store.get<GoalDelivery>('goal-delivery',receipt.ticketId)
     if(previousGoalDelivery!==undefined&&delivery?.id!==previousGoalDelivery&&delivery?.assignmentId===receipt.assignmentId&&!this.store.get('async-worker-delivery',delivery.id))this.store.put('async-worker-delivery',delivery.id,{ticketId:receipt.ticketId,eventId:receipt.id,attemptId:receipt.attemptId})

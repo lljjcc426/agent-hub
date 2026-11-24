@@ -1,4 +1,4 @@
-import {recordInquiry} from './worker-inquiry.ts'
+import {askAtCheckpoint,recordInquiry} from './worker-inquiry.ts'
 import {workerPoolDefault,messageCharacters} from './execution-limits.ts'
 import {checkWorkerAdmission} from './backend-admission.ts'
 import {businessDecision,answerBusinessDecision} from './business-decisions.ts'
@@ -134,7 +134,7 @@ export class WorkerManager {
    if(receipt.fingerprint!==fingerprint)throw Error('requestId reused with different content')
    if(receipt.status==='completed'){
     const result=receipt.result
-    if(input.expectReply&&host.store.get<{triggerId:string}>('worker-inquiry','router-followup:'+key)?.triggerId!==context?.trigger?.id)
+    if(input.expectReply&&(result.status==='recorded_status'?result.triggerId:host.store.get<{triggerId:string}>('worker-inquiry','router-followup:'+key)?.triggerId)!==context?.trigger?.id)
      throw Error('This inquiry belongs to a different Chat message')
     if(context?.scoped){
      if(result?.ticketId){
@@ -225,6 +225,15 @@ export class WorkerManager {
    if(!input.expectReply&&!input.questionId&&context?.singleChatInput&&host.chat.runningNudge(context)?.id===input.ticketId)return complete({status:'already_running',ticketId:input.ticketId,workerId:a.workerId})
    if(repositoryEvent)host.scopes.checkTaskEntry(host.scopes.ownership(input.ticketId)!,context!.scoped!.route.entryId,'request')
    const ticket=host.store.tickets.get(input.ticketId)!,origin=host.store.triggers.get(ticket.origin.triggerId)!,previousInputs=ticket.inputs.map(i=>i.id)
+   if(input.expectReply&&context?.trigger){
+    const assigned=profiles.find(p=>p.id===a.workerId)
+    const inquiry={id:'router-followup:'+key,ticketId:ticket.id,triggerId:context.trigger.id,discussion:context.discussion}
+    const result=askAtCheckpoint(host,inquiry,context.trigger,ticket,assigned??{id:a.workerId})
+    if(result){
+     if(result.status==='queued')host.chat.delegated(key,context.trigger.id,ticket.id,a.workerId,context.trigger.text)
+     return complete({...result,revision:host.settings.current().revision})
+    }
+   }
    if(input.questionId!==undefined){
     const answerKey=bodyDigest([ticket.id,input.questionId])
     if(ticket.ended||ticket.attention?.id!==input.questionId||host.store.get('question-answer',answerKey))throw Error('Question is no longer pending')
@@ -267,7 +276,7 @@ export class WorkerManager {
     followup.channel=origin.channel
     host.engine.receive(followup)
    }
-   if(context?.trigger&&!context.scoped)host.store.put('worker-assignment',input.ticketId,{...a,parentTrigger:context.trigger.id})
+   if(context?.trigger&&!context.scoped&&!input.expectReply)host.store.put('worker-assignment',input.ticketId,{...a,parentTrigger:context.trigger.id})
    allowNewTaskInputs(host.store,input.ticketId,previousInputs)
    if(context?.trigger)host.chat.delegated(key,context.trigger.id,input.ticketId,a.workerId,input.text)
    if(context?.scoped&&!repositoryEvent&&host.goals.forTask(input.ticketId))host.store.db.prepare("DELETE FROM records WHERE kind='goal-delivery' AND id=?").run(input.ticketId)

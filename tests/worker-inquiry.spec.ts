@@ -41,6 +41,7 @@ interface Scenario {
   expectReply: boolean
   observeInput?: (request: ModelRequest, data: any) => void | Promise<void>
   answerOnly?: boolean
+  scoped?: boolean
   present?: (request: ModelRequest) => Promise<void>
   recover?: (request: ModelRequest, data: {question: string; report: {summary: string}}) => string | Promise<string>
   owner?: string
@@ -130,7 +131,7 @@ async function fixture(scenario: Scenario) {
   }}
   host = new Runtime(config, { model })
   hosts.add(host)
-  host.scopes.command({ action: 'scope.put', operationId: 'scope', expectedRevision: 0, scope: {
+  if(scenario.scoped!==false)host.scopes.command({ action: 'scope.put', operationId: 'scope', expectedRevision: 0, scope: {
     id: 'team', tenantId: 'private', name: 'Team', managers: [JSON.stringify(['local', 'operator'])],
     workerIds: ['release'], backendIds: ['codex'], sourceIds: ['local'],
   } })
@@ -142,7 +143,7 @@ async function fixture(scenario: Scenario) {
   const start = send(initial)
   await until(host, () => !!host.store.get('router-result', 'router:' + start.runId) && results().length === 1)
   ticketId = host.store.tickets.list()[0]!.id
-  expect(host.scopes.ownership(ticketId)).toBeDefined()
+  if(scenario.scoped!==false)expect(host.scopes.ownership(ticketId)).toBeDefined()
   async function close() {
     if (hosts.delete(host)) await host.close()
   }
@@ -573,4 +574,48 @@ it('allows the returning Router to read but prevents a second assignment while p
   await until(f.h,()=>f.view().some(m=>m.runId===ask.runId&&m.text===replay.reply))
   expect(checked).toBe(true)
   expect(f.h.store.tickets.list()).toHaveLength(1)
+})
+
+it.each(['Ask release for a progress update',firstQuestion])('asks a busy Worker without changing the active execution or its inputs: %s', async question => {
+  const busy=gate(),checkpoint='The Mac offline check reached its checkpoint.'
+  const f=await fixture({expectReply:true,worker:async()=>{await busy.promise;return {...waiting,summary:checkpoint}},
+    recover:(_r,data)=>data.report.summary})
+  const owner=f.h.taskAuthority(f.ticketId)!,trigger=f.h.store.triggers.get(owner.parentTrigger!)!
+  await f.h.manager.call({action:'send',ticketId:f.ticketId,text:'Run the remaining Mac check',requestId:'run-check',revision:0},
+    {discussion:owner.discussion,trigger,scoped:f.h.scopes.context(trigger,owner.discussion)})
+  await until(f.h,()=>f.workerTurns.length===2)
+  const before=f.h.store.tickets.get(f.ticketId)!,attempt=f.h.store.get('async-worker-current',f.ticketId)
+  const q=f.send(question)
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+q.runId))
+  expect(f.h.store.tickets.get(f.ticketId)?.inputs.map(i=>i.id)).toEqual(before.inputs.map(i=>i.id))
+  expect(f.h.store.get('async-worker-current',f.ticketId)).toEqual(attempt)
+  busy.release()
+  await until(f.h,()=>f.view().some(m=>m.runId===q.runId&&m.text===checkpoint))
+  expect(f.workerTurns).toHaveLength(2)
+  expect(f.view().filter(m=>m.runId===q.runId&&m.text===checkpoint)).toHaveLength(1)
+  expect(f.h.store.get('async-worker-current',f.ticketId)).toEqual(attempt)
+})
+
+it('asks about a retained delivery without removing its evidence or reopening the work', async () => {
+  const f=await fixture({expectReply:true,managed:true})
+  expect(f.h.verification.capture(f.ticketId,{state:'ready',summary:'Candidate result'},'Unverified release claim')).toBe(true)
+  const before=f.h.store.get('goal-delivery',f.ticketId),task=f.h.store.tickets.get(f.ticketId)!
+  const dataRevision=f.h.scopes.ownership(f.ticketId)!.dataRevision
+  const q=f.send('Ask release for a progress update')
+  const owner=f.h.taskAuthority(f.ticketId)!,trigger=f.h.store.triggers.get(q.runId)!
+  await f.h.manager.call({action:'send',ticketId:f.ticketId,text:trigger.text,requestId:'review-status',expectReply:true,revision:0},
+    {discussion:owner.discussion,trigger,scoped:f.h.scopes.context(trigger,owner.discussion)})
+  expect(f.h.store.get('goal-delivery',f.ticketId)).toEqual(before)
+  expect(f.h.scopes.ownership(f.ticketId)!.dataRevision).toBe(dataRevision)
+  expect(f.h.store.tickets.get(f.ticketId)?.inputs).toEqual(task.inputs)
+  expect(f.h.store.list<{text:string}>('router-inbox').some(m=>m.text==='Unverified release claim')).toBe(false)
+})
+
+it('returns an inquiry in a personal Chat without configured management scopes and retains its original task parent', async () => {
+  const f=await fixture({expectReply:true,scoped:false})
+  const original=f.h.taskAuthority(f.ticketId)?.parentTrigger
+  const q=f.send(firstQuestion)
+  await until(f.h,()=>f.view().some(m=>m.runId===q.runId&&m.text===replay.reply))
+  expect(f.h.taskAuthority(f.ticketId)?.parentTrigger).toBe(original)
+  expect(f.view().filter(m=>m.runId===q.runId&&m.text===replay.reply)).toHaveLength(1)
 })

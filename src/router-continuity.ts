@@ -1,3 +1,4 @@
+import {inquiryHistory,inquiryInventoryBytes} from './router-inquiry-context.ts'
 import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
 import type {ScopeContext} from './router-scope.ts'
@@ -183,7 +184,7 @@ export class RouterContinuity {
    return {evidence,holds}
   })
  }
- prepare(c:ScopeContext,packet:{input:string;manifest:ContextManifest},backendIdentity:string,recovery?:RouterRecoveryEvidence,options:{paged?:boolean;fresh?:boolean;targetBytes?:number}={}){
+ prepare(c:ScopeContext,packet:{input:string;manifest:ContextManifest},backendIdentity:string,recovery?:RouterRecoveryEvidence,options:{paged?:boolean;fresh?:boolean;targetBytes?:number;inquiry?:boolean;indexed?:boolean}={}){
   const key=this.key(c),pending=this.host.chat.pendingInputs(c.trigger.id)
   // Upgrade captures historical admitted messages, not arbitrary platform history.
   const admitted=this.host.store.db.prepare("SELECT id AS triggerId FROM records WHERE kind='router-admission' AND json_extract(body,'$.discussion')=? AND json_extract(body,'$.state')='accepted' ORDER BY rowid").all(c.route.discussion)
@@ -216,14 +217,19 @@ export class RouterContinuity {
   const max=this.host.scopes.scope(c.route.scopeId).contextBytes
   const previous=this.host.store.get<any>('router-session',key)
   const signature=stableDigest([backendIdentity,c.route.epoch,this.host.memory.generation(c.route.scopeId),this.host.scopes.scope(c.route.scopeId).revision])
-  let reusable=!options.fresh&&!recovery&&previous?.signature===signature&&previous?.threadId&&Array.isArray(previous.eventIds)&&previous.eventIds.every((id:string)=>eventIds.has(id))&&(previous.contextIds??[]).every((id:string)=>this.validContext(id))
+  // A short inquiry can start from its own bounded history without replacing the normal Router thread.
+  const isolatedInquiry=!!(options.inquiry&&options.paged&&(options.indexed||
+   (previous?.inputBytes??0)>inquiryInventoryBytes||protocolBytes(events)>inquiryInventoryBytes))
+  let reusable=!isolatedInquiry&&!options.fresh&&!recovery&&previous?.signature===signature&&previous?.threadId&&Array.isArray(previous.eventIds)&&previous.eventIds.every((id:string)=>eventIds.has(id))&&(previous.contextIds??[]).every((id:string)=>this.validContext(id))
   try{this.host.knowledge.validate(c,previous?.knowledge??[])}catch{reusable=false}
   // Rotate by the accumulated input budget, not an arbitrary number of turns.
   // The backend additionally enforces its full protocol/tool-result budget.
   if((previous?.inputBytes??0)+Buffer.byteLength(packet.input)>max)reusable=false
   const alreadySeen=new Set<string>(reusable?previous.eventIds:[])
-  const visible=events.filter(e=>!alreadySeen.has(e.id)&&(e.kind==='user'||!covered.has(e.id))).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds,...(kind==='feedback'?{feedback:triggerIds.flatMap(id=>this.host.chat.feedbackForTrigger(id)??[])}:kind==='user'?{quotedMessages:triggerIds.map(id=>this.host.chat.quoteForTrigger(id)).filter(Boolean)}:{})}))
-  const body={...envelope,continuity:{...envelope.continuity,history:[],mode:reusable?'resume':'rebuild'}}
+  const availableHistory=events.filter(e=>!alreadySeen.has(e.id)&&(e.kind==='user'||!covered.has(e.id))).map(({id,kind,text,triggerIds})=>({id,kind,text,triggerIds,...(kind==='feedback'?{feedback:triggerIds.flatMap(id=>this.host.chat.feedbackForTrigger(id)??[])}:kind==='user'?{quotedMessages:triggerIds.map(id=>this.host.chat.quoteForTrigger(id)).filter(Boolean)}:{})}))
+  const window=isolatedInquiry?inquiryHistory(availableHistory):undefined
+  const visible=window?.history??availableHistory
+  const body={...envelope,continuity:{...envelope.continuity,...(window?.archive?{archive:window.archive}:{}),history:[],mode:reusable?'resume':'rebuild'}}
   const target=options.paged?Math.min(options.targetBytes??max,workingInputBudget(max)):max
   let remaining=target-protocolBytes(body)
   let start=visible.length
@@ -264,11 +270,11 @@ export class RouterContinuity {
     break
    }
    projected.history.reverse();projected.requirements.reverse()
-  }else body.continuity.history=visible
+  }else Object.assign(body.continuity,{history:visible})
   const input=JSON.stringify(body)
   if(Buffer.byteLength(input)>max)throw Error('Continuity context exceeds budget; retained user requests were not silently dropped. Increase the scope context budget or explicitly move to a new discussion with an approved handoff.')
   packet.manifest.bytes=Buffer.byteLength(input);this.host.store.put('context-manifest',packet.manifest.id,packet.manifest)
-  return {input,key,signature,previous,reuse:reusable?previous.threadId as string:undefined,eventIds:[...eventIds],contextIds:reusable?[...(previous.contextIds??[]),packet.manifest.id]:[packet.manifest.id],inputBytes:(reusable?previous.inputBytes??0:0)+Buffer.byteLength(input)}
+  return {input,key,signature,previous,isolatedInquiry,reuse:reusable?previous.threadId as string:undefined,eventIds:[...eventIds],contextIds:reusable?[...(previous.contextIds??[]),packet.manifest.id]:[packet.manifest.id],inputBytes:(reusable?previous.inputBytes??0:0)+Buffer.byteLength(input)}
  }
  finish(c:ScopeContext,jobId:string,text:string,triggerIds:string[],contextId:string,knowledge:{documentId:string;revision:number}[],at=Date.now()){
   const id='journal-reply:'+jobId

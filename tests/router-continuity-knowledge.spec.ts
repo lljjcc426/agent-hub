@@ -426,3 +426,29 @@ it('releases the host lock when retirement fails and permits a clean retry',asyn
  expect(recovered.store.get('knowledge-document',doc.id)).toBeUndefined()
  expect(recovered.store.get('knowledge-retired',doc.id)).toMatchObject({reason:'wiki-removed'})
 })
+
+it('keeps recorded requirements and the ordinary private Router thread across a bounded progress question',async()=>{
+ const f=fixture(),chat=f.h.chat.create('alice')
+ let seq=0
+ const send=async(text:string)=>{
+  const q=f.h.chat.send(chat.id,'alice',{clientMessageId:'q'+(++seq),text,locale:'en'})
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+q.runId))
+  return q.runId
+ }
+ const first=await send('Use approved records only. '+'a'.repeat(21000)+' MIDDLE-CANARY '+'b'.repeat(21000))
+ const c=f.context({triggerId:first})
+ f.h.continuity.command({action:'record',kind:'requirement',text:'Use approved records only.',operationId:'limit',sourceIds:[first]},c)
+ const key=f.h.continuity.key(c)
+ const old=f.h.store.get<any>('router-session',key)!.threadId
+ await send('What is the status of one?')
+ const request=f.calls.at(-1)!,snapshot=JSON.parse(request.input)
+ expect(request.threadId).toBeUndefined()
+ expect(snapshot.continuity.requirements.some((v:any)=>v.text==='Use approved records only.')).toBe(true)
+ expect(snapshot.continuity.archive.resource).toBe('journal')
+ expect(request.input).not.toContain('MIDDLE-CANARY')
+ expect(f.h.store.get<any>('router-session',key)!.threadId).toBe(old)
+ await send('Now draft the complete report using those records.')
+ const normal=f.calls.at(-1)!
+ expect(normal.threadId).toBe(old)
+ expect(JSON.parse(normal.input).continuity.history.some((v:any)=>v.text==='What is the status of one?')).toBe(true)
+})

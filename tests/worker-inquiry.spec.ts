@@ -39,6 +39,7 @@ const secondAnswer = 'The offline bundle is available in the release directory.'
 
 interface Scenario {
   expectReply: boolean
+  observeInput?: (request: ModelRequest, data: any) => void | Promise<void>
   recover?: (request: ModelRequest, data: {question: string; report: {summary: string}}) => string | Promise<string>
   owner?: string
   managed?: boolean
@@ -97,6 +98,7 @@ async function fixture(scenario: Scenario) {
       response = { reply: scenario.routerAnswer ? await scenario.routerAnswer(messages) : messages.map(m => m.text).join('\n') }
     } else if (data.kind === 'user_message') {
       const text = data.trigger.text
+      await scenario.observeInput?.(r,data)
       if (text !== initial) await scenario.beforeSend?.(text)
       const createGoal = text === initial && scenario.managed
       const command = text === initial
@@ -130,7 +132,7 @@ async function fixture(scenario: Scenario) {
   } })
   const owner = scenario.owner ?? 'owner'
   const chat = host.chat.create(owner)
-  const send = (text: string) => host.chat.send(chat.id, owner, { text, clientMessageId: randomUUID(), locale: 'en' })
+  const send = (text: string, quote?:string) => host.chat.send(chat.id, owner, { text, clientMessageId: randomUUID(), locale: 'en', ...(quote?{quote:{messageId:quote}}:{}) })
   const view = () => host.chat.view(chat.id, owner).messages
   const results = () => host.store.list<WorkerEventReceipt>('async-worker-event').filter(event => event.kind === 'result')
   const start = send(initial)
@@ -468,4 +470,27 @@ it('accepts a partial answer that hands back only its own inquiry without admitt
   expect(f.h.store.tickets.list()).toHaveLength(1)
   expect(f.workerTurns).toHaveLength(2)
   expect(f.h.store.tickets.get(f.ticketId)?.assignments.at(-1)?.report?.state).toBe('waiting')
+})
+
+it('uses a bounded task index for a long status inquiry and can read the original authorized goal', async () => {
+  const seen: {kind:string; bytes:number; hasIndex:boolean; original:boolean}[]=[]
+  const question='What is the status of release?'
+  const f=await fixture({expectReply:true,managed:true,observeInput:async(r,data)=>{
+    if(data.trigger.text!==question)return
+    let original=false
+    if(data.goals?.length){
+      const stored=await r.onTool!('router_goal',{action:'inspect',id:data.goals[0].id},randomUUID())
+      original=stored.success&&JSON.stringify(stored.contentItems).includes('Retained original plan')
+    }
+    seen.push({kind:data.kind,bytes:Buffer.byteLength(r.input),hasIndex:data.workerStatus?.revision===0,original})
+  }})
+  const g=f.h.goals.forTask(f.ticketId)!
+  const longGoal={...g,plan:Array.from({length:35},(_,i)=>'Retained original plan '+i+' '+'x'.repeat(2400))}
+  f.h.store.put('router-goal',g.id,longGoal)
+  const q=f.send(question)
+  await until(f.h,()=>f.view().some(m=>m.runId===q.runId&&m.text===replay.reply))
+  expect(seen).toHaveLength(1)
+  expect(seen[0]).toMatchObject({hasIndex:true,original:true,kind:'user_message'})
+  expect(seen[0]!.bytes).toBeLessThan(24000)
+  expect(f.h.goals.get(g.id)?.plan).toEqual(longGoal.plan)
 })

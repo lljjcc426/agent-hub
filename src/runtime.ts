@@ -1,3 +1,4 @@
+import {inquiryInventory,inquiryInventoryBytes,statusQuestion} from './router-inquiry-context.ts'
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
 import {authorizedQuestion,readInquiryReport,finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
 import {ApiUsage} from './api-usage.ts'
@@ -1399,8 +1400,15 @@ export class Runtime {
     const toolFilter=configuredRouter?.tools??routerBackend?.defaults?.tools
     const canReadHistory=!candidates&&!followups&&allowedTools.has('router_read')&&(!toolFilter||toolFilter.includes('router_read'))&&!this.delegation.authority(triggerId)
     const packetBudget=scoped&&canReadHistory?Math.floor(workingInputBudget(this.scopes.scope(scoped.route.scopeId).contextBytes)*0.55):undefined
+    const privateInquiry=!!(packetBudget&&scoped&&this.chat.personalManagement({discussion,trigger,scoped})&&
+      (singleChatInput||inquiry)&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand)
+    const contacts=privateInquiry?workerProfiles(this.config).filter(w=>this.scopes.scope(scoped!.route.scopeId).workerIds.includes(w.id)):[]
+    const status=privateInquiry?statusQuestion(trigger.text,contacts,scopedTasks):undefined
+    const indexed=!!status&&protocolBytes({tasks:scopedTasks,goals:rawInput.goals})>inquiryInventoryBytes
     const originalId=packetBudget&&protocolBytes(rawInput)>packetBudget-256?'context-input:'+randomUUID():undefined
-    const visibleInput=originalId?projectWorkingInput(rawInput,'model-tool-receipt/'+originalId,packetBudget!-256,'router_read',trigger.text):rawInput
+    const selected=indexed?{...rawInput,...inquiryInventory(scopedTasks,rawInput.goals,status!,contacts,this.settings.current().revision),
+      ...(originalId?{original:{resource:'model-tool-receipt/'+originalId,reader:'router_read'}}:{})}:rawInput
+    const visibleInput=originalId&&protocolBytes(selected)>packetBudget!-256?projectWorkingInput(selected,'model-tool-receipt/'+originalId,packetBudget!-256,'router_read',trigger.text):selected
     const packet=scoped?this.memory.build(scoped,visibleInput,backendIdentity,packetBudget):undefined
     if(originalId&&scoped&&packet){
       this.memory.bindInputs(scoped,packet.manifest,[...authorityInputs])
@@ -1408,7 +1416,7 @@ export class Runtime {
     }
     if(packet&&scoped)this.agentMemory.recordManifest(scoped,packet.manifest)
     if(packet&&batchId)this.memory.inherit(packet.manifest,this.proactive.batchManifest(batchId))
-    if(packet)for(const task of scopedTasks){const owner=this.scopes.ownership(task.ticketId)!;if(!packet.manifest.taskOwners.some(ref=>ref.id===task.ticketId))packet.manifest.taskOwners.push({id:task.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});if(task.report?.at)readReports.set(task.ticketId,task.report.at)}
+    if(packet)for(const task of scopedTasks){const owner=this.scopes.ownership(task.ticketId)!;if(!packet.manifest.taskOwners.some(ref=>ref.id===task.ticketId))packet.manifest.taskOwners.push({id:task.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1});if(!indexed&&task.report?.at)readReports.set(task.ticketId,task.report.at)}
     if(candidates&&packet)candidates.bindContext(packet.manifest)
     const retryHere=job.kind==='router'&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId
     const recoveryChat=chatBinding?this.store.get<{conversationId:string}>('chat-run',triggerId):undefined
@@ -1416,7 +1424,7 @@ export class Runtime {
       conversationId:recoveryChat.conversationId,discussion,cwd:source.cwd,backendIdentity
     }):undefined
     let recovery=inspectRecovery()
-    let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence,{paged:canReadHistory}):undefined
+    let continuity=scoped&&packet?this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence,{paged:canReadHistory,inquiry:!!status,indexed}):undefined
     const sessionKey=continuity?.key??packet?.manifest.sessionKey??discussion,previous=this.store.get<any>('router-session',sessionKey)
     const threadId=recovery?undefined:scoped?continuity?.reuse:!chatBinding||previous?.backendIdentity===backendIdentity?previous?.threadId:undefined
     const knowledgeRefs:{documentId:string;revision:number}[]=[]
@@ -1619,7 +1627,7 @@ export class Runtime {
             this.store.put('model-tool-receipt',id,{id,triggerId,scopeId:scoped.route.scopeId,contextId:packet.manifest.id,at:Date.now(),result:source})
             retryPacket={...packet,input:JSON.stringify(projectWorkingInput(source,'model-tool-receipt/'+id,packetBytes,'router_read',trigger.text))}
           }
-          continuity=this.continuity.prepare(scoped,retryPacket,backendIdentity,recovery?.evidence,{paged:true,fresh:true,targetBytes:maxBytes})
+          continuity=this.continuity.prepare(scoped,retryPacket,backendIdentity,recovery?.evidence,{paged:true,fresh:true,targetBytes:maxBytes,inquiry:!!status,indexed})
           return decorateInput(modelInput())
         }}:{}),
         onTool:async(name,args)=>{
@@ -1637,7 +1645,7 @@ export class Runtime {
           catch(error){controller.abort(error);return}
           this.chat.output(job.id,triggerId,event,validateReplyContext)
         }}:{}),
-        onThread:id=>this.store.put('router-session',sessionKey,{...this.store.get<any>('router-session',sessionKey),backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
+        onThread:id=>!continuity?.isolatedInquiry&&this.store.put('router-session',sessionKey,{...this.store.get<any>('router-session',sessionKey),backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
       const execute=(input:ModelRequest)=>desktop?this.desktopRouterTurn(input,triggerId,validateReplyContext,handoff):this.runModel(input,triggerId,handoff)
       let result:ModelResult
@@ -1673,7 +1681,7 @@ export class Runtime {
           validateReplyContext()
           recovery=inspectRecovery()
           if(!recovery)throw error
-          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence,{paged:canReadHistory})
+          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence,{paged:canReadHistory,inquiry:!!status,indexed})
           result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
         }
       }
@@ -1716,9 +1724,9 @@ export class Runtime {
           this.continuity.finish(scoped,job.id,output.reply,[...authorityInputs],packet.manifest.id,knowledgeRefs)
           this.agentMemory.recordDocuments(scoped,knowledgeRefs.filter(ref=>output.reply.includes(ref.documentId)),job.id)
           const saved=this.store.get<any>('router-session',sessionKey)
-          if(!inquiry||result.threadId)this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
+          if(!continuity?.isolatedInquiry&&(!inquiry||result.threadId))this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
-        if(handoff?.yielded||rebuildAfterDispatch){
+        if(!continuity?.isolatedInquiry&&(handoff?.yielded||rebuildAfterDispatch)){
           // An interrupted native tool turn may reject resume. Rebuild from the
           // committed conversation and task state instead of replaying its tools.
           this.continuity.retireThread(sessionKey,triggerId)

@@ -456,3 +456,16 @@ it('notifies an already-open HTTP Chat client through its existing event stream 
     await new Promise<void>(resolve=>server.server.close(()=>resolve()))
   }
 })
+
+it('accepts a partial answer that hands back only its own inquiry without admitting more work', async () => {
+  const f=await fixture({expectReply:true,worker:async (_r,inputs) => {
+    const inquiryId=inputs.find(i=>i.inquiryId)!.inquiryId!
+    return {...waiting,reply:'Mac verified; Windows needs its owner.',inquiryReplies:[{inquiryId,text:'Mac verified.'}],
+      handbacks:[{triggerId:inquiryId,reason:'Windows is outside my mandate.'}]}
+  }})
+  const q=f.send(firstQuestion)
+  await until(f.h,()=>f.view().some(m=>m.runId===q.runId&&m.text==='Mac verified.'))
+  expect(f.h.store.tickets.list()).toHaveLength(1)
+  expect(f.workerTurns).toHaveLength(2)
+  expect(f.h.store.tickets.get(f.ticketId)?.assignments.at(-1)?.report?.state).toBe('waiting')
+})

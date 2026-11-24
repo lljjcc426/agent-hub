@@ -2070,6 +2070,12 @@ export class Runtime {
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
       if(delegated?.mode==='host'){
+        // A Worker may decline part of its own inquiry. Its answer already returns to the
+        // asking Router. It grants no authority to re-admit a user message or another task.
+        if(hasInquiry&&output.handbacks.length){
+          const asks=new Set([...inputs.flatMap(i=>inquiryForInput(this,i)?.id??[]),...previousInquiries.map(q=>q.inquiryId)])
+          output.handbacks=output.handbacks.filter(h=>!asks.has(h.triggerId))
+        }
         const rejected=output.handbacks.filter(h=>!reachedRouterFollowup(this,ticket.id,h.triggerId))
         if(rejected.length){
           // A bad routing reference is not an unknown execution outcome. Reject

@@ -372,6 +372,47 @@ it.each(['start','interrupted'] as const)('preserves only a proven parked %s und
  expect(inspect().blockers).toContainEqual({kind:'goals',count:1})
 })
 
+it('keeps a completed waiting Worker and its active goal across maintenance, with the same assignment and turn',async()=>{
+ const h=host(),s=h.store,id='waiting-ticket',assignmentId='assignment',turnId='turn',attemptId='attempt'
+ const goal={id:'goal',objective:'Deliver work for review',state:'active',managed:true,scopeId:'scope',entryId:'entry',
+  actor:'owner',discussion:'local:chat:private',triggerId:'origin',taskIds:[id],
+  nodes:[{id:'delivery',ticketId:id,state:'running',dependsOn:[]}]}
+ const ticket={id,inputs:[],undelivered:[],assignments:[{id:assignmentId,state:'running',report:{state:'waiting',summary:'Submitted'}}]}
+ const thread={id:'plugin:completed',backendId:'native',cwd:h.config.stateDir,turnId,state:'completed',effectIds:['effect']}
+ const run={ticketId:id,assignmentId,phase:'idle',threadId:thread.id,turnId,backendId:thread.backendId,cwd:thread.cwd}
+ const effect={state:'complete',result:{success:true},children:[{state:'complete',success:true}]}
+ const identity={ticketId:id,assignmentId},basis={goalId:goal.id,dataRevision:1}
+ const event={...identity,id:'result',attemptId,kind:'result',disposition:'applied',nativeTurnDigest:stableDigest(turnId),basis}
+ s.put('router-goal',goal.id,goal);s.put('chat-run','origin',{conversationId:'private'})
+ s.put('chat-conversation','private',{sourceId:'local',discussion:goal.discussion});s.put('entry-binding','entry',{privateActor:'owner'})
+ s.put('ticket',id,ticket);s.put('run',id,run);s.put('task-ownership',id,{originEntry:'entry',scopeId:'scope',discussion:goal.discussion,state:'active',dataRevision:1})
+ s.put('backend-plugin-thread',thread.id,thread);s.put('model-session',thread.id,{ticketId:id});s.put('backend-plugin-tool','effect',effect)
+ s.put('async-worker-current',id,{...identity,attemptId});s.put('async-worker-attempt',attemptId,{...identity,id:attemptId,causeJobId:'execute',basis})
+ s.put('async-worker-terminal',attemptId,{...identity,attemptId,eventId:event.id});s.put('async-worker-event',event.id,event)
+ s.enqueue('execute','execute',identity);s.jobState('execute','done')
+ const inspect=()=>inspectDeployment(s,0,h.config.stateDir)
+ expect(inspect()).toMatchObject({blockers:[],heldGoals:[{goalId:goal.id,taskIds:[id]}]})
+ const operationId=randomUUID()
+ await prepare(h,operationId);await deploymentMaintenance(h,{action:'finish',operationId})
+ expect(s.get('ticket',id)).toEqual(ticket);expect(s.get('run',id)).toEqual(run);expect(s.get('router-goal',goal.id)).toEqual(goal)
+ function blocks(kind:string,key:string,original:object,changes:object){
+  s.put(kind,key,{...original,...changes})
+  expect(inspect().blockers).toContainEqual({kind:'goals',count:1})
+  s.put(kind,key,original)
+ }
+ blocks('ticket',id,ticket,{undelivered:['new-input']})
+ blocks('router-goal',goal.id,goal,{nextAt:Date.now()})
+ blocks('async-worker-event',event.id,event,{nativeTurnDigest:stableDigest('previous-turn')})
+ blocks('async-worker-event',event.id,event,{disposition:'archived'})
+ blocks('async-worker-event',event.id,event,{assignmentId:'other'})
+ blocks('async-worker-terminal',attemptId,{...identity,attemptId,eventId:event.id},{eventId:undefined})
+ blocks('backend-plugin-thread',thread.id,thread,{state:'running'})
+ blocks('backend-plugin-tool','effect',effect,{children:[{state:'complete',permission:'uncertain'}]})
+ blocks('backend-plugin-tool','effect',effect,{state:'running'})
+ s.enqueue('new-wake','execute',identity)
+ expect(inspect().blockers).toEqual(expect.arrayContaining([{kind:'jobs',count:1},{kind:'goals',count:1}]))
+})
+
 it('recovers only supported stopped callbacks and leaves the original command fenced after upgrade',async()=>{
  const dir=root(),h=host(dir),plan={title:'Original plan',steps:[{id:'one',title:'Read retained data',state:'running'}]}
  const published=stoppedCallback(h,'superagent_plan',plan,'router')

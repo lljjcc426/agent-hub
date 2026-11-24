@@ -5,7 +5,9 @@ import {marketBlockers} from './plugin-market.ts'
 import {heldArtifactReads,unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {retainedBackendReceipts} from './backend-receipt-recovery.ts'
 import {refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
-import type {PluginThread} from './backends/plugin-process.ts'
+import type {PluginThread,PluginToolEffect} from './backends/plugin-process.ts'
+import type {WorkerAttempt,WorkerEventReceipt} from './async-worker-inbox.ts'
+import {repositoryEffectsSettled} from './repository-source.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
 import {consumedInputWake,retainedInputWakes} from './task-context.ts'
@@ -88,6 +90,38 @@ function rejectedOverallRound(store:DeploymentStore,goal:RouterGoal){
  return node
 }
 
+// The graph keeps ownership while a Worker waits. Its last applied result and
+// the native turn must agree before that running node can survive a cutover.
+function completedWaitingTurn(store:DeploymentStore,goal:RouterGoal,ticket:Ticket,run:Run,owner:TaskOwnership){
+ const assignment=ticket.assignments.at(-1)
+ if(!assignment||assignment.id!==run.assignmentId||assignment.report?.state!=='waiting'||ticket.attention||
+  ticket.undelivered.length||run.phase!=='idle'||run.failure||!run.threadId||!run.turnId)return false
+ const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
+ const session=store.get<{ticketId?:string}>('model-session',run.threadId)
+ if(thread?.state!=='completed'||thread.id!==run.threadId||thread.turnId!==run.turnId||
+  thread.backendId!==run.backendId||thread.cwd!==run.cwd||session?.ticketId!==ticket.id||
+  !Array.isArray(thread.effectIds)||thread.effectIds.some(id=>{
+   const effect=store.get<PluginToolEffect>('backend-plugin-tool',id)
+   return effect?.state!=='complete'||!effect.result||effect.result.permission==='uncertain'||
+    effect.children?.some(child=>child.state!=='complete'||child.permission==='uncertain')
+  }))return false
+ const current=store.get<{ticketId:string;assignmentId:string;attemptId:string}>('async-worker-current',ticket.id)
+ if(current?.ticketId!==ticket.id||current.assignmentId!==assignment.id||!current.attemptId)return false
+ const attempt=store.get<WorkerAttempt>('async-worker-attempt',current.attemptId)
+ const terminal=store.get<{eventId:string;attemptId:string;ticketId:string;assignmentId:string}>('async-worker-terminal',current.attemptId)
+ if(!attempt?.causeJobId||!attempt.basis||attempt.id!==current.attemptId||attempt.ticketId!==ticket.id||attempt.assignmentId!==assignment.id||
+  terminal?.attemptId!==attempt.id||terminal.ticketId!==ticket.id||terminal.assignmentId!==assignment.id||!terminal.eventId||
+  store.get('async-worker-revoked',attempt.id))return false
+ const event=store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
+ if(event?.id!==terminal.eventId||event.attemptId!==attempt.id||event.ticketId!==ticket.id||event.assignmentId!==assignment.id||
+  event.kind!=='result'||event.disposition!=='applied'||event.nativeTurnDigest!==stableDigest(run.turnId)||
+  event.basis?.goalId!==goal.id||event.basis.dataRevision!==(owner.dataRevision??1)||stableDigest(event.basis)!==stableDigest(attempt.basis))return false
+ if(!store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='execute' AND state='done' AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?").get(attempt.causeJobId,ticket.id,assignment.id))return false
+ return !store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('pending','running','blocked','uncertain')
+  AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(ticket.id,assignment.id)&&
+  repositoryEffectsSettled(store,ticket.id)
+}
+
 // An idle Chat task may still be waiting on a user or a prerequisite. A
 // replacement host can keep that checkpoint without dispatching another turn.
 function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
@@ -95,8 +129,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
  const sourceHold=goal.reason==='Error: Goal sources changed; explicit goal reauthorization is required'
  if(!nodes||!goal.managed||goal.supersededBy||goal.cancelledByUser||
   goal.delegationIds?.length||goal.project?.review?.state==='pending')return
- // An interrupted Worker may be the graph's sole unfinished node while the
- // graph still says active. Its exact callback is verified below before parking.
+ // The sole unfinished Worker can be stopped or have completed a waiting turn.
  const activeNode=goal.state==='active'&&!goal.project&&!goal.replanId&&goal.nextAt===undefined&&
   nodes.filter(node=>node.state!=='passed').length===1?nodes.find(node=>node.state==='running'):undefined
  if(!activeNode&&(goal.state!=='held'||!nodes.some(node=>node.state==='held'||sourceHold&&node.state==='running')))return
@@ -128,11 +161,13 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
   const provider=run&&!shell&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?settledProviderTurn(store,stateDir,run):undefined
   const stopped=shell||provider
-  if(node===activeNode&&!stopped||node.failure?.kind==='uncertain'&&!refused&&!stopped)return
+  if(node.failure?.kind==='uncertain'&&!refused&&!stopped)return
   if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!stopped||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
-  const parked=sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
-  if((node.state==='running'||stopped)&&(!parked&&!stopped||owner.originEntry!==goal.entryId||
+  const parked=goal.state==='held'&&sourceHold&&node.state==='running'?sourceHeldNode(store,ticket,run,owner):undefined
+  const waiting=node===activeNode&&!node.failure&&node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))&&
+   completedWaitingTurn(store,goal,ticket,run,owner)
+  if((node.state==='running'||stopped)&&(!parked&&!stopped&&!waiting||owner.originEntry!==goal.entryId||
    store.get<{privateActor?:string}>('entry-binding',goal.entryId)?.privateActor!==goal.actor))return
   if(!parked&&(assignment.state!=='running'||run.assignmentId!==assignment.id||owner.state!=='active'))return
   if(ticket.undelivered.length&&(!waitingOnDependency&&!parked&&!stopped||
@@ -143,6 +178,7 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
     AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(id,assignment.id))return
   if(store.db.prepare(`SELECT 1 FROM records WHERE kind='browser-receipt' AND json_extract(body,'$.ticketId')=?
     AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(id))return
+  if(waiting)continue
   const attempt=store.get<{attemptId:string;assignmentId:string}>('async-worker-current',id)
   if(refused){
    if(!attempt||!run.threadId||!run.turnId||ticket.attention||ticket.undelivered.length||owner.originEntry!==goal.entryId||

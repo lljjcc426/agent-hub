@@ -600,7 +600,9 @@ export class RouterGoals {
    store.put('run',id,{...retained,phase:'idle'})
    n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.recoveries++
    g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
-   this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)
+   // A provider checkpoint continues the same accepted input. Re-admitting
+   // the goal's older trigger here would move the reply away from its owner.
+   if(shell){this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)}
    this.host.engine.report(id,{state:'waiting',summary:shell?'已核实上一条命令未启动，正在继续处理。':'已保留上一步结果，正在恢复模型连接。',question:null})
    this.host.engine.note(id,note)
    return true

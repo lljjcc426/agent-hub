@@ -107,6 +107,23 @@ it('delivers newly recovered evidence once to a legacy blocked Worker without a 
  expect(restarted.chat.businessDecisions(chat.id,owner).every(d=>d.status==='answered')).toBe(true)
 })
 
+it('shows the answered task in its decision run even when a retained route points to the earlier goal',async()=>{
+ const f=await fixture(),{host,chat,owner,ticketId}=f
+ host.chat.decide(chat.id,owner,f.input)
+ const decisionRun=host.chat.view(chat.id,owner).run!.id
+ const original=host.store.get<object>('task-routing',ticketId)!
+ host.store.put('task-routing',ticketId,{...original,parentTrigger:f.goal.triggerId})
+ const run=host.store.get<Run>('run',ticketId)!
+ host.store.put('run',ticketId,{...run,phase:'running'})
+ const view=()=>host.chat.view(chat.id,owner,undefined,undefined,undefined,decisionRun)
+ expect(view().tasks.map(t=>t.id)).toEqual([ticketId])
+ expect(view().run?.state).toBe('running')
+ expect(host.chat.view(chat.id,owner).run?.state).toBe('running')
+ const ticket=host.store.tickets.get(ticketId)!
+ host.store.put('ticket',ticketId,{...ticket,ended:{by:'executor',outcome:'completed',at:new Date().toISOString()}})
+ expect(view().run?.state).toBe('completed')
+})
+
 it.each([false,true])('keeps the approval and resumes the same held task with exact read-only copies (upgrade=%s)',async upgrade=>{
  const f=await fixture(),{host,chat,owner,decision,sourceId,ticketId}=f
  expect(decision.target.label).toBe('验收原有文件')

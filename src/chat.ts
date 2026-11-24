@@ -1313,7 +1313,8 @@ export class ChatSessions {
       !this.host.memory.cleanup.blocked('router-dispatch','router:'+last!.id,dispatch)
       ?new Set(dispatch.items.filter(item=>item.kind==='question').map(item=>item.id)):undefined
     const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id||heldTargets?.has(g.id)):[]
-    const currentTasks=tasks.filter(t=>this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
+    const decisionTask=last?.decisionTicketId?tasks.find(t=>t.id===last.decisionTicketId):undefined
+    const currentTasks=tasks.filter(t=>t===decisionTask||this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
     const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
       FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
       WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running')
@@ -1354,6 +1355,7 @@ export class ChatSessions {
       else if(currentTasks.some(t=>t.state==='failed'))state='failed'
       else if(currentTasks.some(t=>t.state==='blocked'))state='blocked'
       else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
+      else if(decisionTask?.state==='completed'||decisionTask?.state==='cancelled')state=decisionTask.state
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
       else if(jobs.some(j=>j.state==='done')&&jobs.every(j=>j.state==='done'||j.workerReport&&j.state==='failed'))state='completed'
     }

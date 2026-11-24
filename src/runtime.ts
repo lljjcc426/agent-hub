@@ -1,4 +1,5 @@
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
+import {finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
 import {ApiUsage} from './api-usage.ts'
 
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
@@ -55,7 +56,7 @@ import {BackendRegistry} from './backends/registry.ts'
 import {isApiBackend,validateBackendSelection} from './backend-config.ts'
 import {ProjectCode} from './project-code.ts'
 import { prepareGoalWorkspace, prepareWorkspace, retainedWorkspace } from './workspace.ts'
-import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,validateRuleAssessment } from './schemas.ts'
+import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,inquiryChatReportSchema,validateRuleAssessment } from './schemas.ts'
 import {WorkManager,type WorkOwner,type WorkItem} from './work.ts'
 import {Resources,routerReadSpec} from './resources.ts'
 import {WorkerTools,workerSpecs} from './worker-tools.ts'
@@ -402,7 +403,11 @@ export class Runtime {
   }
   private workerModelInputs(inputs:TicketInput[],fullAccess:boolean){
     return inputs.filter(input=>!fullAccess||!isOperationDecision(input))
-      .map(input=>input.kind==='trigger'?{...input,event:this.store.triggers.get(input.triggerId)}:input)
+      .map(input=>{
+        if(input.kind!=='trigger')return input
+        const inquiry=inquiryForInput(this,input)
+        return {...input,event:this.store.triggers.get(input.triggerId),...(inquiry?{inquiryId:inquiry.id}:{})}
+      })
   }
   /** Offer source inputs to the current turn. Only the backend's history receipt consumes them. */
   async deliverLiveInputs(ticketId:string):Promise<void> {
@@ -1284,6 +1289,11 @@ export class Runtime {
     const triggerId=candidates?.batch.primary??followups?.trigger.id??(job.payload as any).triggerId as string
     if(this.store.get('router-result',job.id)||messageId&&this.store.get('router-read',messageId))return
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
+    const inquiry=reportMessage?.inquiryId?this.store.get<WorkerInquiry>('worker-inquiry',reportMessage.inquiryId):undefined
+    if(reportMessage?.inquiryId&&(!inquiry||inquiry.delivered||inquiry.latestMessageId!==messageId||this.workerMessageEvent(reportMessage.id,reportMessage.ticketId)===false)){
+      this.store.put('router-read',reportMessage.id,{discussion,reason:'inquiry_no_longer_current'})
+      return
+    }
     if(reportMessage&&chatDecisionDelivery(this,reportMessage)){
       this.store.put('router-read',reportMessage.id,{discussion,reason:'chat_decision'})
       return
@@ -1355,6 +1365,10 @@ export class Runtime {
     const authorizedMessage=(m:Delivery)=>{
       // The inbox can also contain Router replies without a Worker ticket.
       if(typeof m.ticketId!=='string'||!m.ticketId||this.goals.taskCancelled(m.ticketId)||this.workerMessageEvent(m.id,m.ticketId)===false)return false
+      if(m.inquiryId){
+        const inquiry=this.store.get<WorkerInquiry>('worker-inquiry',m.inquiryId)
+        if(!inquiry||m.id!==messageId||inquiry.delivered||inquiry.latestMessageId!==m.id||inquiry.triggerId!==triggerId||inquiry.ticketId!==m.ticketId||inquiry.discussion!==discussion)return false
+      }
       const owner=this.taskAuthority(m.ticketId)
       if(this.store.get<TaskContinuation>('task-continuation',m.ticketId)?.priorMessages.includes(m.id))return false
       if(!owner?.parentTrigger||owner.discussion!==discussion||!scoped&&this.store.get<{actor:string}>('worker-assignment',m.ticketId)?.actor!==trigger.actor.id)return false
@@ -1362,7 +1376,7 @@ export class Runtime {
     }
     const pendingMessages=messageId?this.store.list<Delivery>('router-inbox').filter((m):m is Delivery & {ticketId:string}=>
       m?.channel?.address?.routerInbox===discussion&&typeof m.id==='string'&&
-      !this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
+      (!reportMessage?.inquiryId||m.id===messageId)&&!this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
     if(messageId&&!pendingMessages.some(m=>m.id===messageId))throw Error('Worker result authorization withdrawn')
     const readMessages=new Set<string>(pendingMessages.map(m=>m.id)),readReports=new Map<string,string>()
     const authorityInputs=new Set([...(candidates||followups?[]:[triggerId]),...(batchInputs??[]).map(t=>t.id),...pendingMessages.map(m=>this.taskAuthority(m.ticketId)!.parentTrigger!)])
@@ -1659,6 +1673,7 @@ export class Runtime {
       if(pendingMessages.some(m=>!authorizedMessage(m)))throw Error('Worker result authorization withdrawn')
       const output=JSON.parse(result.text);if(typeof output.reply!=='string')throw Error('Invalid Router reply')
       if(quiet)output.reply=''
+      else if(reportMessage?.inquiryId&&!output.reply.trim())output.reply=reportMessage.text
       else if(browserRun&&!permissionId&&!fileReviewId&&!teamResultId&&!hostCommand&&!output.reply.trim()&&!this.chat.hasVisibleAnswer(triggerId)&&
               !/^(?:请?(?:先|暂时)?(?:不用|不要|无需|别)回复(?:这条消息|我)?|(?:please\s+)?(?:do not reply|don't reply|no reply (?:needed|required)))[。.!！\s]*$/iu.test(trigger.text.trim())){
         validateReplyContext()
@@ -1683,6 +1698,8 @@ export class Runtime {
         for(const id of readMessages)this.store.put('router-read',id,{discussion,turnId:result.turnId})
         this.store.put('router-result',job.id,{discussion,threadId:result.threadId,turnId:result.turnId,reply:output.reply})
         this.chat.reply(job.id,triggerId,output.reply)
+        if(inquiry&&this.store.get('chat-message','reply:'+job.id))
+          finishInquiry(this,inquiry)
         if(scoped&&packet&&!quiet&&!followups){
           this.continuity.finish(scoped,job.id,output.reply,[...authorityInputs],packet.manifest.id,knowledgeRefs)
           this.agentMemory.recordDocuments(scoped,knowledgeRefs.filter(ref=>output.reply.includes(ref.documentId)),job.id)
@@ -1932,7 +1949,9 @@ export class Runtime {
       const chatActor=this.chat.permissionActor(ticket.origin.triggerId,ticket.id)
       const fullAccess=builtInChat&&chatActor?.mode==='full'
       const chatDelivery=builtInChat||!!delegated&&this.chat.canDeliverWorkerFiles(ticket.id)
-      const schema=chatDelivery?chatReportSchema:reportSchema
+      const previousInquiries=chatDelivery?unansweredInquiries(this,ticket.id,ticket.inputs,inputs):[]
+      const hasInquiry=!!previousInquiries.length||inputs.some(i=>inquiryForInput(this,i))
+      const schema=hasInquiry&&chatDelivery?inquiryChatReportSchema:chatDelivery?chatReportSchema:reportSchema
       const owner:WorkOwner={ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:delegatedTask?delegatedTask.contract.permissions.network&&this.config.work.network:this.config.work.network}
       const localNode=projectGoal?.nodes?.find(n=>n.ticketId===ticket.id)
       const localOutputs=!!localNode?.derivedFrom&&!!localNode.outputs?.length&&this.artifacts.canCapture(projectGoal)
@@ -1994,7 +2013,7 @@ export class Runtime {
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
+        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))
@@ -2031,7 +2050,9 @@ export class Runtime {
         continueChangedInput()
         return
       }
-      const output = (chatDelivery?chatReport:report).parse(JSON.parse(result.text))
+      const rawOutput:unknown=JSON.parse(result.text)
+      const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
+      const output=chatOutput??report.parse(rawOutput)
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
@@ -2116,6 +2137,8 @@ export class Runtime {
         }
         if(handoffDigest)this.store.put('worker-handoff-evidence',ticket.id,{ticketId:ticket.id,assignmentId,digest:handoffDigest})
         this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
+        if(!pending&&!superseded&&!background&&output.state==='waiting'&&!question)
+          queueInquiryReplies(this,receipt,inputs,previousInquiries,chatOutput?.inquiryReplies,output.reply)
         run.phase = background?'background':'idle'; run.threadId = result.threadId; run.result = output.reply; persist(true)
         const updated = this.store.tickets.get(ticket.id)!
         if (pending&&(!handoff||superseded)) this.queueInputs(updated, latestAssignment(updated)!)

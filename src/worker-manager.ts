@@ -1,3 +1,4 @@
+import {recordInquiry} from './worker-inquiry.ts'
 import {workerPoolDefault,messageCharacters} from './execution-limits.ts'
 import {checkWorkerAdmission} from './backend-admission.ts'
 import {businessDecision,answerBusinessDecision} from './business-decisions.ts'
@@ -16,8 +17,8 @@ import type {Trigger} from './vendor/dsh-core/index.ts'
 import {bodyDigest} from './sources.ts'
 import type {ToolSpec} from './model.ts'
 const actions=['list','inspect','create','clone','configure','set_prompt','assign','send','pause','resume','cancel','retire','destroy','result','migrate','rebuild'] as const
-export const workerCommandSchema=z.object({action:z.enum(actions),requestId:z.string().min(1).max(200).optional(),revision:z.number().int().min(0).optional(),id:z.string().optional(),from:z.string().optional(),profile:workerProfileSchema.optional().describe('Full Worker profile for create; backend is a connection ID returned by list.'),patch:workerProfileSchema.partial().optional().describe('Fields to change for configure, or overrides for clone. Omitted fields are retained.'),unset:z.array(z.string()).optional().describe('Optional profile fields to remove so connection defaults apply. Cannot remove id or backend.'),prompt:z.string().max(messageCharacters).optional(),text:z.string().min(1).max(messageCharacters).optional(),discussion:z.string().min(1).max(300).optional(),ticketId:z.string().optional(),questionId:z.string().min(1).max(1000).optional(),decisionVersion:z.string().regex(/^[a-f0-9]{64}$/).optional(),acceptance:z.string().max(64_000).optional(),cancelRunning:z.boolean().optional(),workspaceReviewed:z.boolean().optional(),waitMs:z.number().int().min(0).max(30_000).optional()}).strict()
-export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',description:'Manage Workers for the authorized task autonomously. Read list for the current revision, allowed connections, options, tools and per-Worker permissions. Create or configure Workers directly within this task and its policy. Prefer one Worker owning the task end to end. Mutations require the latest revision and a stable requestId. create uses profile. clone uses from, a new id and optional patch; Personal Chat owners may manage shared Workers; external scope managers must clone shared Workers before changing them. Deleting a Worker removes its current contact, while retaining historical messages. configure uses id and patch. When send answers a pending business question, pass its current attention.id as questionId. Include the decisionVersion returned by inspect for a versioned question. This binds the human follow-up once to that question, not an execution permission. assign delegates a task; inspect/result return actual state, including held goal revisions and available inputs. A blocked send cannot resume its goal. Use router_goal resume for one requested goal or resume_many for several. pause stops future scheduling; retire drains existing work; destroy requires cancelRunning for active tasks. Backend/model changes apply to new tasks; migrate hands an idle task to the new backend. rebuild prepares a budget or permission-held task. Permission rebuild requires a scope manager, fresh text and workspaceReviewed=true after reviewing retained artifacts. It quarantines old text and starts a new session on the same task/backend/workspace; it runs only after a new authorized follow-up.',inputSchema:z.toJSONSchema(workerCommandSchema,{target:'draft-7',io:'input'})}]
+export const workerCommandSchema=z.object({action:z.enum(actions),requestId:z.string().min(1).max(200).optional(),revision:z.number().int().min(0).optional(),id:z.string().optional(),from:z.string().optional(),profile:workerProfileSchema.optional().describe('Full Worker profile for create; backend is a connection ID returned by list.'),patch:workerProfileSchema.partial().optional().describe('Fields to change for configure, or overrides for clone. Omitted fields are retained.'),unset:z.array(z.string()).optional().describe('Optional profile fields to remove so connection defaults apply. Cannot remove id or backend.'),prompt:z.string().max(messageCharacters).optional(),text:z.string().min(1).max(messageCharacters).optional(),discussion:z.string().min(1).max(300).optional(),ticketId:z.string().optional(),expectReply:z.boolean().optional().describe('On send, ask this Worker to answer the current Chat message.'),questionId:z.string().min(1).max(1000).optional(),decisionVersion:z.string().regex(/^[a-f0-9]{64}$/).optional(),acceptance:z.string().max(64_000).optional(),cancelRunning:z.boolean().optional(),workspaceReviewed:z.boolean().optional(),waitMs:z.number().int().min(0).max(30_000).optional()}).strict()
+export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',description:'Manage Workers for the authorized task autonomously. Read list for the current revision, allowed connections, options, tools and per-Worker permissions. Create or configure Workers directly within this task and its policy. Prefer one Worker owning the task end to end. Mutations require the latest revision and a stable requestId. create uses profile. clone uses from, a new id and optional patch; Personal Chat owners may manage shared Workers; external scope managers must clone shared Workers before changing them. Deleting a Worker removes its current contact, while retaining historical messages. configure uses id and patch. When the user asks you to contact an existing Worker and bring back its answer, use send with expectReply=true. For a one-way instruction omit expectReply. When send answers a pending business question, pass its current attention.id as questionId. Include the decisionVersion returned by inspect for a versioned question. This binds the human follow-up once to that question, not an execution permission. assign delegates a task; inspect/result return actual state, including held goal revisions and available inputs. A blocked send cannot resume its goal. Use router_goal resume for one requested goal or resume_many for several. pause stops future scheduling; retire drains existing work; destroy requires cancelRunning for active tasks. Backend/model changes apply to new tasks; migrate hands an idle task to the new backend. rebuild prepares a budget or permission-held task. Permission rebuild requires a scope manager, fresh text and workspaceReviewed=true after reviewing retained artifacts. It quarantines old text and starts a new session on the same task/backend/workspace; it runs only after a new authorized follow-up.',inputSchema:z.toJSONSchema(workerCommandSchema,{target:'draft-7',io:'input'})}]
 
 export interface RouterContext {discussion:string;singleChatInput?:boolean;trigger?:Trigger;scoped?:ScopeContext;manifest?:ContextManifest;
  onDispatch?:(kind:'assign'|'send'|'running',ticketId:string)=>void}
@@ -89,6 +90,8 @@ export class WorkerManager {
  }
  private callNow(value:unknown,context?:RouterContext):any{
   const input=workerCommandSchema.parse(value),host=this.host
+  if(input.expectReply&&(input.action!=='send'||input.questionId||!context?.trigger?.human||!host.store.get('chat-run',context.trigger.id)))
+   throw Error('An inquiry needs a human Chat follow-up to an existing task')
   if(input.decisionVersion&&!input.questionId)throw Error('decisionVersion requires questionId')
   if(input.questionId!==undefined){
    if(input.action!=='send')throw Error('questionId is only valid for send')
@@ -131,6 +134,8 @@ export class WorkerManager {
    if(receipt.fingerprint!==fingerprint)throw Error('requestId reused with different content')
    if(receipt.status==='completed'){
     const result=receipt.result
+    if(input.expectReply&&host.store.get<{triggerId:string}>('worker-inquiry','router-followup:'+key)?.triggerId!==context?.trigger?.id)
+     throw Error('This inquiry belongs to a different Chat message')
     if(context?.scoped){
      if(result?.ticketId){
       const held=input.action==='rebuild'&&host.scopes.ownership(result.ticketId)?.state==='held'
@@ -217,7 +222,7 @@ export class WorkerManager {
    if(host.goals.taskCancelled(input.ticketId))throw Error('This task belongs to a cancelled goal. Start a new goal for new work.')
    const blocked=this.continuationBlock(input.ticketId,context)
    if(blocked&&!input.questionId)return blocked
-   if(!input.questionId&&context?.singleChatInput&&host.chat.runningNudge(context)?.id===input.ticketId)return complete({status:'already_running',ticketId:input.ticketId,workerId:a.workerId})
+   if(!input.expectReply&&!input.questionId&&context?.singleChatInput&&host.chat.runningNudge(context)?.id===input.ticketId)return complete({status:'already_running',ticketId:input.ticketId,workerId:a.workerId})
    if(repositoryEvent)host.scopes.checkTaskEntry(host.scopes.ownership(input.ticketId)!,context!.scoped!.route.entryId,'request')
    const ticket=host.store.tickets.get(input.ticketId)!,origin=host.store.triggers.get(ticket.origin.triggerId)!,previousInputs=ticket.inputs.map(i=>i.id)
    if(input.questionId!==undefined){
@@ -252,6 +257,7 @@ export class WorkerManager {
      // Preserve the user's original event, but attach an internal Router instruction to the Worker.
      // Attaching the external event directly would add its user-facing reply channel to the task.
      const followup:Trigger={...context.trigger,id:'router-followup:'+key,threads:origin.threads,channel:origin.channel,text:input.text,meta:{...context.trigger.meta,delegatedBy:'router',parentTrigger:context.trigger.id}}
+     if(input.expectReply)recordInquiry(host,{id:followup.id,ticketId:input.ticketId,triggerId:context.trigger.id,discussion:context.discussion})
      host.store.triggers.save(followup)
      host.engine.attach(input.ticketId,followup.id,input.text)
     }
@@ -265,7 +271,7 @@ export class WorkerManager {
    allowNewTaskInputs(host.store,input.ticketId,previousInputs)
    if(context?.trigger)host.chat.delegated(key,context.trigger.id,input.ticketId,a.workerId,input.text)
    if(context?.scoped&&!repositoryEvent&&host.goals.forTask(input.ticketId))host.store.db.prepare("DELETE FROM records WHERE kind='goal-delivery' AND id=?").run(input.ticketId)
-   return complete({ticketId:input.ticketId,status:blocked?'answer_recorded':'queued',revision:host.settings.current().revision})
+   return complete({ticketId:input.ticketId,...(input.expectReply?{inquiryId:'router-followup:'+key}:{}),status:blocked?'answer_recorded':'queued',revision:host.settings.current().revision})
   })
   if(input.action==='rebuild')return host.store.atomic(()=>{
    if(!input.ticketId)throw Error('Task required')

@@ -16,7 +16,7 @@ export const ASYNC_WORKER_DB_SCHEMA=18
 export const MAX_DB_SCHEMA=ASYNC_WORKER_DB_SCHEMA
 
 export interface Job { id: string; kind: string; payload: unknown; state: string; attempts: number; nextAt: number }
-export interface Delivery extends OutboundMessage { taskResult?:number; status: string; attempts: number; nextAt: number; error?: string }
+export interface Delivery extends OutboundMessage { inquiryId?:string; taskResult?:number; status: string; attempts: number; nextAt: number; error?: string }
 export interface Run {
   ticketId: string; assignmentId: string; threadId?: string; cwd: string
   phase: 'idle' | 'starting' | 'running' | 'background' | 'interrupted' | 'uncertain' | 'human' | 'delivering' | 'merging'

@@ -454,6 +454,39 @@ it('shows the cause of a held prerequisite when a previously dispatched ticket i
  expect(view.workers.flatMap(w=>w.tasks).find(t=>t.id===existing.ticketId)?.blockedReason).toBe(reason)
 })
 
+it('keeps accepted steps complete while a dependent awaits a real answer and drains only consumed input wakes',async()=>{
+ let workers=0
+ const f=fixture(async r=>{
+  if(r.role==='router')return {reply:''}
+  workers++
+  return workers===1?ready('Handoff verified'):{...ready('Need the test environment'),state:'blocked',question:'Which isolated desktop should I use?'}
+ })
+ const start=f.start('Verify the handoff, then check the desktop',{maxReplans:0,nodes:[
+  {id:'handoff',title:'Handoff',instruction:'Check the handoff',workerId:'builder',criterionIds:['verification']},
+  {id:'desktop',title:'Desktop',instruction:'Check the desktop',workerId:'reviewer',criterionIds:['verification'],dependsOn:['handoff']},
+ ]})
+ const h=f.host,s=h.store
+ await f.until(()=>h.goals.get(start.id)?.state==='held'&&!h.activeExecutions)
+ const g=h.goals.get(start.id)!,first=g.nodes![0]!.ticketId!,last=g.nodes![1]!.ticketId!,ticket=s.tickets.get(last)!
+ const view=()=>h.chat.view(f.chat.id,owner,undefined,undefined,undefined,undefined,undefined,true)
+ const tasks=view().workers.flatMap(w=>w.tasks)
+ expect(tasks.find(t=>t.id===first)).toMatchObject({state:'completed',reviewing:false,blockedReason:undefined})
+ expect(tasks.find(t=>t.id===last)).toMatchObject({state:'waiting',question:'Which isolated desktop should I use?'})
+ expect(h.chat.taskDetail(f.chat.id,owner,'goal:'+g.id).activity.state).toBe('needs_input')
+ const cards=view().pendingCards;expect(cards).toHaveLength(1)
+ const assignmentId=ticket.assignments.at(-1)!.id,prefix='execute:'+assignmentId+':'
+ const consumed=prefix+stableDigest(['already delivered']),other=prefix+'another-purpose',payload={assignmentId,ticketId:last}
+ s.enqueue(consumed,'execute',payload);s.enqueue(other,'execute',payload)
+ const state=(id:string)=>s.db.prepare('SELECT state FROM jobs WHERE id=?').get(id)?.state
+ h.pause(true);await h.tick();expect(state(consumed)).toBe('pending')
+ expect(deploymentBlockers(s,0,h.config.stateDir)).toContainEqual({kind:'jobs',count:1})
+ s.jobState(other,'done')
+ expect(deploymentBlockers(s,0,h.config.stateDir)).toEqual([])
+ h.pause(false);await h.tick()
+ expect(state(consumed)).toBe('done');expect(workers).toBe(2)
+ expect(s.tickets.get(last)).toEqual(ticket);expect(view().pendingCards).toEqual(cards)
+})
+
 it('retains a rejected final Chat review across maintenance with its exact deliveries and verdict',async()=>{
  const f=fixture(async request=>request.role==='router'?{reply:'Checking the task'}:ready(),{rejectOverall:true})
  const first=f.start('Review the retained delivery',{maxReplans:0,maxRepairs:0})

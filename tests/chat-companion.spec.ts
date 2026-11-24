@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {companionStatus} from '../web/chat/companion-state.ts';
+import {companionStatus,pendingWaitLabel} from '../web/chat/companion-state.ts';
 import type {ChatSessions} from '../src/chat.ts';
 type Snapshot=ReturnType<ChatSessions['view']>;
 const L=(_en:string,zh:string)=>zh;
@@ -8,6 +8,15 @@ const options={connected:true};
 const call=(changes:Record<string,unknown>={})=>({id:'model',kind:'router',name:'router',conversationId:'chat',runId:'current',startedAt:10,state:'running',...changes}) as Snapshot['calls'][number];
 
 describe('Chat companion reflects current execution',()=>{
+ it('keeps the exact resumed ticket question on the current goal without borrowing unrelated pending requests',()=>{
+  const s=base();s.run!.state='waiting'
+  s.plans=[{runId:'current',ticketIds:['resumed']},{runId:'old',ticketIds:['unrelated']}] as Snapshot['plans']
+  const question=(ticketId:string)=>({kind:'question',question:{runId:'old',ticketId,workerId:'builder'}} as Snapshot['pendingCards'][number])
+  s.pendingCards=[question('unrelated')];expect(pendingWaitLabel(s,L)).toBeUndefined()
+  s.pendingCards.push(question('resumed'));expect(pendingWaitLabel(s,L)).toBe('等待你的回答')
+  expect(pendingWaitLabel(s,L,'builder')).toBe('等待你的回答')
+  expect(pendingWaitLabel(s,L,'reviewer')).toBeUndefined()
+ })
  it('uses public model status only from the active run',()=>{
   const s=base();s.calls=[call({runId:'old',status:{phase:'reviewing',label:'旧任务',updatedAt:100}})];
   expect(companionStatus(s,L,options).label).toBe('正在思考');

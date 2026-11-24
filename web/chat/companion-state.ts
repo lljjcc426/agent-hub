@@ -8,9 +8,12 @@ type Localize=(en:string,zh:string)=>string;
 export function pendingWaitLabel(snapshot:Snapshot,L:Localize,participant?:string){
  const run=snapshot.run
  if(!run)return
+ // A follow-up can own the goal while its open request still belongs to the
+ // original Worker assignment. Match that exact ticket across turns.
+ const resumedTasks=new Set((snapshot.plans??[]).filter(plan=>plan.runId===run.id).flatMap(plan=>plan.ticketIds))
  const items=(snapshot.pendingCards??[]).filter(card=>{
-   if(card.kind==='approval')return card.request.runId===run.id && (!participant||participant===card.request.workerId)
-   if(card.kind==='question')return card.question.runId===run.id && (!participant||participant===card.question.workerId)
+   if(card.kind==='approval')return (card.request.runId===run.id||resumedTasks.has(card.request.ticketId)) && (!participant||participant===card.request.workerId)
+   if(card.kind==='question')return (card.question.runId===run.id||resumedTasks.has(card.question.ticketId)) && (!participant||participant===card.question.workerId)
    return !participant && snapshot.messages.some(m=>m.id===card.id && m.runId===run.id) && (card.kind!=='choice'||!card.decision.defaultOption)
  })
  if(items.some(c=>c.kind==='approval'&&c.request.method!=='item/tool/requestUserInput'))return L('Awaiting your approval','等待你的审批')

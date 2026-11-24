@@ -8,6 +8,7 @@ import {refusedWorkerJobReads,unstartedWorkerShell} from './backends/opencode-re
 import type {PluginThread} from './backends/plugin-process.ts'
 import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
+import {consumedInputWake} from './task-context.ts'
 import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
 import {legacyAnsweredGoalReply,type BusinessDecisionView} from './business-decisions.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
@@ -186,6 +187,11 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
       !store.get('trigger',answer.triggerId))return
     }
    }
+  }
+  if(!ticket.undelivered.length&&run.phase==='idle'){
+   const wakes=store.db.prepare(`SELECT id FROM jobs WHERE kind='execute' AND state='pending' AND attempts=0
+    AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?`).all(id,assignment.id)
+   for(const wake of wakes)if(consumedInputWake(String(wake.id),assignment.id,ticket,run))jobs.push(String(wake.id))
   }
  }
  // Older overall quality holds kept their last active goal timestamp. It cannot

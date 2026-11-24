@@ -56,8 +56,10 @@ export function taskActivities({ plans, publicPlans, sessionRouterPlans, tasks }
         if (ticket.parentPlanId) goalPlanIds.add(ticket.parentPlanId)
       }
     }
+    const awaitingAnswer = goal.state === 'held' && tickets.some(t => t.state === 'waiting' && t.question) &&
+      !tickets.some(t => t.state === 'blocked' || t.state === 'failed')
     activities.push({
-      id: 'goal:' + goal.id, title: goal.title, state: goal.state, objective: goal.objective,
+      id: 'goal:' + goal.id, title: goal.title, state: awaitingAnswer ? 'needs_input' : goal.state, objective: goal.objective,
       nextAction: goal.nextAction, updatedAt: goal.createdAt, steps: goal.steps, tickets,
     })
   }

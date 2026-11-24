@@ -1,5 +1,13 @@
-import type {Store} from './store.ts'
+import type {Run,Store} from './store.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
+
+/** Live steering can deliver a group of inputs before its queue entry is claimed. */
+export function consumedInputWake(jobId:string,assignmentId:string,ticket:Ticket|undefined,run:Run|undefined){
+ if(!ticket||ticket.undelivered.length||run?.ticketId!==ticket.id||run.assignmentId!==assignmentId||
+   run.phase!=='idle'||!run.prepared||run.waitingForWriter||ticket.assignments.at(-1)?.id!==assignmentId)return false
+ const prefix='execute:'+assignmentId+':'
+ return jobId.startsWith(prefix)&&/^[a-f0-9]{64}$/.test(jobId.slice(prefix.length))
+}
 
 /** A projection for a fresh session. The core ticket and its immutable Mandate
  * remain the audit record; quarantined text is never silently re-authorized. */

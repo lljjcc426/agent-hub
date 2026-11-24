@@ -23,7 +23,7 @@ import {activateBackendPackages} from './backends/plugin-package.ts'
 import {HostWatchdog} from './watchdog-host.ts'
 import {recordMaintenanceReplay} from './maintenance-replay.ts'
 import {SourceIdentities} from './source-identity.ts'
-import {taskView,allowNewTaskInputs,type TaskContinuation} from './task-context.ts'
+import {taskView,allowNewTaskInputs,consumedInputWake,type TaskContinuation} from './task-context.ts'
 import {DecisionLayer,decisionInput} from './decision.ts'
 import { mkdirSync, openSync, writeFileSync, readFileSync, unlinkSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -1091,7 +1091,12 @@ export class Runtime {
         const payload = job.payload as any
         if(['start','execute'].includes(job.kind)){
           const g=this.goals.forTask(payload.ticketId)
-          if(goalExecutionHold(g,payload.ticketId))continue
+          if(goalExecutionHold(g,payload.ticketId)){
+            if(!this.paused&&job.kind==='execute'&&!job.attempts&&!this.executionActive(payload.ticketId)&&
+              consumedInputWake(job.id,payload.assignmentId,this.store.tickets.get(payload.ticketId),this.store.get<Run>('run',payload.ticketId)))
+              this.store.jobState(job.id,'done')
+            continue
+          }
           if(!this.webhooks.taskExecutionAllowed(payload.ticketId))continue
         }
         if(['start','execute'].includes(job.kind)&&this.watchdog.recovering(payload.ticketId))continue

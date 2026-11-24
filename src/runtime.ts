@@ -1267,6 +1267,7 @@ export class Runtime {
         !this.memory.cleanup.blocked('router-dispatch',job.id,record)?record.items:[]
     }
     const retainedDispatch=dispatches()
+    const singleChatInput=!!browserRun&&!!handoff&&!batchId&&!hostCommand&&!candidates&&!selectedSkill
     const saveDispatch=(dispatch:RouterDispatch)=>{
       if(!handoff)return
       const previous=dispatches()
@@ -1438,7 +1439,7 @@ export class Runtime {
             this.delegation.guardRouter(trigger,args)
             const action=(args as {action?:string})?.action
             if(action==='inspect'||action==='result')args={...args as object,waitMs:0}
-            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,manifest:packet?.manifest,
+            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,
               onDispatch:(kind,id)=>{
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
                 if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId})
@@ -1503,6 +1504,7 @@ export class Runtime {
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
           (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. For files, delegate creation or retrieval; the host publishes Worker outputs and accepts explicit review decisions. If an authorized existing Chat artifact is requested, use chat_artifact_find for its metadata and pass the selected artifact ID to the Worker for delivery. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
+          +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups,
         onTool:(name,args)=>checkedRouterTool(name,args),
@@ -1517,7 +1519,11 @@ export class Runtime {
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
       const execute=(input:ModelRequest)=>desktop?this.desktopRouterTurn(input,triggerId,validateReplyContext,handoff):this.runModel(input,triggerId,handoff)
       let result:ModelResult
-      let rebuildAfterDispatch=retainedDispatch.length>0
+      if(!retainedDispatch.length&&singleChatInput&&mandate?.strength==='explicit'){
+        const task=this.chat.runningNudge({discussion,trigger,scoped})
+        if(task)saveDispatch({kind:'running',id:task.id,label:workerProfiles(this.config).find(w=>w.id===task.workerId)?.label??task.workerId})
+      }
+      let rebuildAfterDispatch=dispatches().length>0
       const dispatchReply=()=>{
         acceptHandoff()
         return {threadId:previous?.threadId??'',turnId:'dispatch:'+job.id,text:JSON.stringify({reply:handoff!.reply()})}
@@ -1759,6 +1765,14 @@ export class Runtime {
       if(!pending.length)return
       this.engine.turnEnded(ticket.id,assignmentId)
       this.work.turnEnded(ticket.id,assignmentId)
+      const stopped={...run,phase:'uncertain' as const}
+      if(this.goals.forTask(ticket.id)?.managed&&settledProviderTurn(this.store,this.config.stateDir,stopped)?.cause==='input_superseded'){
+        // Park for the scheduler after this job releases its writer. Recovery
+        // consumes the inbox on a fresh session with the verified receipts.
+        run.phase='uncertain';persist(true)
+        this.engine.report(ticket.id,{state:'blocked',summary:'已收到补充。',question:null})
+        return
+      }
       run.phase='idle';persist(true)
       this.queueInputs(this.store.tickets.get(ticket.id)!,latestAssignment(current)!)
     })
@@ -1836,9 +1850,17 @@ export class Runtime {
           permissionReceipts.push(await this.workerTools.call(owner,action.tool,action.args,action.id,attempt,controller.signal))
         }
       }
+      let inputAccepted=false
       const result = await this.runModel({
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
+        workerInputAccepted:()=>{
+          if(inputAccepted||!inputs.length||!currentWorkerAttempt(this,attempt))return
+          // Record provider acceptance independently of delivery so an interrupted turn can resume.
+          this.engine.inputsRead(ticket.id,inputs.map(input=>input.id))
+          inputAccepted=true
+        },
         role:'worker',allowNativeTools:!delegatedTask,options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
+        workerInputState:()=>({attemptId:attempt.id,dataRevision:attempt.basis.dataRevision,current:currentWorkerAttempt(this,attempt)}),
         workerCheckpointReady:builtInChat&&localNode?()=>currentWorkerAttempt(this,attempt)&&this.goals.canCheckpointWorker(run):undefined,
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,

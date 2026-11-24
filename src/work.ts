@@ -193,7 +193,7 @@ export class WorkManager {
  active(ticketId:string,assignmentId:string){return this.decode(this.autoByAssignment.all(ticketId,assignmentId))}
  ownsRunningShell(item:WorkItem){
   const child=this.runners.get(item.id)
-  return item.kind==='shell'&&item.state==='running'&&!!child?.pid&&child.pid===item.pid&&
+  return item.kind==='shell'&&item.state==='running'&&this.store.get<WorkItem>('work',item.id)?.state==='running'&&!!child?.pid&&child.pid===item.pid&&
    child.exitCode===null&&child.signalCode===null&&!child.killed
  }
  async tick(){

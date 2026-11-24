@@ -536,8 +536,9 @@ it('shows the cause of a held prerequisite when a previously dispatched ticket i
   {...existing,state:'waiting_dependency',dependsOn:['collect'],reason:'Prerequisite repair requires refreshing this result'},prerequisite,
  ]})
  const view=f.host.chat.view(f.chat.id,owner)
- expect(view.run).toMatchObject({state:'blocked',blockedReason:reason})
- expect(view.workers.flatMap(w=>w.tasks).find(t=>t.id===existing.ticketId)?.blockedReason).toBe(reason)
+ expect(view.run?.state).toBe('blocked')
+ expect(view.run).not.toHaveProperty('blockedReason')
+ expect(view.workers.flatMap(w=>w.tasks).find(t=>t.id===existing.ticketId)?.blockedReason).toBeUndefined()
 })
 
 it('keeps accepted steps complete while a dependent awaits a real answer and drains only consumed input wakes',async()=>{
@@ -556,7 +557,7 @@ it('keeps accepted steps complete while a dependent awaits a real answer and dra
  const g=h.goals.get(start.id)!,first=g.nodes![0]!.ticketId!,last=g.nodes![1]!.ticketId!,ticket=s.tickets.get(last)!
  const view=()=>h.chat.view(f.chat.id,owner,undefined,undefined,undefined,undefined,undefined,true)
  const tasks=view().workers.flatMap(w=>w.tasks)
- expect(tasks.find(t=>t.id===first)).toMatchObject({state:'completed',reviewing:false,blockedReason:undefined})
+ expect(tasks.find(t=>t.id===first)).toMatchObject({state:'completed',reviewing:false})
  expect(tasks.find(t=>t.id===last)).toMatchObject({state:'waiting',question:'Which isolated desktop should I use?'})
  expect(h.chat.taskDetail(f.chat.id,owner,'goal:'+g.id).activity.state).toBe('needs_input')
  const cards=view().pendingCards;expect(cards).toHaveLength(1)

@@ -14,8 +14,8 @@ type Tab = 'progress' | 'tools'
 type LoadTask = (id: string, signal: AbortSignal) => Promise<TaskExecutionDetail>
 type RetryAcceptance = (id: string, revision: number) => Promise<AcceptanceRetryResult>
 type Entry = { id: string; at: number; event?: TaskExecutionEvent; call?: TaskExecutionCall }
-type Tone = 'working' | 'problem' | 'done'
-const problems = new Set(['failed', 'interrupted', 'blocked', 'cancelled', 'held'])
+type Tone = 'working' | 'problem' | 'done' | 'recorded'
+const problems = new Set(['cancelled'])
 const terminal = new Set(['completed', 'cancelled', 'failed'])
 const taskListPreviewLimit = 10
 
@@ -71,7 +71,8 @@ function callState(call: TaskExecutionCall, L: Localize) {
     return { tone:'working' as const, label:L('In progress','进行中') }
   const items=call.webBatch?.items
   if(items?.some(item=>item.status==='completed')&&items.some(item=>item.status!=='completed'))
-    return {tone:'problem' as const,label:L('Partial success','部分成功')}
+    return {tone:'recorded' as const,label:L('Results recorded','已记录结果')}
+  if(call.state==='failed'||call.state==='interrupted')return {tone:'recorded' as const,label:toolStatus(call,L)}
   const problem = problems.has(call.state) || call.permission === 'denied' || call.permission === 'uncertain'
   return { tone:problem ? 'problem' as const : 'done' as const, label:toolStatus(call,L) }
 }
@@ -265,7 +266,7 @@ function TaskRecord({record, locale, L, agentName, selectAgent, retryAcceptance,
       {entries.length ? <ol id={progressListId} className="task-run-timeline">
         {(showAll.progress ? entries : entries.slice(0,taskListPreviewLimit)).map(({id,at:time,event,call}) => {
           const callStatus = call && callState(call,L)
-          const tone = callStatus?.tone ?? (event?.state && problems.has(event.state) ? 'problem' : 'done')
+          const tone = callStatus?.tone ?? (event?.state && ['blocked','held','failed','interrupted'].includes(event.state) ? 'recorded' : event?.state && problems.has(event.state) ? 'problem' : 'done')
           const wait = event?.waitMs
           const took = call ? recordedDuration(call) : undefined
           const name = event ? eventLabel(event,L) : call?.kind === 'subagent' ? L('Subagent run','子 Agent 处理') : L('Model run','模型处理')

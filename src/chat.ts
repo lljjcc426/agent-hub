@@ -133,6 +133,26 @@ export class ChatSessions {
     const entry=this.host.scopes.binding(context.scoped.route.entryId)
     return context.scoped.route.scopeId==='@chat:'+stableDigest(conversation.owner)&&entry.privateActor===JSON.stringify([conversation.sourceId,conversation.actor])&&entry.nativeId===(conversation.nativeId??'chat:'+conversation.id)
   }
+  /** A status-only nudge can leave a single, actively executing private task in place. */
+  runningNudge(context:RouterContext){
+    const trigger=context.trigger
+    if(!trigger?.human||!this.personalManagement(context))return
+    const run=this.host.store.get<ChatRun>('chat-run',trigger.id)
+    const message=run&&this.host.store.get<Message>('chat-message','user:'+run.id)
+    if(!run||run.cancelled||run.cancelRequested||!message||message.role!=='user'||message.quote||message.skill||message.attachments?.length||
+      !/^(?:请?继续(?:吧|执行|处理|一下)?|接着做|(?:please )?continue|proceed|keep going)[。.!！]?$/iu.test(message.text.trim()))return
+    const c=this.host.store.get<Conversation>('chat-conversation',run.conversationId)!
+    const goals=this.conversationGoals(c)
+    if(goals.some(g=>g.state==='needs_input'||g.state==='held'||g.state==='paused'))return
+    const unresolved=this.tasks(c,undefined,undefined,goals).filter(t=>t.state!=='completed'&&t.state!=='cancelled')
+    const task=unresolved[0]
+    if(unresolved.length!==1||task?.state!=='running'||!this.host.executionActive(task.id)||
+       !['starting','running'].includes(this.host.store.get<Run>('run',task.id)?.phase??''))return
+    const {native,managed}=pendingChatApprovals(this.host.store,c.id)
+    const closed=new Set(this.rows<ChatRun>('chat-run','conversationId',c.id).filter(r=>r.cancelled||r.cancelRequested).map(r=>r.id))
+    if(this.pendingCards(c,closed,native,managed).length)return
+    return task
+  }
   private recordCall(call:ExecutionCall){
     const assignment=call.ticketId?this.host.store.get<Delegation>('worker-assignment',call.ticketId):undefined
     const triggerId=assignment?.parentTrigger??call.triggerId,run=triggerId?this.originRun(triggerId):undefined
@@ -651,7 +671,7 @@ export class ChatSessions {
     return latest
   }
   deliveredWorker(message:{id:string;ticketId?:string;text:string;taskResult?:number}){
-    if(!message.ticketId||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return
+    if(!message.ticketId||message.id.startsWith('failure:')||!message.text.trim()||this.host.store.get('chat-message','worker:'+message.id))return
     const dest=this.workerDestination(message.ticketId,{includeDelegated:true});if(!dest)return
     this.message(dest.c,{id:'worker:'+message.id,handoff:message.taskResult===1?'result':undefined,runId:dest.run.id,role:'assistant',text:message.text,status:'complete',speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId:message.ticketId});this.changed(dest.c.id)
   }
@@ -1133,7 +1153,6 @@ export class ChatSessions {
       const held=node?.held||r?.phase==='uncertain'||report?.state==='blocked'
       const state=t?.ended?.by==='human'?'cancelled':t?.ended?'completed':executing?'running':question?'waiting':
         node?.passed&&r?.phase!=='uncertain'?'completed':node?.awaitingDependency&&r?.phase!=='uncertain'?'waiting':held?'blocked':report?.state==='failed'?'failed':r?.phase==='human'||report?.state==='waiting'?'waiting':report?.state==='ready'?'completed':'queued'
-      const blockedReason=state==='blocked'?(node?.reason??report?.summary??r?.error):undefined
       // Worker follow-ups can change the current routing authority; the initial assignment owns the plan link.
       let parentPlanId:string|undefined
       if(routerPlanIds?.size){
@@ -1142,8 +1161,8 @@ export class ChatSessions {
         const candidate=parent&&this.turnPlan(c.id,parent)
         if(candidate&&routerPlanIds.has(candidate))parentPlanId=candidate
       }
-      const summary=recovering?(recovering.jobs?'正在等待已启动的后台作业完成。':'正在重连模型并保留已完成的操作。'):report?.summary
-      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question,blockedReason,summary}
+      const summary=recovering?(recovering.jobs?'正在等待已启动的后台作业完成。':'正在重连模型并保留已完成的操作。'):held||report?.state==='failed'?undefined:report?.summary
+      return {id:d.ticketId,failed:report?.state==='failed'||undefined,parentPlanId,workerId:d.workerId,title:node?.title??t?.title??'',reviewing,updatedAt:t?.updatedAt?Date.parse(t.updatedAt):0,state,question,summary}
     })
   }
   private conversationTasks(c:Conversation){
@@ -1312,12 +1331,13 @@ export class ChatSessions {
     if(around)before=this.sourceMessage(c,around).sequence+26
     const {conversationPlans,goals,tasks}=this.conversationTasks(c)
     const dispatch=last&&this.host.store.get<{triggerId:string;discussion:string;items:RouterDispatch[]}>('router-dispatch','router:'+last.id)
-    const heldTargets=dispatch&&dispatch.triggerId===last?.id&&dispatch.discussion===c.discussion&&
-      !this.host.memory.cleanup.blocked('router-dispatch','router:'+last!.id,dispatch)
-      ?new Set(dispatch.items.filter(item=>item.kind==='question').map(item=>item.id)):undefined
+    const items=dispatch&&dispatch.triggerId===last?.id&&dispatch.discussion===c.discussion&&
+      !this.host.memory.cleanup.blocked('router-dispatch','router:'+last!.id,dispatch)?dispatch.items:[]
+    const heldTargets=new Set(items.filter(item=>item.kind==='question').map(item=>item.id))
+    const continuing=new Set(items.filter(item=>item.kind==='running').map(item=>item.id))
     const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id||heldTargets?.has(g.id)):[]
     const decisionTask=last?.decisionTicketId?tasks.find(t=>t.id===last.decisionTicketId):undefined
-    const currentTasks=tasks.filter(t=>t===decisionTask||this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
+    const currentTasks=tasks.filter(t=>t===decisionTask||continuing.has(t.id)||this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
     const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
       FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
       WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running')
@@ -1328,7 +1348,7 @@ export class ChatSessions {
       FROM jobs WHERE (kind='router' AND json_extract(payload,'$.triggerId')=?)
         OR (kind='router-batch' AND json_extract(payload,'$.batchId')=?)`).all(last.triggerId,batch?.id??null):[]
     const clarification=batch?.decision?.action==='clarify'?this.host.store.deliveries().find(d=>d.id==='router-clarify:'+batch.id):undefined
-    const messages=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*'
+    const messages=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-message' AND id NOT GLOB 'card-preview:*' AND id NOT GLOB 'worker:failure:*'
       AND json_extract(body,'$.conversationId')=?
       AND (id NOT GLOB 'worker:*' OR NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value=json_extract(body,'$.text')))
       AND json_extract(body,'$.sequence')<? AND (? IS NULL OR json_extract(body,'$.runId')=?)
@@ -1373,7 +1393,6 @@ export class ChatSessions {
       else if(currentTasks.some(t=>t.state==='cancelled'))state='cancelled'
       else if(state==='completed'&&runGoals.some(g=>g.state==='active'||g.state==='waiting'))state='running'
     }
-    const blockedReason=state==='blocked'?(currentTasks.find(t=>t.blockedReason)?.blockedReason??runGoals.find(g=>g.state==='held'||g.state==='paused')?.reason):undefined
     const workers=workerProfiles(this.host.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:tasks.filter(t=>t.workerId===w.id)}))
     const correctedFullRuns=new Set(runs.filter(item=>item.decisionTicketId&&item.permissionEpoch===undefined&&
       this.permissionMode(c.owner,item)==='full').map(item=>item.id))
@@ -1407,7 +1426,7 @@ export class ChatSessions {
     const sessionRouterPlans=workerView?visiblePlans.filter(plan=>!plan.workerId&&!plan.ticketId):undefined
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
     const handoffs=withPending?this.handoffs(id):[]
-    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(heldTargets?.size?{questionTicketIds:runGoals.filter(g=>heldTargets.has(g.id)).flatMap(g=>g.taskIds)}:{}),...(blockedReason?{blockedReason}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
+    const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(heldTargets?.size?{questionTicketIds:runGoals.filter(g=>heldTargets.has(g.id)).flatMap(g=>g.taskIds)}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
     const screenshots=this.host.browser.screenshots(id)
     for(const message of [...result.messages].reverse()){
       if(message.role!=='assistant'||message.opening||message.status==='streaming')continue

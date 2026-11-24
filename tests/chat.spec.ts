@@ -1193,7 +1193,9 @@ it('forwards a blocked Worker report when the same inbox also contains a Router 
  expect(result()).toMatchObject({state:'done'})
  const view=h.chat.view(c.id,'owner')
  expect(view.messages.some(m=>m.text==='The package is still being located.')).toBe(true)
- expect(view.run).toMatchObject({state:'blocked',blockedReason:'Package unavailable'})
+ expect(view.messages.some(m=>m.text===reportText)).toBe(false)
+ expect(view.run?.state).toBe('blocked')
+ expect(view.run).not.toHaveProperty('blockedReason')
  expect(calls.filter(r=>r.role==='router')).toHaveLength(2)
  const failedId='router:result:missing-report'
  h.store.enqueue(failedId,'router',{discussion,triggerId:sent.runId,messageId:'missing-report'})

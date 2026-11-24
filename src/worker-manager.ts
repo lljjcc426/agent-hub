@@ -19,8 +19,8 @@ const actions=['list','inspect','create','clone','configure','set_prompt','assig
 export const workerCommandSchema=z.object({action:z.enum(actions),requestId:z.string().min(1).max(200).optional(),revision:z.number().int().min(0).optional(),id:z.string().optional(),from:z.string().optional(),profile:workerProfileSchema.optional().describe('Full Worker profile for create; backend is a connection ID returned by list.'),patch:workerProfileSchema.partial().optional().describe('Fields to change for configure, or overrides for clone. Omitted fields are retained.'),unset:z.array(z.string()).optional().describe('Optional profile fields to remove so connection defaults apply. Cannot remove id or backend.'),prompt:z.string().max(messageCharacters).optional(),text:z.string().min(1).max(messageCharacters).optional(),discussion:z.string().min(1).max(300).optional(),ticketId:z.string().optional(),questionId:z.string().min(1).max(1000).optional(),decisionVersion:z.string().regex(/^[a-f0-9]{64}$/).optional(),acceptance:z.string().max(64_000).optional(),cancelRunning:z.boolean().optional(),workspaceReviewed:z.boolean().optional(),waitMs:z.number().int().min(0).max(30_000).optional()}).strict()
 export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',description:'Manage Workers for the authorized task autonomously. Read list for the current revision, allowed connections, options, tools and per-Worker permissions. Create or configure Workers directly within this task and its policy. Prefer one Worker owning the task end to end. Mutations require the latest revision and a stable requestId. create uses profile. clone uses from, a new id and optional patch; Personal Chat owners may manage shared Workers; external scope managers must clone shared Workers before changing them. Deleting a Worker removes its current contact, while retaining historical messages. configure uses id and patch. When send answers a pending business question, pass its current attention.id as questionId. Include the decisionVersion returned by inspect for a versioned question. This binds the human follow-up once to that question, not an execution permission. assign delegates a task; inspect/result return actual state, including held goal revisions and available inputs. A blocked send cannot resume its goal. Use router_goal resume for one requested goal or resume_many for several. pause stops future scheduling; retire drains existing work; destroy requires cancelRunning for active tasks. Backend/model changes apply to new tasks; migrate hands an idle task to the new backend. rebuild prepares a budget or permission-held task. Permission rebuild requires a scope manager, fresh text and workspaceReviewed=true after reviewing retained artifacts. It quarantines old text and starts a new session on the same task/backend/workspace; it runs only after a new authorized follow-up.',inputSchema:z.toJSONSchema(workerCommandSchema,{target:'draft-7',io:'input'})}]
 
-export interface RouterContext {discussion:string;trigger?:Trigger;scoped?:ScopeContext;manifest?:ContextManifest;
- onDispatch?:(kind:'assign'|'send',ticketId:string)=>void}
+export interface RouterContext {discussion:string;singleChatInput?:boolean;trigger?:Trigger;scoped?:ScopeContext;manifest?:ContextManifest;
+ onDispatch?:(kind:'assign'|'send'|'running',ticketId:string)=>void}
 interface Delegation {ticketId:string;workerId:string;discussion:string;source:string;actor:string;parentTrigger?:string;mode:'client'|'host'}
 export class WorkerManager {
  private inFlight=new Set<string>()
@@ -160,6 +160,7 @@ export class WorkerManager {
    host.store.put('worker-command',key,{fingerprint,status:'completed',scopeId:context?.scoped?.route.scopeId,result})
    if((input.action==='assign'||input.action==='send')&&result.status==='queued'&&result.ticketId)
     context?.onDispatch?.(input.action,result.ticketId)
+   if(input.action==='send'&&result.status==='already_running')context?.onDispatch?.('running',result.ticketId)
    return result
   }
   if(['create','clone','configure','set_prompt','pause','resume','retire'].includes(input.action))return host.store.atomic(()=>{
@@ -216,6 +217,7 @@ export class WorkerManager {
    if(host.goals.taskCancelled(input.ticketId))throw Error('This task belongs to a cancelled goal. Start a new goal for new work.')
    const blocked=this.continuationBlock(input.ticketId,context)
    if(blocked&&!input.questionId)return blocked
+   if(!input.questionId&&context?.singleChatInput&&host.chat.runningNudge(context)?.id===input.ticketId)return complete({status:'already_running',ticketId:input.ticketId,workerId:a.workerId})
    if(repositoryEvent)host.scopes.checkTaskEntry(host.scopes.ownership(input.ticketId)!,context!.scoped!.route.entryId,'request')
    const ticket=host.store.tickets.get(input.ticketId)!,origin=host.store.triggers.get(ticket.origin.triggerId)!,previousInputs=ticket.inputs.map(i=>i.id)
    if(input.questionId!==undefined){

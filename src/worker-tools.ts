@@ -5,6 +5,7 @@ import {promisify} from 'node:util'
 import {isAbsolute,relative,sep} from 'node:path'
 import {realpathSync,statSync} from 'node:fs'
 import {hostPrivateFiles} from './private-files.ts'
+import {WorkerToolNotDispatched} from './worker-tool-dispatch.ts'
 import {ContextBudgetExceeded} from './context-budget.ts'
 import {toolTrace} from './tool-trace.ts'
 import {splitPendingNotice,withPendingNotice} from './chat-pending-notice.ts'
@@ -91,6 +92,9 @@ export class WorkerTools {
    if(attempt&&!currentWorkerAttempt(this.host,attempt))throw Error('Worker attempt has ended')
    if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
   })
+  // Only these entry checks establish non-dispatch. Later authority checks can
+  // run after a driver already performed an operation.
+  if(attempt&&!currentWorkerAttempt(this.host,attempt))throw new WorkerToolNotDispatched(attempt.id,attempt.basis.dataRevision)
   checkAuthority()
   const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
@@ -103,7 +107,7 @@ export class WorkerTools {
    if(!owner.agentId)await this.host.deliverLiveInputs(owner.ticketId)
    await this.host.refreshWork(owner)
   }
-  if(attempt&&!read(()=>currentWorkerAttempt(this.host,attempt)))throw Error('Worker attempt has ended')
+  if(attempt&&!read(()=>currentWorkerAttempt(this.host,attempt)))throw new WorkerToolNotDispatched(attempt.id,attempt.basis.dataRevision)
   const continuation=this.host.store.get<TaskContinuation>('task-continuation',owner.ticketId)
   if(continuation&&name==='superagent_job'&&continuation.priorJobs.includes(args.id)){
    return {success:false,contentItems:[{type:'inputText',text:'Prior job body is quarantined; use retained effect identities.'}]}

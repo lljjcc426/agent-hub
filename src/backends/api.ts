@@ -17,7 +17,7 @@ export {readResponsesStream} from './stream.ts'
 
 import {ApiFailure,ApiNetworkFailure} from './api-failure.ts'
 export {ApiFailure,ApiNetworkFailure} from './api-failure.ts'
-export interface ThreadStore {get<T>(kind:string,id:string):T|undefined;put(kind:string,id:string,value:unknown):void}
+export interface ThreadStore {get<T>(kind:string,id:string):T|undefined;put(kind:string,id:string,value:unknown):void;atomic?<T>(write:()=>T):T}
 type Call={id:string;name:string;arguments:string}
 type ToolResult={contentItems:ToolContent[];success:boolean}
 type Effect={call:Call;digest:string;state:'started'|'completed';result?:ToolResult}

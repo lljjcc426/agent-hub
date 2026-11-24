@@ -42,6 +42,7 @@ import {
   LoaderCircle,
   Square,
   AlertCircle,
+  Clock3,
   RefreshCw,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
@@ -257,15 +258,9 @@ function Timestamp({ at, receipt }: { at: Date | number; receipt?: 'sending' | '
 function MessageSkill({skill}:{skill?:ChatSkillRef}){
   return skill?<span className="message-skill"><Box size={13}/><span>/{skill.name}</span></span>:null;
 }
-function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string, recovery?:import('../../src/chat-status.ts').ChatRecovery,blockedReason?:string) {
-  if(state==='running'&&recovery?.state==='rebuilding')return L('Recovering the interrupted read','正在恢复中断的只读操作');
-  if(state==='failed'&&recovery?.state==='held'){
-    const action=recovery.tool?' · '+recovery.tool:'';
-    const receipt=recovery.receiptId?' · '+L('Receipt','回执')+' '+recovery.receiptId.slice(0,12):'';
-    return L('Previous operation needs verification','需核对上一轮操作结果')+action+receipt;
-  }
-  if(state==='blocked')return L('Task is blocked','任务已搁置')+(blockedReason?' · '+blockedReason:'');
-  return ({waiting:waitingLabel||L('Waiting for a task update','等待任务更新'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止'),failed:L('Couldn’t finish. Send a follow-up to retry.','未能完成，可补充消息后重试。')} as Record<string,string>)[state];
+function runLabel(state: string, L: (en: string, zh: string) => string, waitingLabel:string) {
+  if (state==='failed'||state==='blocked') return waitingLabel||L('Progress saved','进度已保留');
+  return ({waiting:waitingLabel||L('Waiting for a task update','等待任务更新'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止')} as Record<string,string>)[state];
 }
 function UserMessage() {
   const { L } = useUI(),
@@ -349,7 +344,7 @@ function AssistantMessage() {
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
     streaming = status?.type === "running",
-    footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'',run.recovery,run.blockedReason) : undefined;
+    footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
   if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
@@ -390,14 +385,14 @@ function AssistantMessage() {
           <MessageActions id={id}/>
         </div>
         <Reactions id={id}/>
-        {run && footerStatus && !(run.state==='waiting' && waitingLabel) ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Output interrupted','输出中断')}</span> : null}
+        {run && footerStatus && !(run.state==='waiting' && waitingLabel) ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Progress saved','进度已保留')}</span> : null}
       </div>
     </MessagePrimitive.Root><WorkflowCards anchor={id}/></>
   );
 }
 function StatusIcon({ state }: { state: string }) {
-  return ["waiting", "blocked", "failed", "interrupted"].includes(state) ? (
-    <AlertCircle size={17} />
+  return state === "waiting" ? (
+    <Clock3 size={16} />
   ) : state === "cancelled" ? (
     <Square size={12} />
   ) : (
@@ -1065,7 +1060,7 @@ function Chat(p: ChatProps) {
   const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
   const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId
-    ? runLabel(run.state,L,waitingLabel??'',run.recovery,run.blockedReason) : undefined;
+    ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const fail = (e: unknown) => {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");

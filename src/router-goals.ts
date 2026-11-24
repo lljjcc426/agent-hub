@@ -243,6 +243,8 @@ export class RouterGoals {
  notice(g:RouterGoal,text:string,review=false){
   try{
    const {trigger}=this.anchor(g)
+   // The Chat already projects progress and any outstanding question. Keep operational holds in its journal.
+   if(!review&&g.state==='held'&&this.host.chat.hasContext({triggerId:g.triggerId}))return
    const channel=g.project?this.projectRequester(g)?.channel:trigger.channel
    if(!channel||g.project&&!this.host.proactive.notify(g.triggerId))return
    const ids=[...new Set([...(g.contextIds??[]),...this.host.replanning.contexts(g.id)])]
@@ -560,7 +562,7 @@ export class RouterGoals {
   const liveJobs=this.host.work.list(id).filter(job=>job.state==='starting'||job.state==='running')
   const shell=!liveJobs.length&&!wakes.length?unstartedWorkerShell(store,this.host.config.stateDir,run):undefined
   const provider=shell?undefined:settledProviderTurn(store,this.host.config.stateDir,run)
-  if(!shell&&!provider||n.recoveries>=5&&!provider?.productiveDeadline)return false
+  if(!shell&&!provider||n.recoveries>=5&&!provider?.productiveDeadline&&provider?.cause!=='input_superseded')return false
   this.host.scopes.checkTask(id,c,true)
   const manifest=store.get<{manifest:ContextManifest}>('task-context',id)?.manifest
   if(manifest)this.host.memory.validate(manifest)
@@ -578,7 +580,7 @@ export class RouterGoals {
    const awaitingJobs=liveJobs.some(job=>job.cwd!==run.cwd||!['auto','held'].includes(job.notify)||!this.host.work.ownsRunningShell(job))
    const jobDeadline=provider.at+this.host.config.work.backgroundTimeoutMs
    if(awaitingJobs&&now>=jobDeadline)return false
-   if(awaitingJobs||now<retry.retryAt!){
+   if(awaitingJobs||provider.cause!=='input_superseded'&&now<retry.retryAt!){
     // A saved PID alone does not prove the host still owns this command.
     n.providerWait={turnId:run.turnId!,jobs:awaitingJobs,checkAt:Math.min(now+5000,awaitingJobs?jobDeadline:retry.retryAt!)}
     n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined
@@ -602,12 +604,15 @@ export class RouterGoals {
    if(readable&&!store.get('model-tool-receipt',key)){
     receipts.set(key,{...value,result:effect.result})
    }
-   return {tool,action,requestId,success,...(readable?{resource:'model-tool-receipt/'+key}:{})}
+   const children=readable?effect.children?.map(child=>({tool:child.name,success:child.success,
+    ...(child.admission?.stage==='not_dispatched'?{dispatched:false}:{}),...(child.resource?{resource:child.resource}:{})})):undefined
+   return {tool,action,requestId,success,...(readable?{resource:'model-tool-receipt/'+key}:{}),...(children?.length?{children}:{})}
   })
   const continuation=shell?{
    instruction:'Continue the current reviewed task in the retained workspace. The interrupted shell request never started. Inspect existing work and the accepted prerequisite artifacts. Use superagent_artifact_read with each artifact.id. Preserve prior effects.',unstartedRequestId:shell.requestId,
   }:{
    instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read the exact receipt resources for previous results. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
+   ...(provider?.cause==='input_superseded'?{inputHandoff:'Use the newest admitted user input. The previous activation ended. Its undispatched requests did not run.'}:{}),
    ...(liveJobs.length?{runningJobs:liveJobs.map(job=>({id:job.id,resource:'job/'+job.id}))}:{}),
   }
   const note=JSON.stringify({...continuation,prerequisiteEvidence:prerequisites})
@@ -619,6 +624,11 @@ export class RouterGoals {
      reconciliation:{reason:'shell_not_dispatched',mode:'automatic',previousState:callback.receipt.state,ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,triggerId:c.trigger.id,activityId,at:this.now()}})
     store.audit({type:'backend.tool.reconciled',receiptId:callback.id,reason:'shell_not_dispatched',activityId,ticketId:id,confirmed:false})
    }else{
+    for(const callback of provider!.undispatched){
+     const reconciliation={reason:'input_superseded_before_dispatch',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,attemptId:provider!.attemptId,at:this.now()}
+     store.put('backend-plugin-tool',callback.id,{...callback.receipt,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The host declined this observation before dispatch when new input arrived.'}]},reconciliation})
+     store.audit({type:'backend.tool.reconciled',receiptId:callback.id,...reconciliation})
+    }
     for(const [key,value] of receipts)store.put('model-tool-receipt',key,value)
     for(const job of liveJobs)if(job.notify==='held')store.put('work',job.id,{...job,notify:'auto',deadline:undefined})
     store.audit({type:'worker.provider_recovered',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,recordedCalls:calls!.length,cause:provider!.cause,productiveDeadline:provider!.productiveDeadline,runningJobs:liveJobs.map(job=>job.id)})
@@ -629,12 +639,12 @@ export class RouterGoals {
    store.put('run',id,{...retained,phase:'idle'})
    n.state='running';n.failure=undefined;n.reason=undefined;n.retryAt=undefined;n.providerWait=undefined
    if(provider?.productiveDeadline)g.turns++
-   else n.recoveries++
+   else if(provider?.cause!=='input_superseded')n.recoveries++
    g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
    // A provider checkpoint continues the same accepted input. Re-admitting
    // the goal's older trigger here would move the reply away from its owner.
    if(shell){this.host.scopes.noteInput(id,c);this.host.memory.moveTaskContext(id,c)}
-   this.host.engine.report(id,{state:'waiting',summary:shell?'已核实上一条命令未启动，正在继续处理。':provider?.cause==='timeout'||provider?.cause==='turn_checkpoint'?'已保留本轮进展，正在接续长任务。':'已保留上一步结果，正在恢复模型连接。',question:null})
+   this.host.engine.report(id,{state:'waiting',summary:provider?.cause==='input_superseded'?'已收到补充。':shell?'正在接续任务。':provider?.cause==='timeout'||provider?.cause==='turn_checkpoint'?'已保留本轮进展，正在接续长任务。':'已保留上一步结果，正在恢复模型连接。',question:null})
    this.host.engine.note(id,note)
    return true
   })

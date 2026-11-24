@@ -222,7 +222,7 @@ it('finishes the active tool receipt before retiring the Router writer',async()=
   await vi.runAllTimersAsync()
   expect(handoff.yielded).toBe(true)
   expect(parent.signal.aborted).toBe(false)
-  expect(handoff.reply()).toBe('I sent your follow-up to Research.')
+  expect(handoff.reply()).toBe('Your follow-up was received.')
  }finally{effect.release();handoff.dispose();vi.useRealTimers()}
 })
 

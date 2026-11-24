@@ -3,6 +3,7 @@ import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'qui
 import { protocolBytes, receiptReference } from './context-budget.ts'
 import { modelToolCalls } from './execution-limits.ts'
 import type { ModelRequest, ToolSpec } from './model.ts'
+import {workerToolChildren} from './worker-tool-dispatch.ts'
 import { isParallelRead, ToolDispatch } from './tool-dispatch.ts'
 
 const maxSource = 16_000
@@ -78,7 +79,8 @@ async function runCell(source:string, tools:ToolSpec[], invoke:Invoke, parent:st
     running.push(dispatch.run(isParallelRead(name),async()=>{
       if(!open||request.signal?.aborted)return message('Code Mode stopped before the queued tool ran',false)
       try{
-        const value=await invoke(name,args,id)
+        const record=workerToolChildren.getStore()
+        const value=await (record?record(name,args,id,()=>invoke(name,args,id)):invoke(name,args,id))
         if(protocolBytes(value)<=outputLimit)return value
         if(request.retainToolResult)return receiptReference(value,await request.retainToolResult(id,value),request.role==='router'?'router_read':'superagent_read')
         return message('Tool result exceeds the Code Mode output budget',false)

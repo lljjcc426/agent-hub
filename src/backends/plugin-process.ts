@@ -1,4 +1,5 @@
 import {modelToolCalls,maxWireBytes} from '../execution-limits.ts'
+import {WorkerToolNotDispatched,undispatchedToolResult,workerToolChildren} from '../worker-tool-dispatch.ts'
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process'
 import {mkdtempSync,mkdirSync,rmSync,realpathSync,existsSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -24,7 +25,9 @@ import {backendEnvelope,backendResult,backendDiagnosticSchema,backendIssueSchema
 import {installBackendPackage,readBackendPackage,backendObjects,validatePluginValue,type BackendPackage} from './plugin-package.ts'
 
 export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
-export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:ToolResult;failure?:BackendDiagnostic}
+interface WorkerToolAdmission {attemptId:string;dataRevision:number|null;stage:'admitted'|'not_dispatched'}
+interface ChildEffect {id:string;name:string;fingerprint:string;state:'running'|'complete';success?:boolean;resource?:string;permission?:ToolResult['permission'];admission?:WorkerToolAdmission}
+export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:ToolResult;failure?:BackendDiagnostic;admission?:WorkerToolAdmission;children?:ChildEffect[]}
 const text=z.string().min(1).max(1000)
 const healthSchema=z.object({available:z.boolean(),authenticated:z.union([z.boolean(),z.literal('unknown')]),remoteVerified:z.literal(false),accountIdentity:z.string().regex(/^[a-f0-9]{64}$/).optional(),version:z.string().max(200).optional()}).strict()
 const historySchema=z.object({id:z.string().min(1).max(1000),turns:z.array(z.unknown())}).passthrough()
@@ -192,33 +195,78 @@ export class ProcessBackend implements Model {
      const p=z.object({name:text,args:z.unknown(),callId:text}).strict().parse(m.params),spec=toolSpecs.get(p.name)
      if(!spec||!request.onTool)throw new BackendPluginError('unsupported',this.id)
      const id=stableDigest([record.id,record.turnId,p.callId]),fingerprint=stableDigest([p.name,p.args]),saved=this.store.get<PluginToolEffect>('backend-plugin-tool',id)
-     if(saved){if(saved.fingerprint!==fingerprint||saved.state!=='complete')throw new BackendPluginError('outcome_unknown',this.id);result=saved.result}
+     if(saved){if(saved.fingerprint!==fingerprint||saved.state!=='complete'||!saved.result)throw new BackendPluginError('outcome_unknown',this.id);result=saved.result}
      else{
-      let failure:BackendDiagnostic|undefined
+      let outcome:ToolResult
+      const effect:PluginToolEffect={fingerprint,state:'running'}
       if(inflightTools.has(id)||record.effectIds.length>=modelToolCalls.max*4)throw new BackendPluginError('outcome_unknown',this.id)
       if(++toolCalls>(request.options?.maxToolCalls??modelToolCalls.default))throw new BackendPluginError('unsupported',this.id)
       const validate=ajv.compile(spec.inputSchema)
-      record.effectIds.push(id);this.save(record)
+      record.effectIds.push(id)
+      let registered=false
+      const save=()=>{
+       const persist=()=>{
+        this.store.put('backend-plugin-tool',id,effect)
+        if(!registered)this.save(record)
+       }
+       if(!registered&&this.store.atomic)this.store.atomic(persist)
+       else persist()
+       registered=true
+      }
       if(!validate(p.args)){
-       result={success:false,contentItems:[{type:'inputText',text:'Invalid tool arguments for '+p.name+': '+ajv.errorsText(validate.errors)+'. Correct the arguments and try again.'}]}
+       outcome={success:false,contentItems:[{type:'inputText',text:'Invalid tool arguments for '+p.name+': '+ajv.errorsText(validate.errors)+'. Correct the arguments and try again.'}]}
       }else{
        inflightTools.add(id)
-       this.store.put('backend-plugin-tool',id,{fingerprint,state:'running'})
-       try{result=await request.onTool(p.name,p.args,p.callId)}
-       catch(error){
-        const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic)
-        failure=diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}
-        if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||!request.isReadOnlyTool?.(p.name)){
-         uncertainTool=true
-         this.store.put('backend-plugin-tool',id,{fingerprint,state:'running',failure})
-         throw error
+       const admit=(item:Pick<PluginToolEffect,'admission'>)=>{
+        const attempt=request.workerInputState?.()
+        if(attempt){
+         const {attemptId,dataRevision,current}=attempt
+         item.admission={attemptId,dataRevision,stage:current?'admitted':'not_dispatched'}
+         if(!current)throw new WorkerToolNotDispatched(attemptId,dataRevision)
         }
-        result={success:false,contentItems:[{type:'inputText',text:JSON.stringify({
-         status:'read_failed',tool:p.name,message:'The read returned no result. Check the arguments or continue with another available read tool.'
-        })}]}
+        save()
+       }
+       try{
+        admit(effect)
+        const invoke=()=>request.onTool!(p.name,p.args,p.callId)
+        if(p.name==='code_mode'&&request.role==='worker'){
+         outcome=await workerToolChildren.run(async(name,args,childId,run)=>{
+          const entry:ChildEffect={id:childId,name,fingerprint:stableDigest([name,args]),state:'running'}
+          effect.children??=[]
+          effect.children.push(entry)
+          try{
+           admit(entry)
+           const value=await run()
+           if(request.retainToolResult)entry.resource='model-tool-receipt/'+await request.retainToolResult(childId,value)
+           entry.state='complete';entry.success=value.success;entry.permission=value.permission
+           return value
+          }catch(error){
+           if(!(error instanceof WorkerToolNotDispatched))throw error
+           entry.admission={attemptId:error.attemptId,dataRevision:error.dataRevision,stage:'not_dispatched'}
+           entry.state='complete';entry.success=false
+           return undispatchedToolResult()
+          }finally{save()}
+         },invoke)
+         if(effect.children?.some(child=>child.state!=='complete'))throw new BackendPluginError('outcome_unknown',this.id)
+        }else outcome=await invoke()
+       }catch(error){
+        if(error instanceof WorkerToolNotDispatched){
+         effect.admission={attemptId:error.attemptId,dataRevision:error.dataRevision,stage:'not_dispatched'}
+         outcome=undispatchedToolResult()
+        }else{
+         const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic)
+         effect.failure=diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}
+         if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||effect.children?.some(child=>child.state!=='complete')||!request.isReadOnlyTool?.(p.name)){
+          uncertainTool=true;save();throw error
+         }
+         outcome={success:false,contentItems:[{type:'inputText',text:JSON.stringify({
+          status:'read_failed',tool:p.name,message:'The read returned no result. Check the arguments or continue with another available read tool.'
+         })}]}
+        }
        }finally{inflightTools.delete(id)}
       }
-      this.store.put('backend-plugin-tool',id,{fingerprint,state:'complete',result,...(failure?{failure}:{})})
+      effect.state='complete';effect.result=outcome;save()
+      result=outcome
      }
     }else if(m.method==='human'){
      if(!request.onHumanRequest)throw new BackendPluginError('unsupported',this.id)

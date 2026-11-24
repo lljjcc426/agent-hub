@@ -25,13 +25,13 @@ describe('Chat companion reflects current execution',()=>{
  });
  it.each(['waiting','completed','cancelled','cancel_requested','failed'] as const)('lets lifecycle %s override a model label',state=>{
   const s=base();s.run!.state=state;s.calls=[call({status:{phase:'working',label:'正在工作',updatedAt:100}})];
-  expect(companionStatus(s,L,options).phase).toBe(({waiting:'waiting',completed:'completed',cancelled:'stopped',cancel_requested:'stopped',failed:'failed'})[state]);
+  expect(companionStatus(s,L,options).phase).toBe(({waiting:'waiting',completed:'completed',cancelled:'stopped',cancel_requested:'stopped',failed:'waiting'})[state]);
  });
  it('shows a goal hold without attributing it to the user',()=>{
   const s=base();s.run!.state='blocked'
   s.workers=[{id:'builder',tasks:[{id:'held',state:'blocked',blockedReason:'Missing evidence'}]}] as unknown as Snapshot['workers']
-  expect(companionStatus(s,L,options).label).toBe('任务已搁置')
-  expect(companionStatus(s,L,{...options,participantId:'builder'}).label).toBe('任务已搁置')
+  expect(companionStatus(s,L,options).label).toBe('进度已保留')
+  expect(companionStatus(s,L,{...options,participantId:'builder'}).label).toBe('进度已保留')
  })
  it('ignores completed activity and chooses a newer running operation',()=>{
   const s=base();s.calls=[call({status:{phase:'thinking',label:'正在思考',updatedAt:20}}),call({id:'tool',kind:'tool',name:'superagent_review',startedAt:30})];

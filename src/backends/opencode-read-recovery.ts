@@ -1,5 +1,5 @@
 import type {PermissionAction} from '../chat-permissions.ts'
-import type {WorkerEventReceipt} from '../async-worker-inbox.ts'
+import type {WorkerAttempt,WorkerEventReceipt} from '../async-worker-inbox.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -267,9 +267,9 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
 
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
  try{
-  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'
+  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'
   const bound=boundWorkerSession(store,stateDir,run,boundary)
   if(!bound)return
   const {thread,session,root,last}=bound
@@ -286,11 +286,13 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
      failure.code==='process_failed'&&failure.diagnostic.reason==='process_exit')
    // A killed writer cannot close its native journal. Its lock, every native
    // operation and every callback must still match the host's durable ledger.
-   if(last.state!=='interrupted'&&!(mode==='provider'&&transport&&last.state==='running'))return
+   if(last.state!=='interrupted'&&!((mode==='provider'||mode==='input')&&transport&&last.state==='running'))return
    if(mode==='provider'&&!transport&&(failure?.code!=='transient'||failure.diagnostic?.operation!=='run'||
       failure.diagnostic.reason!=='provider_status'||!retryableInferenceStatus(failure.diagnostic.httpStatus)))return
   }
   const effects=new Set(thread.effectIds),turns=new Set<string>()
+  const directEffects=new Map<string,number>()
+  let hostConfirmed=false
   const calls:{tool:string;effectId:string;success:boolean;callId?:string;action?:string;requestId?:string}[]=[],denied:InterruptedCallback[]=[]
   if(effects.size!==thread.effectIds.length)return
   for(const turn of session.turns){
@@ -308,15 +310,39 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
     }
     const effectId=stableDigest([thread.id,turn.id,call.id]),record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
     if(!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
-    if(call.result){
-     if(record.state!=='complete'||record.result?.success!==call.result.success||
+    if(record.children&&(call.name!=='code_mode'||new Set(record.children.map(child=>child.id)).size!==record.children.length||
+       record.children.some(child=>child.state!=='complete'||typeof child.success!=='boolean'||child.permission==='pending'||child.permission==='uncertain')))return
+    if(turn===last&&mode==='input'){
+     const action=(call.args as {action?:string}|null)?.action
+     const key=inputEffectKey(call.name,action)
+     if(key)directEffects.set(key,(directEffects.get(key)??0)+1)
+    }
+    // The writer may stop after the host commits a result but before the CLI acknowledges it.
+    const admission=record.admission
+    const confirmed=mode==='input'&&turn===last&&admission&&handoffAttempt&&admission.attemptId===handoffAttempt.attemptId&&
+     admission.dataRevision===handoffAttempt.dataRevision&&record.state==='complete'&&record.result&&
+     (admission.stage==='admitted'||admission.stage==='not_dispatched'&&!record.result.success)
+    if(confirmed&&(!call.result||admission.stage==='not_dispatched'))hostConfirmed=true
+    const result=call.result??(confirmed?record.result:undefined)
+    if(result){
+     if(record.state!=='complete'||record.result?.success!==result.success||
        record.result.permission==='pending'||record.result.permission==='uncertain')return
      if(turn===last){
       const args=checkpoint?call.args as Record<string,unknown>|null:null
-      calls.push({tool:call.name,effectId,success:call.result.success,
+      calls.push({tool:call.name,effectId,success:result.success,
        ...(checkpoint?{callId:call.id}:{}),
        ...(typeof args?.action==='string'?{action:args.action}:{}),...(typeof args?.requestId==='string'?{requestId:args.requestId}:{})})
      }
+     continue
+    }
+    if(mode==='input'&&turn===last){
+     // Earlier releases did not persist admission. Only this structured
+     // observation is eligible for the additional chronological proof below.
+     const args=z.object({action:z.literal('get_window_state'),requestId:z.string().min(1),
+      arguments:z.object({pid:z.number().int().positive(),window_id:z.number().int().positive(),include_screenshot:z.literal(false)}).strict()}).strict().safeParse(call.args)
+     if(!args.success||call!==last.tools.at(-1)||call.name!=='superagent_desktop'||record.state!=='running'||record.result||
+        record.failure?.operation!=='tool'||record.failure.reason!=='exception'||record.admission)return
+     denied.push({id:effectId,receipt:record})
      continue
     }
     if(mode!=='denied_reads'||turn!==last||call.name!=='superagent_job'||record.state!=='running'||record.result||
@@ -330,7 +356,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
    }
    if(native.size)return
   }
-  if(!effects.size&&(mode==='denied_reads'?denied.length:calls.length)&&(boundary||stoppedWriter(root)))return {calls,denied,failure}
+  if(!effects.size&&(mode==='input'||(mode==='denied_reads'?denied.length:calls.length))&&(boundary||stoppedWriter(root)))return {calls,denied,failure,directEffects,hostConfirmed}
  }catch{/* Missing history keeps the original reconciliation fence. */}
 }
 
@@ -355,6 +381,61 @@ export function workerCheckpointReady(store:Pick<Store,'get'|'db'>,stateDir:stri
   !!accountedWorkerTurn(store,stateDir,run,'boundary')?.calls.some(call=>call.success)
 }
 
+// Old Code Mode cells only stored their outer receipt. Reject transfer if
+// any potentially effectful child is not independently present in the journal.
+function inputEffectKey(name:string,action?:string){
+ if(['superagent_status','superagent_read','code_mode','chat_artifact_find'].includes(name)||
+    name==='superagent_desktop'&&action==='get_window_state')return
+ return name==='superagent_desktop'?name+':'+action:name
+}
+
+function inputHandoff(store:Pick<Store,'db'|'get'>,run:Run,event:WorkerEventReceipt){
+ const ticket=store.get<Ticket>('ticket',run.ticketId),owner=store.get<{dataRevision:number;ownerEpoch:number;originEntry:string;scopeId:string}>('task-ownership',run.ticketId)
+ const route=store.get<{parentTrigger:string;entryId:string}>('task-routing',run.ticketId)
+ if(!event.basis?.goalId)return
+ const goal=store.get<{contract:unknown;planRevision:number;entryId:string;actor:string;scopeId:string}>('router-goal',event.basis.goalId)
+ if(!ticket||!owner||!route||!goal||route.entryId!==goal.entryId||owner.originEntry!==route.entryId||owner.scopeId!==goal.scopeId||
+    !ticket.undelivered.length||ticket.ended||ticket.assignments.at(-1)?.id!==run.assignmentId||
+    owner.ownerEpoch!==event.basis.ownerEpoch||stableDigest(goal.contract)!==event.basis.contractDigest||
+    stableDigest(ticket.mandate)!==event.basis.mandateDigest||goal.planRevision!==event.basis.planRevision)return
+ const binding=store.get<{revision:number;privateActor?:string;scopeId:string}>('entry-binding',route.entryId)
+ if(!binding||binding.revision!==event.basis.bindingRevision||binding.privateActor!==goal.actor||binding.scopeId!==goal.scopeId)return
+ const parent=store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',route.parentTrigger)
+ const chat=store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',route.parentTrigger)
+ const conversation=chat&&store.get<{sourceId:string;actor:string;discussion:string}>('chat-conversation',chat.conversationId)
+ if(!parent?.human||!chat||chat.cancelled||chat.cancelRequested||!conversation||conversation.sourceId!==parent.actor.source||
+    conversation.actor!==parent.actor.id||JSON.stringify([parent.actor.source,parent.actor.id])!==goal.actor)return
+ const rows=store.db.prepare(`SELECT body FROM records WHERE kind='async-worker-event' AND json_extract(body,'$.ticketId')=?
+  AND json_extract(body,'$.assignmentId')=? AND json_extract(body,'$.nativeTurnDigest')=? AND json_extract(body,'$.disposition')='archived'
+  AND json_extract(body,'$.reason')='basis_changed' AND json_extract(body,'$.kind')='blocked' LIMIT 2`).all(run.ticketId,run.assignmentId,event.nativeTurnDigest)
+ if(rows.length!==1)return
+ const old=JSON.parse(String(rows[0]!.body)) as WorkerEventReceipt,attempt=store.get<WorkerAttempt>('async-worker-attempt',old.attemptId)
+ if(!attempt||attempt.ticketId!==run.ticketId||attempt.assignmentId!==run.assignmentId||stableDigest(attempt.basis)!==stableDigest(old.basis)||
+    store.get<{eventId:string}>('async-worker-terminal',old.attemptId)?.eventId!==old.id||store.get('async-worker-revoked',old.attemptId))return
+ const {dataRevision,goalRevision:_,...prior}=old.basis,{dataRevision:current,goalRevision:__,...latest}=event.basis
+ // Later follow-ups may already own the route when the scheduler checks the stopped turn.
+ // Anchor its invalidation to a queued input admitted during that attempt.
+ const pending=ticket.inputs.flatMap(input=>{
+  if(input.kind!=='trigger'||!input.human||!ticket.undelivered.includes(input.id)||!input.triggerId.startsWith('router-followup:'))return []
+  const cause=store.get<{meta?:{parentTrigger?:string}}>('trigger',input.triggerId)
+  const id=cause?.meta?.parentTrigger,original=id&&store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',id)
+  const batch=id&&store.get<{conversationId:string;cancelled?:boolean;cancelRequested?:boolean}>('chat-run',id)
+  if(!original||!original.human||JSON.stringify([original.actor.source,original.actor.id])!==goal.actor||
+     !batch||batch.conversationId!==chat.conversationId||batch.cancelled||batch.cancelRequested)return []
+  const command=store.get<{status:string;scopeId:string;result?:{ticketId:string;status:string}}>('worker-command',input.triggerId.slice('router-followup:'.length))
+  return command?.status==='completed'&&command.scopeId===goal.scopeId&&command.result?.ticketId===run.ticketId&&
+    command.result.status==='queued'?[{parent:id!,at:Date.parse(input.at)}]:[]
+ })
+ if(!pending.some(input=>input.parent===route.parentTrigger))return
+ const admission=pending.find(input=>attempt.startedAt<=input.at&&input.at<=old.observedAt)
+ if(!admission)return
+ const {at}=admission
+ if(event.id!==old.id&&(event.disposition!=='applied'||event.reason!=='current'))return
+ if(stableDigest(prior)!==stableDigest(latest)||(dataRevision??1)>=owner.dataRevision||event.id!==old.id&&current!==owner.dataRevision||
+    !(attempt.startedAt<=at&&at<=old.observedAt&&old.observedAt<=event.observedAt))return
+ return {at,attemptId:old.attemptId,dataRevision,parent:admission.parent}
+}
+
 export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string,run:Run){
  if(run.phase!=='uncertain'||run.waitingForWriter)return
  const current=store.get<{ticketId:string;assignmentId:string;attemptId:string}>('async-worker-current',run.ticketId)
@@ -362,21 +443,50 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
  const event=terminal&&store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
  if(!run.turnId||current?.ticketId!==run.ticketId||current.assignmentId!==run.assignmentId||!event||event.id!==terminal!.eventId||
     event.attemptId!==current.attemptId||event.ticketId!==run.ticketId||event.assignmentId!==run.assignmentId||
-    event.kind!=='blocked'||event.disposition!=='applied'||event.nativeTurnDigest!==stableDigest(run.turnId))return
+    event.kind!=='blocked'||event.nativeTurnDigest!==stableDigest(run.turnId))return
  if(store.db.prepare(`SELECT 1 FROM records WHERE kind IN ('browser-receipt','desktop-receipt','tool-receipt')
     AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.state') IS NOT 'complete' LIMIT 1`).get(run.ticketId))return
- const proof=accountedWorkerTurn(store,stateDir,run,'provider')
+ const provider=event.disposition==='applied'?accountedWorkerTurn(store,stateDir,run,'provider'):undefined
+ const handoff=!provider&&inputHandoff(store,run,event)
+ const proof=provider??(handoff?accountedWorkerTurn(store,stateDir,run,'input',handoff):undefined)
  if(!proof?.failure)return
  const model=store.get<{activity:string;workerId?:string;agentId?:string;sourceId:string;triggerId:string;scopeId:string;contextId:string}>('model-session',run.threadId!)
  const usage=model&&store.get<{id:string;ticketId:string;role:string;state:string;at:number;endedAt:number;workerId:string;triggerId:string;sourceId:string}>('model-usage',model.activity)
  if(!model?.workerId||model.workerId!==run.workerId||model.agentId||usage?.role!=='worker'||usage.state!=='failed'||
     usage.id!==model.activity||usage.ticketId!==run.ticketId||usage.workerId!==model.workerId||usage.triggerId!==model.triggerId||usage.sourceId!==model.sourceId||
     !(usage.endedAt>=proof.failure.at))return
- const cause=proof.failure.diagnostic!.reason,at=proof.failure.at
+ const at=proof.failure.at
+ if(handoff){
+  if(!proof.failure.diagnostic||!(usage.at<=handoff.at&&handoff.at<=at))return
+  const legacy=proof.denied.length>0
+  if(legacy){
+   if(proof.denied.length!==1||proof.failure.diagnostic.operation!=='run'||proof.failure.diagnostic.reason!=='exception')return
+   const send=store.db.prepare(`SELECT json_extract(body,'$.endedAt') AS ended FROM records WHERE kind='execution-call'
+    AND json_extract(body,'$.triggerId')=? AND json_extract(body,'$.name')='worker_manage' AND json_extract(body,'$.action')='send'
+    AND json_extract(body,'$.state')='completed' AND json_extract(body,'$.startedAt')<=? AND json_extract(body,'$.endedAt')>=? LIMIT 2`).all(handoff.parent,handoff.at,handoff.at)
+   if(send.length!==1)return
+   const traces=store.db.prepare(`SELECT body FROM records WHERE kind='execution-call' AND json_extract(body,'$.parentId')=? AND json_extract(body,'$.kind')='tool'`).all(usage.id)
+   const unmatched=new Map(proof.directEffects);let failedReads=0
+   for(const row of traces){
+    const trace=JSON.parse(String(row.body))
+    if(trace.ticketId!==run.ticketId||trace.workerId!==model.workerId||!['completed','failed'].includes(trace.state))return
+    const action=trace.name==='superagent_desktop'?trace.action?.replace(/^desktop:/,''):undefined
+    const key=inputEffectKey(trace.name,action)
+    if(key)unmatched.set(key,(unmatched.get(key)??0)-1)
+    if(trace.state==='failed'&&trace.name==='superagent_desktop'&&action==='get_window_state'){
+     if(!(Number(send[0]!.ended)<=trace.startedAt&&trace.startedAt<=trace.endedAt&&trace.endedAt<=at))return
+     failedReads++
+    }
+   }
+   if(!failedReads||[...unmatched.values()].some(n=>n!==0))return
+  }else if(!(proof.failure.diagnostic.operation==='transport'&&['turn_checkpoint','timeout'].includes(proof.failure.diagnostic.reason))&&
+    !(proof.hostConfirmed&&proof.failure.diagnostic.operation==='run'&&proof.failure.diagnostic.reason==='exception'))return
+ }
+ const cause=handoff?'input_superseded' as const:proof.failure.diagnostic!.reason
  // A hard turn deadline also ends productive work. Only spend another
  // authorized goal turn when a real tool finished in the latter half.
  const productiveDeadline=(cause==='turn_checkpoint'||cause==='timeout')&&recentWorkerProgress(store,model.activity,run.ticketId,usage.at,at)
- return {calls:proof.calls,model,at,cause,productiveDeadline,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
+ return {calls:proof.calls,model,at,cause,productiveDeadline,undispatched:proof.denied,attemptId:handoff?handoff.attemptId:undefined,retryAfterMs:proof.failure.diagnostic?.retryAfterMs}
 }
 
 export function refusedWorkerJobReads(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){

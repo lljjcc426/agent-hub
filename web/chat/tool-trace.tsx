@@ -76,17 +76,17 @@ export function toolStatus(c: ExecutionCall, L: Localize) {
   return {
     running: L('Running', '进行中'),
     completed: L('Complete', '已完成'),
-    failed: L('Failed', '失败'),
-    interrupted: L('Interrupted', '已中断'),
+    failed: L('Recorded', '已记录'),
+    interrupted: L('Recorded', '已记录'),
   }[c.state]
 }
 export function ToolCallDetail({call,label,active,locale,L,actor}: {
   call: ExecutionCall; label:string; active:boolean; locale:string; L:Localize; actor:(id?:string)=>string
 }) {
   const clock=new Intl.DateTimeFormat(locale,{hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
-  const flagged=call.permission || call.state==='failed' || call.state==='interrupted'
+  const flagged=call.permission==='pending'||call.permission==='denied'||call.permission==='cancelled'
   const start=new Date(call.startedAt)
-  return <DisclosureRoot className="trace-step" data-state={call.state}>
+  return <DisclosureRoot className="trace-step" data-state={call.state==='failed'||call.state==='interrupted'?'recorded':call.state}>
     <DisclosureSummary>
       <span className={active?'rv-thinking-sheen':undefined}>{label}{call.target?' · '+actor(call.target):''}</span>
       {flagged && <small>{toolStatus(call,L)}</small>}

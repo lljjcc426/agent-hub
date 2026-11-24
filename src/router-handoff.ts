@@ -1,7 +1,7 @@
 import type {ToolResult} from './chat-permissions.ts'
 
 export interface RouterDispatch {
-  kind:'assign'|'send'|'plan'|'team'|'resumed'|'blocked'|'question'
+  kind:'assign'|'send'|'running'|'plan'|'team'|'resumed'|'blocked'|'question'
   reason?:string
   id:string
   label:string
@@ -74,13 +74,14 @@ export class RouterHandoff {
     const names=[...this.workers].join(this.chinese?'、':', ')
     const lines:string[]=[]
     if(names)lines.push(this.chinese?
-      (this.assigned?`已交给 ${names} 处理。`:`已把补充发给 ${names}。`):
-      (this.assigned?`I assigned this to ${names}.`:`I sent your follow-up to ${names}.`))
+      (this.assigned?`已交给 ${names} 处理。`:'已收到补充。'):
+      (this.assigned?`I assigned this to ${names}.`:'Your follow-up was received.'))
     for(const goal of this.goals.values()){
       if(goal.kind==='question')lines.push(this.chinese?`「${goal.label}」需要你在「待处理事项」中回答这个问题。
 ${goal.reason}`:`“${goal.label}” needs your answer in Pending requests.
 ${goal.reason}`)
-      else if(goal.kind==='blocked')lines.push((this.chinese?`「${goal.label}」未能恢复`:`Could not resume “${goal.label}”`)+(goal.reason?' · '+goal.reason:''))
+      else if(goal.kind==='blocked')lines.push(this.chinese?`「${goal.label}」的进度已保留。`:`Progress on “${goal.label}” is saved.`)
+      else if(goal.kind==='running')lines.push(this.chinese?`${goal.label} 正在处理这项任务。`:`${goal.label} is working on this task.`)
       else if(goal.kind==='resumed')lines.push(this.chinese?`已恢复「${goal.label}」。`:`I resumed “${goal.label}”.`)
       else lines.push(this.chinese?`已安排「${goal.label}」进入执行队列。`:`I queued “${goal.label}” for execution.`)
     }

@@ -56,6 +56,10 @@ export interface ModelRequest {
   harnessProviderUrl?:string
   /** Host-only callbacks for a managed goal's handoff between inference steps. */
   workerCheckpointReady?:()=>boolean
+  /** The provider accepted a real task inference containing these inputs. */
+  workerInputAccepted?:()=>void
+  /** A snapshot of the host attempt at an inference or tool boundary. */
+  workerInputState?:()=>{attemptId:string;dataRevision:number|null;current:boolean}
   harnessCheckpointed?:()=>boolean
   harnessWorkspace?:'read'|'edit'
   harnessPrivateFiles?:string[]

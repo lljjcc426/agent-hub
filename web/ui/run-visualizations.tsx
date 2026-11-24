@@ -75,7 +75,7 @@ export interface ThinkingSource {
 export interface ThinkingStep {
   id: string
   label: string
-  state: 'working' | 'done' | 'failed' | 'interrupted'
+  state: 'working' | 'done' | 'failed' | 'interrupted' | 'recorded'
   kind?: 'search'
   activeLabel?: string
   content?: ReactNode
@@ -230,7 +230,7 @@ export function ThinkingState({
   defaultExpanded?: boolean
   scrollable?: boolean
   steps: ThinkingStep[]
-  state: 'running' | 'done' | 'failed'
+  state: 'running' | 'done' | 'failed' | 'recorded'
   elapsedMs: number
   liveSince?: number
 }) {
@@ -240,7 +240,7 @@ export function ThinkingState({
     if (scrollable && defaultExpanded && !toggled.current) setExpanded(true)
   }, [scrollable, defaultExpanded])
   const id = useId()
-  const label = { running: L('Thinking', '正在思考'), done: L('Thought for', '已思考'), failed: L('Interrupted', '思考已中断') }[state]
+  const label = { running: L('Thinking', '正在思考'), done: L('Thought for', '已思考'), failed: L('Interrupted', '思考已中断'), recorded: L('Activity', '处理记录') }[state]
   const list = (
     <ol className="rv-thinking-steps" aria-live="polite" aria-relevant="additions">
       {steps.map((step) => {
@@ -259,7 +259,7 @@ export function ThinkingState({
           </li>
         )
       })}
-      {state !== 'running' && (
+      {(state === 'done' || state === 'failed') && (
         <li className="rv-thinking-step rv-thinking-terminal" data-result={state}>
           <span className="rv-step-mark" aria-hidden="true">{state === 'done' ? <Check size={13} /> : <CircleAlert size={14} />}</span>
           <span>{state === 'done' ? L('Finished thinking', '思考完成') : L('Thinking interrupted', '思考已中断')}</span>

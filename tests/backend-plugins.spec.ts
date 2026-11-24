@@ -1,3 +1,5 @@
+import {withCodeMode} from '../src/code-mode.ts'
+import type {PluginToolEffect} from '../src/backends/plugin-process.ts'
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync,readdirSync} from 'node:fs'
 import {spawn} from 'node:child_process'
 import {tmpdir} from 'node:os'
@@ -111,6 +113,36 @@ it.each(['unknown-tool','bad-args'])('rejects %s before host execution',async(in
  else await expect(run).resolves.toHaveProperty('text')
  expect(calls).toBe(0)
 })
+it.each(['superseded','lost_response'])('accounts for individual Code Mode operations across %s',async(mode)=>{
+ const f=await fixture()
+ let current=true,threadId='',writes=0
+ const request=withCodeMode({...f.request,role:'worker',allowNativeTools:true,input:'worker-cell',onThread:id=>{threadId=id},
+  tools:[{type:'function',name:'allowed',description:'Effect',inputSchema:{type:'object'}}],
+  retainToolResult:(id,result)=>{f.store.put('test-receipt',id,result);return id},
+  workerInputState:()=>({attemptId:'old',dataRevision:1,current}),
+  onTool:async()=>{
+   writes++
+   if(mode==='superseded')current=false
+   if(writes===2)throw Error('Response lost after dispatch')
+   return {success:true,contentItems:[{type:'inputText',text:'Recorded write'}]}
+  }})
+ if(mode==='superseded')await f.registry.run(request)
+ else await expect(f.registry.run(request)).rejects.toMatchObject({code:'outcome_unknown'})
+ const [effect]=f.store.list<PluginToolEffect>('backend-plugin-tool')
+ expect(effect?.children).toHaveLength(2)
+ const [one,two]=effect!.children!
+ expect(one).toMatchObject({state:'complete',success:true,admission:{stage:'admitted'}})
+ expect(f.store.get('test-receipt',one!.id)).toMatchObject({success:true})
+ if(mode==='superseded'){
+  expect(effect!.state).toBe('complete');expect(writes).toBe(1)
+  expect(two).toMatchObject({state:'complete',success:false,admission:{stage:'not_dispatched'}})
+ }else{
+  expect(effect!.state).toBe('running');expect(two).toMatchObject({state:'running',admission:{stage:'admitted'}})
+  await expect(new BackendRegistry(f.config,f.store).run({...request,threadId})).rejects.toMatchObject({code:'outcome_unknown'})
+  expect(writes).toBe(2)
+ }
+})
+
 it('persists uncertain effects and blocks retry after an effect throws',async()=>{
  const f=await fixture();let threadId='',calls=0
  const r={...f.request,input:'tool',onThread:(id:string)=>threadId=id,tools:[{type:'function' as const,name:'allowed',description:'test',inputSchema:{type:'object'}}],onTool:async()=>{calls++;throw Error('Transport lost after external write')}}

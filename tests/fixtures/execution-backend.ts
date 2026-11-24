@@ -26,6 +26,7 @@ export default {
     if(r.input==='malformed'){process.stdout.write('malformed\n');await new Promise(()=>{})}
     if(r.input==='invalid-schema')return {threadId:id,turnId:'bad',text:'not-json'}
     if(r.input==='tool'||r.input==='replay')await r.onTool!('allowed',{value:3},'same-call')
+    if(r.input==='worker-cell')await r.onTool!('code_mode',{source:'await tools.allowed({value:1}); return await tools.allowed({value:2})'},'cell')
     if(r.input==='unknown-tool')await r.onTool!('forbidden',{},'bad-call')
     if(r.input==='bad-args')await r.onTool!('allowed',{value:'wrong'},'bad-call')
     let isolation:Record<string,unknown>|undefined

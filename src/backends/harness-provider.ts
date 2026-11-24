@@ -72,6 +72,9 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    if(input?.model!==model||input.previous_response_id||input.conversation||input.stream!==true){res.writeHead(400).end();return}
    // OpenCode can make auxiliary title requests without the task schema or tools.
    const taskStep=Array.isArray(input.tools)&&input.tools.length>0
+   if(taskStep&&r.workerInputState&&!r.workerInputState().current){
+    checkpointed=true;res.writeHead(409).end();return
+   }
    if(taskStep&&steps>0&&steps<d.maxSteps&&checkpointAt!==undefined&&Date.now()>=checkpointAt&&(checkpointed||r.workerCheckpointReady?.())){
     checkpointed=true;res.writeHead(409).end();return
    }
@@ -104,6 +107,9 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
    let retries=0
    const send=async()=>{
     for(;;){
+     if(taskStep&&r.workerInputState&&!r.workerInputState().current){
+      checkpointed=true;return new Response(null,{status:409})
+     }
      let result:Response|undefined
      try{result=await fetch(upstream,{method:'POST',headers,body:wire,redirect:'error',signal})}
      catch(error){
@@ -152,6 +158,7 @@ export async function openHarnessProvider(d:ApiDefinition,model:string,r:ModelRe
     res.writeHead(502).end()
     return
    }
+   if(taskStep)r.workerInputAccepted?.()
    let received=0
    const limit=new Transform({transform(chunk,_encoding,next){
     received+=chunk.length

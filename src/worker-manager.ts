@@ -1,4 +1,4 @@
-import {askAtCheckpoint,recordInquiry} from './worker-inquiry.ts'
+import {askAtCheckpoint,authorizedQuestion,recordInquiry} from './worker-inquiry.ts'
 import {workerPoolDefault,messageCharacters} from './execution-limits.ts'
 import {checkWorkerAdmission} from './backend-admission.ts'
 import {businessDecision,answerBusinessDecision} from './business-decisions.ts'
@@ -228,6 +228,7 @@ export class WorkerManager {
    if(input.expectReply&&context?.trigger){
     const assigned=profiles.find(p=>p.id===a.workerId)
     const inquiry={id:'router-followup:'+key,ticketId:ticket.id,triggerId:context.trigger.id,discussion:context.discussion}
+    if(!authorizedQuestion(host,inquiry))throw Error('The original Chat cannot receive a reply from this task')
     const result=askAtCheckpoint(host,inquiry,context.trigger,ticket,assigned??{id:a.workerId})
     if(result){
      if(result.status==='queued')host.chat.delegated(key,context.trigger.id,ticket.id,a.workerId,context.trigger.text)
@@ -252,7 +253,7 @@ export class WorkerManager {
    if(context?.scoped){
     if(host.store.deliveries().some(d=>d.ticketId===input.ticketId&&!['sent','dropped'].includes(d.status)))throw Error('Reconcile pending task deliveries before changing the reply entry')
     // CI is evidence for the original task, not a new author or reply owner.
-    if(!repositoryEvent){host.scopes.noteInput(input.ticketId,context.scoped);host.memory.moveTaskContext(input.ticketId,context.scoped)}
+    if(!repositoryEvent){host.scopes.noteInput(input.ticketId,context.scoped,{preserveReplyRoute:input.expectReply});host.memory.moveTaskContext(input.ticketId,context.scoped)}
     if(context.manifest){
      const owner=host.scopes.ownership(input.ticketId)!;context.manifest.taskOwners=[...context.manifest.taskOwners.filter(t=>t.id!==input.ticketId),{id:input.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1}]
      const saved=host.store.get<{manifest:ContextManifest}>('task-context',input.ticketId)

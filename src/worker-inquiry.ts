@@ -28,6 +28,7 @@ export function recordInquiry(host: Runtime, inquiry: WorkerInquiry) {
   const ids = open?.ids ?? []
   host.store.put('worker-inquiry', inquiry.id, inquiry)
   host.store.put('worker-inquiry-open', inquiry.ticketId, {ticketId:inquiry.ticketId, ids:[...ids, inquiry.id]})
+  host.chat.trackInquiry(inquiry.triggerId,inquiry.id)
 }
 
 export function finishInquiry(host: Runtime, inquiry: WorkerInquiry) {
@@ -69,7 +70,6 @@ export function askAtCheckpoint(host:Runtime, inquiry:WorkerInquiry, trigger:Tri
   if (active && !retained && !ticket.ended && !ticket.attention && run?.phase!=='background' &&
       host.executingInquiryTurn(ticket.id) &&
       !statusQuestion(trigger.text,[worker],[{ticketId:ticket.id,workerId:worker.id,title:ticket.title}])) return
-  if (!authorizedQuestion(host,inquiry)) throw Error('The original Chat can no longer read this task')
   const assignment=taskView(host.store,ticket).assignments.at(-1)
   const current=host.store.get<{attemptId:string;assignmentId:string}>('async-worker-current',ticket.id)
   const terminal=current && host.store.get<{eventId:string}>('async-worker-terminal',current.attemptId)

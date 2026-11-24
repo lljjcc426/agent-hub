@@ -1,3 +1,4 @@
+import {authorizedQuestion,type WorkerInquiry} from './worker-inquiry.ts'
 import type {InquiryTask,StatusQuestion} from './router-inquiry-context.ts'
 import {resourcePage} from './execution-limits.ts'
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
@@ -67,7 +68,7 @@ type PendingCard =
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
-interface ChatRun {textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
+interface ChatRun {inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -133,6 +134,11 @@ export class ChatSessions {
     if(!context.scoped)return !this.host.scopes.enabled()
     const entry=this.host.scopes.binding(context.scoped.route.entryId)
     return context.scoped.route.scopeId==='@chat:'+stableDigest(conversation.owner)&&entry.privateActor===JSON.stringify([conversation.sourceId,conversation.actor])&&entry.nativeId===(conversation.nativeId??'chat:'+conversation.id)
+  }
+  trackInquiry(triggerId:string,inquiryId:string){
+    const run=this.host.store.get<ChatRun>('chat-run',triggerId)
+    if(!run)throw Error('Original Chat message unavailable')
+    this.host.store.put('chat-run',triggerId,{...run,inquiryIds:[...new Set([...(run.inquiryIds??[]),inquiryId])]})
   }
   /** Resolve a contact request only from the user's persisted Chat message and accessible task ownership. */
   directInquiryTicket(context:RouterContext, query:StatusQuestion, tasks:readonly InquiryTask[]){
@@ -1390,7 +1396,13 @@ export class ChatSessions {
     const continuing=new Set(items.filter(item=>item.kind==='running').map(item=>item.id))
     const runGoals=last?goals.filter(g=>this.goalRunId(g)===last.id||heldTargets?.has(g.id)):[]
     const decisionTask=last?.decisionTicketId?tasks.find(t=>t.id===last.decisionTicketId):undefined
-    const currentTasks=tasks.filter(t=>t===decisionTask||continuing.has(t.id)||this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId||runGoals.some(g=>g.taskIds.includes(t.id)))
+    const asks=last?.inquiryIds ? last.inquiryIds.flatMap(key=>this.host.store.get<WorkerInquiry>('worker-inquiry',key)??[]) :
+      last&&items.some(d=>d.inquiry) ? this.rows<WorkerInquiry>('worker-inquiry','triggerId',last.id) : []
+    const questions=asks.filter(q=>q.triggerId===last?.id&&q.discussion===c.discussion)
+    // Earlier versions made the last question the task's reply owner. Render it as a question when its receipt establishes that link.
+    const questionTickets=new Set(questions.map(q=>q.ticketId))
+    const currentTasks=tasks.filter(t=>t===decisionTask||continuing.has(t.id)||runGoals.some(g=>g.taskIds.includes(t.id))||
+      this.host.taskAuthority(t.id)?.parentTrigger===last?.triggerId&&(!questionTickets.has(t.id)||items.some(d=>d.id===t.id&&!d.inquiry)))
     const replyJobs=this.host.store.db.prepare(`SELECT j.id,j.state,json_extract(j.payload,'$.triggerId') AS runId
       FROM jobs j JOIN records r ON r.kind='chat-run' AND json_extract(r.body,'$.triggerId')=json_extract(j.payload,'$.triggerId')
       WHERE json_extract(r.body,'$.conversationId')=? AND j.kind='router' AND j.state IN ('pending','running')
@@ -1431,6 +1443,7 @@ export class ChatSessions {
       else if(currentTasks.some(t=>t.state==='failed'))state='failed'
       else if(currentTasks.some(t=>t.state==='blocked'))state='blocked'
       else if(currentTasks.some(t=>t.state==='waiting'))state='waiting'
+      else if(questions.some(q=>!q.delivered&&authorizedQuestion(this.host,q)))state='waiting'
       else if(decisionTask?.state==='completed'||decisionTask?.state==='cancelled')state=decisionTask.state
       else if(batch?.decision?.action==='clarify')state=clarification?.status==='sent'?'waiting':!clarification||['failed','uncertain','held','dropped'].includes(clarification.status)?'failed':'queued'
       else if(jobs.some(j=>j.state==='done')&&jobs.every(j=>j.state==='done'||j.workerReport&&j.state==='failed'))state='completed'

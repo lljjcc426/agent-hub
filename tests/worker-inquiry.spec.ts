@@ -619,3 +619,30 @@ it('returns an inquiry in a personal Chat without configured management scopes a
   expect(f.h.taskAuthority(f.ticketId)?.parentTrigger).toBe(original)
   expect(f.view().filter(m=>m.runId===q.runId&&m.text===replay.reply)).toHaveLength(1)
 })
+
+it('completes the answered Chat question while the original task still waits for acceptance', async () => {
+  const pause=gate(),f=await fixture({expectReply:true,worker:async()=>{await pause.promise;return replay}})
+  const original=f.h.taskAuthority(f.ticketId)!.parentTrigger!
+  const ask=f.send('Ask release for a progress update')
+  const runState=(runId:string)=>f.h.chat.view(f.chatId,'owner',undefined,undefined,undefined,runId).run?.state
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+ask.runId)&&f.workerTurns.length===2)
+  expect(['running','waiting']).toContain(runState(ask.runId))
+  pause.release()
+  await until(f.h,()=>f.view().some(m=>m.runId===ask.runId&&m.text===replay.reply))
+  expect(runState(ask.runId)).toBe('completed')
+  expect(runState(original)).toBe('waiting')
+  expect(f.h.taskAuthority(f.ticketId)?.parentTrigger).toBe(original)
+})
+
+it('cancels only the inquiry when the user stops waiting for its answer', async () => {
+  const pause=gate(),f=await fixture({expectReply:true,worker:async()=>{await pause.promise;return replay}})
+  const original=f.h.taskAuthority(f.ticketId)!.parentTrigger
+  const ask=f.send('Ask release for a progress update')
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+ask.runId)&&f.workerTurns.length===2)
+  await f.h.chat.cancel(f.chatId,'owner',ask.runId)
+  pause.release()
+  await until(f.h,()=>f.results().length===2)
+  expect(f.h.store.tickets.get(f.ticketId)?.ended).toBeFalsy()
+  expect(f.h.taskAuthority(f.ticketId)?.parentTrigger).toBe(original)
+  expect(f.view().some(m=>m.runId===ask.runId&&m.text===replay.reply)).toBe(false)
+})

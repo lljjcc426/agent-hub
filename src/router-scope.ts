@@ -296,13 +296,13 @@ export class RouterScopes {
   this.store.put('task-channel',stableDigest([ticketId,c.route.entryId]),{ticketId,entryId:c.route.entryId,revision:1,context:true,request:true,result:true,active:true} satisfies TaskChannel)
   return owner
  }
- noteInput(ticketId:string,c:ScopeContext){
+ noteInput(ticketId:string,c:ScopeContext,options:{preserveReplyRoute?:boolean}={}){
   const owner=this.ownership(ticketId)!;this.checkTask(ticketId,c,true)
   const next={...owner,dataRevision:(owner.dataRevision??1)+1};this.store.put('task-ownership',ticketId,next)
   const key=stableDigest([ticketId,c.route.entryId]),channel=this.store.get<TaskChannel>('task-channel',key)!
   if(!channel.result||!channel.active)throw Error('A follow-up needs an explicit result channel')
   this.store.put('task-channel',key,{...channel,dataRevision:next.dataRevision,revision:channel.revision+1})
-  this.store.put('task-routing',ticketId,{ticketId,source:c.trigger.source,discussion:c.route.discussion,parentTrigger:c.trigger.id,entryId:c.route.entryId,mode:'host'})
+  if(!options.preserveReplyRoute)this.store.put('task-routing',ticketId,{ticketId,source:c.trigger.source,discussion:c.route.discussion,parentTrigger:c.trigger.id,entryId:c.route.entryId,mode:'host'})
  }
  addWorker(scopeId:string,workerId:string){const scope=this.scope(scopeId);if(!scope.workerIds.includes(workerId))this.store.put('management-scope',scope.id,{...scope,workerIds:[...scope.workerIds,workerId],revision:scope.revision+1})}
  taskRunnable(ticketId:string){if(this.store.list<{tickets:string[]}>('history-plan').some(p=>p.tickets.includes(ticketId)))return false;const owner=this.ownership(ticketId);const migration=this.store.get<any>('scope-migration','current');return (!migration||migration.phase==='active')&&(!this.enabled()||!!owner&&owner.state==='active'&&owner.requiredSourceIds.every(s=>this.scope(owner.scopeId).sourceIds.includes(s))&&this.scope(owner.scopeId).backendIds.includes(owner.backendId))}

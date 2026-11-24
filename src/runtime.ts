@@ -1385,7 +1385,8 @@ export class Runtime {
     const readMessages=new Set<string>(pendingMessages.map(m=>m.id)),readReports=new Map<string,string>()
     const authorityInputs=new Set([...(candidates||followups?[]:[triggerId]),...(batchInputs??[]).map(t=>t.id),...pendingMessages.map(m=>this.taskAuthority(m.ticketId)!.parentTrigger!)])
     const schema={type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false}
-    const scopedTasks=scoped?this.store.list<any>('worker-assignment').flatMap(a=>{try{this.scopes.checkTask(a.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(a.ticketId)!,scoped.route.entryId,'result');const saved=this.store.get<{manifest:ContextManifest}>('task-context',a.ticketId);if(saved)this.memory.validate(saved.manifest);const raw=this.store.tickets.get(a.ticketId),task=raw&&taskView(this.store,raw);return task?[{ticketId:task.id,workerId:a.workerId,title:task.title,ended:task.ended,report:task.assignments.at(-1)?.report}]:[]}catch{return []}}).slice(-40):[]
+    const eligibleTasks=scoped?this.store.list<any>('worker-assignment').flatMap(a=>{try{this.scopes.checkTask(a.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(a.ticketId)!,scoped.route.entryId,'result');const saved=this.store.get<{manifest:ContextManifest}>('task-context',a.ticketId);if(saved)this.memory.validate(saved.manifest);const raw=this.store.tickets.get(a.ticketId),task=raw&&taskView(this.store,raw);return task?[{ticketId:task.id,workerId:a.workerId,title:task.title,ended:task.ended,report:task.assignments.at(-1)?.report}]:[]}catch{return []}}):[]
+    const scopedTasks=eligibleTasks.slice(-40)
     if(scoped&&!candidates&&!followups){
       for(const t of [trigger,...(batchInputs??[])])if(t.human&&!this.chat.isReactionInput(t.id)&&this.routerIngress.authority(t.id).strength==='explicit'){
         const c=this.scopes.context(t,discussion)
@@ -1396,14 +1397,14 @@ export class Runtime {
     if(scoped)await this.agentMemory.prepare(scoped,trigger.text)
     const rawInput={...(messageId?{kind:'worker_result',messages:pendingMessages,mandate}:currentInput),tasks:scopedTasks,goals:scoped?this.goals.list(scoped):[],currentGoalId:this.goals.forInput(triggerId)?.id}
     const configuredRouter=profile??this.config.execution.router
-    const routerBackend=this.config.backends[configuredRouter?.backend??this.config.execution.roles.router??this.config.execution.backend]
-    const toolFilter=configuredRouter?.tools??routerBackend?.defaults?.tools
+    const routerBackend=this.config.backends[profile?.backend??chatBinding?.backendId??configuredRouter?.backend??this.config.execution.roles.router??this.config.execution.backend]
+    const toolFilter=(profile?profile.tools:chatBinding?chatBinding.options?.tools:configuredRouter?.tools)??routerBackend?.defaults?.tools
     const canReadHistory=!candidates&&!followups&&allowedTools.has('router_read')&&(!toolFilter||toolFilter.includes('router_read'))&&!this.delegation.authority(triggerId)
     const packetBudget=scoped&&canReadHistory?Math.floor(workingInputBudget(this.scopes.scope(scoped.route.scopeId).contextBytes)*0.55):undefined
     const privateInquiry=!!(packetBudget&&scoped&&this.chat.personalManagement({discussion,trigger,scoped})&&
       (singleChatInput||inquiry)&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand)
     const contacts=privateInquiry?workerProfiles(this.config).filter(w=>this.scopes.scope(scoped!.route.scopeId).workerIds.includes(w.id)):[]
-    const status=privateInquiry?statusQuestion(trigger.text,contacts,scopedTasks):undefined
+    const status=privateInquiry?statusQuestion(trigger.text,contacts,eligibleTasks):undefined
     const indexed=!!status&&protocolBytes({tasks:scopedTasks,goals:rawInput.goals})>inquiryInventoryBytes
     const originalId=packetBudget&&protocolBytes(rawInput)>packetBudget-256?'context-input:'+randomUUID():undefined
     const selected=indexed?{...rawInput,...inquiryInventory(scopedTasks,rawInput.goals,status!,contacts,this.settings.current().revision),
@@ -1474,6 +1475,7 @@ export class Runtime {
       const workerRequired=(message:string):ToolResult=>({success:false,contentItems:[{type:'inputText',text:JSON.stringify({
         code:'worker_required',message,
       })}]})
+      let hostRouted=false
       const callRouterTool=async(name:string,args:unknown):Promise<ToolResult>=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -1552,7 +1554,8 @@ export class Runtime {
             const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,
               onDispatch:(kind,id)=>{
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
-                if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId})
+                if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId,
+                  ...(kind==='send'&&(args as {expectReply?:boolean}).expectReply?{inquiry:true,...(hostRouted?{hostRouted:true}:{})}:{})})
               }
             })),ticketId=(args as {ticketId?:string})?.ticketId
             if(result.status==='goal_blocked')return {success:false,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
@@ -1582,6 +1585,7 @@ export class Runtime {
           return workerRequired('Task execution belongs to a Worker. Use worker_manage to assign or continue the task.')
         }
         if(hostCommand&&!isRouterRead(name,args))return workerRequired('The host handles this decision. Read its state and reply without repeating the action.')
+        if(inquiry&&!isRouterRead(name,args))return workerRequired('The Worker has answered the original question. Use authorized reads if needed and return the answer to the user.')
         const held=blockedByRouterRecovery(this.store,recovery?.holds??[],name,args)
         if(held)return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
           code:'operation_outcome_unconfirmed',tool:held.tool,receiptId:held.receiptId,
@@ -1650,10 +1654,24 @@ export class Runtime {
       const execute=(input:ModelRequest)=>desktop?this.desktopRouterTurn(input,triggerId,validateReplyContext,handoff):this.runModel(input,triggerId,handoff)
       let result:ModelResult
       if(!retainedDispatch.length&&singleChatInput&&mandate?.strength==='explicit'){
-        const task=this.chat.runningNudge({discussion,trigger,scoped})
+        const context={discussion,trigger,scoped}
+        const named=status?.contact&&!recovery?.holds.length&&(!toolFilter||toolFilter.includes('worker_manage'))&&
+          !this.chat.textReplyAttempt(triggerId)?this.chat.directInquiryTicket(context,status,eligibleTasks):undefined
+        if(named){
+          // Use the same permission, recovery, scope and idempotency checks as a model tool call.
+          validateReplyContext()
+          hostRouted=true
+          try{
+            await checkedRouterTool('worker_manage',{action:'send',ticketId:named.ticketId,id:named.workerId,text:trigger.text,
+              expectReply:true,revision:this.settings.current().revision,requestId:'ask-'+stableDigest([triggerId,named.ticketId])})
+          }finally{hostRouted=false}
+        }
+        const task=this.chat.runningNudge(context)
         if(task)saveDispatch({kind:'running',id:task.id,label:workerProfiles(this.config).find(w=>w.id===task.workerId)?.label??task.workerId})
       }
-      let rebuildAfterDispatch=dispatches().length>0
+      const dispatchRecords=dispatches()
+      const directHandoff=dispatchRecords.length>0&&dispatchRecords.every(d=>d.hostRouted)
+      let rebuildAfterDispatch=dispatchRecords.length>0
       const dispatchReply=()=>{
         acceptHandoff()
         return {threadId:previous?.threadId??'',turnId:'dispatch:'+job.id,text:JSON.stringify({reply:handoff!.reply()})}
@@ -1724,9 +1742,9 @@ export class Runtime {
           this.continuity.finish(scoped,job.id,output.reply,[...authorityInputs],packet.manifest.id,knowledgeRefs)
           this.agentMemory.recordDocuments(scoped,knowledgeRefs.filter(ref=>output.reply.includes(ref.documentId)),job.id)
           const saved=this.store.get<any>('router-session',sessionKey)
-          if(!continuity?.isolatedInquiry&&(!inquiry||result.threadId))this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
+          if(!directHandoff&&!continuity?.isolatedInquiry&&(!inquiry||result.threadId))this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
-        if(!continuity?.isolatedInquiry&&(handoff?.yielded||rebuildAfterDispatch)){
+        if(!directHandoff&&!continuity?.isolatedInquiry&&(handoff?.yielded||rebuildAfterDispatch)){
           // An interrupted native tool turn may reject resume. Rebuild from the
           // committed conversation and task state instead of replaying its tools.
           this.continuity.retireThread(sessionKey,triggerId)
@@ -2074,13 +2092,14 @@ export class Runtime {
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
       const output=chatOutput??report.parse(rawOutput)
       const reportedState=output.state
+      const receivedInquiry=hasInquiry||(chatDelivery&&inputs.some(i=>inquiryForInput(this,i)))
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
       this.store.put('transcript',result.turnId,{ticketId:ticket.id,threadId:result.threadId,turnId:result.turnId,text:result.text,at:Date.now(),revision:promptRevision})
       if(delegated?.mode==='host'){
         // A Worker may decline part of its own inquiry. Its answer already returns to the
         // asking Router. It grants no authority to re-admit a user message or another task.
-        if(hasInquiry&&output.handbacks.length){
+        if(receivedInquiry&&output.handbacks.length){
           const asks=new Set([...inputs.flatMap(i=>inquiryForInput(this,i)?.id??[]),...previousInquiries.map(q=>q.inquiryId)])
           output.handbacks=output.handbacks.filter(h=>!asks.has(h.triggerId))
         }
@@ -2164,7 +2183,7 @@ export class Runtime {
         }
         if(handoffDigest)this.store.put('worker-handoff-evidence',ticket.id,{ticketId:ticket.id,assignmentId,digest:handoffDigest})
         const finalMessageId=this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
-        if(hasInquiry&&!pending&&!superseded&&!question&&['waiting','ready'].includes(output.state)){
+        if(receivedInquiry&&!pending&&!superseded&&!question&&['waiting','ready'].includes(output.state)){
           const finalHeld=reportedState==='ready'&&(!finalMessageId||output.state!=='ready')
           queueInquiryReplies(this,receipt,inputs,previousInquiries,finalHeld?[]:chatOutput?.inquiryReplies,finalHeld?'':output.reply,finalMessageId)
         }

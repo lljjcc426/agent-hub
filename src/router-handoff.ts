@@ -2,6 +2,8 @@ import type {ToolResult} from './chat-permissions.ts'
 
 export interface RouterDispatch {
   kind:'assign'|'send'|'running'|'plan'|'team'|'resumed'|'blocked'|'question'
+  inquiry?:boolean
+  hostRouted?:boolean
   reason?:string
   id:string
   label:string
@@ -14,6 +16,7 @@ const queuedInputGraceMs=250
 export class RouterHandoff {
   private readonly closeModel=new AbortController()
   private readonly workers=new Set<string>()
+  private readonly asked=new Set<string>()
   private readonly goals=new Map<string,RouterDispatch>()
   private grace?:ReturnType<typeof setTimeout>
   private deadline=Infinity
@@ -34,7 +37,10 @@ export class RouterHandoff {
   }
 
   recordDispatch(dispatch:RouterDispatch){
-    if(dispatch.kind==='assign'||dispatch.kind==='send')this.record(dispatch.label,dispatch.kind==='assign')
+    if(dispatch.kind==='send'&&dispatch.inquiry){
+      this.asked.add(dispatch.label)
+      this.closeIn(replyGraceMs)
+    }else if(dispatch.kind==='assign'||dispatch.kind==='send')this.record(dispatch.label,dispatch.kind==='assign')
     else{
       this.goals.set(dispatch.id,dispatch)
       this.closeIn(replyGraceMs)
@@ -76,6 +82,10 @@ export class RouterHandoff {
     if(names)lines.push(this.chinese?
       (this.assigned?`已交给 ${names} 处理。`:'已收到补充。'):
       (this.assigned?`I assigned this to ${names}.`:'Your follow-up was received.'))
+    if(this.asked.size){
+      const recipients=[...this.asked].join(this.chinese?'、':', ')
+      lines.push(this.chinese?`已向${recipients}转达了你的问题，收到回复后我会告诉你。`:`I asked ${recipients} and will bring you their reply.`)
+    }
     for(const goal of this.goals.values()){
       if(goal.kind==='question')lines.push(this.chinese?`「${goal.label}」需要你在「待处理事项」中回答这个问题。
 ${goal.reason}`:`“${goal.label}” needs your answer in Pending requests.

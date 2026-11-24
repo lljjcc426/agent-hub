@@ -20,7 +20,9 @@ const statusEn = /^(?:please )?(?:(?:check|show|give me) |what(?:'s| is) )?(?:(?
 
 function mode(value:string) {
   const compact=value.replace(/[\s,，、]+/gu,'')
-  if(contactZh.test(compact)||contactEn.test(value))return true
+  if(contactZh.test(compact)||contactEn.test(value)||
+    /^(?:请|麻烦)?(?:帮我|替我)?(?:问问|问一下|问下)(?:最新|当前|目前)?(?:进展|进度)$/u.test(compact)||
+    /^(?:please )?ask (?:for |about )?(?:a |the )?(?:progress|status) update$/u.test(value))return true
   if(statusZh.test(compact)||statusEn.test(value))return false
 }
 

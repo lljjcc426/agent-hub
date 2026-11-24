@@ -1,3 +1,4 @@
+import type {InquiryTask,StatusQuestion} from './router-inquiry-context.ts'
 import {resourcePage} from './execution-limits.ts'
 import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
@@ -132,6 +133,41 @@ export class ChatSessions {
     if(!context.scoped)return !this.host.scopes.enabled()
     const entry=this.host.scopes.binding(context.scoped.route.entryId)
     return context.scoped.route.scopeId==='@chat:'+stableDigest(conversation.owner)&&entry.privateActor===JSON.stringify([conversation.sourceId,conversation.actor])&&entry.nativeId===(conversation.nativeId??'chat:'+conversation.id)
+  }
+  /** Resolve a contact request only from the user's persisted Chat message and accessible task ownership. */
+  directInquiryTicket(context:RouterContext, query:StatusQuestion, tasks:readonly InquiryTask[]){
+    const trigger=context.trigger
+    if(!trigger?.human||!query.contact||query.workerIds.length>1||!this.personalManagement(context))return
+    const run=this.host.store.get<ChatRun>('chat-run',trigger.id)
+    const user=run&&this.host.store.get<Message>('chat-message','user:'+run.id)
+    if(!user||user.role!=='user'||!run||run.cancelled||run.cancelRequested||run.feedback||user.skill||user.attachments?.length)return
+    let ticketId=query.ticketId
+    if(user.quote){
+      const quoted=this.host.store.get<Message>('chat-message',user.quote.messageId)
+      if(!quoted||quoted.conversationId!==run.conversationId||this.host.memory.cleanup.blocked('chat-message',quoted.id,quoted))return
+      let quotedTicket=quoted.ticketId
+      const prefix='reply:router:result:'
+      if(!quotedTicket&&quoted.id.startsWith(prefix)){
+        const message=this.host.store.get<{ticketId?:string;inquiryId?:string}>('router-inbox',quoted.id.slice(prefix.length))
+        const ask=message?.inquiryId&&this.host.store.get<{triggerId:string;ticketId:string;delivered?:boolean}>('worker-inquiry',message.inquiryId)
+        if(ask&&ask.delivered&&ask.triggerId===quoted.runId&&ask.ticketId===message?.ticketId)quotedTicket=ask.ticketId
+      }
+      if(!quotedTicket||ticketId&&ticketId!==quotedTicket)return
+      ticketId=quotedTicket
+    }
+    if(!ticketId&&!query.workerIds.length)return
+    const matches=tasks.filter(t=>{
+      if(ticketId&&t.ticketId!==ticketId||query.workerIds.length&&!query.workerIds.includes(t.workerId))return false
+      const owner=this.host.taskAuthority(t.ticketId)
+      return owner?.mode==='host'&&owner.discussion===context.discussion&&owner.actor===trigger.actor.id&&owner.source===trigger.source
+    })
+    // Include ended tasks in disambiguation. A name shared with older work is not an address.
+    const task=matches.length===1?matches[0]:undefined
+    if(!task||task.ended)return
+    const ticket=this.host.store.tickets.get(task.ticketId),state=this.host.store.get<Run>('run',task.ticketId)
+    if(!ticket||ticket.attention||!state||!['idle','starting','running','background'].includes(state.phase)||
+      this.host.permissions.hasUnconfirmedEffect(task.ticketId)||this.host.approvals.waiting(task.ticketId))return
+    return task
   }
   /** A status-only nudge can leave a single, actively executing private task in place. */
   runningNudge(context:RouterContext){

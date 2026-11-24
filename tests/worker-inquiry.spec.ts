@@ -40,6 +40,8 @@ const secondAnswer = 'The offline bundle is available in the release directory.'
 interface Scenario {
   expectReply: boolean
   observeInput?: (request: ModelRequest, data: any) => void | Promise<void>
+  answerOnly?: boolean
+  present?: (request: ModelRequest) => Promise<void>
   recover?: (request: ModelRequest, data: {question: string; report: {summary: string}}) => string | Promise<string>
   owner?: string
   managed?: boolean
@@ -95,10 +97,12 @@ async function fixture(scenario: Scenario) {
     } else if (data.kind === 'worker_result') {
       const messages = data.messages as { id: string; text: string }[]
       readyForAnswer.push(messages.map(m => m.id))
+      await scenario.present?.(r)
       response = { reply: scenario.routerAnswer ? await scenario.routerAnswer(messages) : messages.map(m => m.text).join('\n') }
     } else if (data.kind === 'user_message') {
       const text = data.trigger.text
       await scenario.observeInput?.(r,data)
+      if (scenario.answerOnly && text !== initial) return {threadId,turnId,text:JSON.stringify({reply:'I checked the available status.'})}
       if (text !== initial) await scenario.beforeSend?.(text)
       const createGoal = text === initial && scenario.managed
       const command = text === initial
@@ -493,4 +497,80 @@ it('uses a bounded task index for a long status inquiry and can read the origina
   expect(seen[0]).toMatchObject({hasIndex:true,original:true,kind:'user_message'})
   expect(seen[0]!.bytes).toBeLessThan(24000)
   expect(f.h.goals.get(g.id)?.plan).toEqual(longGoal.plan)
+})
+
+it.each(['name','quoted task','quoted answer','ticket'] as const)('routes an explicit contact by %s with one durable send and no initial Router model call', async address => {
+  const modelQuestions:string[]=[]
+  const f=await fixture({expectReply:true,observeInput:(_r,d)=>{modelQuestions.push(d.trigger.text)}})
+  let quote:string|undefined
+  if(address==='quoted task'){
+    quote=f.h.store.list<{id:string;ticketId?:string}>('chat-message').find(m=>m.id.startsWith('delegated:')&&m.ticketId===f.ticketId)!.id
+  }else if(address==='quoted answer'){
+    const prior=f.send(firstQuestion)
+    await until(f.h,()=>f.view().some(m=>m.runId===prior.runId&&m.text===replay.reply))
+    quote=f.view().find(m=>m.runId===prior.runId&&m.text===replay.reply)!.id
+  }
+  const target=address==='name'?'release':address==='ticket'?f.ticketId:''
+  const question=target?'Ask '+target+' for a progress update':'Ask for a progress update'
+  const ask=f.send(question,quote)
+  await until(f.h,()=>f.view().some(m=>m.runId===ask.runId&&m.text===replay.reply))
+  expect(modelQuestions).not.toContain(question)
+  const key='router:'+ask.runId
+  expect(f.h.store.get('router-dispatch',key)).toMatchObject({items:[{kind:'send',id:f.ticketId,inquiry:true,hostRouted:true}]})
+  expect(f.h.store.get<{reply:string}>('router-result',key)?.reply).toContain('I asked release')
+  const jobs=f.h.store.db.prepare('SELECT payload FROM jobs WHERE id=?').get(key)!
+  f.h.store.enqueue(key,'router',JSON.parse(String(jobs.payload)))
+  await f.h.tick()
+  expect(f.h.store.list<{triggerId:string;ticketId:string;delivered:boolean}>('worker-inquiry').filter(i=>i.triggerId===ask.runId)).toMatchObject([{ticketId:f.ticketId,delivered:true}])
+  expect(f.view().filter(m=>m.runId===ask.runId&&m.text===replay.reply)).toHaveLength(1)
+  expect(f.h.store.tickets.get(f.ticketId)?.assignments.at(-1)?.report?.state).toBe('waiting')
+})
+
+it('leaves ambiguous names with the Router and accepts a stored task quote to disambiguate', async () => {
+  const modelQuestions:string[]=[]
+  const f=await fixture({expectReply:true,answerOnly:true,observeInput:(_r,d)=>{modelQuestions.push(d.trigger.text)}})
+  const owner=f.h.taskAuthority(f.ticketId)!,trigger=f.h.store.triggers.get(owner.parentTrigger!)!
+  const second=await f.h.manager.call({action:'assign',id:'release',text:'Another release job',requestId:'second-task',revision:0},
+    {discussion:owner.discussion,trigger,scoped:f.h.scopes.context(trigger,owner.discussion)})
+  expect(second.ticketId).toBeTruthy()
+  const question='Ask release for a progress update'
+  const q=f.send(question)
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+q.runId))
+  expect(modelQuestions).toContain(question)
+  expect(f.h.store.list('worker-inquiry')).toHaveLength(0)
+  const anchor=f.h.store.list<{id:string;ticketId?:string}>('chat-message').find(m=>m.id.startsWith('delegated:')&&m.ticketId===f.ticketId)!.id
+  const quoted=f.send(question,anchor)
+  await until(f.h,()=>f.view().some(m=>m.runId===quoted.runId&&m.text===replay.reply))
+  expect(f.h.store.list('worker-inquiry')).toMatchObject([{ticketId:f.ticketId,triggerId:quoted.runId}])
+  expect(modelQuestions.filter(t=>t===question)).toHaveLength(1)
+})
+
+it('leaves status-only and unbound questions with the Router and respects the saved tool filter', async () => {
+  const modelQuestions:string[]=[]
+  const f=await fixture({expectReply:true,answerOnly:true,observeInput:(_r,d)=>{modelQuestions.push(d.trigger.text)}})
+  for (const question of ['What is the status of release?','Ask for a progress update',"Don't ask release for a progress update"]){
+    const q=f.send(question)
+    await until(f.h,()=>!!f.h.store.get('router-result','router:'+q.runId))
+    expect(modelQuestions).toContain(question)
+  }
+  const ask=f.send('Ask release for a progress update'),saved=f.h.store.get<any>('chat-run',ask.runId)!
+  f.h.store.put('chat-run',ask.runId,{...saved,router:{...saved.router,options:{...saved.router.options,tools:['router_read']}}})
+  await until(f.h,()=>!!f.h.store.get('router-result','router:'+ask.runId))
+  expect(modelQuestions).toContain('Ask release for a progress update')
+  expect(f.h.store.list('worker-inquiry')).toHaveLength(0)
+})
+
+it('allows the returning Router to read but prevents a second assignment while presenting an inquiry', async () => {
+  let checked=false
+  const f=await fixture({expectReply:true,present:async r=>{
+    const read=await r.onTool!('worker_manage',{action:'list'},randomUUID())
+    const write=await r.onTool!('worker_manage',{action:'assign',id:'release',revision:0,text:'duplicate work',requestId:'presentation-retry'},randomUUID())
+    expect(read.success).toBe(true)
+    expect(write.success).toBe(false)
+    checked=true
+  }})
+  const ask=f.send(firstQuestion)
+  await until(f.h,()=>f.view().some(m=>m.runId===ask.runId&&m.text===replay.reply))
+  expect(checked).toBe(true)
+  expect(f.h.store.tickets.list()).toHaveLength(1)
 })

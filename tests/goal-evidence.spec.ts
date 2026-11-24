@@ -23,6 +23,27 @@ it('does not acknowledge inline evidence after authority or snapshot invalidatio
  const a=evidenceAccess([evidence('a','original')],4096,()=>{throw Error('Authority changed')},1024)
  expect(()=>a.confirmInline()).toThrow('Authority changed');expect(a.read.size).toBe(0)
 })
+it('pages and searches the scoped GitHub catalog without treating its index as evidence',async()=>{
+ const originals:GoalEvidence[]=Array.from({length:70},(_,i)=>({
+  ...evidence('e'+i,''),kind:'provider',key:'github_read owner/repo '+(i===65?'unique-job':'checks')+' '+i,
+  provider:{kind:'model-tool-receipt',id:'receipt'+i,digest:'d',contextId:'ctx',activity:'worker',at:1,repository:'owner/repo',success:true},
+ }))
+ const access=evidenceAccess(originals,1200,()=>{},50000,e=>JSON.stringify({result:e.id}))
+ const catalog=async(offset:number,query?:string)=>{
+  const response=await access.onTool('goal_evidence',{id:'github-receipts',offset,query},'list')
+  expect(protocolBytes(response)).toBeLessThanOrEqual(1200)
+  return JSON.parse(response.contentItems[0]!.text!)
+ }
+ const first=await catalog(0)
+ expect(first.total).toBe(70);expect(first.nextOffset).toBeGreaterThan(0);expect(first.nextOffset).toBeLessThan(70)
+ const second=await catalog(first.nextOffset)
+ expect(second.items[0].id).toBe('e'+first.nextOffset)
+ const match=await catalog(0,'UNIQUE-JOB')
+ expect(match.items.map((e:GoalEvidence)=>e.id)).toEqual(['e65']);expect(match.nextOffset).toBeNull()
+ access.confirmInline();expect(access.read.size).toBe(0)
+ await access.onTool('goal_evidence',{id:'e65'},'read')
+ expect([...access.read]).toEqual(['e65'])
+})
 it('keeps legacy paging when the base input leaves no bundle budget',()=>{
  expect(inlineEvidenceBudget({text:'x'.repeat(2000)},4096)).toBe(0)
  const a=evidenceAccess([evidence('a','original')],4096,()=>{})

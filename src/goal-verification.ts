@@ -15,7 +15,7 @@ import {githubRepository,githubReadSchema} from './github-read.ts'
 import {legacyGithubReads} from './backends/opencode-read-recovery.ts'
 import type {PluginThread,PluginToolEffect} from './backends/plugin-process.ts'
 import type {ContextManifest} from './router-memory.ts'
-import {inlineEvidenceBudget,evidenceAccess,type GoalEvidence as Evidence} from './goal-evidence.ts'
+import {inlineEvidenceBudget,evidenceAccess,evidenceMetadata,type GoalEvidence as Evidence} from './goal-evidence.ts'
 import type {DelegationBinding} from './delegation/goals.ts'
 import {taskView} from './task-context.ts'
 import {AcceptanceEvidenceTooLarge,type EvidenceOverflow} from './goal-acceptance.ts'
@@ -375,9 +375,12 @@ export class GoalVerification {
     // Use short round-local references for every task. Ledger records retain the full evidence hashes.
     const presented=snapshot.evidence.map((e,i)=>({...e,id:'e'+(i+1)}))
     const toStored=new Map(presented.map((e,i)=>[e.id,snapshot.evidence[i]!.id])),toPresented=new Map([...toStored].map(([alias,stored])=>[stored,alias]))
-    const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:presented.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:presented.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
+    const providers=presented.filter(e=>e.provider)
+    const indexed=Buffer.byteLength(JSON.stringify(providers.map(evidenceMetadata)))>Math.min(12_000,this.host.goalEvidenceBudget(g)/8)
+    const visible=indexed?presented.filter(e=>!e.provider):presented
+    const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:visible.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:visible.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
     const previous=round.attempts>1?this.host.store.get<{error?:string}>('goal-verification-attempt',round.id+':'+(round.attempts-1))?.error:undefined
-    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),evidence:presented.map(({content,...meta})=>meta)}
+    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),...(indexed?{githubReceipts:{id:'github-receipts',count:providers.length,search:'Use goal_evidence with this id and an optional query. Returned IDs listing the criterion are also allowed evidence. Open the individual result before citing it.'}}:{}),evidence:visible.map(evidenceMetadata)}
     const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)),e=>this.providerContent(e))
     const result=await this.host.runGoalVerifier(g,id,{
      input:access.input(modelInput),

@@ -66,6 +66,25 @@ it('retains a pending review and prevents a restore from repeating a committed c
  try{expect(store.get('chat-result-review',id)).toMatchObject({decision:'continue'})}finally{store.close()}
 })
 
+it('restores matching interjection receipts and refuses to replace newer corrections or stops',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'interjection-restore-'));roots.push(root)
+ const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]})
+ const file=join(config.stateDir,'state.sqlite'),prior=join(root,'prior'),updated=join(root,'updated'),current=join(root,'current')
+ let store=new Store(file)
+ const schema=store.db.prepare('PRAGMA user_version').get()!.user_version
+ expect(()=>store.atomic(()=>{store.requireChatInterjectionSchema();throw Error('interrupted')})).toThrow('interrupted')
+ expect(store.db.prepare('PRAGMA user_version').get()!.user_version).toBe(schema)
+ store.put('chat-run','main',{id:'main'});store.close();await backupState(config,prior)
+ store=new Store(file);store.atomic(()=>{
+  store.requireChatInterjectionSchema();store.put('chat-run','input',{id:'input',interjection:{state:'update',parentId:'main'}})
+ });store.close()
+ await expect(restoreState(config,prior)).rejects.toThrow('Chat instructions advanced')
+ await backupState(config,updated)
+ store=new Store(file);store.put('chat-run','main',{id:'main',cancelRequested:true});store.close()
+ await expect(restoreState(config,updated)).rejects.toThrow('Chat instructions advanced')
+ await backupState(config,current);expect((await restoreState(config,current)).restored).toBe(true)
+})
+
 it('restores offline state and retains a backup of the previous database',async()=>{
  const root=mkdtempSync(join(tmpdir(),'agent-restore-'));roots.push(root)
  const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]})

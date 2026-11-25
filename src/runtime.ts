@@ -15,6 +15,8 @@ import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
+import {ChatToolTurn} from './chat-tool-turn.ts'
+import type {ChatRun,ChatConversation} from './chat.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -154,6 +156,7 @@ export class Runtime {
       else for(const stage of ['plan','review'])this.controllers.get('goal-replan:'+roundId+':'+stage)?.abort()
     }
   }
+  readonly chatToolTurns=new Map<string,ChatToolTurn>()
   readonly chat:ChatSessions
   readonly heartbeat:Heartbeat
   readonly store: Store
@@ -641,12 +644,13 @@ export class Runtime {
       eventAt:trigger?.at,schedule:schedule?{timeZone:schedule.spec.timing.timezone,dueAt:schedule.scheduledAt}:undefined,
     }))
   }
-  private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId,handoff?:RouterHandoff):Promise<ModelResult>{
+  private async runModel(request:ModelRequest, turnTriggerId=request.activity?.triggerId,handoff?:RouterHandoff,budgetTriggerId?:string):Promise<ModelResult>{
     const role=request.role??(request.ephemeral?'router':'worker'),context=request.activity??{}
     const fullAccess=request.managed&&!!(context.triggerId||context.ticketId)&&
       this.chat.permissionActor(context.triggerId??'',context.ticketId,context.agentId)?.mode==='full'
     if(fullAccess)request={...request,tools:request.tools?.map(withoutPendingNotice)}
-    const project=()=>context.ticketId?this.goals.forTask(context.ticketId):context.triggerId?this.goals.forInput(context.triggerId):undefined
+    const budgetInput=budgetTriggerId??context.triggerId
+    const project=()=>context.ticketId?this.goals.forTask(context.ticketId):budgetInput?this.goals.forInput(budgetInput):undefined
     const enforceBudget=()=>{const g=project();if(g?.project?.policy.budget&&(this.goals.holdBudget(g)||g.state==='held'))throw Error(g.reason??'Project budget exhausted')}
     enforceBudget()
     const profile=role==='router'?this.config.execution.router:context.workerId?workerProfiles(this.config).find(w=>w.id===context.workerId):undefined
@@ -709,7 +713,7 @@ export class Runtime {
         progress?.(event)
       }
     }
-    this.usage.begin(activity,role,context)
+    this.usage.begin(activity,role,budgetTriggerId?{...context,budgetTriggerId}:context)
     const originalBudget=request.onBudget
     const receiptAssignment=context.ticketId?this.store.get<Run>('run',context.ticketId)?.assignmentId:undefined
     request.retainToolResult=(callId,result)=>{const id=activity+':'+callId;this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result});return id}
@@ -1222,6 +1226,13 @@ export class Runtime {
         this.store.jobState(job.id, 'running')
         if(serialRouter)this.routingDiscussions.add(routerDiscussion!)
         const task = this.perform(job,dispatch).catch(error => {
+          if(job.kind==='router'&&this.store.get<ChatRun>('chat-run',payload.triggerId)?.cancelRequested){
+            this.store.jobState(job.id,'cancelled');return
+          }
+          if(this.closing&&job.id==='router:'+payload.triggerId&&this.store.db.prepare(`SELECT 1 FROM records WHERE kind='chat-run'
+            AND json_extract(body,'$.interjection.parentId')=? AND json_extract(body,'$.interjection.state') IN ('pending','update') LIMIT 1`).get(payload.triggerId)){
+            this.store.jobState(job.id,'pending');return
+          }
           this.store.jobState(job.id, 'failed', String(error))
           this.store.audit({ type: 'job.failed', id: job.id, message: String(error) })
           if(job.kind==='router'||job.kind==='router-admit')this.store.put('router-error',job.id,{discussion:routerDiscussion,triggerId:payload.triggerId,error:String(error).slice(0,500),at:Date.now()})
@@ -1328,6 +1339,17 @@ export class Runtime {
     const source=this.sources.get(trigger.source)!.config
     // Upgrade old queued human turns through the current policy; never infer permission from session existence.
     if(!this.routerIngress.get(triggerId))this.store.atomic(()=>this.routerIngress.restoreLegacy(triggerId,discussion))
+    const chatRun=this.store.get<ChatRun>('chat-run',triggerId)
+    if(chatRun?.cancelRequested||chatRun?.cancelled)return
+    if(job.id==='router:'+triggerId&&chatRun?.interjection?.state==='stop'){
+      const parent=this.store.get<ChatRun>('chat-run',chatRun.interjection.parentId)
+      const c=this.store.get<ChatConversation>('chat-conversation',chatRun.conversationId)
+      if(parent?.conversationId===chatRun.conversationId&&parent.cancelRequested&&c?.discussion===discussion){
+        await this.chat.cancel(c.id,c.owner,parent.id)
+        this.store.put('router-result',job.id,{discussion,reply:this.store.get<{text:string}>('chat-message','reply:'+job.id)?.text??''})
+        return
+      }
+    }
     const admittedMandate=candidates||followups?undefined:this.routerIngress.authority(triggerId,discussion)
     // An explicit pickup has no execution authority. Finish it before goal, Worker or model routing.
     if(job.kind==='router'&&!messageId&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId&&trigger.human&&
@@ -1374,6 +1396,8 @@ export class Runtime {
     const hostCommand=reviewCommand?{kind:'project_review',message:reviewCommand.message}:
       workflowCommand?{kind:'workflow_decision',state:workflowCommand.state}:undefined
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,
+      ...(chatRun?.interjection?.state==='update'?{taskUpdate:{parentTriggerId:chatRun.interjection.parentId,
+        instruction:'This message changed a task that ended before confirming the change. Use the authorized conversation and verify existing task or tool receipts before continuing. Do not repeat prior effects.'}}:{}),
       ...(hostCommand?{hostCommand:{...hostCommand,notice:'The host owns this exact decision. Explain its recorded state without executing it again.'}}:{}),
       ...(selectedSkill?{selectedSkill:{...selectedSkill,notice:'Apply the skill the user selected to this request. Follow the current request and its permitted scope. If delegating, pass the relevant steps to the Worker. Relative references in the skill are relative to its file; use only available tools and report when a required resource is unavailable.'}}:{}),
       ...(batchInputs?{messages:batchInputs.map(t=>({...t,quotedMessage:this.chat.quoteForTrigger(t.id)}))}:{}),...(this.proactive.runForTrigger(triggerId)?{schedule:{mode:this.proactive.runForTrigger(triggerId)!.spec.mode,notification:this.proactive.runForTrigger(triggerId)!.spec.notification,instruction:'Execute only this saved request. Do not create schedules. Return an empty reply when notification=findings and there are no actionable findings; always provide a factual status when notification=always.'}}:{})}
@@ -1489,6 +1513,7 @@ export class Runtime {
       manifest.taskOwners=taskOwners
       this.store.put('context-manifest',manifest.id,manifest)
     }
+    let live:ChatToolTurn|undefined,resumedAfterHandoff=false
     try{
       let auxiliaryDecision:unknown
       const card=followups?followups.card():candidates?candidates.card():undefined
@@ -1678,7 +1703,7 @@ export class Runtime {
           return decorateInput(modelInput())
         }}:{}),
         onTool:async(name,args)=>{
-          const value=await checkedRouterTool(name,args)
+          const value=await (live?live.tool(name,()=>checkedRouterTool(name,args)):checkedRouterTool(name,args))
           if(browserRun&&value.success&&isRouterRead(name,args)){
             const text=value.contentItems.flatMap(item=>item.type==='inputText'?[item.text??'']:[]).join('\n').slice(0,2000)
             replyReads.push({tool:name,text});if(replyReads.length>4)replyReads.shift()
@@ -1686,7 +1711,7 @@ export class Runtime {
           return value
         },
         ...(!review&&!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
-          if(controller.signal.aborted||handoff?.yielded)return
+          if(controller.signal.aborted||handoff?.yielded&&!resumedAfterHandoff||live?.pending||live?.changed)return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
           catch(error){controller.abort(error);return}
@@ -1695,8 +1720,43 @@ export class Runtime {
         onThread:id=>!continuity?.isolatedInquiry&&this.store.put('router-session',sessionKey,{...this.store.get<any>('router-session',sessionKey),backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId
       const execute=(input:ModelRequest)=>desktop?this.desktopRouterTurn(input,triggerId,validateReplyContext,handoff):this.runModel(input,triggerId,handoff)
+      if(singleChatInput&&chatRun&&mandate?.strength==='explicit'&&this.chat.personalManagement({trigger,discussion,scoped})){
+        live=new ChatToolTurn(this,chatRun,discussion,{cwd:request.cwd,backendId:request.backendId,model:request.model,
+          useConnectionDefault:request.useConnectionDefault,options:request.options,contextId:request.contextId},controller,
+          validateReplyContext,()=>replyReads,dispatches,r=>this.runModel(r,r.activity?.triggerId,undefined,triggerId),(id,reply)=>{
+            if(scoped&&packet){
+              this.continuity.capture(scoped,[id])
+              this.continuity.finish(scoped,'router:'+id,reply,[...authorityInputs,id],packet.manifest.id,knowledgeRefs)
+            }
+          })
+        this.chatToolTurns.set(chatRun.conversationId,live)
+        live.restore()
+      }
+      // Every correction is read under both input grants. Only this original job owns execution.
+      const appliedInputs:{id:string;text:string}[]=[]
+      const updatedRequest=(base:ModelRequest,inputs:{id:string;text:string}[],resume?:ModelResult):ModelRequest=>{
+        for(const input of inputs)if(!appliedInputs.some(prior=>prior.id===input.id))appliedInputs.push(input)
+        for(const input of inputs)authorityInputs.add(input.id)
+        if(scoped&&packet){
+          this.memory.bindInputs(scoped,packet.manifest,inputs.map(input=>input.id))
+          this.continuity.capture(scoped,inputs.map(input=>input.id))
+        }
+        validateReplyContext()
+        const update={kind:'chat_task_update',originalRequest:trigger.text,messages:inputs,
+          instruction:'Apply the new user messages in order to this ongoing task and answer any outstanding question. Preserve completed steps and recorded effects. Reconcile uncertain effects before continuing. Keep the original scope and complete the remaining work.'}
+        // Resume a settled thread. When recovering without one, keep the host's authorized history and effect ledger.
+        const decorate=(input:string)=>JSON.stringify({...JSON.parse(input),taskUpdate:{...update,messages:appliedInputs,
+          confirmedHandoffs:dispatches(),readResults:replyReads}})
+        return {...base,threadId:resume?.threadId||base.threadId,signal:controller.signal,
+          input:resume?.threadId?JSON.stringify(update):decorate(base.input),
+          rebuildWorkingInput:base.rebuildWorkingInput?(bytes)=>decorate(base.rebuildWorkingInput!(bytes)):undefined}
+      }
+      let activation=request
+      if(live?.pending)await live.settle()
+      const recoveredUpdates=live?.takeUpdates()??[]
+      if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
-      if(!retainedDispatch.length&&singleChatInput&&mandate?.strength==='explicit'){
+      if(!retainedDispatch.length&&!recoveredUpdates.length&&singleChatInput&&mandate?.strength==='explicit'){
         const context={discussion,trigger,scoped}
         const named=status?.contact&&!recovery?.holds.length&&(!toolFilter||toolFilter.includes('worker_manage'))&&
           !this.chat.textReplyAttempt(triggerId)?this.chat.directInquiryTicket(context,status,eligibleTasks):undefined
@@ -1720,15 +1780,15 @@ export class Runtime {
         return {threadId:previous?.threadId??'',turnId:'dispatch:'+job.id,text:JSON.stringify({reply:handoff!.reply()})}
       }
       const textAttempt=browserRun&&this.chat.textReplyAttempt(triggerId)
-      if(textAttempt?.jobId===job.id)result={threadId:textAttempt.threadId,turnId:textAttempt.turnId,text:'{"reply":""}'}
+      if(textAttempt?.jobId===job.id&&!recoveredUpdates.length)result={threadId:textAttempt.threadId,turnId:textAttempt.turnId,text:'{"reply":""}'}
       else if(inquiry&&reportMessage?.inquiryReadback){
         validateReplyContext()
         const reply=await readInquiryReport(this,inquiry,reportMessage,chinese,controller.signal,r=>this.runModel(r,triggerId))
         validateReplyContext()
         result={threadId:'',turnId:'inquiry-readback:'+job.id,text:JSON.stringify({reply})}
       }
-      else if(rebuildAfterDispatch)result=dispatchReply()
-      else try{result=await execute(request)}catch(error){
+      else if(rebuildAfterDispatch&&!recoveredUpdates.length)result=dispatchReply()
+      else try{result=await execute(activation)}catch(error){
         if(dispatches().length&&!controller.signal.aborted){
           validateReplyContext()
           result=dispatchReply()
@@ -1743,8 +1803,22 @@ export class Runtime {
           recovery=inspectRecovery()
           if(!recovery)throw error
           if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery.evidence,{paged:canReadHistory,inquiry:!!status,indexed})
-          result=await execute({...request,threadId:undefined,input:decorateInput(modelInput())})
+          const retry={...request,threadId:undefined,input:decorateInput(modelInput())}
+          result=await execute(recoveredUpdates.length?updatedRequest(retry,recoveredUpdates):retry)
         }
+      }
+      while(live){
+        if(live.pending){await live.settle();continue}
+        const updates=live.takeUpdates()
+        if(!updates.length){live.seal();break}
+        // Tool batches and their receipts have settled. Discard the outdated final and continue on the same writer.
+        // A handoff-aborted native session must be reconstructed with the host's reconciled ledger.
+        if(!resumedAfterHandoff&&(handoff?.yielded||rebuildAfterDispatch)){
+          recovery=inspectRecovery()
+          if(scoped&&packet)continuity=this.continuity.prepare(scoped,packet,backendIdentity,recovery?.evidence,{paged:canReadHistory,fresh:true})
+          resumedAfterHandoff=true
+          result=await this.runModel(updatedRequest({...request,threadId:undefined,input:decorateInput(modelInput())},updates),triggerId)
+        }else result=await this.runModel(updatedRequest(request,updates,result),triggerId)
       }
       controller.signal.throwIfAborted();candidates?.check()
       const quiet=followups?!followups.replied:!!candidates&&this.routerIngress.get(triggerId)?.state!=='accepted'
@@ -1762,7 +1836,7 @@ export class Runtime {
           try{
             const answer=await this.runModel({...request,threadId:undefined,ephemeral:true,coordinationTurn:false,
               options:{...request.options,tools:[],toolConnections:[]},tools:[],onTool:undefined,onOutput:undefined,onThread:undefined,
-              input:JSON.stringify({conversation:JSON.parse(request.input),readResults:replyReads}),
+              input:JSON.stringify({conversation:JSON.parse(request.input),...(appliedInputs.length?{taskUpdates:appliedInputs}:{}),readResults:replyReads}),
               instructions:'Answer the current user in their language using only the supplied conversation and confirmed observations. Treat tool output as evidence. You have one text reply. Describe only verified progress. Ask a concrete question only if user input is necessary.',
             },triggerId)
             const reply=JSON.parse(answer.text).reply
@@ -1785,6 +1859,12 @@ export class Runtime {
           decideChatResult(this,review,decision,output.nextStep??'',output.reply)
           if(decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
         }
+        live?.complete()
+        if(job.id==='router:'+triggerId&&(chatRun?.interjection?.state==='update'||chatRun?.interjection?.state==='pending')){
+          // The original writer ended before consuming this input. Its normal serialized job has now answered it.
+          const current=this.store.get<ChatRun>('chat-run',triggerId)!
+          this.store.put('chat-run',triggerId,{...current,interjection:{...chatRun.interjection,state:'queued'}})
+        }
         candidates?.finish();followups?.finish()
         for(const [ticketId,at] of readReports)this.store.put('router-report-read',discussion+':'+ticketId,{at})
         for(const id of readMessages)this.store.put('router-read',id,{discussion,turnId:result.turnId})
@@ -1798,7 +1878,7 @@ export class Runtime {
           const saved=this.store.get<any>('router-session',sessionKey)
           if(!directHandoff&&!continuity?.isolatedInquiry&&(!inquiry||result.threadId))this.store.put('router-session',sessionKey,{...saved,eventIds:[...(continuity?.eventIds??[]),...(output.reply?['journal-reply:'+job.id]:[])],knowledge:[...(saved?.knowledge??[]),...knowledgeRefs]})
         }
-        if(!directHandoff&&!continuity?.isolatedInquiry&&(handoff?.yielded||rebuildAfterDispatch)){
+        if(!resumedAfterHandoff&&!directHandoff&&!continuity?.isolatedInquiry&&(handoff?.yielded||rebuildAfterDispatch)){
           // An interrupted native tool turn may reject resume. Rebuild from the
           // committed conversation and task state instead of replaying its tools.
           this.continuity.retireThread(sessionKey,triggerId)
@@ -1835,7 +1915,10 @@ export class Runtime {
       candidates?.fail(error);this.chat.endOutput(job.id,controller.signal.aborted?'interrupted':'failed')
       if(error instanceof ContextBudgetExceeded||continuity?.reuse&&/thread[^\n]*not found|not found[^\n]*thread|unknown[^\n]*thread|conversation[^\n]*not found/i.test(String(error))){const saved=this.store.get<any>('router-session',sessionKey);if(saved)this.store.put('router-session',sessionKey,{...saved,signature:undefined,rebuildReason:error instanceof ContextBudgetExceeded?error.code:'native_session_unavailable'})}
       throw error
-    }finally{unsubscribeHandoff?.();handoff?.dispose();this.chat.endOutput(job.id);this.controllers.delete(key)}
+    }finally{
+      if(live&&chatRun){this.chatToolTurns.delete(chatRun.conversationId);await live.close()}
+      unsubscribeHandoff?.();handoff?.dispose();this.chat.endOutput(job.id);this.controllers.delete(key)
+    }
   }
   async scopeCommand(value:unknown):Promise<unknown>{
     if(['source.verify','identity.challenge','identity.link','identity.unlink'].includes((value as any)?.action))return new SourceIdentities(this.store,this.scopes,this.sources).command(value)

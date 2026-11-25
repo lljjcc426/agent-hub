@@ -30,6 +30,7 @@ export interface PermissionAction {
   automatic: boolean
   approved?: boolean
   receipt?: ToolResult
+  supersededByInput?: string
 }
 export const permissionInstructions =
   'The host enforces the permission mode. A pending approval defers only that operation. Continue independent steps within your role while the action awaits a decision. Return waiting only when the remaining work depends on a decision. Never poll or resubmit a pending operation. After denial do not perform the operation another way. For Chat tools with pendingNotice, author the notice with the operation before requesting it; the host displays it only if a decision is needed. For native requests give a concise user-facing reason or question in their language and use the appropriate word for approval or answer in that sentence. Do not repeat the notice in a second message. On your next user-facing reply after an approval decision, mention its observed outcome once, in one natural sentence in the user’s language. Approval alone does not establish execution success. If denied, failed, pending or unconfirmed, accurately state that result. Use the actual execution receipt. Explicit requests to review a file or make a user choice still apply.'
@@ -138,7 +139,7 @@ export class ChatPermissions {
     // Transport retry IDs carry no authority. A retry with a fresh requestId cannot repeat the same effect.
     const { requestId, operationId, yieldMs, ...effect } = args
     const { change, ...boundFacts } = facts
-    const id =
+    let id =
       'permission:' +
       stableDigest([
         actor.conversationId,
@@ -151,12 +152,17 @@ export class ChatPermissions {
         effect,
         boundFacts,
       ])
+    let action = this.get(id)
+    // A revised Router may propose the same unexecuted action again. Older approval jobs stay bound to their own decision.
+    while (action?.phase === 'cancelled' && action.supersededByInput) {
+      id = 'permission:' + stableDigest([id,action.supersededByInput])
+      action = this.get(id)
+    }
     if (expectedId && expectedId !== id) {
       this.cancel(expectedId)
       return result('cancelled', expectedId, 'The target or revision changed; request a new decision.')
     }
     const automatic=actor.mode==='full'
-    let action = this.get(id)
     if (!action) {
       action = this.save({
         id,
@@ -194,6 +200,13 @@ export class ChatPermissions {
   cancel(id: string) {
     const a = this.get(id)
     if (a && ['pending', 'approved'].includes(a.phase)) this.save({ ...a, phase: 'cancelled' })
+  }
+  supersedeRouterProposals(conversationId:string,runId:string,inputId:string){
+    for(const action of this.forChat(conversationId)){
+      if(action.actor.runId===runId&&!action.actor.ticketId&&!action.actor.agentId&&['pending','approved'].includes(action.phase)){
+        this.save({...action,phase:'cancelled',supersededByInput:inputId})
+      }
+    }
   }
 }
 

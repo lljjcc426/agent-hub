@@ -1,3 +1,4 @@
+import type {ChatInterjection} from './chat-tool-turn.ts'
 import {chatReviewInProgress} from './chat-result-review.ts'
 import {authorizedQuestion,type WorkerInquiry} from './worker-inquiry.ts'
 import type {InquiryTask,StatusQuestion} from './router-inquiry-context.ts'
@@ -70,7 +71,7 @@ type PendingCard =
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
-interface ChatRun {inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
+interface ChatRun {interjection?:ChatInterjection;inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -116,6 +117,7 @@ export class ChatSessions {
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.status')='streaming'").all()){const m=JSON.parse(String(row.body));host.store.put('chat-message',m.id,{...m,status:'interrupted'})}
     host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_handoff_sequence ON records(json_extract(body,'$.conversationId'),json_extract(body,'$.sequence')) WHERE kind='chat-message' AND json_extract(body,'$.handoff') IS NOT NULL")
     for(const row of host.store.db.prepare("SELECT body FROM records WHERE kind='chat-call' AND json_extract(body,'$.state')='running'").all()){const call=JSON.parse(String(row.body));host.store.put('chat-call',call.id,{...call,state:'interrupted',endedAt:Date.now()})}
+    host.store.db.exec("CREATE INDEX IF NOT EXISTS chat_interjection_parent ON records(json_extract(body,'$.interjection.parentId')) WHERE kind='chat-run' AND json_extract(body,'$.interjection.parentId') IS NOT NULL")
     this.unsubscribe=host.activity.subscribe(call=>this.recordCall(call))
     // Older Router traces carry an exact chat trigger. Never infer old Worker lineage from a reassigned ticket.
     for(const call of host.activity.list())if(!host.store.get('chat-call',call.id)&&call.triggerId&&host.store.get('chat-run',call.triggerId))this.recordCall(call)
@@ -250,6 +252,20 @@ export class ChatSessions {
     const stream=this.streams.get(jobId);if(stream?.timer)clearTimeout(stream.timer);this.streams.delete(jobId)
     const m=this.host.store.get<Message>('chat-message','reply:'+jobId)
     if(m?.status==='streaming'){this.host.store.put('chat-message',m.id,{...m,status:state});this.changed(m.conversationId)}
+  }
+  /** A replacement activation starts its own draft after the user's correction. */
+  discardDraft(jobId:string){
+    const stream=this.streams.get(jobId)
+    if(stream?.timer)clearTimeout(stream.timer)
+    this.streams.delete(jobId)
+    const id='reply:'+jobId,m=this.host.store.get<Message>('chat-message',id)
+    if(m?.status==='streaming'){
+      // A visible draft may already be the source of a user's quote. Keep its message address valid.
+      const quoted=this.host.store.db.prepare("SELECT 1 FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.quote.messageId')=? LIMIT 1").get(m.conversationId,id)
+      if(quoted)return
+      this.host.store.db.prepare("DELETE FROM records WHERE kind='chat-message' AND id=?").run(id)
+      this.changed(m.conversationId)
+    }
   }
   close(){for(const id of this.streams.keys())this.endOutput(id);this.unsubscribe();this.listeners.clear();this.revisions.clear()}
   private rows<T>(kind:string, field:string, value:string):T[]{
@@ -424,6 +440,7 @@ export class ChatSessions {
     const setting=this.host.store.get<{approvalMode?:ApprovalMode;permissionEpoch?:number}>('settings','chat-space:'+owner)
     return {mode:setting?.approvalMode??'ask',epoch:setting?.permissionEpoch??0}
   }
+  currentPermissionEpoch(owner:string,epoch:number|undefined){return this.permissionSetting(owner).epoch===(epoch??0)}
   setApprovalMode(owner:string,approvalMode:ApprovalMode){
     const key='chat-space:'+owner,setting=this.permissionSetting(owner)
     if(setting.mode!==approvalMode)this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),approvalMode,permissionEpoch:setting.epoch+1})
@@ -1123,6 +1140,9 @@ export class ChatSessions {
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)
           this.host.store.put('chat-message',sourceMessage.id,{...sourceMessage,decision:{...sourceMessage.decision,answer:text,replyRunId:run.id}})
       }
+      if(!attachments.length&&!skill&&!sourceMessage?.decision&&!sourceMessage?.fileReview&&!existingFileRequest(text)&&
+        !this.host.store.get('project-review-input',run.id)&&!this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=?").get('workflow-decision:'+run.id))
+        this.host.chatToolTurns.get(c.id)?.offer(run,sourceMessage?.runId)
       this.changed(c.id)
       return {runId:run.id,duplicate:false}
     })
@@ -1426,7 +1446,13 @@ export class ChatSessions {
     return cards.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))
   }
   view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string,decisionsFrom?:number,withPending=false){
-    const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id),last=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
+    const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id)
+    const latest=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
+    const link=latest?.interjection
+    const parent=!runId&&link&&link.state!=='queued'?runs.find(run=>run.id===link.parentId):undefined
+    // The companion and its stop button describe the task the user is talking about, including after it stopped.
+    const parentIsActive=parent&&this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND state IN ('running','pending')").get('router:'+parent.id)
+    const last=parent&&(parentIsActive||link?.state==='stop'||link?.state==='answered'||link?.state==='applied')?parent:latest
     if(runId&&!last)throw new ChatError('run_missing','Run not found in this conversation.',404)
     if(around)before=this.sourceMessage(c,around).sequence+26
     const {conversationPlans,goals,tasks}=this.conversationTasks(c)
@@ -1597,23 +1623,46 @@ export class ChatSessions {
     }
     return revision
   }
-  async cancel(id:string,owner:string,runId:string){
+  requestCancel(id:string,owner:string,runId:string){
     this.get(id,owner)
     const run=this.host.store.get<ChatRun>('chat-run',runId)
     if(!run||run.conversationId!==id)throw new ChatError('run_missing','Run not found.',404)
-    if(run.cancelled)return {cancelled:true}
+    if(run.cancelled)return
+    if(run.cancelRequested)return {run,c:this.get(id,owner)}
     // Preflight before recording cancellation: a submitted merge cannot be undone.
     const c=this.get(id,owner)
     if(this.tasks(c,run).some(t=>this.host.store.get<Run>('run',t.id)?.phase==='merging'))throw new ChatError('merge_in_progress','Reconcile the submitted merge before stopping.')
     this.host.store.atomic(()=>{
       this.host.store.put('chat-run',runId,{...run,cancelRequested:true})
+      // A queued change belongs to the task being stopped, including after a host restart.
+      const children=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-run'
+        AND json_extract(body,'$.interjection.parentId')=? AND json_extract(body,'$.interjection.state') IN ('pending','update')`).all(runId)
+      for(const row of children){
+        const child=JSON.parse(String(row.body)) as ChatRun
+        if(child.conversationId!==id)continue
+        this.host.store.put('chat-run',child.id,{...child,cancelled:true,cancelRequested:true})
+        this.host.store.put('router-cancelled',child.id,{at:Date.now(),discussion:c.discussion})
+        this.host.routerIngress.cancel(child.id)
+        this.host.store.jobState('router:'+child.id,'cancelled')
+      }
       for(const action of this.host.permissions.forChat(id))if(action.actor.runId===runId)this.host.permissions.cancel(action.id)
       for(const m of this.rows<Message>('chat-message','runId',runId))
         if(m.fileReview?.state==='pending')this.closeFileReview(m,'cancelled')
     })
     this.changed(id)
-    await this.host.cancelRouter(run.triggerId,c.discussion)
-    this.host.store.put('chat-run',runId,{...run,cancelRequested:true,cancelled:true})
+    return {run,c}
+  }
+  async cancel(id:string,owner:string,runId:string){
+    // A stop already accepted for the original task must survive cancellation of its acknowledgement.
+    const c=this.get(id,owner),input=this.host.store.get<ChatRun>('chat-run',runId)
+    if(input?.conversationId===c.id&&input.interjection?.state==='stop'){
+      const parent=this.host.store.get<ChatRun>('chat-run',input.interjection.parentId)
+      if(parent?.conversationId===c.id&&parent.cancelRequested&&!parent.cancelled)await this.cancel(id,owner,parent.id)
+    }
+    const pending=this.requestCancel(id,owner,runId)
+    if(!pending)return {cancelled:true}
+    await this.host.cancelRouter(pending.run.triggerId,pending.c.discussion)
+    this.host.store.put('chat-run',runId,{...this.host.store.get<ChatRun>('chat-run',runId)!,cancelRequested:true,cancelled:true})
     return {cancelled:true}
   }
 }

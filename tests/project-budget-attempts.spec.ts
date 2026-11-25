@@ -12,6 +12,14 @@ import type {RouterGoal} from '../src/router-goals.ts'
 const roots:string[]=[],stores:Store[]=[],hosts:Runtime[]=[]
 afterEach(async()=>{for(const host of hosts.splice(0))await host.close();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true})})
 function root(){const path=mkdtempSync(join(tmpdir(),'project-attempt-budget-'));roots.push(path);return path}
+it('charges a short answer to its original task and keeps the receipt on the asking message',()=>{
+ const {store,usage}=fixture(),g=goal()
+ usage.begin('side','router',{triggerId:'follow-up',budgetTriggerId:g.triggerId})
+ usage.record('side',0,{id:'response',inputTokens:350,outputTokens:50})
+ usage.finish('side','completed')
+ expect(projectBudget(store,g,Date.now())?.estimatedUsd).toBeCloseTo(0.0004,7)
+ expect(store.get<UsageRecord>('model-usage','side')?.triggerId).toBe('follow-up')
+})
 function goal(inputRate=1,outputRate=1):RouterGoal{return {id:'project',triggerId:'budget-input',scopeId:'scope',entryId:'entry',discussion:'discussion',actor:'operator',bindingRevision:1,revision:1,title:'Budget fixture',objective:'No external effects',criteria:[],plan:[],state:'active',taskIds:[],nextAction:'Inspect',turns:0,maxTurns:2,failures:0,at:Date.now(),project:{base:'a'.repeat(40),sourceId:'local',integration:'integration',triggerIds:['budget-input'],reviewWaitMs:0,policy:{testCommand:'true',budget:{cost:{maxUsd:1,inputUsdPerMillion:inputRate,outputUsdPerMillion:outputRate}}}}}}
 function fixture(){const store=new Store(join(root(),'state.sqlite'));stores.push(store);return {store,usage:new UsageLedger(store)}}
 it.each(['failed','completed','interrupted'])('holds on a partial %s attempt while its call remains running',state=>{

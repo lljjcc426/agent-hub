@@ -33,6 +33,29 @@ const actor: PermissionActor = {
 }
 const receipt = { success: true, contentItems: [{ type: 'inputText' as const, text: 'saved' }] }
 
+it('expires an unsubmitted proposal after a correction while retaining committed effects and Worker approvals',async()=>{
+  const {permissions}=fixture()
+  let executions=0
+  const perform=async()=>{executions++;return receipt}
+  const call=(target:string,who=actor,expected?:string)=>permissions.run(who,'router_knowledge',{action:'delete',target},{target},perform,expected)
+  await call('done',{...actor,mode:'full'})
+  await call('worker',{...actor,ticketId:'worker-task'})
+  await call('planned')
+  const old=permissions.forChat('chat').find(a=>a.facts.target==='planned')!
+  permissions.decide(old.id,true,()=>{})
+  permissions.supersedeRouterProposals('chat','turn','changed')
+  expect((await call('planned',actor,old.id)).permission).toBe('cancelled')
+  expect((await call('planned')).permission).toBe('pending')
+  const next=permissions.forChat('chat').find(a=>a.facts.target==='planned'&&a.phase==='pending')!
+  expect(next.id).not.toBe(old.id)
+  expect(permissions.forChat('chat').find(a=>a.facts.target==='worker')?.phase).toBe('pending')
+  expect(await call('done',{...actor,mode:'full'})).toEqual(receipt)
+  expect(executions).toBe(1)
+  permissions.decide(next.id,true,()=>{})
+  expect(await call('planned',actor,next.id)).toEqual(receipt)
+  expect(executions).toBe(2)
+})
+
 it('claims an approved operation once across concurrent retries, including reordered arguments', async () => {
   const { permissions } = fixture()
   let count = 0,

@@ -7,7 +7,8 @@ import type {UsagePurpose,UsageSummary,UsageGroup,UsagePeriod,UsageStatistics} f
 import {aggregateUsage,usageCalendar} from './usage-statistics.ts'
 export type {UsagePurpose,UsageSummary,UsageGroup} from './usage-contract.ts'
 
-export interface UsageRecord extends ExecutionContext {id:string;purpose:UsagePurpose;role:string;sessionKey?:string;latestReading?:{key:string;at:number};state:'running'|'completed'|'failed'|'interrupted';at:number;endedAt?:number;backend?:string;model?:string;steps:Record<string,ModelUsage>;attempts?:Record<string,string>}
+type UsageContext=ExecutionContext & {budgetTriggerId?:string}
+export interface UsageRecord extends UsageContext {id:string;purpose:UsagePurpose;role:string;sessionKey?:string;latestReading?:{key:string;at:number};state:'running'|'completed'|'failed'|'interrupted';at:number;endedAt?:number;backend?:string;model?:string;steps:Record<string,ModelUsage>;attempts?:Record<string,string>}
 export function usagePurpose(role:string,context:ExecutionContext):UsagePurpose{
  const id=context.agentId??''
  return id.startsWith('memory:')?'memory':id.startsWith('goal-verify:')?'verification':id.startsWith('goal-replan:')?id.endsWith(':review')?'plan_review':'replanning':role==='router'?'router':role==='worker'?'worker':role==='auxiliary'?'auxiliary':'subagent'
@@ -24,7 +25,7 @@ function usageRows(db: DatabaseSync, window?: {since: number; now: number}): Usa
 /** Durable accounting is independent of the pruned activity display and native history. No prompt/result content. */
 export class UsageLedger {
  constructor(private store:Store,private watchdogPath?:string){for(const r of store.list<UsageRecord>('model-usage'))if(r.state==='running')this.finish(r.id,'interrupted')}
- begin(id:string,role:string,context:ExecutionContext={},purpose=usagePurpose(role,context)){
+ begin(id:string,role:string,context:UsageContext={},purpose=usagePurpose(role,context)){
   this.store.put('model-usage',id,{id,role,purpose,...context,state:'running',at:Date.now(),steps:{}} satisfies UsageRecord)
  }
  update(id:string,metadata:{backend?:string;model?:string;sessionKey?:string}){const r=this.store.get<UsageRecord>('model-usage',id);if(r)this.store.put('model-usage',id,{...r,...metadata})}

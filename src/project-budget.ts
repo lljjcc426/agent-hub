@@ -13,7 +13,8 @@ export function projectBudget(store:Store,g:RouterGoal,now:number){
  let estimatedUsd=0,unknownCalls=0
  if(price){
   for(const row of store.list<UsageRecord>('model-usage')){
-   if(!(row.ticketId?g.taskIds.includes(row.ticketId):!!row.triggerId&&p.triggerIds.includes(row.triggerId)))continue
+   const trigger=row.budgetTriggerId??row.triggerId
+   if(!(row.ticketId?g.taskIds.includes(row.ticketId):!!trigger&&p.triggerIds.includes(trigger)))continue
    const steps=Object.entries(row.steps)
    const chargeable=price.inputUsdPerMillion>0||price.outputUsdPerMillion>0
    const endedAttempts=new Set(Object.entries(row.attempts??{}).filter(([,state])=>state!=='running').map(([attempt])=>attempt))

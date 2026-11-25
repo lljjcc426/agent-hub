@@ -426,3 +426,305 @@ it('uses the Chat zone for a new daily schedule and replays the same occurrence 
  expect(create({...change,operationId:'change-zone',expectedRevision:1})).toMatchObject({timing:{timezone:'Asia/Shanghai'}})
  expect(create(command)).toEqual(saved)
 })
+it.each([false,true])('answers a private follow-up while a Router tool is in flight and keeps the original stop target (scoped=%s)',async scoped=>{
+ const started=gate(),release=gate()
+ let originalReads=0
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(input.kind==='chat_interjection'){
+   expect(r.ephemeral).toBe(true);expect(r.threadId).toBeUndefined()
+   expect(r.onTool).toBeUndefined();expect(r.tools).toEqual([]);expect(r.options?.toolConnections).toEqual([])
+   expect(input.steps).toContainEqual(expect.objectContaining({actor:'router',state:'running'}))
+   return {action:'answer',reply:'I am reading the current team status.'}
+  }
+  if(input.trigger?.text==='Repeat the status you gave me.'){
+   expect(r.input).toContain('I am reading the current team status.')
+   return {reply:'I said I was reading the team status.'}
+  }
+  expect((await r.onTool!('worker_manage',{action:'list'},'first')).success).toBe(true)
+  expect((await r.onTool!('worker_manage',{action:'list'},'second')).success).toBe(true)
+  return {reply:'Both checks complete.'}
+ },scoped)
+ const call=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{
+  if(++originalReads===1){started.release();await release.wait}
+  return call(...args)
+ })
+ const primary=f.send('Check team status twice.')
+ await f.h.tick();await started.wait
+ try{
+  const a=f.send('Who is doing the current check?')
+  const key=randomUUID(),b=f.send('What is happening now?',key)
+  await settle(f.h,()=>f.view().messages.some(m=>m.runId===b.runId&&m.text==='I am reading the current team status.'))
+  expect(f.h.store.get('chat-message','reply:router:'+a.runId)).toMatchObject({text:'I am doing this step myself.'})
+  expect(f.send('What is happening now?',key)).toEqual({runId:b.runId,duplicate:true})
+  expect(f.view().run).toMatchObject({id:primary.runId,state:'running'})
+  expect(f.view().reply?.runId).toBe(primary.runId)
+  expect(f.calls).toHaveLength(2);expect(originalReads).toBe(1)
+  expect(f.h.store.list<any>('model-usage').find(row=>row.triggerId===b.runId)).toMatchObject({budgetTriggerId:primary.runId})
+ }finally{release.release()}
+ await settle(f.h,()=>!f.view().reply)
+ expect(originalReads).toBe(2);expect(f.h.store.tickets.list()).toHaveLength(0)
+ expect(f.view().messages.filter(m=>m.role==='assistant').map(m=>m.text)).toEqual([
+  'I am doing this step myself.','I am reading the current team status.','Both checks complete.'])
+ if(!scoped){
+  f.send('Repeat the status you gave me.')
+  await settle(f.h,()=>f.view().messages.some(m=>m.text==='I said I was reading the team status.'))
+ }
+})
+
+it('fences a proposed assignment until a mixed follow-up is read, then continues the same writer in order',async()=>{
+ const firstRead=gate(),release=gate(),classifying=gate(),judge=gate()
+ let denied=false,corrected=0
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(input.kind==='chat_interjection'){
+   classifying.release();await judge.wait
+   return {action:'update',reply:'我在查，接下来只看 B。'}
+  }
+  if(input.kind==='chat_task_update'){
+   corrected++;expect(input.messages.map((m:any)=>m.text)).toEqual(['谁在查？先别派工，只看 B。'])
+   expect(r.threadId).toBe(firstThread)
+   expect((await r.onTool!('worker_manage',{action:'list'},'check-b')).success).toBe(true)
+   return {reply:'B 已核对。'}
+  }
+  if(r.role==='worker')throw Error('Obsolete assignment executed')
+  await r.onTool!('worker_manage',{action:'list'},'check-a')
+  const old=await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'old',text:'Old action'},'old')
+  denied=!old.success
+  return {reply:'旧方案已派工。'}
+ },true)
+ let firstThread:string
+ const impl=f.h.manager.call.bind(f.h.manager)
+ const manager=vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{
+  if(!firstThread){firstThread=f.h.store.list<any>('model-session').find(row=>!row.ephemeral)!.threadId;firstRead.release();await release.wait}
+  return impl(...args)
+ })
+ const main=f.send('查 A 后安排检查。')
+ await f.h.tick();await firstRead.wait
+ const change=f.send('谁在查？先别派工，只看 B。')
+ try{
+  await classifying.wait;release.release()
+  for(let i=0;i<4;i++)await f.h.tick()
+  expect(manager).toHaveBeenCalledTimes(1)
+  judge.release()
+  await settle(f.h,()=>!f.view().reply)
+ }finally{release.release();judge.release()}
+ expect(denied).toBe(true);expect(corrected).toBe(1)
+ expect(f.h.store.tickets.list()).toEqual([])
+ expect(f.view().messages.filter(m=>m.role==='assistant').map(m=>[m.runId,m.text])).toEqual([[change.runId,'我在查，接下来只看 B。'],[main.runId,'B 已核对。']])
+ expect(f.h.store.get('chat-run',change.runId)).toMatchObject({interjection:{parentId:main.runId,state:'applied'}})
+ expect(manager).toHaveBeenCalledTimes(2)
+})
+
+it('honors an explicit stop during a Router read without accepting its next action',async()=>{
+ const firstRead=gate(),release=gate()
+ const f=fixture(async r=>{
+  await r.onTool!('worker_manage',{action:'list'},'check')
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'old',text:'Old action'},'old')
+  return {reply:'Obsolete completion'}
+ },true)
+ const impl=f.h.manager.call.bind(f.h.manager)
+ const manager=vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{firstRead.release();await release.wait;return impl(...args)})
+ const primary=f.send('Check status')
+ await f.h.tick();await firstRead.wait
+ let stop:{runId:string}
+ try{
+  stop=f.send('停止当前任务')
+  await settle(f.h,()=>f.view().messages.some(m=>m.runId===stop!.runId&&m.role==='assistant'))
+  expect(f.view().messages.some(m=>m.text==='Obsolete completion')).toBe(false)
+ }finally{release.release()}
+ await settle(f.h,()=>!f.view().reply)
+ expect(manager).toHaveBeenCalledTimes(1)
+ expect(f.h.store.get('chat-run',primary.runId)).toMatchObject({cancelRequested:true,cancelled:true})
+ expect(f.view().run).toMatchObject({id:primary.runId,state:'cancelled'})
+ expect(f.h.store.tickets.list()).toEqual([])
+ expect(f.calls).toHaveLength(1)
+})
+
+it.each(['pending','update'])('recovers a correction after a crash at %s without dispatching the old action or sending a second acknowledgement',async phase=>{
+ const reading=gate(),release=gate(),classifying=gate(),judge=gate()
+ const revised='Skip the assignment and check B.'
+ let restored=false,replayed=0
+ const f=fixture(async r=>{
+  const data=JSON.parse(r.input)
+  if(data.kind==='chat_interjection'){
+   classifying.release();await judge.wait
+   return {action:'update',reply:'I will check B.'}
+  }
+  const revision=data.kind==='chat_task_update'?data:data.taskUpdate
+  if(revision){
+   expect(revision.messages.map((m:{text:string})=>m.text)).toEqual([revised])
+   if(restored)replayed++
+   return {reply:'Checked B.'}
+  }
+  if(restored)throw Error('The recovered writer overlooked the accepted input')
+  await r.onTool!('worker_manage',{action:'list'},'first-read')
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'obsolete',text:'Obsolete'},'obsolete')
+  return {reply:'Obsolete'}
+ },true)
+ const impl=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{reading.release();await release.wait;return impl(...args)})
+ const original=f.send('Read, then assign.'),clientId=randomUUID()
+ await f.h.tick();await reading.wait
+ const update=f.send(revised,clientId)
+ const stateDir=mkdtempSync(join(f.root,'snapshot-'))
+ try{
+  await classifying.wait
+  if(phase==='update'){judge.release();await settle(f.h,()=>!!f.h.store.get('chat-message','reply:interjection:'+update.runId))}
+  expect(f.h.store.get('chat-run',update.runId)).toMatchObject({interjection:{state:phase}})
+  f.h.store.db.prepare('VACUUM INTO ?').run(join(stateDir,'state.sqlite'))
+ }finally{judge.release();release.release()}
+ await settle(f.h,()=>!f.view().reply)
+ await f.h.close();hosts.splice(hosts.indexOf(f.h),1);restored=true
+ // Disabling the feature for new inputs must not orphan an already accepted message.
+ const h=new Runtime({...f.config,stateDir,execution:{...f.config.execution,chatInterjections:false}},{model:f.model});hosts.push(h)
+ expect(h.chat.send(f.c.id,'local-operator',{text:revised,clientMessageId:clientId})).toEqual({runId:update.runId,duplicate:true})
+ await settle(h,()=>!h.chat.view(f.c.id,'local-operator').reply)
+ const messages=h.chat.view(f.c.id,'local-operator').messages.filter(m=>m.role==='assistant')
+ expect(messages.map(m=>[m.runId,m.text])).toEqual([[update.runId,'I will check B.'],[original.runId,'Checked B.']])
+ expect(replayed).toBe(1);expect(h.store.tickets.list()).toEqual([])
+ expect(h.store.get('chat-run',update.runId)).toMatchObject({interjection:{parentId:original.runId,state:'applied'}})
+})
+
+it('withdraws an in-flight short answer when its Chat permission changes',async()=>{
+ const reading=gate(),release=gate(),classifying=gate(),judge=gate()
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(input.kind==='chat_interjection'){
+   classifying.release();await judge.wait;return {action:'answer',reply:'Stale observation'}
+  }
+  if(input.trigger?.text==='What can you see?')return {reply:'Answered under the current permission.'}
+  await r.onTool!('worker_manage',{action:'list'},'read');return {reply:'Original complete.'}
+ },true)
+ const impl=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{reading.release();await release.wait;return impl(...args)})
+ f.send('Inspect the team.');await f.h.tick();await reading.wait
+ const input=f.send('What can you see?')
+ try{await classifying.wait;f.h.chat.setApprovalMode('local-operator','full')}
+ finally{judge.release();release.release()}
+ await settle(f.h,()=>!f.view().reply)
+ expect(f.view().messages.map(m=>m.text)).not.toContain('Stale observation')
+ expect(f.h.store.get('chat-message','reply:router:'+input.runId)).toMatchObject({text:'Answered under the current permission.'})
+})
+
+it('finishes a natural-language stop even if its acknowledgement is cancelled, and drops earlier queued changes',async()=>{
+ const reading=gate(),release=gate()
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(input.kind==='chat_interjection')return input.question.includes('call off')?{action:'stop',reply:''}:{action:'update',reply:'I will check B.'}
+  await r.onTool!('worker_manage',{action:'list'},'first')
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'obsolete',text:'Obsolete'},'obsolete')
+  return {reply:'Obsolete'}
+ })
+ const impl=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{reading.release();await release.wait;return impl(...args)})
+ const main=f.send('Check the team.');await f.h.tick();await reading.wait
+ const change=f.send('Only check B.')
+ try{
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:interjection:'+change.runId))
+  const stop=f.send('Please call off this entire task.')
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:router:'+stop.runId))
+  const cancelling=f.h.chat.cancel(f.c.id,'local-operator',stop.runId)
+  release.release();await cancelling
+ }finally{release.release()}
+ await settle(f.h,()=>!f.view().reply)
+ expect(f.h.store.get('chat-run',main.runId)).toMatchObject({cancelled:true})
+ expect(f.h.store.get('chat-run',change.runId)).toMatchObject({cancelled:true})
+ expect(f.view().messages.some(m=>m.text==='Obsolete')).toBe(false);expect(f.h.store.tickets.list()).toEqual([])
+})
+
+it('queues an independent new job and respects the feature switch on the normal Chat entry point',async()=>{
+ for(const enabled of [true,false]){
+  const reading=gate(),release=gate()
+  const f=fixture(async r=>{
+   const input=JSON.parse(r.input)
+   if(input.kind==='chat_interjection')return {action:'queue',reply:''}
+   if(input.trigger.text==='Independent new job')return {reply:'New job complete'}
+   await r.onTool!('worker_manage',{action:'list'},'held');return {reply:'Initial job complete'}
+  })
+  f.h.config.execution.chatInterjections=enabled
+  const impl=f.h.manager.call.bind(f.h.manager)
+  vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{reading.release();await release.wait;return impl(...args)})
+  f.send('Check the team.');await f.h.tick();await reading.wait
+  const next=f.send('Independent new job')
+  try{
+   if(enabled)await settle(f.h,()=>f.h.store.get<any>('chat-run',next.runId)?.interjection?.state==='queued')
+   else expect(f.h.store.get<any>('chat-run',next.runId)?.interjection).toBeUndefined()
+   expect(f.h.store.get('router-result','router:'+next.runId)).toBeUndefined()
+  }finally{release.release()}
+  await settle(f.h,()=>!f.view().reply)
+  expect(f.view().messages.filter(m=>m.role==='assistant').map(m=>m.text)).toEqual(['Initial job complete','New job complete'])
+  expect(f.calls.filter(r=>r.ephemeral)).toHaveLength(enabled?1:0)
+ }
+})
+
+it('preserves an assignment already submitted when its receipt returns after a correction',async()=>{
+ const submitted=gate(),receipt=gate(),worker=gate()
+ const f=fixture(async r=>{
+  const data=JSON.parse(r.input)
+  if(r.role==='worker'){
+   await worker.wait
+   return {state:'ready',summary:'Original assignment complete',reply:'Original assignment complete',question:null,handbacks:[]}
+  }
+  if(data.resultReview)return {decision:'answer',nextStep:'',reply:'The existing Worker completed.'}
+  if(data.kind==='chat_interjection')return {action:'update',reply:'I will check the original assignment.'}
+  if(data.kind==='chat_task_update'||data.taskUpdate)return {reply:'One assignment was already submitted.'}
+  const assign=(key:string)=>r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:key,text:'Review A'},key)
+  expect((await assign('sent-before-change')).success).toBe(true)
+  expect((await assign('must-not-send')).success).toBe(false)
+  return {reply:'Superseded'}
+ },true)
+ const impl=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{
+  const result=await impl(...args)
+  if((args[0] as any).requestId==='sent-before-change'){submitted.release();await receipt.wait}
+  return result
+ })
+ const main=f.send('Assign the check.');await f.h.tick();await submitted.wait
+ try{
+  expect(f.h.store.tickets.list()).toHaveLength(1)
+  const input=f.send('No more assignments. Check whether the first one went through.')
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:interjection:'+input.runId))
+  receipt.release()
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:router:'+main.runId))
+  expect(f.h.store.get('chat-message','reply:router:'+main.runId)).toMatchObject({text:'One assignment was already submitted.'})
+  expect(f.h.store.get('chat-run',input.runId)).toMatchObject({interjection:{state:'applied'}})
+  expect(f.h.store.tickets.list()).toHaveLength(1)
+ }finally{receipt.release();worker.release()}
+ await settle(f.h,()=>f.view().messages.some(m=>m.text==='The existing Worker completed.'))
+})
+
+it('keeps adjacent private chats separate and sends only confirmed evidence to a short reply',async()=>{
+ const reading=gate(),release=gate()
+ let reads=0
+ const f=fixture(async r=>{
+  const d=JSON.parse(r.input)
+  if(d.kind==='chat_interjection'){
+   expect(r.input).not.toContain('Foreign instruction')
+   expect(d.readResults).toHaveLength(1)
+   expect(d.readResults[0].tool).toBe('worker_manage')
+   expect(d.readResults[0].text).toContain('research')
+   expect(d.priorReplies).toEqual([{question:'Who did this step?',answer:'I am doing this step myself.'}])
+   return {action:'answer',reply:'The first read found research.'}
+  }
+  if(d.trigger?.text==='Foreign instruction'){expect(r.input).not.toContain('Check twice');return {reply:'Other conversation only.'}}
+  await r.onTool!('worker_manage',{action:'list'},'first')
+  await r.onTool!('worker_manage',{action:'list'},'second')
+  return {reply:'Finished the checks.'}
+ },true)
+ const impl=f.h.manager.call.bind(f.h.manager)
+ vi.spyOn(f.h.manager,'call').mockImplementation(async(...args)=>{if(++reads===2){reading.release();await release.wait}return impl(...args)})
+ f.send('Check twice');await f.h.tick();await reading.wait
+ try{
+  const other=f.h.chat.create('different-owner')
+  const foreign=f.h.chat.send(other.id,'different-owner',{clientMessageId:randomUUID(),text:'Foreign instruction'})
+  expect(f.h.store.get<any>('chat-run',foreign.runId)?.interjection).toBeUndefined()
+  const actor=f.send('Who did this step?')
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:router:'+actor.runId))
+  const follow=f.send('What had you found then?')
+  await settle(f.h,()=>!!f.h.store.get('chat-message','reply:router:'+follow.runId))
+  expect(f.h.store.get('chat-message','reply:router:'+follow.runId)).toMatchObject({text:'The first read found research.'})
+ }finally{release.release()}
+ await settle(f.h,()=>!f.view().reply)
+})

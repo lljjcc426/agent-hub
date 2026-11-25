@@ -125,7 +125,7 @@ export function readerPacket(plan:EvidencePlan,id:string){
   const sections=selected(plan,workerSections(plan,id)),q=questionOnly(plan.question)
   const focus=exactKey(plan)?'Key '+exactKey(plan):q
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
-    return {instructions:'Read your assigned source for the question. Return one exact quote from it, relevant row IDs, or ALL. No explanation.',input:evidenceText(sections,true)+'\nQuestion for the final reader: '+focus}
+    return {instructions:'Read your assigned source. Briefly identify the evidence relevant to the question. Use exact names and numbers.',input:focus+'\n'+evidenceText(sections)}
   }
   const prompt='Select source IDs needed for this question, including indirect links. Reply only with IDs separated by commas, * for all or 0 for none.'
   if(catalogue(plan)){
@@ -145,11 +145,9 @@ function indices(text:string,n:number){
 export function citedEvidence(plan:EvidencePlan,id:string,text:string){
   const sections=selected(plan,workerSections(plan,id))
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
-    const raw=evidenceText(sections),ref=text.trim().replace(/^(["“‘'])|(["”’'])$/gu,'').trim()
-    const ids=indices(ref,originals(sections).length)
-    if(ref.toUpperCase()!=='ALL'&&!(ids&&ids.length)&&!(ref.length>=2&&sections.some(s=>s.rows.some(row=>row.includes(ref)))))return
-    // Only the immutable source crosses this boundary. Even a plausible reader conclusion is never evidence.
-    return raw
+    // Small evidence is already bound to the real ticket at dispatch. A reader response is retained
+    // in its native transcript. Only the granted source crosses to the final reader, even on abstention.
+    return text.trim()?evidenceText(sections):undefined
   }
   if(catalogue(plan)){
     const refs=indices(text,sections.length);if(!refs)return

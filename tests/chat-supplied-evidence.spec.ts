@@ -32,7 +32,8 @@ it('keeps complete small sources for cross-record comparisons and preserves the 
   const p=evidencePlan(prompt('Ask @east and @west to check the registers.'),roster)!
   const evidence=citedEvidence(p,'east','Mara holds permit A.')!
   expect(answerPacket(p,p.sections.slice(1),[evidence]).input).toContain('Mara holds permit A.')
-  expect(citedEvidence(p,'east','Mara also holds B.')).toBeUndefined()
+  expect(citedEvidence(p,'east','Mara also holds B.')).toBe(evidence)
+  expect(citedEvidence(p,'east','')).toBeUndefined()
   expect(evidence).toBe('@east / register\nMara holds permit A.')
   expect(cleanEvidenceAnswer(p,'Computed this.\nRESULT name=Mara')).toBe('RESULT name=Mara')
   expect(answerNeedsReview(p,'RESULT name=Invented',evidence)).toBe(true)

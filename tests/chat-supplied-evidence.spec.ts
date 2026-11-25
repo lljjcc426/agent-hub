@@ -39,6 +39,7 @@ it('keeps complete small sources for cross-record comparisons and preserves the 
 })
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]
+  let directChecks=0,checkDirect=false
   const host=await Runtime.create(configSchema.parse({
     stateDir:join(dir,'state'),port:0,watchdog:{enabled:false},
     work:{sandboxDriver:'seatbelt',network:false,autoRecover:false},
@@ -49,6 +50,7 @@ it('runs two real tickets in order, publishes one result, and invalidates the co
     calls.push(r)
     const threadId=randomUUID(),turnId=randomUUID()
     r.onThread?.(threadId);r.onTurn?.(turnId)
+    if(checkDirect&&r.suppliedText&&r.role==='router'&&++directChecks===1)return {threadId,turnId,text:'NEED_CONTEXT'}
     return {threadId,turnId,text:r.instructions.startsWith('Read your assigned')?'Permit A belongs to Mara.':'RESULT name=Mara'}
   }}})
   try{
@@ -71,5 +73,26 @@ it('runs two real tickets in order, publishes one result, and invalidates the co
     expect(storedEvidence(host,run.id)).toBeDefined()
     host.chat.send(chat.id,'owner',{text:'Use a different source.',clientMessageId:'message-2'})
     expect(freshEvidence(host,run,input)).toBe(false)
+    checkDirect=true
+    const direct=host.chat.create('owner')
+    host.chat.send(direct.id,'owner',{text:prompt('Answer directly.'),clientMessageId:'direct-1'})
+    for(let i=0;i<180;i++){
+      await host.tick()
+      if(host.chat.view(direct.id,'owner').messages.some(m=>m.text==='RESULT name=Mara'))break
+      await new Promise<void>(resolve=>setTimeout(resolve,10))
+    }
+    expect(directChecks).toBe(2)
+    expect(host.chat.view(direct.id,'owner').messages.filter(m=>m.text==='RESULT name=Mara')).toHaveLength(1)
+    expect(host.store.tickets.list()).toHaveLength(2)
   }finally{await host.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+it('bounds interpreted admission to explicitly mentioned, available readers and limits ranking work',()=>{
+ const source=prompt('Could @east and @west check these records?')
+ expect(evidencePlan(source,roster)).toBeUndefined()
+ expect(evidencePlan(source,roster,true)?.interpreted).toBe(true)
+ expect(evidencePlan(source.replace('@west','@missing'),roster,true)).toBeUndefined()
+ expect(evidencePlan(source.replace('Could','Do not let'),roster,true)).toBeUndefined()
+ expect(evidencePlan(source+'\n\n@unlisted / confidential\nsample',roster,true)).toBeUndefined()
+ expect(evidencePlan(source+'\n\nSection\nexample'.repeat(50),roster,true)).toBeUndefined()
 })

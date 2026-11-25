@@ -1139,11 +1139,12 @@ export class Runtime {
     if(assignment?.suppliedEvidence&&assignment.parentTrigger){
       const source=storedEvidence(this,assignment.parentTrigger),run=this.store.get<ChatRun>('chat-run',assignment.parentTrigger)
       if(source?.group.fold&&source.plan.workers.length>1&&source.plan.workers.at(-1)===assigned&&run&&Date.now()-run.createdAt<this.config.turnTimeoutMs){
-        const tr=this.store.triggers.get(run.id),authority=this.taskAuthority(ticketId),scope=tr&&authority&&this.scopes.contextForTask(tr,authority.discussion,ticketId)
-        if(scope){
-          // Waiting for earlier readers consumes no execution slot. Stale grants go through normal admission.
-          try{if(evidenceDependencies(this,run.id,source.group,source.plan.workers.slice(0,-1),scope).state==='pending')return undefined}catch{}
-        }
+        // A stale grant must go through the normal execution guard without blocking this scheduler tick.
+        try{
+          const tr=this.store.triggers.get(run.id),authority=this.taskAuthority(ticketId)
+          const scope=tr&&authority&&this.scopes.contextForTask(tr,authority.discussion,ticketId)
+          if(scope&&evidenceDependencies(this,run.id,source.group,source.plan.workers.slice(0,-1),scope).state==='pending')return undefined
+        }catch{/* Standard ticket admission revalidates permissions. */}
       }
     }
     const pool=workerProfiles(this.config).filter(w=>(!assigned||w.id===assigned)&&(!w.state||w.state==='enabled'||w.state==='retiring'&&(assigned===w.id||this.store.get<Run>('run',ticketId)?.workerId===w.id))),busy=new Set(this.store.list<Run>('run').filter(r=>r.ticketId!==ticketId&&(['starting','running'].includes(r.phase)||r.phase==='background'&&this.work.active(r.ticketId,r.assignmentId).length>0)).map(r=>r.workerId).filter(Boolean))
@@ -1633,7 +1634,7 @@ export class Runtime {
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
                 if(assignment&&issueEvidence&&chatRun&&kind==='assign'){
                   const latest=this.store.get<ChatRun>('chat-run',chatRun.id)!
-                  const group=latest.suppliedEvidence??{digest:issueEvidence.digest,workers:issueEvidence.workers,tickets:{},fold:this.config.execution.suppliedEvidence==='fold'}
+                  const group=latest.suppliedEvidence??{digest:issueEvidence.digest,workers:issueEvidence.workers,tickets:{},fold:this.config.execution.suppliedEvidence==='fold',interpreted:issueEvidence.interpreted,labels:issueEvidence.labels}
                   if(group.digest!==issueEvidence.digest||!group.workers.includes(assignment.workerId)||group.tickets[assignment.workerId]&&group.tickets[assignment.workerId]!==id)throw Error('Evidence assignment changed')
                   this.store.put('chat-run',latest.id,{...latest,suppliedEvidence:{...group,tickets:{...group.tickets,[assignment.workerId]:id}}})
                   this.store.put('worker-assignment',id,{...assignment,suppliedEvidence:true})
@@ -1777,23 +1778,43 @@ export class Runtime {
       if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
       let suppliedResult:ModelResult|undefined,internalEvidence=false
-      const renderEvidence=async(input:string)=>{
+      const readSuppliedText=async(instructions:string,input:string)=>{
         const reply=await this.runModel({role:'router',activity:{triggerId,sourceId:source.id},backendId:request.backendId,model:request.model,useConnectionDefault:request.useConnectionDefault,
           options:{...request.options,tools:[],toolConnections:[]},contextId:request.contextId,cwd:request.cwd,signal:controller.signal,managed:true,
-          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema:{},suppliedText:true,instructions:answerInstructions,input},triggerId)
+          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema:{},suppliedText:true,instructions,input},triggerId)
         validateReplyContext()
+        return reply
+      }
+      const renderEvidence=async(input:string)=>{
+        const reply=await readSuppliedText(answerInstructions,input)
         return reply.text.trim()==='NEED_CONTEXT'?undefined:{...reply,text:JSON.stringify({reply:reply.text})}
       }
       const evidenceContext={discussion,trigger,scoped}
       const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
       const pp=this.config.prompts
-      const customPolicy=this.config.rules.length||pp.shared||pp.worker||pp.router||pp.personality||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||request.options?.prompt||request.options?.persona
+      const customPolicy=packet?.manifest.facts.length||packet?.manifest.knowledge?.length||this.config.execution.router?.prompt||this.config.execution.router?.persona||this.config.rules.length||pp.shared||pp.worker||pp.router||pp.personality||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||request.options?.prompt||request.options?.persona
       if(this.config.execution.suppliedEvidence&&!customPolicy&&privateEvidence&&singleChatInput&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&!recovery?.holds.length&&!recoveredUpdates.length&&
          (!retainedDispatch.length||chatRun.suppliedEvidence)&&!this.goals.forInput(triggerId)&&freshEvidence(this,chatRun,trigger.text)&&
          routerBackend&&isApiBackend(routerBackend)&&!this.chat.isReactionInput(triggerId)){
         const roster=this.manager.list(evidenceContext).workers.filter(w=>!w.state||w.state==='enabled')
-        const plan=evidencePlan(trigger.text,roster)
-        if(plan&&!plan.workers.length)suppliedResult=await renderEvidence(answerPacket(plan,plan.sections).input)
+        let plan=evidencePlan(trigger.text,roster)
+        if(!plan&&allowedTools.has('worker_manage')&&(!toolFilter||toolFilter.includes('worker_manage'))){
+          const draft=evidencePlan(trigger.text,roster,true)
+          if(draft){
+            const approved=chatRun.suppliedEvidence?.digest===draft.digest&&chatRun.suppliedEvidence.interpreted
+            const verdict=approved?'READ':(await readSuppliedText('Classify this user request. Return READ only if the user is now requesting all named people to inspect the supplied sources and provide one answer, with no external action, separate sign-off or additional context. A mere mention, hypothetical, quoted request, earlier work or ambiguity is OTHER. Return one word.',draft.direction)).text.trim()
+            if(verdict==='READ'&&freshEvidence(this,chatRun,trigger.text))plan=draft
+          }
+        }
+        if(plan&&!plan.workers.length){
+          const packet=answerPacket(plan,plan.sections)
+          let reply=await readSuppliedText(packet.instructions,packet.input)
+          if(answerNeedsReview(plan,reply.text,packet.input)&&freshEvidence(this,chatRun,trigger.text)){
+            const complete=answerPacket(plan,plan.sections,[],true)
+            reply=await readSuppliedText(complete.instructions+' Recheck each requested value against the original sources. Give one final record without any explanation.',complete.input)
+          }
+          if(freshEvidence(this,chatRun,trigger.text)&&!(/\bNEED_CONTEXT\b/u.test(reply.text)))suppliedResult={...reply,text:JSON.stringify({reply:cleanEvidenceAnswer(plan,reply.text)})}
+        }
         else if(plan&&(!toolFilter||toolFilter.includes('worker_manage'))&&allowedTools.has('worker_manage')&&plan.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})){
           issueEvidence=plan
           try{
@@ -1807,7 +1828,8 @@ export class Runtime {
           }finally{issueEvidence=undefined}
         }
       }
-      if(privateEvidence&&review&&currentReview(this,review)&&review.reportedState==='ready'&&!review.question){
+      if(privateEvidence&&review&&currentReview(this,review)&&review.reportedState==='ready'&&!review.question&&
+        this.store.get<{assignmentId:string}>('evidence-report',review.ticketId)?.assignmentId===review.assignmentId){
         const stored=storedEvidence(this,triggerId)
         if(stored&&stored.plan.workers.every(id=>stored.group.tickets[id])&&Object.values(stored.group.tickets).includes(review.ticketId)){
           const self=stored.plan.workers.find(id=>stored.group.tickets[id]===review.ticketId)!

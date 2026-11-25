@@ -7,9 +7,9 @@ import type {ScopeContext} from './router-scope.ts'
 import {stableDigest} from './sources.ts'
 
 /** Only a new private Chat with an explicit read-only request can start this opt-in path. */
-export interface EvidenceGroup { digest:string; workers:string[]; tickets:Record<string,string>; fold?:boolean }
+export interface EvidenceGroup { digest:string; workers:string[]; tickets:Record<string,string>; fold?:boolean; interpreted?:boolean; labels?:Record<string,string> }
 export interface Section { heading:string; rows:string[] }
-export interface EvidencePlan { question:string; direction:string; workers:string[]; sections:Section[]; digest:string }
+export interface EvidencePlan { question:string; direction:string; workers:string[]; sections:Section[]; digest:string; labels:Record<string,string>; interpreted?:true }
 
 const direct=/^(?:answer directly[.!]?|直接(?:回答|作答)[。！]?|respond directly[.!]?)$/iu
 const delegation=/^(?:please (?:have|ask)\b|use\b|have\b|ask\b|assign\b|let\b|请|让|交给|由)/iu
@@ -20,25 +20,31 @@ const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
 function named(text:string,word:string){
   return new RegExp('(?<![a-z0-9_-])'+escaped(word)+'(?![a-z0-9_-])','iu').test(text)
 }
-export function evidencePlan(text:string,profiles:readonly Pick<WorkerProfile,'id'|'label'>[]):EvidencePlan|undefined{
+export function evidencePlan(text:string,profiles:readonly Pick<WorkerProfile,'id'|'label'>[],interpreted=false):EvidencePlan|undefined{
   const [header,...blocks]=text.trim().split(/\r?\n[ \t]*\r?\n/u)
-  if(!header||!blocks.length||text.length>90_000)return
-  const [direction,...rest]=header.includes('\n')?header.split(/\r?\n/):header.split(/(?<=[.!?。！？])\s+(?=\S)/u)
-  const question=rest.join('\n').trim()
+  if(!header||!blocks.length||blocks.length>48||text.length>90_000)return
+  const [first,...rest]=header.includes('\n')?header.split(/\r?\n/):header.split(/(?<=[.!?。！？])\s+(?=\S)/u)
+  const direction=interpreted?header:first
+  const question=interpreted?header:rest.join('\n').trim()
   if(!direction||!question||requireOrdinary.test(header))return
   const found=profiles.filter(w=>named(direction,w.id)||!!w.label&&named(direction,w.label))
   const workers=found.map(w=>w.id)
   const mentions=[...direction.matchAll(/@([a-z][a-z\d_-]*)/giu)].map(m=>m[1]!.toLowerCase())
   if(mentions.some(name=>!found.some(p=>p.id.toLowerCase()===name||p.label?.toLowerCase()===name)))return
-  if(!direct.test(direction.trim())&&(!delegation.test(direction)||!inspection.test(direction)||negative.test(direction)||/\b(?:first .+ then (?:ask|have|let|assign)|in sequence|separately|individually)\b|逐个独立|依次审阅/iu.test(direction)||!workers.length))return
+  if(interpreted){
+    if(!mentions.length||mentions.length!==new Set(mentions).size||negative.test(header)||workers.length!==mentions.length)return
+  }else if(!direct.test(direction.trim())&&(!delegation.test(direction)||!inspection.test(direction)||negative.test(direction)||/\b(?:first .+ then (?:ask|have|let|assign)|in sequence|separately|individually)\b|逐个独立|依次审阅/iu.test(direction)||!workers.length))return
   if(direct.test(direction.trim())&&workers.length||workers.length>4)return
+  const labels=Object.fromEntries(found.map(w=>[w.id,w.label??w.id]))
   const sections:Section[]=[]
   for(const part of blocks){
     const lines=part.split(/\r?\n/)
     if(lines.length<2||lines[0]!.length>160)return
+    const tag=/^@([a-z][a-z\d_-]*)(?=\s|$)/iu.exec(lines[0]!)?.[1]
+    if(workers.length&&tag&&!found.some(w=>w.id.toLowerCase()===tag.toLowerCase()||w.label?.toLowerCase()===tag.toLowerCase()))return
     sections.push({heading:lines[0]!,rows:lines.slice(1)})
   }
-  return {question,direction,sections,workers,digest:stableDigest(text)}
+  return {question,direction,sections,workers,labels,digest:stableDigest(text),...(interpreted?{interpreted:true as const}:{})}
 }
 export function freshEvidence(host:Runtime,run:ChatRun,text:string){
   const m=host.store.get<ChatMessage>('chat-message','user:'+run.id)
@@ -49,7 +55,8 @@ export function freshEvidence(host:Runtime,run:ChatRun,text:string){
 export function workerSections(plan:EvidencePlan,id:string){
   if(plan.workers.length<=1)return plan.sections
   // An explicit label is a source boundary. Unlabelled sources stay available to every reader.
-  return plan.sections.filter(s=>named(s.heading,id)||!plan.workers.some(w=>named(s.heading,w)))
+  const owns=(s:Section,w:string)=>named(s.heading,w)||named(s.heading,plan.labels[w]??w)
+  return plan.sections.filter(s=>owns(s,id)||!plan.workers.some(w=>owns(s,w)))
 }
 function originals(sections:Section[]){return sections.flatMap(s=>s.rows.map(row=>({heading:s.heading,row})))}
 /** Factor constant column prefixes while preserving every value, row and its order. */
@@ -109,7 +116,7 @@ function rank(plan:EvidencePlan,sections:Section[],hints:string[]=[]){
   }).filter(x=>sections.includes(x.s)).sort((a,b)=>b.score-a.score).map(x=>x.s)
 }
 export function answerPacket(plan:EvidencePlan,sections:Section[],findings:string[]=[],expanded=false){
-  const docs=catalogue(plan)&&!expanded?rank(plan,sections,findings).slice(0,3):selected(plan,sections)
+  const docs=expanded?sections:catalogue(plan)?rank(plan,sections,findings).slice(0,3):selected(plan,sections)
   const instructions=/\bJSON\b/iu.test(plan.question)?'Use the sources. Reply as bare JSON. Give the shortest exact answer and original titles supporting every step. If evidence is missing return NEED_CONTEXT.':answerInstructions
   const evidence=[...findings,evidenceText(docs)].filter(Boolean).join('\n\n')
   return {instructions,input:/\bJSON\b/iu.test(plan.question)?evidence+'\n\n'+plan.question:plan.question+'\n\n'+evidence}
@@ -198,7 +205,11 @@ export function evidenceDependencies(host:Runtime,runId:string,group:EvidenceGro
     host.scopes.checkTask(key,scope);host.scopes.checkTaskEntry(owner,scope.route.entryId,'result')
     if(manifest)host.memory.validate(manifest)
     const report=ticket.assignments.at(-1)?.report
-    if(ticket.ended?.outcome==='completed'&&report?.state==='ready'){findings.push(report.summary);continue}
+    if(ticket.ended?.outcome==='completed'&&report?.state==='ready'){
+      const receipt=host.store.get<{assignmentId:string}>('evidence-report',key)
+      if(receipt?.assignmentId!==ticket.assignments.at(-1)?.id)return {state:'ordinary' as const,findings}
+      findings.push(report.summary);continue
+    }
     if(report?.state==='waiting'&&!ticket.ended&&!ticket.attention){
       const row=host.store.db.prepare("SELECT body FROM records WHERE kind='chat-result-review' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? AND json_extract(body,'$.decision') IS NULL ORDER BY rowid DESC LIMIT 1").get(key,ticket.assignments.at(-1)!.id) as {body:string}|undefined
       if(row&&currentReview(host,JSON.parse(row.body) as ChatResultReview))return {state:'pending' as const,findings}
@@ -212,7 +223,7 @@ export function storedEvidence(host:Runtime,runId:string){
   const run=host.store.get<ChatRun>('chat-run',runId),group=run?.suppliedEvidence
   const trigger=host.store.triggers.get(runId)
   if(!group||!run||!trigger||!freshEvidence(host,run,trigger.text))return
-  const plan=evidencePlan(trigger.text,group.workers.map(id=>({id,label:host.config.execution.workers?.find(w=>w.id===id)?.label})))
-  if(!plan||plan.digest!==group.digest||JSON.stringify(plan.workers)!==JSON.stringify(group.workers))return
+  const plan=evidencePlan(trigger.text,group.workers.map(id=>({id,label:host.config.execution.workers?.find(w=>w.id===id)?.label})),group.interpreted)
+  if(!plan||group.labels&&stableDigest(group.labels)!==stableDigest(plan.labels)||plan.digest!==group.digest||JSON.stringify(plan.workers)!==JSON.stringify(group.workers))return
   return {plan,group}
 }

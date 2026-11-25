@@ -1813,7 +1813,7 @@ export class Runtime {
             const complete=answerPacket(plan,plan.sections,[],true)
             reply=await readSuppliedText(complete.instructions+' Recheck each requested value against the original sources. Give one final record without any explanation.',complete.input)
           }
-          if(freshEvidence(this,chatRun,trigger.text)&&!(/\bNEED_CONTEXT\b/u.test(reply.text)))suppliedResult={...reply,text:JSON.stringify({reply:cleanEvidenceAnswer(plan,reply.text)})}
+          if(freshEvidence(this,chatRun,trigger.text)&&!answerNeedsReview(plan,reply.text,evidenceText(plan.sections)))suppliedResult={...reply,text:JSON.stringify({reply:cleanEvidenceAnswer(plan,reply.text)})}
         }
         else if(plan&&(!toolFilter||toolFilter.includes('worker_manage'))&&allowedTools.has('worker_manage')&&plan.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})){
           issueEvidence=plan
@@ -2341,6 +2341,7 @@ export class Runtime {
         }
       }
       const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
+      let checkedInput=activation.input
       let result=await this.runModel(activation,modelTrigger)
       if(evidenceWorker&&evidenceAssignment?.parentTrigger&&!controller.signal.aborted&&currentWorkerAttempt(this,attempt)&&storedEvidence(this,evidenceAssignment.parentTrigger)){
         const {plan,id,author,findings}=evidenceWorker
@@ -2350,6 +2351,7 @@ export class Runtime {
           const more=author?answerPacket(plan,workerSections(plan,id),findings,true):readerPacket(plan,id)
           if(author)more.instructions+=' Recheck each requested value against the original sources. Give one final record without any explanation.'
           else more.instructions+=' Return a sequence of integer IDs (example: 1,2) or *. Do not answer the underlying question.'
+          checkedInput=more.input
           result=await this.runModel({...activation,...more},modelTrigger)
         }
       }
@@ -2370,7 +2372,7 @@ export class Runtime {
         return
       }
       const evidenceAnswer=evidenceWorker?(evidenceWorker.author?cleanEvidenceAnswer(evidenceWorker.plan,result.text):citedEvidence(evidenceWorker.plan,evidenceWorker.id,result.text)):undefined
-      const usableEvidence=!!evidenceAnswer&&!/\bNEED_CONTEXT\b/u.test(evidenceAnswer)
+      const usableEvidence=!!evidenceAnswer&&!/\bNEED_CONTEXT\b/u.test(evidenceAnswer)&&(!evidenceWorker?.author||!answerNeedsReview(evidenceWorker.plan,evidenceAnswer,checkedInput))
       if(evidenceWorker&&usableEvidence)this.store.put('evidence-report',ticket.id,{author:evidenceWorker.author,assignmentId,turnId:result.turnId})
       const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined

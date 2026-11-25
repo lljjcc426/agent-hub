@@ -30,8 +30,10 @@ it('accepts bounds-checked exact-key references and retains amended and conflict
 })
 it('keeps complete small sources for cross-record comparisons and preserves the requested schema',()=>{
   const p=evidencePlan(prompt('Ask @east and @west to check the registers.'),roster)!
-  const evidence=citedEvidence(p,'east','Mara is the recorded holder.')!
+  const evidence=citedEvidence(p,'east','Mara holds permit A.')!
   expect(answerPacket(p,p.sections.slice(1),[evidence]).input).toContain('Mara holds permit A.')
+  expect(citedEvidence(p,'east','Mara also holds B.')).toBeUndefined()
+  expect(evidence).toBe('@east / register\nMara holds permit A.')
   expect(cleanEvidenceAnswer(p,'Computed this.\nRESULT name=Mara')).toBe('RESULT name=Mara')
   expect(answerNeedsReview(p,'RESULT name=Invented',evidence)).toBe(true)
   expect(answerNeedsReview(p,'RESULT name=Mara',evidence)).toBe(false)
@@ -51,7 +53,7 @@ it('runs two real tickets in order, publishes one result, and invalidates the co
     const threadId=randomUUID(),turnId=randomUUID()
     r.onThread?.(threadId);r.onTurn?.(turnId)
     if(checkDirect&&r.suppliedText&&r.role==='router'&&++directChecks===1)return {threadId,turnId,text:'NEED_CONTEXT'}
-    return {threadId,turnId,text:r.instructions.startsWith('Read your assigned')?'Permit A belongs to Mara.':'RESULT name=Mara'}
+    return {threadId,turnId,text:r.instructions.startsWith('Read your assigned')?'Mara holds permit A.':'RESULT name=Mara'}
   }}})
   try{
     host.scopes.command({action:'scope.put',operationId:'test',expectedRevision:0,scope:{id:'team',tenantId:'lab',name:'Team',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['east','west'],backendIds:['test']}})

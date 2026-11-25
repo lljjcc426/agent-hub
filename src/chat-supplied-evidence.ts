@@ -125,7 +125,7 @@ export function readerPacket(plan:EvidencePlan,id:string){
   const sections=selected(plan,workerSections(plan,id)),q=questionOnly(plan.question)
   const focus=exactKey(plan)?'Key '+exactKey(plan):q
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
-    return {instructions:'Read your assigned records. Give one brief factual finding that can help another reader. Copy names and numbers exactly.',input:focus+'\n'+evidenceText(sections)}
+    return {instructions:'Read your assigned source for the question. Return one exact quote from it, relevant row IDs, or ALL. No explanation.',input:evidenceText(sections,true)+'\nQuestion for the final reader: '+focus}
   }
   const prompt='Select source IDs needed for this question, including indirect links. Reply only with IDs separated by commas, * for all or 0 for none.'
   if(catalogue(plan)){
@@ -145,10 +145,11 @@ function indices(text:string,n:number){
 export function citedEvidence(plan:EvidencePlan,id:string,text:string){
   const sections=selected(plan,workerSections(plan,id))
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
-    const note=text.trim()
-    if(!note||note==='NEED_CONTEXT')return
-    // A short source travels verbatim. The untrusted note is only an annotation of that source.
-    return evidenceText(sections)+(note.length<=280?'\nReader '+id+': '+note:'')
+    const raw=evidenceText(sections),ref=text.trim().replace(/^(["“‘'])|(["”’'])$/gu,'').trim()
+    const ids=indices(ref,originals(sections).length)
+    if(ref.toUpperCase()!=='ALL'&&!(ids&&ids.length)&&!(ref.length>=2&&sections.some(s=>s.rows.some(row=>row.includes(ref)))))return
+    // Only the immutable source crosses this boundary. Even a plausible reader conclusion is never evidence.
+    return raw
   }
   if(catalogue(plan)){
     const refs=indices(text,sections.length);if(!refs)return
@@ -185,14 +186,23 @@ function fieldsRequested(q:string){
 export function answerNeedsReview(plan:EvidencePlan,text:string,rawSources:string){
   if(/\bNEED_CONTEXT\b/u.test(text))return true
   const result=cleanEvidenceAnswer(plan,text)
-  if(/\bJSON\b/iu.test(plan.question)){try{JSON.parse(result);return false}catch{return true}}
+  if(/\bJSON\b/iu.test(plan.question)){
+    try{
+      const record=JSON.parse(result)
+      if(/\btitles\b.*\boriginal\b|\boriginal\b.*\btitles\b/iu.test(plan.question)){
+        const titles=plan.sections.map(title)
+        return !Array.isArray(record?.titles)||record.titles.some((s:unknown)=>typeof s!=='string'||!titles.includes(s))
+      }
+      return false
+    }catch{return true}
+  }
   const fields=fieldsRequested(plan.question)
   if(!fields.length)return false
   const pairs=[...result.matchAll(/(?:^|\s)([A-Za-z][\w-]*)=([^=]+?)(?=\s+[A-Za-z][\w-]*=|$)/gu)]
   if(!result.startsWith('RESULT ')||fields.join('|')!==pairs.map(m=>m[1]).join('|'))return true
   const corpus=(rawSources+' '+plan.question).toLowerCase()
   // A new numeric quantity may be calculated. A novel textual value deserves one recheck with the same grant.
-  return pairs.some(m=>{const v=m[2]!.trim().replace(/[.。]$/u,'');return /[\p{L}]/u.test(v)&&!corpus.includes(v.toLowerCase())})
+  return pairs.some(m=>{const v=m[2]!.trim().replace(/[.。]$/u,'');return /[\p{L}]/u.test(v)&&!named(corpus,v)})
 }
 /** Re-read the normal ticket and source grants before using a sibling’s accepted report. */
 export function evidenceDependencies(host:Runtime,runId:string,group:EvidenceGroup,ids:string[],scope:ScopeContext){

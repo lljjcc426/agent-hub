@@ -17,6 +17,7 @@ import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
+import {answerPacket,answerInstructions,answerNeedsReview,cleanEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -794,7 +795,7 @@ export class Runtime {
       try{
         this.delegation.beforeActivation(request)
         const activation:ModelRequest={...request,
-          input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
+          input:request.suppliedText?request.input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
           model:threadId?undefined:request.model??(role==='router'&&!request.useConnectionDefault?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
           onBudget:receipt=>{
@@ -1133,7 +1134,18 @@ export class Runtime {
     })
   }
   private dispatchWorker(ticketId:string,reserve:boolean):{profile:WorkerProfile;reserve:boolean}|undefined {
-    const assigned=this.store.get<{workerId:string}>('worker-assignment',ticketId)?.workerId
+    const assignment=this.store.get<{workerId:string;parentTrigger?:string;suppliedEvidence?:true}>('worker-assignment',ticketId)
+    const assigned=assignment?.workerId
+    if(assignment?.suppliedEvidence&&assignment.parentTrigger){
+      const source=storedEvidence(this,assignment.parentTrigger),run=this.store.get<ChatRun>('chat-run',assignment.parentTrigger)
+      if(source?.group.fold&&source.plan.workers.length>1&&source.plan.workers.at(-1)===assigned&&run&&Date.now()-run.createdAt<this.config.turnTimeoutMs){
+        const tr=this.store.triggers.get(run.id),authority=this.taskAuthority(ticketId),scope=tr&&authority&&this.scopes.contextForTask(tr,authority.discussion,ticketId)
+        if(scope){
+          // Waiting for earlier readers consumes no execution slot. Stale grants go through normal admission.
+          try{if(evidenceDependencies(this,run.id,source.group,source.plan.workers.slice(0,-1),scope).state==='pending')return undefined}catch{}
+        }
+      }
+    }
     const pool=workerProfiles(this.config).filter(w=>(!assigned||w.id===assigned)&&(!w.state||w.state==='enabled'||w.state==='retiring'&&(assigned===w.id||this.store.get<Run>('run',ticketId)?.workerId===w.id))),busy=new Set(this.store.list<Run>('run').filter(r=>r.ticketId!==ticketId&&(['starting','running'].includes(r.phase)||r.phase==='background'&&this.work.active(r.ticketId,r.assignmentId).length>0)).map(r=>r.workerId).filter(Boolean))
     const cursor=this.store.get<number>('worker-pool','cursor')??0,rotated=pool.map((_,i)=>pool[(cursor+i)%pool.length]!)
     const previous=this.store.get<Run>('run',ticketId)?.workerId
@@ -1540,6 +1552,7 @@ export class Runtime {
         code:'worker_required',message,
       })}]})
       let hostRouted=false
+      let issueEvidence:EvidencePlan|undefined
       const callRouterTool=async(name:string,args:unknown):Promise<ToolResult>=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -1618,6 +1631,13 @@ export class Runtime {
             const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,
               onDispatch:(kind,id)=>{
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
+                if(assignment&&issueEvidence&&chatRun&&kind==='assign'){
+                  const latest=this.store.get<ChatRun>('chat-run',chatRun.id)!
+                  const group=latest.suppliedEvidence??{digest:issueEvidence.digest,workers:issueEvidence.workers,tickets:{},fold:this.config.execution.suppliedEvidence==='fold'}
+                  if(group.digest!==issueEvidence.digest||!group.workers.includes(assignment.workerId)||group.tickets[assignment.workerId]&&group.tickets[assignment.workerId]!==id)throw Error('Evidence assignment changed')
+                  this.store.put('chat-run',latest.id,{...latest,suppliedEvidence:{...group,tickets:{...group.tickets,[assignment.workerId]:id}}})
+                  this.store.put('worker-assignment',id,{...assignment,suppliedEvidence:true})
+                }
                 if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId,
                   ...(kind==='send'&&(args as {expectReply?:boolean}).expectReply?{inquiry:true,...(hostRouted?{hostRouted:true}:{})}:{})})
               }
@@ -1756,6 +1776,52 @@ export class Runtime {
       const recoveredUpdates=live?.takeUpdates()??[]
       if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
+      let suppliedResult:ModelResult|undefined,internalEvidence=false
+      const renderEvidence=async(input:string)=>{
+        const reply=await this.runModel({role:'router',activity:{triggerId,sourceId:source.id},backendId:request.backendId,model:request.model,useConnectionDefault:request.useConnectionDefault,
+          options:{...request.options,tools:[],toolConnections:[]},contextId:request.contextId,cwd:request.cwd,signal:controller.signal,managed:true,
+          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema:{},suppliedText:true,instructions:answerInstructions,input},triggerId)
+        validateReplyContext()
+        return reply.text.trim()==='NEED_CONTEXT'?undefined:{...reply,text:JSON.stringify({reply:reply.text})}
+      }
+      const evidenceContext={discussion,trigger,scoped}
+      const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
+      const pp=this.config.prompts
+      const customPolicy=this.config.rules.length||pp.shared||pp.worker||pp.router||pp.personality||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||request.options?.prompt||request.options?.persona
+      if(this.config.execution.suppliedEvidence&&!customPolicy&&privateEvidence&&singleChatInput&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&!recovery?.holds.length&&!recoveredUpdates.length&&
+         (!retainedDispatch.length||chatRun.suppliedEvidence)&&!this.goals.forInput(triggerId)&&freshEvidence(this,chatRun,trigger.text)&&
+         routerBackend&&isApiBackend(routerBackend)&&!this.chat.isReactionInput(triggerId)){
+        const roster=this.manager.list(evidenceContext).workers.filter(w=>!w.state||w.state==='enabled')
+        const plan=evidencePlan(trigger.text,roster)
+        if(plan&&!plan.workers.length)suppliedResult=await renderEvidence(answerPacket(plan,plan.sections).input)
+        else if(plan&&(!toolFilter||toolFilter.includes('worker_manage'))&&allowedTools.has('worker_manage')&&plan.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})){
+          issueEvidence=plan
+          try{
+            for(const id of plan.workers){
+              if(this.store.get<ChatRun>('chat-run',triggerId)?.suppliedEvidence?.tickets[id])continue
+              validateReplyContext()
+              const receipt=await checkedRouterTool('worker_manage',{action:'assign',id,revision:this.settings.current().revision,requestId:'evidence-'+stableDigest([triggerId,plan.digest,id]),
+                text:plan.question+'\n'+evidenceText(workerSections(plan,id))})
+              if(!receipt.success||!this.store.get<ChatRun>('chat-run',triggerId)?.suppliedEvidence?.tickets[id])break
+            }
+          }finally{issueEvidence=undefined}
+        }
+      }
+      if(privateEvidence&&review&&currentReview(this,review)&&review.reportedState==='ready'&&!review.question){
+        const stored=storedEvidence(this,triggerId)
+        if(stored&&stored.plan.workers.every(id=>stored.group.tickets[id])&&Object.values(stored.group.tickets).includes(review.ticketId)){
+          const self=stored.plan.workers.find(id=>stored.group.tickets[id]===review.ticketId)!
+          const peers=stored.plan.workers.filter(id=>id!==self)
+          const deps=evidenceDependencies(this,triggerId,stored.group,peers,scoped)
+          if(deps.state!=='ordinary'){
+            const author=this.store.get<{author?:boolean;assignmentId:string}>('evidence-report',review.ticketId)
+            if(deps.state==='pending'||stored.plan.workers.length===1||author?.author&&author.assignmentId===review.assignmentId){
+              internalEvidence=deps.state==='pending'
+              suppliedResult={threadId:'',turnId:'evidence:'+job.id,text:JSON.stringify({reply:review.summary})}
+            }else suppliedResult=await renderEvidence([stored.plan.question,...deps.findings,review.summary].join('\n'))
+          }
+        }
+      }
       if(!retainedDispatch.length&&!recoveredUpdates.length&&singleChatInput&&mandate?.strength==='explicit'){
         const context={discussion,trigger,scoped}
         const named=status?.contact&&!recovery?.holds.length&&(!toolFilter||toolFilter.includes('worker_manage'))&&
@@ -1780,7 +1846,8 @@ export class Runtime {
         return {threadId:previous?.threadId??'',turnId:'dispatch:'+job.id,text:JSON.stringify({reply:handoff!.reply()})}
       }
       const textAttempt=browserRun&&this.chat.textReplyAttempt(triggerId)
-      if(textAttempt?.jobId===job.id&&!recoveredUpdates.length)result={threadId:textAttempt.threadId,turnId:textAttempt.turnId,text:'{"reply":""}'}
+      if(suppliedResult)result=suppliedResult
+      else if(textAttempt?.jobId===job.id&&!recoveredUpdates.length)result={threadId:textAttempt.threadId,turnId:textAttempt.turnId,text:'{"reply":""}'}
       else if(inquiry&&reportMessage?.inquiryReadback){
         validateReplyContext()
         const reply=await readInquiryReport(this,inquiry,reportMessage,chinese,controller.signal,r=>this.runModel(r,triggerId))
@@ -1857,6 +1924,7 @@ export class Runtime {
           else if(output.decision==null&&!output.reply.trim())output.reply=reportMessage.text
           if(decision==='continue')output.reply=''
           decideChatResult(this,review,decision,output.nextStep??'',output.reply)
+          if(internalEvidence)output.reply=''
           if(decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
         }
         live?.complete()
@@ -2191,7 +2259,7 @@ export class Runtime {
         }
       }
       let inputAccepted=false
-      const result = await this.runModel({
+      const standardRequest:ModelRequest={
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
         workerInputAccepted:()=>{
           if(inputAccepted||!inputs.length||!currentWorkerAttempt(this,attempt))return
@@ -2230,7 +2298,39 @@ export class Runtime {
         onThread: id => { delete run.error;run.toolsVersion=5;run.toolsDigest=toolsDigest; run.waitingForWriter=false; run.threadId = id; persist() },
         onModel:model=>{run.model=model;persist()},
         onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;turnStarted=true;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
-      },latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId)
+      }
+      const evidenceAssignment=this.store.get<{parentTrigger?:string;workerId:string;suppliedEvidence?:true}>('worker-assignment',ticket.id)
+      let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;findings:string[]}|undefined
+      let activation=standardRequest
+      if(evidenceAssignment?.suppliedEvidence&&!saved?.threadId&&!permissionReceipts.length&&!hasInquiry){
+        const link=evidenceAssignment.parentTrigger&&storedEvidence(this,evidenceAssignment.parentTrigger)
+        const id=evidenceAssignment.workerId
+        if(link&&link.group.tickets[id]===ticket.id){
+          const single=link.plan.workers.length===1
+          const tail=link.group.fold&&link.plan.workers.at(-1)===id&&!single
+          const authority=this.taskAuthority(ticket.id),origin=this.store.triggers.get(evidenceAssignment.parentTrigger!)
+          const scope=origin&&authority&&this.scopes.contextForTask(origin,authority.discussion,ticket.id)
+          const deps=tail&&scope?evidenceDependencies(this,origin!.id,link.group,link.plan.workers.slice(0,-1),scope):undefined
+          const author=single||deps?.state==='ready'
+          evidenceWorker={plan:link.plan,id,author,findings:deps?.findings??[]}
+          const packet=author?answerPacket(link.plan,workerSections(link.plan,id),deps?.findings):readerPacket(link.plan,id)
+          activation={...standardRequest,...packet,suppliedText:true,schema:{},allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+            attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'}
+        }
+      }
+      const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
+      let result=await this.runModel(activation,modelTrigger)
+      if(evidenceWorker&&evidenceAssignment?.parentTrigger&&!controller.signal.aborted&&currentWorkerAttempt(this,attempt)&&storedEvidence(this,evidenceAssignment.parentTrigger)){
+        const {plan,id,author,findings}=evidenceWorker
+        const retry=author?answerNeedsReview(plan,result.text,activation.input):!citedEvidence(plan,id,result.text)
+        if(retry){
+          if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
+          const more=author?answerPacket(plan,workerSections(plan,id),findings,true):readerPacket(plan,id)
+          if(author)more.instructions+=' Recheck each requested value against the original sources. Give one final record without any explanation.'
+          else more.instructions+=' Return a sequence of integer IDs (example: 1,2) or *. Do not answer the underlying question.'
+          result=await this.runModel({...activation,...more},modelTrigger)
+        }
+      }
       delete run.webFetchReplay
       live.accepting=false
       await live.delivery
@@ -2247,7 +2347,10 @@ export class Runtime {
         continueChangedInput()
         return
       }
-      const rawOutput:unknown=JSON.parse(result.text)
+      const evidenceAnswer=evidenceWorker?(evidenceWorker.author?cleanEvidenceAnswer(evidenceWorker.plan,result.text):citedEvidence(evidenceWorker.plan,evidenceWorker.id,result.text)):undefined
+      const usableEvidence=!!evidenceAnswer&&!/\bNEED_CONTEXT\b/u.test(evidenceAnswer)
+      if(evidenceWorker&&usableEvidence)this.store.put('evidence-report',ticket.id,{author:evidenceWorker.author,assignmentId,turnId:result.turnId})
+      const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
       const output=chatOutput??report.parse(rawOutput)
       const reportedState=output.state

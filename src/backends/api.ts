@@ -93,10 +93,11 @@ export class ApiModel implements Model {
   const d=this.definition,tools=r.tools??[]
   const context=tools.some(t=>t.name===recallSpec.name)?contextProjection(t,Math.floor(Math.min(d.maxContextBytes,r.contextBudget?.maxBytes??d.maxContextBytes)/2)):{messages:t.messages,notice:''}
   t={...t,messages:context.messages}
-  const finalInstructions=instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
-  if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...apiOutputFormat(d,r.schema),...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
-  if(d.kind==='openai-responses')return {...d.parameters,model:t.model,max_output_tokens:d.maxOutputTokens,instructions:finalInstructions,input:t.messages,store:false,...(d.subscription||r.onOutput?{stream:true}:{}),include:['reasoning.encrypted_content'],...(tools.length?{tools:tools.map(s=>({type:'function',name:s.name,description:s.description,parameters:s.inputSchema,strict:false}))}:{}),...apiOutputFormat(d,r.schema)}
-  return {[d.chatTokenField]:d.maxOutputTokens,...d.parameters,...(r.onOutput?{stream:true,stream_options:{...(d.parameters.stream_options as object??{}),include_usage:true}}:{}),model:t.model,messages:[{role:'system',content:finalInstructions},...t.messages],...(tools.length?{tools:tools.map(s=>({type:'function',function:{name:s.name,description:s.description,parameters:s.inputSchema,strict:false}}))}:{}),...apiOutputFormat(d,r.schema)}
+  const format=r.suppliedText?{}:apiOutputFormat(d,r.schema)
+  const finalInstructions=r.suppliedText?instructions:instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
+  if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...format,...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
+  if(d.kind==='openai-responses')return {...d.parameters,model:t.model,max_output_tokens:d.maxOutputTokens,instructions:finalInstructions,input:t.messages,store:false,...(d.subscription||r.onOutput?{stream:true}:{}),include:['reasoning.encrypted_content'],...(tools.length?{tools:tools.map(s=>({type:'function',name:s.name,description:s.description,parameters:s.inputSchema,strict:false}))}:{}),...format}
+  return {[d.chatTokenField]:d.maxOutputTokens,...d.parameters,...(r.onOutput?{stream:true,stream_options:{...(d.parameters.stream_options as object??{}),include_usage:true}}:{}),model:t.model,messages:[{role:'system',content:finalInstructions},...t.messages],...(tools.length?{tools:tools.map(s=>({type:'function',function:{name:s.name,description:s.description,parameters:s.inputSchema,strict:false}}))}:{}),...format}
  }
  private accept(response:any,t:ApiThread):{calls:Call[];text:string;wire:any[]}{
   const kind=this.definition.kind
@@ -128,6 +129,7 @@ export class ApiModel implements Model {
   return {calls,text:texts.join(''),wire}
  }
  async run(r:ModelRequest):Promise<ModelResult>{
+  if(r.suppliedText&&(r.threadId||r.tools?.length||r.onTool||r.workerMcp||r.allowNativeTools||r.role==='router'&&!r.ephemeral))throw Error('Supplied text requires a fresh, tool-free activation')
   if(r.workerMcp)throw Error('API backends require explicit host tool definitions, not a native MCP bridge')
   if(r.ephemeral&&r.threadId)throw Error('Ephemeral backend calls cannot resume retained threads')
   const canRecall=!r.ephemeral&&r.role==='router'&&r.managed&&(!r.options?.tools||r.options.tools.includes(recallSpec.name))
@@ -170,6 +172,7 @@ export class ApiModel implements Model {
     for(const call of accepted.calls){if(typeof call.id!=='string'||!call.id||typeof call.name!=='string'||typeof call.arguments!=='string'||Buffer.byteLength(call.arguments)>maxToolArgumentBytes||seen.has(call.id)||t.effects[call.id])throw Error('Backend returned an invalid or repeated tool call ID');seen.add(call.id)}
     t.messages.push(...accepted.wire)
     turn.items.push(...accepted.calls.map(c=>({type:'functionCall',callId:c.id,name:c.name,arguments:c.arguments})),...(accepted.text?[{type:'agentMessage',text:accepted.text}]:[]))
+    if(r.suppliedText&&accepted.calls.length)throw Error('Unexpected tool in a text-only response')
     if(accepted.calls.length){
      t.pending=accepted.calls;persist();const results:ToolResult[]=[]
      // A provider can return many calls in one response. Reserve the entire pair set
@@ -195,6 +198,10 @@ export class ApiModel implements Model {
      this.appendResults(t,accepted.calls,results);delete t.pending;persist();if(budgetError)throw budgetError;continue
     }
     persist();checkBudget(this.body(t,instructions,r),r.contextBudget,'api-wire','complete',r.onBudget);if(queue.length)continue
+    if(r.suppliedText){
+      if(!accepted.text.trim())throw Error('Empty supplied-evidence response')
+      turn.status='completed';persist();return {threadId:t.id,turnId:turn.id,text:accepted.text.trim()}
+    }
     let value:unknown,parseError:string|undefined;try{value=JSON.parse(accepted.text)}catch(error){parseError=(error as SyntaxError).message}
     if(parseError||!validateOutput(value)){
      if(++repairs>2||step+1>=this.definition.maxSteps)throw new ApiFailure('model_reply_invalid')

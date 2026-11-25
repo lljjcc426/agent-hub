@@ -469,3 +469,16 @@ it.each(kinds)('%s preserves structured business terms through the actual Runtim
  expect(records[0]).toMatchObject({status:'pending',actor:{source:'local',id:'operator'},target:{...decision.target,amount:decision.amount,recipient:decision.recipient}})
  expect(records[0].expiresAt-records[0].createdAt).toBe(7200000);expect(host.store.list('approval')).toEqual([])
 })
+
+it('requires an isolated activation and keeps a plain evidence reader tool-free',async()=>{
+ const endpoint=await server(()=>output('openai-responses','2,4'))
+ const model=new ApiModel('local',definition('openai-responses',endpoint.url),memory(),5000)
+ const base=request({role:'worker',tools:[],suppliedText:true,allowNativeTools:false,sandbox:'read-only'})
+ for(const override of [{threadId:'old'},{role:'router' as const},{onTool:async()=>({success:true,contentItems:[]})},{allowNativeTools:true}]){
+  await expect(model.run({...base,...override})).rejects.toThrow('fresh, tool-free')
+ }
+ expect(endpoint.requests).toHaveLength(0)
+ expect((await model.run(base)).text).toBe('2,4')
+ expect(endpoint.requests[0]!.body.instructions).toBe(base.instructions)
+ expect(endpoint.requests[0]!.body.tools??[]).toEqual([])
+})

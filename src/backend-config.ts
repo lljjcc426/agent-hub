@@ -68,7 +68,7 @@ function dropLegacyHarness(profile:unknown){
  const {harness,...rest}=profile as Record<string,unknown>
  return rest
 }
-export const executionSchema=z.object({chatInterjections:z.boolean().optional(),backend:name.default('codex'),roles:z.object({router:name.optional(),worker:name.optional(),subagent:name.optional()}).strict().prefault({}),
+export const executionSchema=z.object({suppliedEvidence:z.enum(['gather','fold']).optional(),chatInterjections:z.boolean().optional(),backend:name.default('codex'),roles:z.object({router:name.optional(),worker:name.optional(),subagent:name.optional()}).strict().prefault({}),
  router:z.preprocess(dropLegacyHarness,agentOptionsSchema.extend({nativeTool,label:z.string().trim().min(1).max(100).optional(),backend:name.optional(),model:z.string().min(1).optional(),mode:z.enum(['assessment','host','client']).optional()})).optional(),
  management:z.object({enabled:z.boolean().default(false),maxWorkers:z.number().int().min(1).default(workerPoolDefault),backends:z.array(name).optional()}).strict().optional(),
  workers:z.array(z.preprocess(dropLegacyHarness,workerProfileSchema)).optional(),teamTargets:z.array(teamTargetSchema).max(16).optional()}).strict().prefault({})

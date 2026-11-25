@@ -14,6 +14,8 @@ export interface ToolContent {type:'inputText'|'inputImage';text?:string;imageUr
 /** Public assistant output only. Provider reasoning and tool arguments never enter this channel. */
 export interface ModelOutput {id:string;type:'start'|'delta'|'end';text?:string;phase:'answer'|'commentary'}
 export interface ModelRequest {
+  /** A tool-free API read of material supplied in this message. */
+  suppliedText?:true
   onUsage?:(usage:import('./model-usage.ts').ModelUsage)=>void
   contextBudget?:import('./context-budget.ts').ContextBudget
   contextId?:string

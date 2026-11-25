@@ -18,3 +18,4 @@ export const workerPoolDefault = 32
 export const shellOutputBytes = {default: 8 * 1024 * 1024, max: 64 * 1024 * 1024}
 export const browserCapacity = {defaultTabs: 16, maxTabs: 64, textCharacters: 128_000, snapshotCharacters: 256_000}
 export const chatUploadLimits = {maxBytes: 100 * 1024 * 1024, maxFiles: 32}
+export const chatDownloadMaxBytes = 512 * 1024 * 1024

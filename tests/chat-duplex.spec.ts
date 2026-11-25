@@ -175,7 +175,7 @@ it('delivers progress questions to the Router while a dispatched plan runs',asyn
 it('rejects direct execution and confirms an accepted assignment after the Router provider fails',async()=>{
  let started=0
  const work=gate()
- const forbidden=['github_read','github_write','github_git','workspace_browser','chat_deliver_file','chat_artifact_deliver','code_mode','superagent_shell']
+ const forbidden=['github_read','github_write','github_git','workspace_browser','chat_deliver_file','code_mode','superagent_shell']
  const f=fixture(async r=>{
   if(r.role==='worker'){
    started++

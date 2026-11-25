@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto'
-import {mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs'
+import {mkdirSync,mkdtempSync,readFileSync,rmSync,truncateSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {dirname,join} from 'node:path'
 import {afterEach,expect,it} from 'vitest'
@@ -53,12 +53,13 @@ async function settle(host:Runtime,done:()=>boolean){
 const name='Setup 0.3.1.exe',expected=Buffer.from('exact original package')
 const sha=createHash('sha256').update(expected).digest('hex')
 
-async function publishManifest(f:ReturnType<typeof fixture>){
+async function publishManifest(f:ReturnType<typeof fixture>,version={bytes:expected.length,sha256:sha}){
  const {h,chat}=f
  const old=f.send('Build the original package'),orig=await f.assign(old.runId,'build','Build')
  const cwd=managedWorkspacePath(h.config.stateDir,orig.ticketId),relative='release/'+name
  mkdirSync(dirname(join(cwd,relative)),{recursive:true})
- writeFileSync(join(cwd,relative),expected)
+ writeFileSync(join(cwd,relative),version.bytes===expected.length?expected:Buffer.alloc(0))
+ truncateSync(join(cwd,relative),version.bytes)
  const a=h.store.tickets.get(orig.ticketId)!.assignments.at(-1)!
  h.store.put('run',orig.ticketId,{ticketId:orig.ticketId,assignmentId:a.id,cwd,phase:'idle',workerId:'build',prepared:true})
  h.engine.stopTicket(orig.ticketId,'Original task was stopped')
@@ -66,7 +67,7 @@ async function publishManifest(f:ReturnType<typeof fixture>){
  const reportCwd=managedWorkspacePath(h.config.stateDir,report.ticketId)
  mkdirSync(reportCwd,{recursive:true})
  writeFileSync(join(reportCwd,'verified.json'),JSON.stringify({
-  sourceTicketId:orig.ticketId,artifacts:[{kind:'Windows-x64',originalRelativePath:relative,bytes:expected.length,sha256:sha}],
+  sourceTicketId:orig.ticketId,artifacts:[{kind:'Windows-x64',originalRelativePath:relative,...version}],
  }))
  const deliveries=new ChatDeliveries(h),files=deliveries.capture(chat.id,verified.runId,report.ticketId,'review',reportCwd,['verified.json'])
  h.chat.publishFiles(report.ticketId,files.map(file=>file.id))
@@ -172,4 +173,138 @@ it('keeps an interrupted Chat Worker visible without requesting confirmation aft
  expect(view.pendingCards).toEqual([])
  expect(restored.store.tickets.get(ticketId)?.attention).toBeUndefined()
  expect(restored.store.tickets.get(ticketId)?.assignments.at(-1)?.report?.summary).toBe('Error: Worker connection interrupted')
+})
+
+it('fulfills a private pickup without a model turn, a new assignment or a goal wake',async()=>{
+ let turns=0
+ const f=fixture(async()=>{turns++;throw Error('pickup must not dispatch')})
+ await publishManifest(f)
+ const {h,chat,owner}=f
+ const target=f.send('把安装包给我')
+ const before=h.store.tickets.list(),wakes=h.store.list('goal-wake')
+ await settle(h,()=>!!h.store.get('router-result','router:'+target.runId))
+ const view=h.chat.view(chat.id,owner,undefined,undefined,undefined,target.runId,undefined,true)
+ expect(view.messages.flatMap(m=>m.deliveries??[])).toMatchObject([{name,localFile:true,sha256:sha}])
+ expect(h.store.tickets.list()).toEqual(before)
+ expect(h.store.list('goal-wake')).toEqual(wakes)
+ expect(turns).toBe(0)
+})
+
+it('reads an applied, previously oversized Worker handback without changing the original ticket',async()=>{
+ const {h,chat,owner,assign,send}=fixture(async()=>{throw Error('must not call model')})
+ const build=send('build package'),work=await assign(build.runId,'build','produce the test installer')
+ const ticket=h.store.tickets.get(work.ticketId)!,assignment=ticket.assignments.at(-1)!,cwd=managedWorkspacePath(h.config.stateDir,ticket.id)
+ const path='candidate/setup-mac.zip',turnId=randomUUID()
+ mkdirSync(dirname(join(cwd,path)),{recursive:true});writeFileSync(join(cwd,path),expected)
+ h.store.put('run',ticket.id,{ticketId:ticket.id,assignmentId:assignment.id,cwd,phase:'idle',workerId:'build',prepared:true})
+ const {begin,observe}=await import('../src/async-worker-inbox.ts')
+ h.engine.assignmentStarted(ticket.id,assignment.id)
+ const attempt=begin(h,ticket.id,assignment.id)
+ const text=JSON.stringify({state:'ready',files:[path,'unrelated.txt'],reply:'文件名：`setup-mac.zip`（'+expected.length+' 字节）。\nSHA-256：`'+sha+'`'})
+ h.store.put('transcript',turnId,{turnId,ticketId:ticket.id,text,at:Date.now()})
+ observe(h,attempt,{kind:'result',nativeTurnId:turnId,payload:text},()=>{
+  h.store.put('chat-file-correction',ticket.id+':'+assignment.id,{ticketId:ticket.id,assignmentId:assignment.id})
+  h.engine.note(ticket.id,'File delivery failed: Evidence must be a regular file no larger than 102400 KiB.')
+ })
+ h.store.jobState('router:'+build.runId,'done')
+ const request=send('把安装包给我')
+ const before=h.store.tickets.list()
+ expect(await h.chat.pickup(request.runId,'把安装包给我',new AbortController().signal)).toContain('候选')
+ const cards=h.chat.view(chat.id,owner,undefined,undefined,undefined,request.runId,undefined,true).messages.flatMap(m=>m.deliveries??[])
+ expect(cards).toMatchObject([{name:'setup-mac.zip',size:expected.length,sha256:sha,localFile:true}])
+ await h.chat.pickup(request.runId,'把安装包给我',new AbortController().signal)
+ expect(new ChatDeliveries(h).list(chat.id)).toHaveLength(1)
+ expect(h.store.tickets.list()).toEqual(before)
+ writeFileSync(join(cwd,path),Buffer.alloc(expected.length))
+ await expect(h.chat.retainedDelivery(chat.id,owner,cards[0]!.id)).rejects.toThrow()
+ h.store.put('async-worker-revoked',attempt.id,{ticketId:ticket.id})
+ expect(JSON.stringify(await h.chat.artifactTool(request.runId,'chat_artifact_find',{ticketId:ticket.id},()=>{}))).not.toContain('setup-mac.zip')
+})
+
+it('keeps pickup separate from new work and binds legacy digests to the named file',async()=>{
+ const {existingFileRequest,reportedFileVersions,choosePickup}=await import('../src/chat-file-pickup.ts')
+ for(const request of ['把安装包给我','你把mac安装包本地链接给我','Send me the installer','Where is the report?'])expect(existingFileRequest(request)).toBe(true)
+ for(const request of ['帮我生成一份报告给我','重新构建安装包发给我','别把安装包给我','Build and send me the new installer','把安装包发给团队','给我解释这个安装包怎么使用'])expect(existingFileRequest(request)).toBe(false)
+ const items=[{id:'a',ticketId:'first-ticket',name:'setup-mac.zip'},{id:'b',ticketId:'review-ticket',name:'review-mac.zip'}]
+ expect(choosePickup(items,'把安装包给我','from first-ticket')).toEqual(items.slice(0,1))
+ expect(choosePickup(items,'把安装包给我','')).toEqual(items)
+ expect(choosePickup(items,'send missing.exe','from first-ticket')).toEqual([])
+ expect(choosePickup(items.slice(1),'把安装包给我','原任务 '+'a'.repeat(32)+' 的安装包')).toEqual([])
+ expect(choosePickup(items,'把 v1.2.3 安装包给我','')).toEqual([])
+ expect(reportedFileVersions(JSON.stringify({state:'ready',files:['a.zip','b.zip'],reply:'`a.zip` 23 bytes. Other file: `b.zip` (44 bytes). SHA256: '+sha}))).toEqual([{name:'b.zip',path:'b.zip',bytes:44,sha256:sha}])
+})
+
+
+it('streams the inclusive 512 MiB download boundary and excludes larger files while uploads retain their own limit',async()=>{
+ const {chatDownloadMaxBytes,chatUploadLimits}=await import('../src/execution-limits.ts')
+ expect(chatDownloadMaxBytes).toBe(512*1024*1024)
+ expect(chatUploadLimits.maxBytes).toBe(100*1024*1024)
+ const digest=createHash('sha256'),zero=Buffer.alloc(1024*1024)
+ for(let i=0;i<512;i++)digest.update(zero)
+ const f=fixture(async()=>{throw Error('Unexpected dispatch')}),{h,send,owner,chat}=f
+ const version={bytes:chatDownloadMaxBytes,sha256:digest.digest('hex')}
+ const original=await publishManifest(f,version),request=send('把安装包给我')
+ const cards=()=>new ChatDeliveries(h).list(chat.id).filter(f=>f.runId===request.runId)
+ await h.chat.pickup(request.runId,'把安装包给我',new AbortController().signal)
+ expect(cards()).toMatchObject([{size:chatDownloadMaxBytes,sha256:version.sha256,localFile:true}])
+ const entry=await h.chat.retainedDelivery(chat.id,owner,cards()[0]!.id)
+ expect(entry&&'file' in entry&&entry.file).toBeTruthy()
+ if(entry&&'file' in entry&&entry.file)await entry.file.handle.close()
+ truncateSync(join(original.cwd,original.relative),chatDownloadMaxBytes+1)
+ await expect(h.chat.retainedDelivery(chat.id,owner,cards()[0]!.id)).rejects.toThrow()
+ expect(()=>new ChatDeliveries(h).capture(chat.id,request.runId,original.ticketId,'build',original.cwd,[original.relative])).toThrow('524288 KiB')
+ const larger=fixture(async()=>{throw Error('Unexpected dispatch')})
+ await publishManifest(larger,{...version,bytes:chatDownloadMaxBytes+1})
+ const get=larger.send('把安装包给我')
+ await larger.h.chat.pickup(get.runId,'把安装包给我',new AbortController().signal)
+ expect(new ChatDeliveries(larger.h).list(larger.chat.id).filter(f=>f.runId===get.runId)).toHaveLength(0)
+},20000)
+
+it('lets the Router return an existing published file in a contextual reply without a Worker',async()=>{
+ const f=fixture(async r=>{
+  if(r.role!=='router')throw Error('File pickup dispatched work')
+  const listed=await r.onTool!('chat_artifact_find',{query:'Windows x64'},'list')
+  const [item]=JSON.parse(listed.contentItems[0]!.text!).items
+  const delivered=await r.onTool!('chat_artifact_deliver',{id:item.id},'attach')
+  expect(delivered.success).toBe(true)
+  return {reply:'Here is the file.'}
+ })
+ await publishManifest(f)
+ const {h,chat,owner}=f,request=f.send('That one, please.')
+ const before=h.store.tickets.list()
+ await settle(h,()=>!!h.store.get('router-result','router:'+request.runId))
+ const view=h.chat.view(chat.id,owner,undefined,undefined,undefined,request.runId,undefined,true)
+ expect(view.messages.flatMap(m=>m.deliveries??[])).toMatchObject([{name,sha256:sha,localFile:true}])
+ expect(h.store.tickets.list()).toEqual(before)
+})
+
+it('prefers the captured original and preserves the published download if that original is replaced',async()=>{
+ const {h,chat,owner,send,assign}=fixture(async()=>{throw Error('Unexpected dispatch')})
+ const build=send('Build original'),{ticketId}=await assign(build.runId,'build','Build the release')
+ const cwd=managedWorkspacePath(h.config.stateDir,ticketId),file='my-installer.dmg',dir=new ChatDeliveries(h)
+ mkdirSync(cwd,{recursive:true});writeFileSync(join(cwd,file),expected)
+ h.store.put('run',ticketId,{ticketId,assignmentId:h.store.tickets.get(ticketId)!.assignments.at(-1)!.id,cwd,phase:'idle',workerId:'build'})
+ const staged=dir.capture(chat.id,build.runId,ticketId,'build',cwd,[file])
+ h.chat.publishFiles(ticketId,staged.map(f=>f.id))
+ const pickup=async()=>{
+  const r=send('把安装包给我')
+  await h.chat.pickup(r.runId,'把安装包给我',new AbortController().signal)
+  return dir.list(chat.id).find(f=>f.runId===r.runId)!
+ }
+ const first=await pickup();expect(first).toMatchObject({name:file,localFile:true,sha256:sha})
+ writeFileSync(join(cwd,file),Buffer.alloc(expected.length))
+ await expect(h.chat.retainedDelivery(chat.id,owner,first.id)).rejects.toThrow()
+ const next=await pickup();expect(next.sha256).toBe(sha);expect(next.localFile).toBeUndefined()
+ const entry=await h.chat.retainedDelivery(chat.id,owner,next.id)
+ expect(entry&&'bytes' in entry&&Buffer.from(entry.bytes!)).toEqual(expected)
+})
+
+it('captures Worker downloads beyond the upload limit with their exact version',async()=>{
+ const {h,chat,assign,send}=fixture(async()=>{throw Error('Unexpected dispatch')})
+ const r=send('Build'),{ticketId}=await assign(r.runId,'build','Build')
+ const cwd=managedWorkspacePath(h.config.stateDir,ticketId),path=join(cwd,'large.zip')
+ mkdirSync(cwd,{recursive:true});writeFileSync(path,'');truncateSync(path,100*1024*1024+1)
+ const [file]=new ChatDeliveries(h).capture(chat.id,r.runId,ticketId,'build',cwd,['large.zip'])
+ expect(h.store.get('chat-delivery',file!.id)).toMatchObject({originalPath:'large.zip',size:100*1024*1024+1,sha256:expect.stringMatching(/^[a-f0-9]{64}$/)})
+ expect(h.store.db.prepare('SELECT length(bytes) n FROM chat_delivery_bytes WHERE id=?').get(file!.id)?.n).toBe(100*1024*1024+1)
 })

@@ -48,6 +48,7 @@ import {basename} from 'node:path'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
 import {chatPersonalization} from './chat-personalization.ts'
+import {choosePickup,existingFileRequest} from './chat-file-pickup.ts'
 import {ChatRetainedArtifacts,chatArtifactFind,deliverChatArtifactInput} from './chat-retained-artifacts.ts'
 import type {ToolResult} from './chat-permissions.ts'
 export {ChatError} from './chat-errors.ts'
@@ -731,6 +732,40 @@ export class ChatSessions {
     this.host.routerIngress.authority(triggerId)
     return c
   }
+  async pickup(triggerId:string,text:string,signal:AbortSignal){
+    const {c,run}=this.cardTarget(triggerId),store=this.host.store
+    const user=store.get<Message>('chat-message','user:'+triggerId)!
+    const zh=/\p{Script=Han}/u.test(text)||this.locale(triggerId)?.startsWith('zh')
+    const previous=store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
+      AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.role')='user'
+      AND json_extract(body,'$.sequence')<? ORDER BY json_extract(body,'$.sequence') DESC LIMIT 1`).get(c.id,user.sequence)
+    const prior:Message|undefined=previous&&JSON.parse(String(previous.body))
+    let context=''
+    if(user.quote){
+      context=this.sourceMessage(c,user.quote.messageId).text
+    }else if(prior&&existingFileRequest(prior.text)&&!this.host.memory.cleanup.blocked('chat-message',prior.id,prior)){
+      // Only the immediately preceding pickup can supply an implicit referent.
+      const conversation=this.rows<Message>('chat-message','runId',prior.runId)
+      context=conversation.filter(m=>m.conversationId===c.id&&m.sequence<user.sequence&&!this.host.memory.cleanup.blocked('chat-message',m.id,m)).map(m=>m.text).join('\n')
+    }
+    const listing=this.retained.find(triggerId,{},true)
+    const matches=choosePickup(listing.items,text,context)
+    if(!listing.more&&matches.length===1){
+      const match=matches[0]!
+      try{
+        const attachment=await this.attachRetained(triggerId,match.id,()=>this.cardTarget(run.id),signal,'pickup-file:'+triggerId)
+        const status=match.kind==='worker-candidate'?(zh?'这是原工单留存的候选文件。':'This is the candidate from the original task. '):''
+        return status+(attachment.local&&process.platform==='darwin'?(zh?'在这台 Mac 上可从文件卡定位原件，也可以下载。':'Use the file card to show the original in Finder on this Mac or download it.'):(zh?'可从文件卡下载。':'Download the file from its card.'))
+      }catch(error){
+        if(!(error instanceof ChatError))throw error
+        return zh?'现有文件和原工单记录未能对应。请指明要取的文件名或版本。':'Which filename or version would you like? I could not verify this file against the original task.'
+      }
+    }
+    const names=matches.slice(0,5).map(f=>matches.some(other=>other.id!==f.id&&other.name===f.name) ? f.name+' ('+(f.sha256?.slice(0,12)??f.ticketId??f.id)+')' : f.name)
+    return names.length>1?(zh?'你要哪一个文件？':'Which file would you like?')+'\n'+names.map(n=>'• '+n).join('\n'):
+      (zh?'请告诉我原工单中的文件名或版本，我可以按原记录取件。':'Which filename or version should I look up in the original task?')
+  }
+
   async artifactTool(triggerId:string,name:string,args:unknown,checkAuthority:()=>void,signal?:AbortSignal):Promise<ToolResult>{
     const result=(value:unknown,success=true):ToolResult=>({success,contentItems:[{type:'inputText',text:JSON.stringify(value)}]})
     const current=()=>{
@@ -740,29 +775,33 @@ export class ChatSessions {
     try{
       current()
       if(name===chatArtifactFind)return result(this.retained.find(triggerId,args))
-      const c=this.fileTarget(triggerId),{id}=deliverChatArtifactInput.parse(args)
-      const messageId='router-retained:'+stableDigest([triggerId,id])
-      const prepared=await this.retained.prepare(triggerId,id,signal)
-      current()
-      this.fileTarget(triggerId)
-      const file=this.host.store.atomic(()=>{
-        const previous=this.host.store.get<Message>('chat-message',messageId)?.deliveries?.[0]
-        if(previous){
-          if(previous.sha256!==prepared.reference.sha256)throw new ChatError('artifact_unavailable','The original file changed.',404)
-          return previous
-        }
-        const item=this.deliveries.retain(c.id,triggerId,prepared.item,prepared.reference,prepared.local)
-        this.message(c,{id:messageId,runId:triggerId,role:'assistant',text:item.name,status:'complete',deliveries:[item]})
-        return item
-      })
-      this.changed(c.id)
-      return result({name:file.name,size:file.size,sha256:file.sha256,messageId,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id,
-        ...(file.localFile?{local:true}:{})})
+      const {id}=deliverChatArtifactInput.parse(args)
+      return result(await this.attachRetained(triggerId,id,current,signal))
     }catch(error){
       if(error instanceof z.ZodError)return result({code:'invalid_request',message:'Invalid artifact tool arguments.'},false)
       if(!(error instanceof ChatError))throw error
       return result({code:error.code,message:error.message},false)
     }
+  }
+
+  private async attachRetained(triggerId:string,id:string,current:()=>void,signal?:AbortSignal,messageId='router-retained:'+stableDigest([triggerId,id])){
+    const c=this.fileTarget(triggerId)
+    const prepared=await this.retained.prepare(triggerId,id,signal)
+    current()
+    this.fileTarget(triggerId)
+    const file=this.host.store.atomic(()=>{
+      const previous=this.host.store.get<Message>('chat-message',messageId)?.deliveries?.[0]
+      if(previous){
+        if(previous.sha256!==prepared.reference.sha256)throw new ChatError('artifact_unavailable','The original file changed.',404)
+        return previous
+      }
+      const item=this.deliveries.retain(c.id,triggerId,prepared.item,prepared.reference,prepared.local)
+      this.message(c,{id:messageId,runId:triggerId,role:'assistant',text:item.name,status:'complete',deliveries:[item]})
+      return item
+    })
+    this.changed(c.id)
+    return {name:file.name,size:file.size,sha256:file.sha256,messageId,url:'/api/chat/conversations/'+c.id+'/deliveries/'+file.id,
+      ...(file.localFile?{local:true}:{})}
   }
 
   async retainedDelivery(id:string,owner:string,fileId:string,localOnly=false){
@@ -856,16 +895,16 @@ export class ChatSessions {
   delivery(id:string,owner:string,fileId:string,acceptanceTask?:string){
     const c=this.get(id,owner)
     if(acceptanceTask&&!this.host.store.get<{published?:boolean}>('chat-delivery',fileId)?.published){
-      const goal=this.acceptanceGoal(c,acceptanceTask)
-      if(goal&&this.host.goals.acceptanceStatus(goal)){
-        for(const ticketId of goal.taskIds){
-          const delivery=retainedGoalDelivery(this.host.store,goal,ticketId)
-          if(delivery?.files?.includes(fileId))return this.deliveries.read(id,fileId,{ticketId})
-        }
-      }
+      const ticketId=acceptanceTask.startsWith('goal:')&&this.reviewableFile(c.id,owner,acceptanceTask.slice(5),fileId)
+      if(ticketId)return this.deliveries.read(id,fileId,{ticketId})
       throw new ChatError('delivery_missing','Delivery unavailable.',404)
     }
     return this.deliveries.read(id,fileId)
+  }
+  reviewableFile(id:string,owner:string,goalId:string,fileId:string){
+    const goal=this.acceptanceGoal(this.get(id,owner),'goal:'+goalId)
+    if(goal&&this.host.goals.acceptanceStatus(goal))
+      return goal.taskIds.find(ticketId=>retainedGoalDelivery(this.host.store,goal,ticketId)?.files?.includes(fileId))
   }
   private originRun(triggerId:string,includeSilent=false){
     const direct=this.host.store.get<ChatRun>('chat-run',triggerId)
@@ -1078,7 +1117,7 @@ export class ChatSessions {
       if(this.host.store.get('project-review-input',run.id)||
         this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='workflow-decision'").get('workflow-decision:'+run.id))
         this.host.store.enqueue('router:'+run.id,'router',{discussion:c.discussion,triggerId:run.id})
-      if(text&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
+      if(text&&!existingFileRequest(text)&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
         const questionRun=this.host.store.get<ChatRun>('chat-run',sourceMessage.runId)
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)
           this.host.store.put('chat-message',sourceMessage.id,{...sourceMessage,decision:{...sourceMessage.decision,answer:text,replyRunId:run.id}})

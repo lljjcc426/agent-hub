@@ -5,7 +5,7 @@ import type { ToolSpec } from './model.ts'
 import type { Runtime } from './runtime.ts'
 import { evidenceBytes, workbookObservation } from './goal-artifacts.ts'
 import type {RetainedChatFile} from './chat-retained-artifacts.ts'
-import { chatUploadLimits } from './chat-attachments.ts'
+import { chatDownloadMaxBytes } from './execution-limits.ts'
 import { pendingNoticeSchema, pendingNoticeProperty } from './chat-pending-notice.ts'
 import { ChatError } from './chat-errors.ts'
 
@@ -25,7 +25,7 @@ export interface ChatDelivery {
   localFile?: true
   sha256?: string
 }
-type DeliveryRow=ChatDelivery&{published:boolean;reference?:RetainedChatFile}
+type DeliveryRow=ChatDelivery&{published:boolean;reference?:RetainedChatFile;originalPath?:string}
 const images: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -99,6 +99,7 @@ export class ChatDeliveries {
     bytes: Buffer,
     published: boolean,
     origin: { runId: string; ticketId?: string; workerId?: string },
+    originalPath?: string,
   ) {
     const ext = extname(name).toLowerCase(),
       preview = images[ext] ? 'image' : textFiles.has(ext) ? 'text' : null
@@ -113,7 +114,7 @@ export class ChatDeliveries {
       mime: images[ext] ?? (preview === 'text' ? 'text/plain' : 'application/octet-stream'),
       createdAt: Date.now(),
     }
-    this.host.store.put('chat-delivery', item.id, { ...item, published })
+    this.host.store.put('chat-delivery', item.id, { ...item, published, ...(originalPath ? {originalPath, sha256:createHash('sha256').update(bytes).digest('hex')} : {}) })
     this.host.store.db.prepare('INSERT INTO chat_delivery_bytes VALUES(?,?)').run(item.id, bytes)
     return item
   }
@@ -138,9 +139,9 @@ export class ChatDeliveries {
     try {
       for (const path of new Set(paths)) {
         this.host.resources.workspacePath(cwd, path)
-        const bytes = evidenceBytes(cwd, path, chatUploadLimits.maxBytes)
+        const bytes = evidenceBytes(cwd, path, chatDownloadMaxBytes)
         if (!bytes) throw Error('Delivery file is missing: ' + path)
-        files.push(this.save(conversationId, basename(path), bytes, false, { runId, ticketId, workerId }))
+        files.push(this.save(conversationId, basename(path), bytes, false, { runId, ticketId, workerId }, path))
       }
       return files
     } catch (error) {
@@ -150,12 +151,12 @@ export class ChatDeliveries {
   }
   publish(conversationId: string, origin: {ticketId: string} | {runId: string}, ids: string[]) {
     return ids.map((id) => {
-      const row = this.host.store.get<ChatDelivery & { published: boolean }>('chat-delivery', id)
+      const row = this.host.store.get<DeliveryRow>('chat-delivery', id)
       if (!row?.mime || row.conversationId !== conversationId ||
           ('ticketId' in origin ? row.ticketId !== origin.ticketId : !!row.ticketId || row.runId !== origin.runId))
         throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)
-      const { published, ...item } = row
-      this.host.store.put('chat-delivery', id, { ...item, published: true })
+      const { published, originalPath, reference, ...item } = row
+      this.host.store.put('chat-delivery', id, { ...row, published: true })
       return item
     })
   }
@@ -203,7 +204,7 @@ export class ChatDeliveries {
       )
       .all(conversationId)
       .map((row) => {
-        const {reference,...item}=JSON.parse(String(row.body)) as DeliveryRow
+        const {reference,originalPath,...item}=JSON.parse(String(row.body)) as DeliveryRow
         return item
       })
   }
@@ -211,7 +212,7 @@ export class ChatDeliveries {
     const item = this.host.store.get<DeliveryRow>('chat-delivery', id)
     if (
       !item ||
-      !item.mime ||
+      !item.mime || item.size > chatDownloadMaxBytes ||
       item.conversationId !== conversationId ||
       (!draft ? !item.published :
         'runId' in draft ? item.published || !!item.ticketId || item.runId !== draft.runId :
@@ -222,12 +223,12 @@ export class ChatDeliveries {
     return item
   }
   reference(conversationId:string,id:string){
-    const {reference,...item}=this.allowed(conversationId,id)
+    const {reference,originalPath,...item}=this.allowed(conversationId,id)
     if(item.retained&&!reference)throw new ChatError('delivery_missing','Delivery unavailable.',404)
     return reference?{item,reference}:undefined
   }
   read(conversationId: string, id: string, draft?: { runId: string } | { ticketId: string }) {
-    const {reference,...item}=this.allowed(conversationId,id,draft)
+    const {reference,originalPath,...item}=this.allowed(conversationId,id,draft)
     const data = this.host.store.db.prepare('SELECT bytes FROM chat_delivery_bytes WHERE id=?').get(id)
     if (!data) throw new ChatError('delivery_missing', 'Delivery unavailable.', 404)
     return { item, bytes: data.bytes as Uint8Array }

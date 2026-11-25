@@ -4,7 +4,8 @@ import {answerCheckpointInquiries,authorizedQuestion,readInquiryReport,finishInq
 import {ApiUsage} from './api-usage.ts'
 
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
-import {chatArtifactFind,chatArtifactSpecs} from './chat-retained-artifacts.ts'
+import {existingFileRequest} from './chat-file-pickup.ts'
+import {chatArtifactSpecs} from './chat-retained-artifacts.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
@@ -887,7 +888,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind),...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs({githubConnector=true,network=true,localOutputs=false}:{githubConnector?:boolean;network?:boolean;localOutputs?:boolean}={}){
     return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&
       (s.name!=='superagent_artifact'||localOutputs||this.delegation.enabled)&&
@@ -1312,6 +1313,23 @@ export class Runtime {
     // Upgrade old queued human turns through the current policy; never infer permission from session existence.
     if(!this.routerIngress.get(triggerId))this.store.atomic(()=>this.routerIngress.restoreLegacy(triggerId,discussion))
     const admittedMandate=candidates||followups?undefined:this.routerIngress.authority(triggerId,discussion)
+    // An explicit pickup has no execution authority. Finish it before goal, Worker or model routing.
+    if(job.kind==='router'&&!messageId&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId&&trigger.human&&
+       this.chat.binding(triggerId)&&!this.chat.isReactionInput(triggerId)&&!this.chat.skillForTrigger(triggerId)&&
+       existingFileRequest(trigger.text)&&!this.store.get<{attachments?:unknown[]}>('chat-message','user:'+triggerId)?.attachments?.length){
+      const key='router:'+discussion,controller=new AbortController()
+      this.controllers.set(key,controller)
+      try{
+        const reply=await this.chat.pickup(triggerId,trigger.text,controller.signal)
+        controller.signal.throwIfAborted()
+        this.routerIngress.authority(triggerId,discussion)
+        this.store.atomic(()=>{
+          this.store.put('router-result',job.id,{discussion,threadId:'',turnId:'pickup:'+job.id,reply})
+          this.chat.reply(job.id,triggerId,reply)
+        })
+      }finally{if(this.controllers.get(key)===controller)this.controllers.delete(key)}
+      return
+    }
     this.proactive.beforeTurn(triggerId)
     this.goals.beforeTurn(triggerId,!!messageId)
     const batchInputs=batchId?this.proactive.batchInputs(batchId):undefined
@@ -1324,7 +1342,7 @@ export class Runtime {
     const selectedSkill=!messageId&&chatBinding?this.chat.skillForTrigger(triggerId):undefined
     const browserRun = chatBinding && trigger.human && !messageId && !candidates && !followups && !this.chat.isReactionInput(triggerId)
       ? this.store.get<{conversationId:string;openingLocale?:'zh-CN'|'en'}>('chat-run', triggerId) : undefined
-    const artifactTools=browserRun?chatArtifactSpecs.filter(spec=>spec.name===chatArtifactFind):[]
+    const artifactTools=browserRun?chatArtifactSpecs:[]
     const browserOwner = browserRun && this.store.get<{owner:string}>('chat-conversation', browserRun.conversationId)?.owner
     if(browserRun&&scoped&&admittedMandate?.strength==='explicit'&&!permissionId&&!fileReviewId&&!teamResultId)this.revalidateChatWorkerHolds(scoped)
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
@@ -1500,7 +1518,7 @@ export class Runtime {
             this.goals.toolAllowed(triggerId,name,args)
             if(scoped)this.scopes.assertCurrent(scoped)
             if(packet)this.memory.validate(packet.manifest)
-            if(artifactTools.length&&name===chatArtifactFind)
+            if(artifactTools.some(spec=>spec.name===name))
               return this.chat.artifactTool(triggerId,name,args,validateReplyContext,controller.signal)
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
@@ -1622,7 +1640,7 @@ export class Runtime {
       const replyReads:{tool:string;text:string}[]=[]
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
-          (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. For files, delegate creation or retrieval; the host publishes Worker outputs and accepts explicit review decisions. If an authorized existing Chat artifact is requested, use chat_artifact_find for its metadata and pass the selected artifact ID to the Worker for delivery. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
+          (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. Delegate file creation. To return an existing file, use chat_artifact_find and chat_artifact_deliver with the selected ID. Clarify ambiguous versions. Do not dispatch a Worker or resume a goal for a pickup. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
@@ -2173,7 +2191,7 @@ export class Runtime {
             const reason='File delivery failed: '+(error instanceof Error?error.message:String(error))
             const key=ticket.id+':'+assignmentId,alreadyRetried=this.store.get('chat-file-correction',key)
             if(!alreadyRetried){
-              this.store.put('chat-file-correction',key,{ticketId:ticket.id,assignmentId})
+              this.store.put('chat-file-correction',key,{ticketId:ticket.id,assignmentId,eventId:receipt.id})
               const prior=this.store.tickets.get(ticket.id)!.inputs.map(i=>i.id)
               this.engine.note(ticket.id,reason+'. Check the task directory, repair the missing deliverables and report the verified relative paths. Reuse completed work.')
               allowNewTaskInputs(this.store,ticket.id,prior)

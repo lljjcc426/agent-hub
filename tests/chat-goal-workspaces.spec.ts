@@ -39,7 +39,7 @@ async function tool<T=unknown>(r:ModelRequest,name:string,args:unknown):Promise<
  return JSON.parse(text) as T
 }
 
-function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean;rejectOverall?:boolean;rejectIntermediate?:boolean}={}){
+function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolean;shell?:boolean;rejectOverall?:boolean;rejectIntermediate?:boolean;observeReceipt?:(tool:string,content:string)=>void}={}){
  const root=mkdtempSync(join(tmpdir(),'roppo-goal-workspace-'));roots.push(root)
  const source=join(root,'source');mkdirSync(source)
  if(options.git){
@@ -63,7 +63,11 @@ function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolea
   if(input.kind==='goal_verification'){
    for(const e of input.evidence){
     let offset:number|null=0
-    do{offset=(await tool<{nextOffset:number|null}>(r,'goal_evidence',{id:e.id,offset})).nextOffset}while(offset!==null)
+    do{
+     const page:{content:string;nextOffset:number|null}=await tool(r,'goal_evidence',{id:e.id,offset})
+     if(e.provider?.tool)options.observeReceipt?.(e.provider.tool,page.content)
+     offset=page.nextOffset
+    }while(offset!==null)
    }
    output={checks:input.criteria.map((criterion:{id:string})=>({criterionId:criterion.id,verdict:options.rejectOverall&&criterion.id==='__goal__'||options.rejectIntermediate&&criterion.id.startsWith('__step__:')?'insufficient':'passed',
     explanation:'Inspected the evidence',evidenceIds:input.evidence.filter((e:{criterionIds:string[]})=>criterion.id==='__goal__'||e.criterionIds.includes(criterion.id)).map((e:{id:string})=>e.id)}))}
@@ -100,6 +104,23 @@ function startCommand(text:string,fields:Record<string,unknown>={}){
   nodes:[{id:'continue',title:'Check existing work',instruction:'Inspect the existing files',workerId:'builder',criterionIds:['verification']}],
   ...fields}
 }
+
+it('lets the independent verifier read the original desktop observation from a Chat Worker',async()=>{
+ const args={action:'get_window_state',requestId:'observe-window',arguments:{window_id:120,include_screenshot:false}}
+ const result={success:true,contentItems:[{type:'inputText' as const,text:JSON.stringify({tree_markdown:'Preference pane: previous profile'})}]}
+ const observed:string[]=[]
+ const f=fixture(async r=>{
+  if(r.role!=='worker')return {reply:'Working.'}
+  expect(await r.onTool!('superagent_desktop',args,'desktop-observation')).toEqual(result)
+  return ready('Observed the window')
+ },{observeReceipt:(tool,content)=>{if(tool==='superagent_desktop')observed.push(content)}})
+ const driver=vi.spyOn(f.host.desktop,'call').mockResolvedValue(result)
+ const goal=f.start('Inspect the current preference pane')
+ await f.until(()=>f.host.goals.get(goal.id)?.state==='completed')
+ expect(driver).toHaveBeenCalledTimes(1)
+ expect(observed.length).toBeGreaterThan(0)
+ for(const content of observed)expect(JSON.parse(content)).toMatchObject({tool:'superagent_desktop',request:args,result})
+})
 
 function stageInstaller(cwd:string,archiveRoot:string|undefined){
  const sample=Buffer.from('macOS arm64 candidate fixture')

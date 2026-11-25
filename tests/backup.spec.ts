@@ -42,6 +42,30 @@ it('backs up WAL state, verifies integrity and refuses restoring under a live ho
   expect(()=>verifyBackup(join(root,'backup'))).toThrow('checksum')
  }finally{store.close()}
 })
+it('retains a pending review and prevents a restore from repeating a committed continuation',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'review-restore-'));roots.push(root)
+ const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}]}),file=join(config.stateDir,'state.sqlite')
+ const backup=join(root,'backup'),current=join(root,'current'),id='chat-result-review:event'
+ const review={id,ticketId:'task',assignmentId:'assignee',summary:'Partial result'}
+ let store=new Store(file)
+ const previous=store.db.prepare('PRAGMA user_version').get()!.user_version
+ expect(()=>store.atomic(()=>{store.requireChatResultReviewSchema();throw Error('interrupted')})).toThrow('interrupted')
+ expect(store.db.prepare('PRAGMA user_version').get()!.user_version).toBe(previous)
+ store.atomic(()=>{store.requireChatResultReviewSchema();store.put('chat-result-review',id,review)})
+ store.close();await backupState(config,backup)
+ store=new Store(file)
+ store.atomic(()=>{
+  store.put('chat-result-review',id,{...review,decision:'continue',nextStep:'Read the original file'})
+  store.put('router-read',id,{discussion:'chat'})
+ })
+ store.close()
+ await expect(restoreState(config,backup)).rejects.toThrow('Reviewed Chat work')
+ await backupState(config,current)
+ expect((await restoreState(config,current)).restored).toBe(true)
+ store=new Store(file)
+ try{expect(store.get('chat-result-review',id)).toMatchObject({decision:'continue'})}finally{store.close()}
+})
+
 it('restores offline state and retains a backup of the previous database',async()=>{
  const root=mkdtempSync(join(tmpdir(),'agent-restore-'));roots.push(root)
  const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]})

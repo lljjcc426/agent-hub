@@ -74,7 +74,9 @@ it('keeps its Worker running during further conversation and reports completion 
   await settle(f.h,()=>laterStarted)
   expect(f.view().workers[0]!.tasks[0]!.state).toBe('running')
   work.release()
-  await settle(f.h,()=>f.h.store.tickets.list().some(t=>!!t.ended))
+  await settle(f.h,()=>f.h.store.list('chat-result-review').length===1)
+  expect(f.h.store.tickets.list()[0]!.ended).toBeUndefined()
+  expect(f.view().workers[0]!.tasks[0]).toMatchObject({state:'running',reviewing:true})
   expect(f.view().messages.some(m=>m.text==='The background task is complete.')).toBe(false)
  }finally{first.release();work.release();later.release()}
  await settle(f.h,()=>f.view().messages.some(m=>m.text==='The background task is complete.'))
@@ -83,6 +85,123 @@ it('keeps its Worker running during further conversation and reports completion 
  expect(f.view().workers[0]!.tasks[0]!.state).toBe('completed')
  expect(f.view().messages.filter(m=>m.role==='user')).toHaveLength(2)
  expect(f.h.store.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state='failed'").get()!.n).toBe(0)
+})
+
+it('continues a partial result in the same ticket once and closes only after answering the original request',async()=>{
+ let workers=0,reviews=0
+ const f=fixture(async r=>{
+  const data=JSON.parse(r.input)
+  if(r.role==='worker'){
+   workers++
+   if(workers===2)expect(JSON.stringify(data.inputs)).toContain('Compare the saved and loaded preferences')
+   return {state:'ready',summary:workers===1?'Reproduced':'The previous preference file is loaded',
+    reply:workers===1?'The setting still resets.':'The app loads the old preference file.',question:null,handbacks:[]}
+  }
+  if(data.resultReview){
+   reviews++
+   expect(data.resultReview.originalRequest).toBe('Find why my preference resets')
+   expect(f.h.store.tickets.list()[0]?.ended).toBeUndefined()
+   return reviews===1?{decision:'continue',nextStep:'Compare the saved and loaded preferences',reply:''}:
+    {decision:'answer',nextStep:'',reply:'The app loads the old preference file.'}
+  }
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'prefs',text:'Investigate the reset'},'assign')
+  return {reply:'Checking.'}
+ },true)
+ f.send('Find why my preference resets')
+ await settle(f.h,()=>f.view().messages.some(m=>m.text==='The app loads the old preference file.'&&m.speaker?.kind==='router'))
+ const [ticket]=f.h.store.tickets.list()
+ expect(ticket!.ended?.outcome).toBe('completed')
+ expect(f.h.store.tickets.list()).toHaveLength(1)
+ expect(ticket!.inputs.filter(i=>i.kind==='note'&&i.text==='Compare the saved and loaded preferences')).toHaveLength(1)
+ for(const r of f.h.store.list<{id:string}>('chat-result-review'))f.h.store.jobState('router:result:'+r.id,'pending')
+ await f.h.tick()
+ expect(workers).toBe(2);expect(reviews).toBe(2)
+ expect(f.view().messages.filter(m=>m.role==='user')).toHaveLength(1)
+})
+
+it('retries an interrupted read-only review without repeating the Worker or its continuation',async()=>{
+ let workers=0,reviews=0
+ const f=fixture(async r=>{
+  if(r.role==='worker')return {state:'ready',summary:++workers===1?'Observed':'Verified',reply:'Recorded observation',question:null,handbacks:[]}
+  if(JSON.parse(r.input).resultReview){
+   if(++reviews===1)throw Error('Transient connection loss')
+   return reviews===2?{decision:'continue',nextStep:'Read the original log',reply:''}:
+    {decision:'answer',nextStep:'',reply:'Original log verified.'}
+  }
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'log',text:'Investigate'},'assign')
+  return {reply:'Checking.'}
+ },true)
+ f.send('Explain the unexpected result')
+ await settle(f.h,()=>f.view().messages.some(m=>m.text==='Original log verified.'))
+ const [ticket]=f.h.store.tickets.list()
+ expect(ticket!.ended?.outcome).toBe('completed')
+ expect(ticket!.inputs.filter(i=>i.kind==='note'&&i.text==='Read the original log')).toHaveLength(1)
+ expect([workers,reviews]).toEqual([2,3])
+})
+
+it('respects a human stop while the Router is deciding whether to continue',async()=>{
+ const pending=gate();let reviewing=false,workers=0
+ const f=fixture(async r=>{
+  if(r.role==='worker'){workers++;return {state:'ready',summary:'Observed',reply:'Partial result',question:null,handbacks:[]}}
+  if(JSON.parse(r.input).resultReview){reviewing=true;await pending.wait;return {decision:'continue',nextStep:'Check another log',reply:''}}
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'log',text:'Investigate'},'assign')
+  return {reply:'Checking.'}
+ },true)
+ f.send('Check the log')
+ try{
+  await settle(f.h,()=>reviewing)
+  f.h.engine.stopTicket(f.h.store.tickets.list()[0]!.id,'Human stop')
+ }finally{pending.release()}
+ const review=f.h.store.list<{id:string}>('chat-result-review')[0]!
+ await settle(f.h,()=>['done','failed'].includes(String(f.h.store.db.prepare('SELECT state FROM jobs WHERE id=?').get('router:result:'+review.id)?.state)))
+ expect(workers).toBe(1)
+ const [ticket]=f.h.store.tickets.list()
+ expect(ticket!.ended).toBeDefined()
+ expect(ticket!.inputs.some(i=>i.kind==='note'&&i.text==='Check another log')).toBe(false)
+})
+
+it('lets the same Worker switch evidence when a proposed manual step has an authorized alternative',async()=>{
+ let workers=0,reviews=0
+ const f=fixture(async r=>{
+  if(r.role==='worker'){
+   workers++
+   if(workers===2)return {state:'blocked',summary:'Panel unavailable',reply:'The panel did not open.',question:'Can you open the panel?',handbacks:[]}
+   return {state:'ready',summary:workers===1?'Observed':'Verified the setting',reply:'Read the local setting.',question:null,handbacks:[]}
+  }
+  const input=JSON.parse(r.input)
+  if(input.resultReview){
+   reviews++
+   if(reviews===1)return {decision:'continue',nextStep:'Inspect the panel.',reply:''}
+   if(reviews===2){
+    expect(input.resultReview).toMatchObject({previousChecks:['Inspect the panel.'],proposedQuestion:'Can you open the panel?'})
+    expect(f.h.store.tickets.list()[0]!.attention).toBeUndefined()
+    return {decision:'continue',nextStep:'Read the setting from its original file.',reply:''}
+   }
+   return {decision:'answer',nextStep:'',reply:'The verified setting explains it.'}
+  }
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'panel',text:'Investigate the setting'},'assign')
+  return {reply:'Checking.'}
+ },true)
+ f.send('Explain the setting')
+ await settle(f.h,()=>f.view().messages.some(m=>m.text==='The verified setting explains it.'))
+ expect([workers,reviews]).toEqual([3,3])
+ expect(f.view().messages.some(m=>m.text==='Can you open the panel?')).toBe(false)
+ expect(f.h.store.tickets.list()).toHaveLength(1)
+})
+
+it('records a genuine user decision on the same open ticket',async()=>{
+ const question='Which of your two profiles should be updated?'
+ const f=fixture(async r=>{
+  if(r.role==='worker')return {state:'ready',summary:'Two profiles',reply:'Both profiles exist.',question:null,handbacks:[]}
+  const input=JSON.parse(r.input)
+  if(input.resultReview)return {decision:'ask_user',nextStep:'',reply:question}
+  await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:'profiles',text:'Inspect the profiles'},'assign')
+  return {reply:'Checking.'}
+ },true)
+ f.send('Update my profile')
+ await settle(f.h,()=>f.h.store.tickets.list().some(t=>t.attention?.question===question))
+ expect(f.h.store.tickets.list()[0]!.ended).toBeUndefined()
+ expect(f.calls.filter(r=>r.role==='worker')).toHaveLength(1)
 })
 
 it('ends a stalled Router reply after a confirmed assignment and answers the next message while the Worker runs',async()=>{

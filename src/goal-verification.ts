@@ -12,7 +12,8 @@ import type {Run} from './store.ts'
 import {stableDigest} from './sources.ts'
 import {scopeBudget} from './context-budget.ts'
 import {githubRepository,githubReadSchema} from './github-read.ts'
-import {legacyGithubReads} from './backends/opencode-read-recovery.ts'
+import {observationRequest} from './goal-observation.ts'
+import {legacyEvidenceReads} from './backends/opencode-read-recovery.ts'
 import type {PluginThread,PluginToolEffect} from './backends/plugin-process.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {inlineEvidenceBudget,evidenceAccess,evidenceMetadata,type GoalEvidence as Evidence} from './goal-evidence.ts'
@@ -148,13 +149,20 @@ export class GoalVerification {
   }
   return items
  }
- private githubEvidence(ticketId:string,assignmentId:string,scopeId:string):Omit<Evidence,'id'|'hash'|'criterionIds'>[]{
+ private toolEvidence(ticketId:string,assignmentId:string,scopeId:string):Omit<Evidence,'id'|'hash'|'criterionIds'>[]{
   const store=this.host.store,items:Omit<Evidence,'id'|'hash'|'criterionIds'>[]=[]
   if(store.get('task-continuation',ticketId))return items
   const modern=new Set<string>()
-  const add=(kind:'backend-plugin-tool'|'model-tool-receipt',id:string,raw:unknown,digest:string,contextId:string,activity:string,at:number,success:boolean)=>{
+  const add=(name:string,kind:'backend-plugin-tool'|'model-tool-receipt',id:string,raw:unknown,digest:string,contextId:string,activity:string,at:number,success:boolean)=>{
+   if(!contextId||!activity)return
+   if(name!=='github_read'){
+    const observation=observationRequest(name,raw)
+    if(observation)items.push({kind:'provider',ticketId,key:name+' '+JSON.stringify(observation.args),content:'',
+     provider:{tool:name,kind,id,digest,activity,contextId,at,success}})
+    return
+   }
    const parsed=githubReadSchema.safeParse(raw)
-   if(!contextId||!activity||!parsed.success)return
+   if(!parsed.success)return
    const query=parsed.data,repository=githubRepository(query.repository)!
    const path=query.action==='api'?query.apiPath?.split('?')[0]:undefined
    const prefix='/repos/'+repository+'/commits/'
@@ -162,18 +170,20 @@ export class GoalVerification {
    const commit=ref&&/^[a-f0-9]{40}$/i.test(ref)?ref.toLowerCase():undefined
    items.push({kind:'provider',ticketId,key:'github_read '+JSON.stringify(query),content:'',provider:{kind,id,digest,activity,contextId,at,repository,commit,success}})
   }
-  const rows=store.db.prepare("SELECT body FROM records WHERE kind='model-tool-receipt' AND id GLOB 'github-read:*' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? ORDER BY id").all(ticketId,assignmentId)
+  const rows=store.db.prepare("SELECT body FROM records WHERE kind='model-tool-receipt' AND (id GLOB 'github-read:*' OR id GLOB 'goal-tool:*') AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? ORDER BY id").all(ticketId,assignmentId)
   for(const row of rows){
    const r=JSON.parse(String(row.body))
-   if(r.scopeId!==scopeId||!r.githubRead||!r.result||this.host.memory.cleanup.blocked('model-tool-receipt',r.id,r))continue
-   modern.add(r.activity);add('model-tool-receipt',r.id,r.githubRead,stableDigest(r.result),r.contextId,r.activity,r.at,r.result.success)
+   if(r.scopeId!==scopeId||!r.result||this.host.memory.cleanup.blocked('model-tool-receipt',r.id,r))continue
+   const name=r.observation?.tool??'github_read'
+   modern.add(r.activity+':'+name)
+   add(name,'model-tool-receipt',r.id,r.observation?.args??r.githubRead,stableDigest(r.result),r.contextId,r.activity,r.at,r.result.success)
   }
-  if(!store.db.prepare("SELECT 1 FROM records WHERE kind='execution-call' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.name')='github_read' LIMIT 1").get(ticketId))return items
+  if(!store.db.prepare("SELECT 1 FROM records WHERE kind='execution-call' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.name') IN ('github_read','superagent_desktop','chat_artifact_find','superagent_artifact_read','chat_artifact_open') LIMIT 1").get(ticketId))return items
   const sessions=store.db.prepare("SELECT body FROM records WHERE kind='model-session' AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL ORDER BY id").all(ticketId)
   const task=store.tickets.get(ticketId),assignment=task?.assignments.find(a=>a.id===assignmentId)
   for(const row of sessions){
    const m=JSON.parse(String(row.body))
-   if(task?.assignments.length!==1||modern.has(m.activity)||m.scopeId!==scopeId||!m.workerId||!assignment||m.ephemeral||!m.contextId||!Number.isFinite(m.at)||m.at<Date.parse(assignment.createdAt)||assignment.endedAt&&m.at>Date.parse(assignment.endedAt))continue
+   if(task?.assignments.length!==1||m.scopeId!==scopeId||!m.workerId||!assignment||m.ephemeral||!m.contextId||!Number.isFinite(m.at)||m.at<Date.parse(assignment.createdAt)||assignment.endedAt&&m.at>Date.parse(assignment.endedAt))continue
    const thread=store.get<PluginThread>('backend-plugin-thread',m.threadId)
    if(!thread||m.cwd!==thread.cwd||thread.id!==m.threadId)continue
    const usage=store.get<{sessionKey?:string}>('model-usage',m.activity)
@@ -181,21 +191,30 @@ export class GoalVerification {
    const turns=store.db.prepare("SELECT body FROM records WHERE kind='model-usage' AND json_extract(body,'$.sessionKey')=? ORDER BY json_extract(body,'$.at'),id").all(usage.sessionKey).map(row=>JSON.parse(String(row.body)))
    if(turns.some((u,i)=>u.ticketId!==ticketId||u.agentId||u.workerId!==m.workerId||u.sourceId!==m.sourceId||
       u.triggerId!==m.triggerId||!u.endedAt||Object.keys(u.attempts??{}).length!==1||i>0&&turns[i-1].endedAt>u.at))continue
-   for(const r of legacyGithubReads(store,this.host.config.stateDir,thread)){
+   for(const r of legacyEvidenceReads(store,this.host.config.stateDir,thread)){
     if(r.turnCount!==turns.length)continue
-    const u=turns[r.turnIndex],value=store.get<PluginToolEffect>('backend-plugin-tool',r.id)
-    if(value&&!this.host.memory.cleanup.blocked('backend-plugin-tool',r.id,value))add('backend-plugin-tool',r.id,r.args,r.digest,m.contextId,u.id,u.endedAt,value.result!.success)
+    const u=turns[r.turnIndex]
+    // A native thread's latest manifest cannot authorize observations taken in a different turn.
+    if((r.name!=='github_read'&&u.id!==m.activity)||modern.has(u.id+':'+r.name))continue
+    const value=store.get<PluginToolEffect>('backend-plugin-tool',r.id)
+    if(value&&!this.host.memory.cleanup.blocked('backend-plugin-tool',r.id,value))add(r.name,'backend-plugin-tool',r.id,r.args,r.digest,m.contextId,u.id,u.endedAt,value.result!.success)
    }
   }
   return items
  }
  private providerContent(e:Evidence){
   const p=e.provider!,store=this.host.store
-  const record=store.get<{result?:unknown;ticketId?:string;contextId?:string;activity?:string}>(p.kind,p.id)
+  const record=store.get<{result?:unknown;observation?:{tool:string;args:unknown};fingerprint?:string;ticketId?:string;contextId?:string;activity?:string}>(p.kind,p.id)
   const context=store.get<ContextManifest>('context-manifest',p.contextId)
   if(!e.ticketId||!record?.result||!context||store.get('task-continuation',e.ticketId)||this.host.memory.cleanup.blocked(p.kind,p.id,record)||
      stableDigest(record.result)!==p.digest||p.kind==='model-tool-receipt'&&(record.ticketId!==e.ticketId||record.contextId!==p.contextId||record.activity!==p.activity))throw Error('Provider receipt changed or is unavailable')
   this.host.memory.validate(context)
+  if(p.tool){
+   const args=JSON.parse(e.key.slice(p.tool.length+1))
+   if(p.kind==='backend-plugin-tool'?record.fingerprint!==stableDigest([p.tool,args]):
+     record.observation?.tool!==p.tool||stableDigest(record.observation.args)!==stableDigest(args))throw Error('Host tool request changed')
+   return JSON.stringify({tool:p.tool,request:args,recordedAt:p.at,result:record.result})
+  }
   return JSON.stringify({request:e.key,...(p.kind==='model-tool-receipt'?{observedAt:p.at}:{sessionRecordedAt:p.at}),result:record.result})
  }
  private snapshot(g:RouterGoal,node?:GoalNode,requireSettled=true,options:{readOnly?:boolean;includeHandoffs?:boolean;legacyCriteria?:boolean;providerSnapshot?:Evidence[]}={}):Snapshot {
@@ -262,7 +281,7 @@ export class GoalVerification {
    }
    if(options.providerSnapshot){
     for(const {id,hash,...e} of options.providerSnapshot.filter(e=>e.kind==='provider'&&e.ticketId===n.ticketId))add(e)
-   }else for(const e of this.githubEvidence(n.ticketId,proposal.assignmentId,g.scopeId))add({...e,criterionIds:citeIds(ids)})
+   }else for(const e of this.toolEvidence(n.ticketId,proposal.assignmentId,g.scopeId))add({...e,criterionIds:citeIds(ids)})
    let execution=this.execution(n.ticketId)
    if(proposal.files?.length){
     const chatDeliveries=proposal.files.map(id=>JSON.parse(this.host.chat.fileEvidence(n.ticketId!,id).content))
@@ -323,7 +342,11 @@ export class GoalVerification {
   const prior=this.host.store.get<VerificationRound>('goal-verification',id);if(prior){if(prior.state==='pending')this.host.store.db.prepare("UPDATE jobs SET state='pending' WHERE id=? AND state IN ('done','failed')").run('goal-verify:'+id);return prior}
   if(snapshot.tasks.some(t=>!this.host.goals.effectsSettled(t.ticketId)))throw Error('Task has unfinished or uncertain effects')
   const round:VerificationRound={id,evidenceVersion:2,handoffEvidence:true,goalId:g.id,nodeId:node?.id,triggerId:g.triggerId,scopeId:g.scopeId,entryId:g.entryId,ticketIds:snapshot.tasks.map(t=>t.ticketId),...(snapshot.delegations?{delegationIds:snapshot.delegations.map(t=>t.delegationId)}:{}),snapshot,state:'pending',checks:[],attempts:0,at:this.now()}
-  this.host.store.atomic(()=>{this.host.store.put('goal-verification',id,round);this.host.store.enqueue('goal-verify:'+id,'goal-verify',{roundId:id,goalId:g.id,triggerId:g.triggerId,discussion:g.discussion})})
+  this.host.store.atomic(()=>{
+   if(snapshot.evidence.some(e=>e.provider?.tool))this.host.store.requireChatResultReviewSchema()
+   this.host.store.put('goal-verification',id,round)
+   this.host.store.enqueue('goal-verify:'+id,'goal-verify',{roundId:id,goalId:g.id,triggerId:g.triggerId,discussion:g.discussion})
+  })
   return round
  }
  private program(cr:GoalCriterion,snapshot:Pick<Snapshot,'evidence'>):VerificationCheck {
@@ -377,10 +400,11 @@ export class GoalVerification {
     const toStored=new Map(presented.map((e,i)=>[e.id,snapshot.evidence[i]!.id])),toPresented=new Map([...toStored].map(([alias,stored])=>[stored,alias]))
     const providers=presented.filter(e=>e.provider)
     const indexed=Buffer.byteLength(JSON.stringify(providers.map(evidenceMetadata)))>Math.min(12_000,this.host.goalEvidenceBudget(g)/8)
+    const githubCount=providers.filter(e=>!e.provider?.tool).length,hostCount=providers.length-githubCount
     const visible=indexed?presented.filter(e=>!e.provider):presented
     const requested=semantic.map(cr=>({...cr,requiredEvidenceIds:visible.filter(e=>requiredEvidence(e,cr.id)).map(e=>e.id),allowedEvidenceIds:visible.filter(e=>cr.id==='__goal__'||e.criterionIds.includes(cr.id)).map(e=>e.id)}))
     const previous=round.attempts>1?this.host.store.get<{error?:string}>('goal-verification-attempt',round.id+':'+(round.attempts-1))?.error:undefined
-    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),...(indexed?{githubReceipts:{id:'github-receipts',count:providers.length,search:'Use goal_evidence with this id and an optional query. Returned IDs listing the criterion are also allowed evidence. Open the individual result before citing it.'}}:{}),evidence:visible.map(evidenceMetadata)}
+    const modelInput={kind:'goal_verification',stage,...(previous?{previousResponseError:previous}:{}),objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),originalRequest:g.contract?this.host.store.triggers.get(g.contract.triggerId)?.text:undefined,authorizationScope:g.contract?.mandate.scope,criteria:requested,programChecks:checks.map(ch=>({...ch,evidenceIds:ch.evidenceIds.map(id=>toPresented.get(id)!)})),...(indexed&&hostCount?{hostReceipts:{id:'host-receipts',count:hostCount,search:'Find the original desktop and file requests and results; open an individual receipt to cite it.'}}:{}),...(indexed&&githubCount?{githubReceipts:{id:'github-receipts',count:githubCount,search:'Use goal_evidence with this id and an optional query. Returned IDs listing the criterion are also allowed evidence. Open the individual result before citing it.'}}:{}),evidence:visible.map(evidenceMetadata)}
     const access=evidenceAccess(presented,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{const current=this.host.goals.get(g.id);if(!current||!this.current(round!,current))throw Error('Acceptance evidence or authority changed')},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)),e=>this.providerContent(e))
     const result=await this.host.runGoalVerifier(g,id,{
      input:access.input(modelInput),

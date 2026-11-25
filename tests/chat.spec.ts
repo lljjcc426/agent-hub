@@ -1220,7 +1220,7 @@ it('forwards a blocked Worker report when the same inbox also contains a Router 
  h.store.put('router-inbox',echo,message)
  h.store.put('router-inbox','invalid-report',{id:'invalid-report'})
  const sent=send(h,c.id,'Continue locating the package')
- const result=()=>h.store.db.prepare("SELECT state,error FROM jobs WHERE id LIKE 'router:result:failure:%'").get()
+ const result=()=>h.store.db.prepare("SELECT state,error FROM jobs WHERE kind='router' AND json_extract(payload,'$.triggerId')=? AND json_extract(payload,'$.messageId') IS NOT NULL").get(sent.runId)
  await settle(h,()=>['done','failed'].includes(String(result()?.state)))
  expect(result()).toMatchObject({state:'done'})
  const view=h.chat.view(c.id,'owner')

@@ -273,6 +273,7 @@ export class Resources {
   if(resource==='jobs')return this.host.work.list(p.ticketId).filter(w=>!continuation?.priorJobs.includes(w.id)).filter(w=>!p.agentId||w.agentId===p.agentId).reverse().map(w=>({...w,resource:'job/'+w.id}))
   if(head==='asset'){
    const asset=store.get<any>('asset',id!)
+   if(asset?.kind==='chat-artifact-input'&&(!p.ticketId||!p.assignmentId||!this.host.chat.retained.canReadInput(asset,{ticketId:p.ticketId,assignmentId:p.assignmentId,agentId:p.agentId})))throw Error('Attachment is outside this reader')
    if(asset?.kind==='chat-upload')return this.host.chat.uploads.read(id!,p)
    if(!asset||p.chatTriggerId||p.ticketId&&asset.ticketId!==p.ticketId)throw Error('Attachment is outside this reader')
    if(asset.kind==='browser-recording')return asset

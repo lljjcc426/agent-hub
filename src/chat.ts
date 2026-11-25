@@ -1,3 +1,4 @@
+import {chatReviewInProgress} from './chat-result-review.ts'
 import {authorizedQuestion,type WorkerInquiry} from './worker-inquiry.ts'
 import type {InquiryTask,StatusQuestion} from './router-inquiry-context.ts'
 import {resourcePage} from './execution-limits.ts'
@@ -98,7 +99,7 @@ export function chatToolDetails(name:string,args:unknown):Pick<ExecutionCall,'ac
 export class ChatSessions {
   readonly uploads:ChatAttachments
   private readonly deliveries:ChatDeliveries
-  private readonly retained:ChatRetainedArtifacts
+  readonly retained:ChatRetainedArtifacts
   private listeners=new Map<string,Set<()=>void>>()
   private notifications=new Set<string>()
   private revisions=new Map<string,{owner:string;stamp:string;browser:string;ledger:string;revision:number;at:number;until:number}>()
@@ -1241,7 +1242,8 @@ export class ChatSessions {
         this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>this.workerResultAllowed(d.ticketId,d.parentTrigger!,d.discussion)))
     }).map(d=>{
       const t=this.host.store.tickets.get(d.ticketId),r=this.host.store.get<Run>('run',d.ticketId),report=t?.assignments.at(-1)?.report
-      const node=nodes.get(d.ticketId),reviewing=!!node?.reviewing&&!t?.ended&&!t?.attention
+      const node=nodes.get(d.ticketId)
+      const reviewing=!!t&&!t.ended&&!t.attention&&(!!node?.reviewing||report?.state==='waiting'&&chatReviewInProgress(this.host,t))
       const attention=t?.attention
       const decision=attention&&r?.phase!=='uncertain'&&!isRuntimeRecoveryQuestion(attention.question)
         ?this.host.scopes.readOnly(()=>this.host.memory.readOnly(()=>businessDecision(this.host,attention.id))):undefined

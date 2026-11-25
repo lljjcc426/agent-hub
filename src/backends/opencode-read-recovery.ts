@@ -9,6 +9,7 @@ import {githubReadSchema} from '../github-read.ts'
 import {readSchema} from '../resources.ts'
 import {knowledgeCommandSchema} from '../knowledge.ts'
 import {skillReadSchema} from '../saved-skills.ts'
+import {observationRequest} from '../goal-observation.ts'
 import {findChatArtifactInput} from '../chat-retained-artifacts.ts'
 import {bodyDigest,stableDigest} from '../sources.ts'
 import type {Run,Store} from '../store.ts'
@@ -87,10 +88,10 @@ function sessionRoot(stateDir:string,thread:PluginThread){
  return {root,folder:mapping.folder}
 }
 
-/** Match legacy direct GitHub reads to their original host results. A Code Mode
+/** Match legacy direct evidence reads to their original host results. A Code Mode
  * cell's transformed return value is not the provider response. */
-export function legacyGithubReads(store:Pick<ThreadStore,'get'>,stateDir:string,thread:PluginThread){
- const reads:{id:string;args:z.infer<typeof githubReadSchema>;digest:string;turnIndex:number;turnCount:number}[]=[]
+export function legacyEvidenceReads(store:Pick<ThreadStore,'get'>,stateDir:string,thread:PluginThread){
+ const reads:{id:string;name:string;args:unknown;digest:string;turnIndex:number;turnCount:number}[]=[]
  const binding=store.get<{id:string;harness?:string;harnessDigest?:string}>('backend-binding',thread.id)
  if(thread.pluginId!=='opencode-cli'||thread.stateVersion!==1||binding?.harness!==bundledEngineId||
     binding.id!==thread.backendId||binding.harnessDigest!==thread.digest)return reads
@@ -102,12 +103,13 @@ export function legacyGithubReads(store:Pick<ThreadStore,'get'>,stateDir:string,
   const owned=new Set(thread.effectIds)
   if(new Set(session.turns.map(turn=>turn.id)).size!==session.turns.length)return reads
   for(const [turnIndex,turn] of session.turns.entries())for(const call of turn.tools){
-   if(call.name!=='github_read')continue
-   const id=stableDigest([thread.id,turn.id,call.id]),args=githubReadSchema.safeParse(call.args)
-   if(!owned.has(id)||!args.success)continue
+   if(call.name==='github_read'?!githubReadSchema.safeParse(call.args).success:!observationRequest(call.name,call.args))continue
+   const id=stableDigest([thread.id,turn.id,call.id])
+   if(!owned.has(id))continue
    const effect=store.get<PluginToolEffect>('backend-plugin-tool',id)
-   if(effect?.state==='complete'&&effect.result&&effect.fingerprint===stableDigest([call.name,call.args])&&call.result?.success===effect.result.success)
-    reads.push({id,args:args.data,digest:stableDigest(effect.result),turnIndex,turnCount:session.turns.length})
+   if(effect?.state==='complete'&&effect.result&&effect.fingerprint===stableDigest([call.name,call.args])&&call.result?.success===effect.result.success&&
+      (call.name==='github_read'||effect.result.contentItems.every(item=>item.type==='inputText')))
+    reads.push({id,name:call.name,args:call.args,digest:stableDigest(effect.result),turnIndex,turnCount:session.turns.length})
   }
   return stoppedWriter(loc.root)?reads:[]
  }catch{return []}

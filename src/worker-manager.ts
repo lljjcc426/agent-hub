@@ -22,7 +22,7 @@ export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',d
 
 export interface RouterContext {discussion:string;singleChatInput?:boolean;trigger?:Trigger;scoped?:ScopeContext;manifest?:ContextManifest;
  onDispatch?:(kind:'assign'|'send'|'running',ticketId:string)=>void}
-interface Delegation {ticketId:string;workerId:string;discussion:string;source:string;actor:string;parentTrigger?:string;mode:'client'|'host'}
+interface Delegation {ticketId:string;workerId:string;discussion:string;source:string;actor:string;parentTrigger?:string;mode:'client'|'host';reviewResult?:true}
 export class WorkerManager {
  private inFlight=new Set<string>()
  constructor(private host:Runtime){}
@@ -207,7 +207,8 @@ export class WorkerManager {
    host.engine.receive(trigger)
    const decision=host.engine.decide(id,{kind:'accept',title:input.text.slice(0,100),scope:input.text+(input.acceptance?'\nAcceptance: '+input.acceptance:''),reason:'Router delegation within admitted scope',rules:mandate?.basis.rules??[]})
    if(!decision.ticketId)throw Error('Delegation was not accepted')
-   const assignment:Delegation={ticketId:decision.ticketId,workerId:worker.id,discussion,source:source.id,actor,parentTrigger:context?.trigger?.id,mode:context?.trigger?'host':'client'}
+   const assignment:Delegation={ticketId:decision.ticketId,workerId:worker.id,discussion,source:source.id,actor,parentTrigger:context?.trigger?.id,mode:context?.trigger?'host':'client',...(context?.singleChatInput?{reviewResult:true}:{})}
+   if(assignment.reviewResult)host.store.requireChatResultReviewSchema()
    host.store.put('worker-assignment',decision.ticketId,assignment)
    if(context?.trigger)for(const ref of origin.threads)if(ref.source===source.id)host.engine.followForContext(decision.ticketId,ref)
    if(context?.scoped){const owner=host.scopes.own(decision.ticketId,context.scoped,worker.backend);if(context.manifest)host.store.put('task-context',decision.ticketId,{manifest:{...context.manifest,taskOwners:[...context.manifest.taskOwners,{id:decision.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1}]}})}

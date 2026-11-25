@@ -9,7 +9,7 @@ import {createHash,randomUUID} from 'node:crypto'
 import {readRevocations} from './router-memory.ts'
 import {configSchema,type Config} from './config.ts'
 import {managedFiles,recoverManagedFiles,prepareManagedFiles,validateManagedSnapshot,atomicPrivateFile} from './managed-config.ts'
-import {MAX_DB_SCHEMA,WEBHOOK_REHEARSAL_DB_SCHEMA,GOAL_REPLACEMENT_DB_SCHEMA,ASYNC_WORKER_DB_SCHEMA,WORKER_INQUIRY_DB_SCHEMA} from './store.ts'
+import {MAX_DB_SCHEMA,WEBHOOK_REHEARSAL_DB_SCHEMA,GOAL_REPLACEMENT_DB_SCHEMA,ASYNC_WORKER_DB_SCHEMA,WORKER_INQUIRY_DB_SCHEMA,CHAT_RESULT_REVIEW_DB_SCHEMA} from './store.ts'
 const hash=(path:string)=>createHash('sha256').update(readFileSync(path)).digest('hex')
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex')
 function captureManaged(state:string){const files=managedFiles(state);if(existsSync(files.journal))throw Error('Setup is changing; retry backup after configuration recovery');return {connections:existsSync(files.connections)?readFileSync(files.connections,'utf8'):undefined,secrets:existsSync(files.secrets)?readFileSync(files.secrets,'utf8'):undefined}}
@@ -99,6 +99,13 @@ export async function restoreState(config:Config,directory:string){
    const live=new DatabaseSync(currentPath,{readOnly:true}),old=new DatabaseSync(join(directory,'state.sqlite'),{readOnly:true})
    try{
     const liveSchema=Number(live.prepare('PRAGMA user_version').get()!.user_version)
+    if(liveSchema>=CHAT_RESULT_REVIEW_DB_SCHEMA){
+     const reviews=(db:DatabaseSync)=>db.prepare(`SELECT kind,id,body FROM records WHERE kind='chat-result-review'
+       OR (kind='worker-assignment' AND json_extract(body,'$.reviewResult')=1)
+       OR (kind='router-read' AND id GLOB 'chat-result-review:*')
+       OR (kind='asset' AND json_extract(body,'$.kind')='chat-artifact-input') ORDER BY kind,id`).all()
+     if(verified.schema<CHAT_RESULT_REVIEW_DB_SCHEMA||JSON.stringify(reviews(live))!==JSON.stringify(reviews(old)))throw Error('Reviewed Chat work or its file inputs advanced after backup; reconcile before restore')
+    }
     if(liveSchema>=WORKER_INQUIRY_DB_SCHEMA){
      const inquiries=(db:DatabaseSync)=>db.prepare("SELECT id,body FROM records WHERE kind='worker-inquiry' ORDER BY id").all()
      if(verified.schema<WORKER_INQUIRY_DB_SCHEMA||JSON.stringify(inquiries(live))!==JSON.stringify(inquiries(old)))throw Error('Worker inquiries advanced after backup; reconcile before restore')

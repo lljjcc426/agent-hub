@@ -42,6 +42,10 @@ const desktopInput = z.object({
   inlineImage:z.boolean().optional(),
 }).strict()
 type DesktopInput = z.infer<typeof desktopInput>
+export function desktopObservation(args:unknown){
+ const parsed=desktopInput.safeParse(args)
+ if(parsed.success&&observations.some(a=>a===parsed.data.action))return {tool:'superagent_desktop',args}
+}
 export const desktopNeedsApproval = (action: unknown) => interactions.some(value => value === action) || action === 'start_recording'
 export const desktopToolDefinition = {
   name:'superagent_desktop',

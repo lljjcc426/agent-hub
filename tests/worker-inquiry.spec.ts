@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { configSchema } from '../src/config.ts'
 import type { Model, ModelRequest } from '../src/model.ts'
+import { CHAT_RESULT_REVIEW_DB_SCHEMA } from '../src/store.ts'
 import { Runtime } from '../src/runtime.ts'
 import { serve } from '../src/server.ts'
 import { observe, type WorkerAttempt, type WorkerEventReceipt } from '../src/async-worker-inbox.ts'
@@ -406,7 +407,7 @@ it('keeps the saved report available after its single read-only recovery budget 
   const q = f.h.store.list<{delivered?:boolean;readbackStarted?:boolean}>('worker-inquiry')[0]
   expect(q).toMatchObject({readbackStarted:true,delivered:true})
   expect(reads).toBe(1)
-  expect(Number(f.h.store.db.prepare('PRAGMA user_version').get()!.user_version)).toBe(19)
+  expect(Number(f.h.store.db.prepare('PRAGMA user_version').get()!.user_version)).toBe(CHAT_RESULT_REVIEW_DB_SCHEMA)
 })
 
 it('deduplicates a retried send from the same user message along with its Worker input and visible answer', async () => {

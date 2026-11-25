@@ -5,7 +5,9 @@ import {ApiUsage} from './api-usage.ts'
 
 import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-pending-notice.ts'
 import {existingFileRequest} from './chat-file-pickup.ts'
-import {chatArtifactSpecs} from './chat-retained-artifacts.ts'
+import {currentReview,decideChatResult,priorWorkerChecks,proposeChatResult,reviewSchema,type ChatResultReview} from './chat-result-review.ts'
+import {observationRequest} from './goal-observation.ts'
+import {chatArtifactOpen,chatArtifactSpecs} from './chat-retained-artifacts.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
@@ -332,7 +334,7 @@ export class Runtime {
     this.heartbeat=new Heartbeat(this,this.clock)
     this.browser=new BrowserManager(this,options.browserDriver)
     this.desktop=new CuaDesktop(this)
-    this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
+    this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),canReadInput:(file,owner)=>this.chat.retained.canReadInput(file,owner),wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
     this.routerIngress.delegatedAuthority=id=>this.delegation.authority(id)
     this.routerIngress.delegatedRevalidate=m=>this.delegation.validates(m)
     this.merger=new Merger(this)
@@ -503,6 +505,9 @@ export class Runtime {
       captureReportedQuestion(this,ticket,previous?.id,value.decision)
       return finalMessageId
     })
+  }
+  commitChatReview(ticketId:string,report:WorkerReport){
+    this.reportWork(ticketId,report)
   }
   private bindWorkerEventMessages(receipt:WorkerEventReceipt,previous:Set<string>,previousGoalDelivery?:string|null){
     answerCheckpointInquiries(this,receipt)
@@ -712,6 +717,12 @@ export class Runtime {
       const invoke=request.onTool
       request={...request,onTool:async(name,args,callId)=>{
         const result=await invoke(name,args,callId)
+        const observation=scopeId&&manifest&&observationRequest(name,args)
+        if(observation&&this.goals.forTask(context.ticketId!)&&result.contentItems.every(item=>item.type==='inputText')){
+          const id='goal-tool:'+stableDigest([activity,callId])
+          this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,
+            contextId:manifest.id,at:Date.now(),observation,result})
+        }
         if(name==='github_read'){
           const query=githubReadSchema.safeParse(args)
           if(query.success){
@@ -898,7 +909,7 @@ export class Runtime {
   taskWorkerSpecs(options:{localOutputs:boolean;delegatedTask:boolean;builtInChat:boolean;managedGoal:boolean;workspaceBrowser:boolean;githubConnector:boolean;network:boolean}){
     return this.availableWorkerSpecs(options).filter(s=>
       (s.name!=='superagent_artifact'||options.delegatedTask||options.localOutputs)&&
-      (s.name!=='superagent_desktop'||options.builtInChat)&&
+      (!['superagent_desktop','chat_artifact_open'].includes(s.name)||options.builtInChat)&&
       (s.name!=='chat_deliver_file'||options.builtInChat&&!options.managedGoal)&&
       (s.name!=='workspace_browser'||options.builtInChat&&options.workspaceBrowser))
   }
@@ -1299,6 +1310,11 @@ export class Runtime {
     const triggerId=candidates?.batch.primary??followups?.trigger.id??(job.payload as any).triggerId as string
     if(this.store.get('router-result',job.id)||messageId&&this.store.get('router-read',messageId))return
     const reportMessage=messageId?this.store.get<any>('router-inbox',messageId):undefined
+    const review=messageId?this.store.get<ChatResultReview>('chat-result-review',messageId):undefined
+    if(review&&(!currentReview(this,review)||!this.workerMessageEvent(review.id,review.ticketId))){
+      this.store.put('router-read',review.id,{discussion,reason:'worker_result_superseded'})
+      return
+    }
     const inquiry=reportMessage?.inquiryId?this.store.get<WorkerInquiry>('worker-inquiry',reportMessage.inquiryId):undefined
     if(reportMessage?.inquiryId&&(!inquiry||inquiry.delivered||inquiry.latestMessageId!==messageId||!this.workerMessageEvent(reportMessage.id,reportMessage.ticketId)||!authorizedQuestion(this,inquiry))){
       this.store.put('router-read',reportMessage.id,{discussion,reason:'inquiry_no_longer_current'})
@@ -1403,11 +1419,11 @@ export class Runtime {
     }
     const pendingMessages=messageId?this.store.list<Delivery>('router-inbox').filter((m):m is Delivery & {ticketId:string}=>
       m?.channel?.address?.routerInbox===discussion&&typeof m.id==='string'&&
-      (!reportMessage?.inquiryId||m.id===messageId)&&!this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
+      (!(reportMessage?.inquiryId||review)||m.id===messageId)&&(m.id===messageId||!this.store.get('chat-result-review',m.id))&&!this.store.get('router-read',m.id)&&authorizedMessage(m)&&!chatDecisionDelivery(this,m)):[]
     if(messageId&&!pendingMessages.some(m=>m.id===messageId))throw Error('Worker result authorization withdrawn')
     const readMessages=new Set<string>(pendingMessages.map(m=>m.id)),readReports=new Map<string,string>()
     const authorityInputs=new Set([...(candidates||followups?[]:[triggerId]),...(batchInputs??[]).map(t=>t.id),...pendingMessages.map(m=>this.taskAuthority(m.ticketId)!.parentTrigger!)])
-    const schema={type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false}
+    const schema=review?reviewSchema:{type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false}
     const eligibleTasks=scoped?this.store.list<any>('worker-assignment').flatMap(a=>{try{this.scopes.checkTask(a.ticketId,scoped);this.scopes.checkTaskEntry(this.scopes.ownership(a.ticketId)!,scoped.route.entryId,'result');const saved=this.store.get<{manifest:ContextManifest}>('task-context',a.ticketId);if(saved)this.memory.validate(saved.manifest);const raw=this.store.tickets.get(a.ticketId),task=raw&&taskView(this.store,raw);return task?[{ticketId:task.id,workerId:a.workerId,title:task.title,ended:task.ended,report:task.assignments.at(-1)?.report}]:[]}catch{return []}}):[]
     const scopedTasks=eligibleTasks.slice(-40)
     if(scoped&&!candidates&&!followups){
@@ -1594,7 +1610,7 @@ export class Runtime {
             }
             if(['result','inspect'].includes(action??'')&&ticketId){
               for(const m of this.store.list<Delivery>('router-inbox'))
-                if(m.ticketId===ticketId&&m.channel?.address?.routerInbox===discussion&&authorizedMessage(m))readMessages.add(m.id)
+                if(m.ticketId===ticketId&&m.channel?.address?.routerInbox===discussion&&authorizedMessage(m)&&!this.store.get('chat-result-review',m.id))readMessages.add(m.id)
             }
             return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
           }catch(error){return {success:false,contentItems:[{type:'inputText',text:String(error)}]}}
@@ -1608,6 +1624,7 @@ export class Runtime {
           return workerRequired('Task execution belongs to a Worker. Use worker_manage to assign or continue the task.')
         }
         if(hostCommand&&!isRouterRead(name,args))return workerRequired('The host handles this decision. Read its state and reply without repeating the action.')
+        if(review&&!isRouterRead(name,args))return workerRequired('Inspect the proposal and use the response decision to continue this same Worker or answer the user.')
         if(inquiry&&!isRouterRead(name,args))return workerRequired('The Worker has answered the original question. Use authorized reads if needed and return the answer to the user.')
         const held=blockedByRouterRecovery(this.store,recovery?.holds??[],name,args)
         if(held)return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
@@ -1635,16 +1652,19 @@ export class Runtime {
           else permissionReceipt=receipt
         }else if(!fullAccess)permissionReceipt={tool:action.tool,state:action.phase,receipt:action.receipt}
       }
-      const decorateInput=(input:string)=>auxiliaryDecision||permissionReceipt||operationOutcome||fileReviewReceipt||replyPreferences
-        ?JSON.stringify({...JSON.parse(input),auxiliaryDecision,permissionReceipt,operationOutcome,fileReviewReceipt,replyPreferences}):input
+      const decorateInput=(input:string)=>review||auxiliaryDecision||permissionReceipt||operationOutcome||fileReviewReceipt||replyPreferences
+        ?JSON.stringify({...JSON.parse(input),...(review?{resultReview:{ticketId:review.ticketId,originalRequest:trigger.text,reportedState:review.reportedState,
+          proposedQuestion:review.question,previousChecks:priorWorkerChecks(this,review.ticketId,review.assignmentId,triggerId),
+          availableFiles:this.chat.retained.recentInputs(triggerId,review.ticketId)}}:{}),auxiliaryDecision,permissionReceipt,operationOutcome,fileReviewReceipt,replyPreferences}):input
       const replyReads:{tool:string;text:string}[]=[]
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
-          (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, attachment context and an observable result. Delegate file creation. To return an existing file, use chat_artifact_find and chat_artifact_deliver with the selected ID. Clarify ambiguous versions. Do not dispatch a Worker or resume a goal for a pickup. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
+          (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, relevant file context and the outcome the user needs. For diagnosis, delegate the question and relevant artifact, leaving the Worker free to choose read-only checks. Delegate file creation. To return an existing file, use chat_artifact_find and chat_artifact_deliver with the selected ID. Clarify ambiguous versions. Do not dispatch a Worker or resume a goal for a pickup. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
+          +(review?'\nReview the Worker report against the actual user objective in this conversation. A reproduced symptom alone does not explain its cause. If an authorized check could answer the open question, choose continue with that concrete next step for the same Worker. Ask which observation would distinguish the proposed cause from alternatives. Check the actual failing entry point and the policy of the exact build. If a live control is unavailable, consider the corresponding implementation or logs before asking the user to operate it. Use answer for a supported conclusion or ask_user for an indispensable human choice or access. For continue, leave reply empty.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
-        input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups,
+        input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups&&!review,
         ...(scoped&&packet&&canReadHistory?{rebuildWorkingInput:(maxBytes:number)=>{
           validateReplyContext()
           let retryPacket=packet
@@ -1665,7 +1685,7 @@ export class Runtime {
           }
           return value
         },
-        ...(!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
+        ...(!review&&!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted||handoff?.yielded)return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
@@ -1754,6 +1774,17 @@ export class Runtime {
       }
       else if(feishuDirect&&!output.reply.trim())output.reply=/\p{Script=Han}/u.test(trigger.text)?'收到。':'Got it.'
       this.store.atomic(()=>{
+        if(review){
+          if(!currentReview(this,review)){this.store.put('router-read',review.id,{discussion,reason:'worker_result_superseded'});return}
+          // Older reply-only adapters give no new disposition. Preserve the Worker's reported state.
+          if(output.decision!=null&&!['answer','continue','ask_user'].includes(output.decision))throw Error('Unknown Worker review decision')
+          const decision=output.decision??(review.question?'ask_user':review.reportedState==='blocked'?'retain_blocked':'answer')
+          if(output.decision==null&&review.question)output.reply=review.question
+          else if(output.decision==null&&!output.reply.trim())output.reply=reportMessage.text
+          if(decision==='continue')output.reply=''
+          decideChatResult(this,review,decision,output.nextStep??'',output.reply)
+          if(decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
+        }
         candidates?.finish();followups?.finish()
         for(const [ticketId,at] of readReports)this.store.put('router-report-read',discussion+':'+ticketId,{at})
         for(const id of readMessages)this.store.put('router-read',id,{discussion,turnId:result.turnId})
@@ -1782,6 +1813,25 @@ export class Runtime {
       })
       this.goals.finishTurn(triggerId)
     }catch(error){
+      if(review&&!controller.signal.aborted&&!this.closing&&currentReview(this,review)){
+        validateReplyContext()
+        const retryId='router:review-retry:'+review.id
+        if(job.id!==retryId){
+          this.store.enqueue(retryId,'router',{discussion,triggerId,messageId:review.id})
+          this.chat.endOutput(job.id,'interrupted')
+          return
+        }
+        // Review only reads. An unavailable reviewer must never rerun the Worker's effects or claim completion.
+        this.store.atomic(()=>{
+          const reply=review.question??reportMessage.text
+          this.commitChatReview(review.ticketId,{state:'blocked',summary:review.summary,question:review.question??null,askedBy:review.askedBy})
+          this.store.put('router-read',review.id,{discussion,reason:'review_unavailable'})
+          this.store.put('router-result',job.id,{discussion,reply})
+          this.chat.reply(job.id,triggerId,reply)
+          this.store.audit({type:'chat.result_review_unavailable',ticketId:review.ticketId,messageId:review.id})
+        })
+        return
+      }
       candidates?.fail(error);this.chat.endOutput(job.id,controller.signal.aborted?'interrupted':'failed')
       if(error instanceof ContextBudgetExceeded||continuity?.reuse&&/thread[^\n]*not found|not found[^\n]*thread|unknown[^\n]*thread|conversation[^\n]*not found/i.test(String(error))){const saved=this.store.get<any>('router-session',sessionKey);if(saved)this.store.put('router-session',sessionKey,{...saved,signature:undefined,rebuildReason:error instanceof ContextBudgetExceeded?error.code:'native_session_unavailable'})}
       throw error
@@ -2009,6 +2059,9 @@ export class Runtime {
       const builtInChat=!!delegated&&this.chat.hasContext({ticketId:ticket.id})
       const chatActor=this.chat.permissionActor(ticket.origin.triggerId,ticket.id)
       const fullAccess=builtInChat&&chatActor?.mode==='full'
+      const sourceTrigger=this.taskAuthority(ticket.id)?.parentTrigger
+      const fileTools=agentOptions?.tools??this.config.backends[run.backendId??dispatch?.profile.backend??this.config.execution.roles.worker??this.config.execution.backend]?.defaults?.tools
+      const recentFiles=builtInChat&&sourceTrigger&&(!fileTools||fileTools.includes(chatArtifactOpen))&&this.chat.binding(sourceTrigger)?this.chat.retained.recentInputs(sourceTrigger,ticket.id):[]
       const chatDelivery=builtInChat||!!delegated&&this.chat.canDeliverWorkerFiles(ticket.id)
       const previousInquiries=chatDelivery?unansweredInquiries(this,ticket.id,ticket.inputs,inputs):[]
       const hasInquiry=!!previousInquiries.length||inputs.some(i=>inquiryForInput(this,i))
@@ -2074,7 +2127,7 @@ export class Runtime {
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
+        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))
@@ -2205,7 +2258,9 @@ export class Runtime {
           }
         }
         if(handoffDigest)this.store.put('worker-handoff-evidence',ticket.id,{ticketId:ticket.id,assignmentId,digest:handoffDigest})
-        const finalMessageId=this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
+        const proposed=delegated?.mode==='host'&&!receivedInquiry&&!pending&&!background&&!superseded&&output.state===reportedState&&!output.decision&&(question||['ready','blocked'].includes(output.state))&&!files?.length
+          ?proposeChatResult(this,receipt,{state:output.state,summary:output.summary,question,askedBy},output.reply||output.summary):undefined
+        const finalMessageId=proposed??this.reportWork(ticket.id, { state:background?'progress':pending&&!handoff?'waiting':output.state, summary: background?'Managed background work is running. '+output.summary:output.summary, question,...(output.decision!==undefined?{decision:output.decision}:{}),...(question&&askedBy?{askedBy}:{}), ...(!pending && answerId ? { answers: answerId } : {}) },!pending||failed?(output.reply||(failed?output.summary:undefined)):undefined,false,files)
         if(receivedInquiry&&!pending&&!superseded&&!question&&['waiting','ready'].includes(output.state)){
           const finalHeld=reportedState==='ready'&&(!finalMessageId||output.state!=='ready')
           queueInquiryReplies(this,receipt,inputs,previousInquiries,finalHeld?[]:chatOutput?.inquiryReplies,finalHeld?'':output.reply,finalMessageId)
@@ -2328,9 +2383,9 @@ export class Runtime {
             if(question){
               if(question.latestMessageId===message.id&&!question.delivered&&authorizedQuestion(this,question))
                 this.store.enqueue('router:result:'+message.id,'router',{discussion:question.discussion,triggerId:question.triggerId,messageId:message.id})
-            }else if(!message.inquiryId&&delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at)this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
+            }else if(!message.inquiryId&&delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&(this.store.get('chat-result-review',message.id)||this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at))this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
           }
-          this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)
+          this.chat.deliveredClarification(message);if(!this.store.get('chat-result-review',message.id))this.chat.deliveredWorker(message);this.store.delivered(message.id)
         });blocked.delete(channel)}catch{this.store.audit({type:'router.inbox-retry',id:message.id})}
         continue
       }

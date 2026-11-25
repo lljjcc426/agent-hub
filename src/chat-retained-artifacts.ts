@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto'
-import {constants,type BigIntStats} from 'node:fs'
-import {open,realpath,lstat,type FileHandle} from 'node:fs/promises'
+import {constants,createWriteStream,lstatSync,type BigIntStats} from 'node:fs'
+import {pipeline} from 'node:stream/promises'
+import {open,realpath,lstat,mkdir,mkdtemp,rm,writeFile,type FileHandle} from 'node:fs/promises'
 import {basename,join,resolve} from 'node:path'
 import {z} from 'zod'
 import type {WorkerAttempt,WorkerEventReceipt} from './async-worker-inbox.ts'
@@ -17,6 +18,7 @@ import {projectWorkspace} from './project-code.ts'
 import {isHostPrivateFile} from './private-files.ts'
 import {validRetainedPath} from './chat-file-handoff.ts'
 import type {ScopeContext} from './router-scope.ts'
+import type {WorkOwner} from './work.ts'
 import {type Trigger} from './vendor/dsh-core/index.ts'
 import type {ToolSpec} from './model.ts'
 
@@ -35,9 +37,10 @@ export const findChatArtifactInput=z.object({query:z.string().trim().max(180).op
 export const deliverChatArtifactInput=z.object({id:artifactId}).strict()
 
 export const chatArtifactFind='chat_artifact_find'
+export const chatArtifactOpen='chat_artifact_open'
 export const chatArtifactDeliver='chat_artifact_deliver'
 export const chatArtifactSpecs:ToolSpec[]=[
- {type:'function',name:chatArtifactFind,description:'Find already published files and verifiable candidates handed back by the requesting Chat’s original Worker. A worker-candidate is a draft, never acceptance evidence. Search by distinctive filename or platform, such as Windows, or the original task ID. Items include the ID needed to attach the original file. Check this before asking for a repeat upload or delegating retrieval of an existing file.',inputSchema:z.toJSONSchema(findChatArtifactInput,{target:'draft-7',io:'input'})},
+ {type:'function',name:chatArtifactFind,description:'Find already published files and verifiable candidates handed back by the requesting Chat’s original Worker. A worker-candidate is a draft, never acceptance evidence. Search by distinctive filename or platform, such as Windows, or the original task ID. Workers can inspect a matching file using chat_artifact_open with its ID. Attach the file to Chat when the user requests delivery. Check this before asking for a repeat upload or delegating retrieval of an existing file.',inputSchema:z.toJSONSchema(findChatArtifactInput,{target:'draft-7',io:'input'})},
  {type:'function',name:chatArtifactDeliver,description:'Attach the exact existing file returned by chat_artifact_find to the current private Chat. Use this when the human asks for that file and its version is clear. On success, point the user to the file card. If local is true, the card reveals the original in Finder on this Mac and offers Download separately.',inputSchema:z.toJSONSchema(deliverChatArtifactInput,{target:'draft-7',io:'input'})},
 ]
 
@@ -48,6 +51,10 @@ type Delivery=ChatDelivery&{published?:boolean;originalPath?:string}
 type Transcript={ticketId:string;turnId:string;text:string;status?:string}
 type Item={id:string;name:string;size:number;sha256?:string;ticketId?:string;kind?:string}
 type Candidate={item:Item;delivery?:Delivery;savedCopy?:boolean;original?:{ticketId:string;path:string;sha256:string}}
+export interface OpenedChatArtifact {
+ id:string;kind:'chat-artifact-input';ticketId:string;assignmentId:string;triggerId:string;artifactId:string;
+ name:string;path:string;bytes:number;sha256:string;fileSignature:string;resource:string
+}
 export type RetainedChatFile={id:string;signature?:string;sha256:string}
 
 const unavailable=()=>new ChatError('artifact_unavailable','The file is unavailable in this Chat.',404)
@@ -215,7 +222,7 @@ export class ChatRetainedArtifacts {
   return {items,more}
  }
 
- private resolve(triggerId:string,id:string){
+ private resolve(triggerId:string,id:string,currentChatOnly=false){
   const c=this.context(triggerId),[deliveryId,turn]=artifactId.parse(id).split('.')
   let candidates:Candidate[]=[]
   if(deliveryId==='report'&&turn){
@@ -223,7 +230,7 @@ export class ChatRetainedArtifacts {
    if(transcript)candidates=this.reported(c,transcript)
   }else{
    const delivery=this.host.store.get<Delivery>('chat-delivery',deliveryId!)
-   if(delivery)candidates=this.candidates(c,delivery)
+   if(delivery&&(!currentChatOnly||delivery.conversationId===c.chat.id))candidates=this.candidates(c,delivery)
   }
   const candidate=candidates.find(r=>r.item.id===id)
   if(!candidate)throw unavailable()
@@ -291,6 +298,96 @@ export class ChatRetainedArtifacts {
   signal?.throwIfAborted()
   this.resolve(triggerId,id)
   return {reference,item:candidate.item,local:!!reference.signature}
+ }
+
+ /** A small index of files the user actually received before this request. No file contents enter the prompt. */
+ recentInputs(triggerId:string,ticketId:string){
+  if(this.host.store.get('task-continuation',ticketId))return []
+  let c:Context
+  try{c=this.context(triggerId)}catch(error){if(error instanceof ChatError)return [];throw error}
+  const rows=this.host.store.db.prepare(`SELECT body FROM records WHERE kind='chat-delivery'
+   AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.published')=1
+   AND json_extract(body,'$.createdAt')<=? ORDER BY rowid DESC LIMIT 3`).all(c.chat.id,Date.parse(c.trigger.at))
+  return rows.flatMap(row=>{
+   const card=JSON.parse(String(row.body)) as Delivery&{reference?:RetainedChatFile}
+   if(this.host.memory.cleanup.blocked('chat-delivery',card.id,card))return []
+   try{
+    const file=this.resolve(triggerId,card.reference?.id??card.id,true).item
+    return [{id:file.id,name:file.name,bytes:file.size}]
+   }catch{return []}
+  })
+ }
+
+ /** A ticket consumes an immutable copy. Its source task is only ever read. */
+ canReadInput(input:OpenedChatArtifact,owner:Pick<WorkOwner,'ticketId'|'assignmentId'|'agentId'>){
+  try{
+   if(this.host.store.get('task-continuation',owner.ticketId)||owner.agentId||input.ticketId!==owner.ticketId||input.assignmentId!==owner.assignmentId||
+      this.host.taskAuthority(owner.ticketId)?.parentTrigger!==input.triggerId||
+      this.host.memory.cleanup.blocked('asset',input.id,input))return false
+   this.resolve(input.triggerId,input.artifactId,true)
+   return signature(lstatSync(input.path,{bigint:true}))===input.fileSignature
+  }catch{return false}
+ }
+
+ /** Stream and hash the original in one pass. A saved Chat delivery is already an exact blob. */
+ private async copyForWorker(candidate:Candidate,path:string,signal?:AbortSignal){
+  if(candidate.original){
+   try{
+    const source=await this.file(candidate)
+    try{
+     const digest=createHash('sha256'),stream=source.handle.createReadStream({autoClose:false})
+     await pipeline(stream.on('data',chunk=>digest.update(chunk)),createWriteStream(path,{mode:0o400,flags:'wx'}),{signal})
+     await source.verify()
+     const sha256=digest.digest('hex')
+     if(sha256!==candidate.original.sha256)throw unavailable()
+     return sha256
+    }finally{await source.handle.close()}
+   }catch(error){
+    signal?.throwIfAborted()
+    if(!candidate.savedCopy)throw error
+    await rm(path,{force:true})
+   }
+  }
+  const bytes=this.bytes(candidate),sha256=createHash('sha256').update(bytes).digest('hex')
+  if(candidate.original&&sha256!==candidate.original.sha256)throw unavailable()
+  await writeFile(path,bytes,{flag:'wx',mode:0o400,signal})
+  return sha256
+ }
+
+ async openForWorker(owner:WorkOwner,id:string,current:()=>void,signal?:AbortSignal){
+  const trigger=this.host.taskAuthority(owner.ticketId)?.parentTrigger
+  if(!trigger||owner.agentId||this.host.store.get('task-continuation',owner.ticketId))throw unavailable()
+  const authorize=()=>{
+   current()
+   if(!this.host.validWork(owner)||this.host.taskAuthority(owner.ticketId)?.parentTrigger!==trigger)throw unavailable()
+   return this.resolve(trigger,id,true)
+  }
+  const candidate=authorize(),name=basename(candidate.item.name)
+  if(!validRetainedPath(name))throw unavailable()
+  const assetId=stableDigest([chatArtifactOpen,owner.ticketId,owner.assignmentId,id])
+  const get=()=>this.host.store.get<OpenedChatArtifact>('asset',assetId)
+  const describe=(a:OpenedChatArtifact)=>({id:a.artifactId,resource:a.resource,path:a.path,name:a.name,bytes:a.bytes,sha256:a.sha256})
+  const existing=get()
+  if(existing&&this.canReadInput(existing,owner))return describe(existing)
+  const base=join(this.host.config.stateDir,'assets')
+  await mkdir(base,{recursive:true,mode:0o700})
+  const dir=await mkdtemp(join(base,'chat-input-')),path=join(dir,name)
+  let committed=false
+  try{
+   const sha256=await this.copyForWorker(candidate,path,signal)
+   return this.host.store.atomic(()=>{
+    authorize()
+    const winner=get()
+    if(winner&&this.canReadInput(winner,owner))return describe(winner)
+    const asset:OpenedChatArtifact={id:assetId,kind:'chat-artifact-input',ticketId:owner.ticketId,assignmentId:owner.assignmentId,
+     triggerId:trigger,artifactId:id,name,path,bytes:candidate.item.size,sha256,
+     fileSignature:signature(lstatSync(path,{bigint:true})),resource:'asset/'+assetId}
+    this.host.store.requireChatResultReviewSchema()
+    this.host.store.put('asset',assetId,asset)
+    committed=true
+    return describe(asset)
+   })
+  }finally{if(!committed)await rm(dir,{recursive:true,force:true})}
  }
 
  async access(triggerId:string,reference:RetainedChatFile){

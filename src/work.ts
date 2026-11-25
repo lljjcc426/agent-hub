@@ -26,6 +26,7 @@ export interface WorkItem extends WorkOwner {
 }
 export interface WorkHooks {
  valid(owner:WorkOwner):boolean
+ canReadInput?(input:import('./chat-retained-artifacts.ts').OpenedChatArtifact,owner:WorkOwner):boolean
  wake(item:WorkItem):void
  expired?(owner:WorkOwner,killed:string[],remaining:string[]):void
  agent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>
@@ -118,7 +119,7 @@ export class WorkManager {
   if(fresh){
    const spec=join(this.directory,item.id+'.spec.json')
    const gitDirectory=owner.cwd===projectWorkspace(this.config.stateDir,owner.ticketId)?undefined:linkedGitDirectory(owner.cwd)
-   const attachments=this.store.list<any>('asset').filter(a=>a.ticketId===owner.ticketId).map(a=>a.path)
+   const attachments=this.store.list<any>('asset').filter(a=>a.ticketId===owner.ticketId&&(a.kind!=='chat-artifact-input'||this.hooks.canReadInput?.(a,owner))).map(a=>a.path)
    writeFileSync(spec,JSON.stringify({id:item.id,command,cwd:owner.cwd,sandbox:owner.sandbox,codex:this.config.codex,sandboxDriver:this.config.work.sandboxDriver,network:this.config.work.network&&(owner.network??true),privateState:this.config.stateDir,privatePaths:hostPrivateFiles(),gitDirectory,attachments,writablePaths,hostPid:process.pid,hostLock:join(this.config.stateDir,'host.lock'),directory:this.directory,maxOutputBytes:this.config.work.maxOutputBytes}),{mode:0o600,flag:'wx'})
    try{
     const child=startSandboxRunner(spec)

@@ -144,7 +144,7 @@ export class GoalArtifacts {
   open(owner:WorkOwner,id:string){
     const goal=this.host.goals.forTask(owner.ticketId)
     const node=goal?.nodes?.find(n=>n.ticketId===owner.ticketId)
-    if(!goal||!node)throw new ArtifactReadError('artifact_dependency_required','This tool opens the accepted prerequisites of a goal task. Use chat_artifact_find for an existing file from another Chat task.')
+    if(!goal||!node)throw new ArtifactReadError('artifact_dependency_required','This tool opens the accepted prerequisites of a goal task. For a file previously delivered in this Chat, pass its ID to chat_artifact_open.')
     if(!this.host.validWork(owner))throw new ArtifactReadError('artifact_unavailable','The task can no longer access this artifact.')
     try{this.host.goals.context(goal)}catch{throw new ArtifactReadError('artifact_unavailable','The task can no longer access this artifact.')}
     const rounds=node.dependsOn.map(dep=>goal.nodes!.find(n=>n.id===dep)).filter(n=>n?.state==='passed').map(n=>this.host.store.get<VerificationRound>('goal-verification',n!.roundId!))

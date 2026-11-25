@@ -91,6 +91,8 @@ it.each([
  let observed:boolean[]|undefined
  const wire=await server(body=>{
   const toolResults=results(kind,body)
+  if(body.instructions?.includes('Review the Worker report'))
+   return output(kind,JSON.stringify({reply:'The catalog was read.',decision:'answer',nextStep:''}))
   if(body.tools?.some((tool:{name:string})=>tool.name==='worker_manage')){
    expect(body.tools.some((tool:{name:string})=>tool.name==='code_mode')).toBe(false)
    return toolResults.length?output(kind,'{"reply":"Assigned."}'):output(kind,'',[{id:'assign',name:'worker_manage',args:{

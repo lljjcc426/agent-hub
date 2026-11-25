@@ -24,7 +24,7 @@ import {DatabaseSync} from 'node:sqlite'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
 import {BackendPluginError} from '../src/backends/plugin-contract.ts'
 import type {PluginThread,PluginToolEffect} from '../src/backends/plugin-process.ts'
-import type {Run,Store} from '../src/store.ts'
+import {CHAT_RESULT_REVIEW_DB_SCHEMA,type Run,type Store} from '../src/store.ts'
 import {retainedWebPages} from '../src/backends/opencode-read-recovery.ts'
 import {webPageDirectory,webPageFile} from '../src/backends/opencode-web-checkpoint.ts'
 
@@ -52,6 +52,32 @@ function fixture(worker?:(r:ModelRequest,attempt:number)=>any,verify?:(r:ModelRe
  const start=(extra:any={})=>h.goals.command({action:'start',operationId:'start',expectedRevision:0,title:'Verified delivery',objective:'Produce a result whose total is 42. Never deploy.',authorizationQuote:'Continuously build, verify and repair',maxReplans:0,criteria:[{id:'sum',description:'result.json total equals 42',check:{kind:'json_equals',path:'result.json',pointer:'/total',expected:42}}],nodes:[{id:'build',title:'Build',instruction:'Produce result.json',workerId:'one',criterionIds:['sum']}],...extra},context()) as RouterGoal
  return {get h(){return h},root,config,calls,attempts,start,context,advance:(ms:number)=>{now+=ms},goal:()=>h.store.list<RouterGoal>('router-goal')[0]!,rounds:()=>h.store.list<VerificationRound>('goal-verification'),restart:async()=>{hosts.splice(hosts.indexOf(h),1);await h.close();open()}}
 }
+
+it('lets an independent verifier inspect the original request and rejected file read without a Worker transcription',async()=>{
+ const original={id:'missing-prerequisite'},reviewed:string[]=[]
+ const f=fixture(async r=>{
+  const result=await r.onTool!('superagent_artifact_read',original,'original-file-read')
+  expect(result.success).toBe(false)
+  return ready('Checked the prerequisite')
+ },async(r,input)=>{
+  const receipt=input.evidence.find((e:any)=>e.provider?.tool==='superagent_artifact_read')
+  expect(receipt).toBeDefined()
+  const page=await r.onTool!('goal_evidence',{id:receipt.id},'read-file-receipt')
+  const body=JSON.parse(JSON.parse(page.contentItems[0]!.text!).content)
+  expect(body).toMatchObject({tool:'superagent_artifact_read',request:original,result:{success:false}})
+  expect(JSON.parse(body.result.contentItems[0].text).code).toBe('artifact_unavailable')
+  reviewed.push(receipt.id)
+  for(const e of input.evidence)if(e.id!==receipt.id)await r.onTool!('goal_evidence',{id:e.id},'read-'+e.id)
+  return {checks:input.criteria.map((cr:any)=>({criterionId:cr.id,verdict:'passed',explanation:'Verified the recorded rejection',evidenceIds:cr.allowedEvidenceIds}))}
+ })
+ f.start({criteria:[{id:'sum',description:'Verify how the prerequisite read ended'}]})
+ await until(f,()=>f.goal().state==='completed')
+ expect(reviewed.length).toBeGreaterThan(0)
+ const retained=f.rounds().flatMap(r=>r.snapshot.evidence).find(e=>e.provider?.tool==='superagent_artifact_read')!
+ const receipt=f.h.store.get<any>('model-tool-receipt',retained.provider!.id)!
+ f.h.store.put('model-tool-receipt',receipt.id,{...receipt,observation:{...receipt.observation,args:{id:'changed'}}})
+ expect(f.h.verification.current(f.rounds().at(-1)!,f.goal())).toBe(false)
+})
 
 it('rejects oversized workbook members even when ZIP sizes understate the actual output',()=>{
  const f=fixture(),file='ledger.xlsx',g=f.start({criteria:[{id:'sum',description:'Read A1',check:{kind:'xlsx_cell_equals',path:file,sheet:'Ledger',cell:'A1',expected:42}}]})
@@ -115,7 +141,7 @@ it('hands a large versioned workbook to its dependent Worker and keeps earlier r
  writeFileSync(join(f.root,file),makeWorkbook(40));expect(f.h.verification.current(accepted,f.goal())).toBe(false)
  await f.restart();expect(f.h.artifacts.download(versions[1]!.id).artifact.sha256).toBe(opened)
  const backup=join(f.root,'artifact-backup');await backupState(f.config,backup)
- expect(verifyBackup(backup).schema).toBe(18)
+ expect(verifyBackup(backup).schema).toBe(CHAT_RESULT_REVIEW_DB_SCHEMA)
  const copy=new DatabaseSync(join(backup,'state.sqlite'),{readOnly:true})
  try{
   expect(Buffer.from(copy.prepare('SELECT bytes FROM goal_artifact_bytes WHERE id=?').get(versions[1]!.id)!.bytes as Uint8Array)).toEqual(f.h.artifacts.download(versions[1]!.id).bytes)

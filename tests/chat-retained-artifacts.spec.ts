@@ -137,6 +137,36 @@ it('reuses an authorized package from a stopped task, supports resumed downloads
  })
 })
 
+it('opens just the selected original for the assigned Worker and revokes further access with the source grant',async()=>{
+ let input:any,opened:any,second:any
+ const f=fixture(async r=>{
+  if(r.role!=='worker')return {reply:'Received'}
+  const result=await r.onTool!('chat_artifact_open',{id:input.id},'open')
+  expect(result.success).toBe(true)
+  opened=JSON.parse(result.contentItems[0]!.text!)
+  expect(readFileSync(opened.path)).toEqual(expected)
+  const replay=await r.onTool!('superagent_artifact_read',{id:input.id},'again')
+  second=JSON.parse(replay.contentItems[0]!.text!)
+  return {state:'ready',summary:'Inspected package bytes',reply:'Verified',question:null,handbacks:[]}
+ })
+ const source=await publishManifest(f),old=f.h.store.tickets.get(source.ticketId)!
+ const turn=f.send('Inspect the original installer'),target=await f.assign(turn.runId,'review','Inspect its version')
+ const listed=await f.h.chat.artifactTool(turn.runId,'chat_artifact_find',{query:'Windows'},()=>{})
+ input=JSON.parse(listed.contentItems[0]!.text!).items[0]
+ await settle(f.h,()=>!!second)
+ expect(second).toEqual(opened)
+ expect(opened).toMatchObject({name,sha256:sha,bytes:expected.length})
+ expect(opened.path).not.toContain(source.ticketId)
+ expect(f.h.store.tickets.get(source.ticketId)).toEqual(old)
+ const asset=f.h.store.get<any>('asset',opened.resource.slice(6))!
+ const current={ticketId:target.ticketId,assignmentId:f.h.store.tickets.get(target.ticketId)!.assignments.at(-1)!.id}
+ expect(f.h.chat.retained.canReadInput(asset,current)).toBe(true)
+ expect(f.h.chat.retained.canReadInput(asset,{...current,ticketId:source.ticketId})).toBe(false)
+ const entryId=f.context(turn.runId).route.entryId,grant=f.h.store.get<{revision:number}>('task-channel',stableDigest([source.ticketId,entryId]))!
+ f.h.scopes.command({action:'task.channel',operationId:'withdraw-source',expectedRevision:grant.revision,ticketId:source.ticketId,entryId,context:true,request:true,result:false})
+ expect(f.h.chat.retained.canReadInput(asset,current)).toBe(false)
+})
+
 it('settles a prerequisite rejection as an individual tool result without a confirmation',async()=>{
  const f=fixture(async r=>{
   if(r.role==='worker'){

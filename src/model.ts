@@ -16,6 +16,7 @@ export interface ModelOutput {id:string;type:'start'|'delta'|'end';text?:string;
 export interface ModelRequest {
   /** A tool-free API read of material supplied in this message. */
   suppliedText?:true
+  validateSuppliedRead?:()=>void
   onUsage?:(usage:import('./model-usage.ts').ModelUsage)=>void
   contextBudget?:import('./context-budget.ts').ContextBudget
   contextId?:string

@@ -1,9 +1,12 @@
 import {checkedCalculation,type CheckedCalculation,type SuppliedRows} from './supplied-calculation.ts'
+import {checkPassage,type PassageBasis} from './supplied-passage.ts'
 
-export type AnswerCheck={ok:true;text:string}|{ok:false;reason:'format'|'sources'|'values'|'missing';detail:string}
+export type AnswerCheck={ok:true;text:string;rows?:string[]}|{ok:false;reason:'format'|'sources'|'values'|'missing';detail:string}
 export interface AnswerPacket {
   instructions:string
   input:string
+  schema?:Record<string,unknown>
+  passage?:PassageBasis
   /** Addresses refer only to sources presented in this activation. */
   references?:{id:number;title:string}[]
   addressesShown?:true
@@ -129,7 +132,13 @@ function fieldValues(text:string,fields:NonNullable<AnswerPacket['fields']>){
 const numericField=(f:{key:string;spec:string})=>/\b(?:number|integer|count|duration|amount|minutes|numeric)\b|数值|整数|分数|数字|数量/iu.test(f.spec)||/^(?:total|sum|count)$/iu.test(f.key)
 export function checkAnswer(question:string,raw:string,packet:AnswerPacket):AnswerCheck{
   const text=unFence(raw);if(!text||text==='?'||/\bNEED_CONTEXT\b/u.test(text))return missing
+  if(packet.passage)return checkPassage(question,text,packet.passage)
   if(packet.references)return checkedCitations(text,packet)
+  if(packet.calculation?.complement!==undefined){
+    const number=/^(\d+(?:\.\d+)?)\s*(?:%|percent)?[.]?$/iu.exec(text)
+    if(!number||Number(number[1])!==packet.calculation.complement)return bad('values',packet.calculation.note)
+    return yes(packet.shortUnit?number[1]!:text)
+  }
   const fields=packet.fields
   if(!fields){
     if(packet.shortUnit){

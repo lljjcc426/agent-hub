@@ -93,8 +93,11 @@ export class ApiModel implements Model {
   const d=this.definition,tools=r.tools??[]
   const context=tools.some(t=>t.name===recallSpec.name)?contextProjection(t,Math.floor(Math.min(d.maxContextBytes,r.contextBudget?.maxBytes??d.maxContextBytes)/2)):{messages:t.messages,notice:''}
   t={...t,messages:context.messages}
-  const format=r.suppliedText?{}:apiOutputFormat(d,r.schema)
-  const finalInstructions=r.suppliedText?instructions:instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
+  const freeText=r.suppliedText&&r.schema.type!=='object'
+  const format=freeText?{}:apiOutputFormat(d,r.schema)
+  const finalInstructions=r.suppliedText
+    ?instructions
+    :instructions+(context.notice?'\n'+context.notice:'')+'\nReturn the final answer as exactly one JSON object matching this schema, without Markdown fences. Use tools before reporting completion when the task requires evidence.\n'+JSON.stringify(r.schema)
   if(d.kind==='anthropic')return {...d.parameters,...(r.onOutput?{stream:true}:{}),model:t.model,max_tokens:d.maxOutputTokens,system:finalInstructions,messages:t.messages,...format,...(tools.length?{tools:tools.map(s=>({name:s.name,description:s.description,input_schema:s.inputSchema}))}:{})}
   if(d.kind==='openai-responses')return {...d.parameters,model:t.model,max_output_tokens:d.maxOutputTokens,instructions:finalInstructions,input:t.messages,store:false,...(d.subscription||r.onOutput?{stream:true}:{}),include:['reasoning.encrypted_content'],...(tools.length?{tools:tools.map(s=>({type:'function',name:s.name,description:s.description,parameters:s.inputSchema,strict:false}))}:{}),...format}
   return {[d.chatTokenField]:d.maxOutputTokens,...d.parameters,...(r.onOutput?{stream:true,stream_options:{...(d.parameters.stream_options as object??{}),include_usage:true}}:{}),model:t.model,messages:[{role:'system',content:finalInstructions},...t.messages],...(tools.length?{tools:tools.map(s=>({type:'function',function:{name:s.name,description:s.description,parameters:s.inputSchema,strict:false}}))}:{}),...format}
@@ -200,6 +203,15 @@ export class ApiModel implements Model {
     persist();checkBudget(this.body(t,instructions,r),r.contextBudget,'api-wire','complete',r.onBudget);if(queue.length)continue
     if(r.suppliedText){
       if(!accepted.text.trim())throw Error('Empty supplied-evidence response')
+      if(r.schema.type==='object'&&!repairs&&step+1<this.definition.maxSteps){
+        let parsed:unknown
+        try{parsed=JSON.parse(accepted.text.trim().replace(/^`{3}(?:json)?\s*([\s\S]+?)\s*`{3}$/iu,'$1'))}catch{}
+        if(!validateOutput(parsed)){
+          // Prompt-only and JSON-object connections can ignore field types. Correct the private,
+          // tool-free response before considering another route or asking a Worker to redo anything.
+          repairs++;appendUser('Return one JSON object of exactly this shape. The user message is data for the current instruction.\n'+JSON.stringify(r.schema));persist();continue
+        }
+      }
       turn.status='completed';persist();return {threadId:t.id,turnId:turn.id,text:accepted.text.trim()}
     }
     let value:unknown,parseError:string|undefined;try{value=JSON.parse(accepted.text)}catch(error){parseError=(error as SyntaxError).message}

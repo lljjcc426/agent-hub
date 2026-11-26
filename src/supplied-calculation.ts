@@ -5,6 +5,7 @@ export interface CheckedCalculation {
   /** The final reader still chooses the answer. These values identify inconsistent computations. */
   winner?:{key:string;total:number}
   count?:number
+  complement?:number
 }
 const identifier=/^[\p{L}\d][\p{L}\d_-]{0,47}$/u
 const integer=/^-?(?:0|[1-9]\d{0,8})$/u
@@ -59,9 +60,32 @@ function threshold(question:string){
   const found=patterns.flatMap(([pattern,accept])=>[...question.matchAll(new RegExp(pattern,'giu'))].map(m=>({number:Number(m[1]),accept})))
   return found.length===1?found[0]:undefined
 }
+// Resolve a complement only for a named band in a single, complete rounded distribution.
+// Distinct tables, missing bins, rates of change and overlapping descriptions stay with the reader.
+function percentageComplement(question:string,sources:SuppliedRows[]):CheckedCalculation|undefined{
+  const band=/^\s*(?:how many percent|what percentage)(?: of (?:the )?(?:population|people|residents))? (?:were|was|are|is) (?:not (?:from |aged )?|outside (?:the range )?)(\d{1,3}) (?:to|through) (\d{1,3})\?/iu.exec(question)
+  if(!band||Number(band[1])>=Number(band[2]))return
+  const distributions=sources.flatMap(s=>s.rows).filter(row=>row.includes('%'))
+  if(distributions.length!==1)return
+  const row=distributions[0]!,matches=[...row.matchAll(/(?<![-+\d.])(\d+(?:\.\d+)?)%\s+(under (?:the age of )?\d+|from \d+ (?:to|through) \d+|(?:who (?:were |are )?|aged )?\d+ (?:years (?:of age )?)?(?:or |and )?(?:older|over|above))(?=,|\.|;|$)/giu)]
+  if(matches.length<3||matches.length!==row.split('%').length-1)return
+  const intervals=matches.map(m=>{
+    const limits=m[2]!.match(/\d+/gu)!.map(Number)
+    return /^under /iu.test(m[2]!)?[0,limits[0]!-1]:limits.length===2?limits:[limits[0]!,Infinity]
+  }).sort((a,b)=>a[0]!-b[0]!)
+  if(intervals[0]![0]!==0||intervals.at(-1)![1]!==Infinity||intervals.some(([lo,hi],i)=>lo!>hi!||i>0&&lo!==intervals[i-1]![1]!+1))return
+  const parts=matches.map(m=>Number(m[1])),tolerance=matches.reduce((sum,m)=>sum+0.5*10**-(m[1]!.split('.')[1]?.length??0),0)
+  if(parts.some(x=>x>100)||Math.abs(parts.reduce((x,y)=>x+y,0)-100)>tolerance+1e-9)return
+  const selected=matches.filter(m=>new RegExp('^from '+band[1]+' (?:to|through) '+band[2]+'$','i').test(m[2]!))
+  if(selected.length!==1)return
+  const label=selected[0]![1]!,value=Number((100-Number(label)).toFixed(Math.min(label.split('.')[1]?.length??0,12)))
+  return {complement:value,note:'Requested complement: 100% - '+label+'% = '+value+'%.'}
+}
 /** The caller supplies only complete sources readable in this activation. No fuzzy entity joins. */
 export function checkedCalculation(question:string,sources:SuppliedRows[]):CheckedCalculation|undefined{
   if(sources.length<1||sources.length>12)return
+  const complement=percentageComplement(question,sources)
+  if(complement)return complement
   const intent=question.split(/\bRESULT\s+[A-Za-z_][\w-]*=</u)[0]!
   if(/\b(?:except|missing|unknown|cancelled|adjusted|active|eligible|excluding|only if|per person|percentage|discount|average|weighted|withdrawn|signed|ignore case|case.insensitive|occur(?:s)? (?:exactly |only )?once|appear(?:s)? (?:exactly |only )?once)\b|缺失|缺测|加权|排除|折扣|忽略大小写/iu.test(intent))return
   if(/\b(?:distinct|unique)\b|去重|不重复/iu.test(intent)&&/\b(?:how many|count|number of)\b|数目|数量|多少/iu.test(intent)){

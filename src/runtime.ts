@@ -18,7 +18,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
 import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
-import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidenceGate,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
+import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,namedEvidenceGroup,participantGroup,pendingParticipants,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -794,6 +794,7 @@ export class Runtime {
       this.usage.attempt(activity,attempt,'running')
       if(threadId||attempt>0)this.usage.update(activity,{sessionKey:threadId?stableDigest([request.backendId,threadId]):undefined})
       try{
+        if(request.suppliedText)request.validateSuppliedRead?.()
         this.delegation.beforeActivation(request)
         const activation:ModelRequest={...request,
           input:request.suppliedText?request.input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
@@ -847,10 +848,11 @@ export class Runtime {
         }
         const transient=typed?typed.code==='transient':error instanceof TransientModelError||/HTTP (408|429|5\d\d)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection reset|stream disconnected|temporar(?:y|ily)|error sending request/i.test(String(error))
         if(request.signal?.aborted||invokedEffect||attempt>=3||!transient||
-         typed&&(role==='worker'||turnId&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
+         !request.suppliedText&&typed&&(role==='worker'||turnId&&!typed.diagnostic?.effectFree||typed.diagnostic?.readOnlyHistory)||
          (typed?.diagnostic?.retryAfterMs??0)>10_000)throw error
         this.store.audit({type:'model.retry',threadId,attempt:attempt+1,error:String(error).slice(0,300)})
-        request.input=JSON.stringify({retry:attempt+1,notice:'Continue the same work after a transient provider failure. Inspect native history and retained managed jobs before repeating any action.',previousInput:originalInput})
+        if(request.suppliedText){threadId=undefined;request.input=originalInput}
+        else request.input=JSON.stringify({retry:attempt+1,notice:'Continue the same work after a transient provider failure. Inspect native history and retained managed jobs before repeating any action.',previousInput:originalInput})
         await delay(Math.max(typed?.diagnostic?.retryAfterMs??0,1000*2**attempt),undefined,{signal:request.signal})
       }
     }
@@ -1629,16 +1631,26 @@ export class Runtime {
             if(name!=='worker_manage')throw Error('Unknown Router tool')
             this.delegation.guardRouter(trigger,args)
             const action=(args as {action?:string})?.action
+            if(action==='assign'&&chatRun){
+              const group=participantGroup(this.store.get<ChatRun>('chat-run',chatRun.id))
+              const id=(args as {id?:string}).id
+              if(group&&id&&group.digest===stableDigest(trigger.text)&&group.workers.includes(id)){
+                if(Object.hasOwn(group.tickets,id))return workerRequired('This participant already has a ticket for this request. Inspect the existing assignment.')
+                args={...args as object,requestId:'evidence-'+stableDigest([triggerId,group.digest,id])}
+              }
+            }
             if(action==='inspect'||action==='result')args={...args as object,waitMs:0}
             const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,
               onDispatch:(kind,id)=>{
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
-                if(assignment&&issueEvidence&&chatRun&&kind==='assign'){
+                if(assignment&&chatRun&&kind==='assign'){
                   const latest=this.store.get<ChatRun>('chat-run',chatRun.id)!
-                  const group=latest.suppliedEvidence??{digest:issueEvidence.digest,workers:issueEvidence.workers,tickets:{},fold:this.config.execution.suppliedEvidence==='fold',interpreted:issueEvidence.interpreted,labels:issueEvidence.labels}
-                  if(group.digest!==issueEvidence.digest||!group.workers.includes(assignment.workerId)||group.tickets[assignment.workerId]&&group.tickets[assignment.workerId]!==id)throw Error('Evidence assignment changed')
-                  this.store.put('chat-run',latest.id,{...latest,suppliedEvidence:{...group,tickets:{...group.tickets,[assignment.workerId]:id}}})
-                  this.store.put('worker-assignment',id,{...assignment,suppliedEvidence:true})
+                  const group=participantGroup(latest)
+                  if(group?.workers.includes(assignment.workerId)){
+                    if(group.digest!==stableDigest(trigger.text)||Object.hasOwn(group.tickets,assignment.workerId)&&group.tickets[assignment.workerId]!==id)throw Error('Named participant already has a different assignment')
+                    this.store.put('chat-run',latest.id,{...latest,[group.ordinary?'namedParticipants':'suppliedEvidence']:{...group,tickets:{...group.tickets,[assignment.workerId]:id}}})
+                    if(issueEvidence)this.store.put('worker-assignment',id,{...assignment,suppliedEvidence:true})
+                  }
                 }
                 if(assignment)saveDispatch({kind,id,label:workerProfiles(this.config).find(w=>w.id===assignment.workerId)?.label??assignment.workerId,
                   ...(kind==='send'&&(args as {expectReply?:boolean}).expectReply?{inquiry:true,...(hostRouted?{hostRouted:true}:{})}:{})})
@@ -1779,10 +1791,10 @@ export class Runtime {
       if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
       let suppliedResult:ModelResult|undefined,internalEvidence=false,reviewedAnswer:string|undefined
-      const readSuppliedText=async(instructions:string,input:string)=>{
+      const readSuppliedText=async(instructions:string,input:string,schema:Record<string,unknown>={})=>{
         const reply=await this.runModel({role:'router',activity:{triggerId,sourceId:source.id},backendId:request.backendId,model:request.model,useConnectionDefault:request.useConnectionDefault,
           options:{...request.options,tools:[],toolConnections:[]},contextId:request.contextId,cwd:request.cwd,signal:controller.signal,managed:true,
-          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema:{},suppliedText:true,instructions,input},triggerId)
+          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema,suppliedText:true,validateSuppliedRead:validateReplyContext,instructions,input},triggerId)
         validateReplyContext()
         return reply
       }
@@ -1791,62 +1803,78 @@ export class Runtime {
       const pp=this.config.prompts
       const customPolicy=packet?.manifest.facts.length||packet?.manifest.knowledge?.length||this.config.execution.router?.prompt||this.config.execution.router?.persona||this.config.rules.length||pp.shared||pp.worker||pp.router||pp.personality||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||request.options?.prompt||request.options?.persona
       if(this.config.execution.suppliedEvidence&&!customPolicy&&privateEvidence&&singleChatInput&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&!recovery?.holds.length&&!recoveredUpdates.length&&
-         (!retainedDispatch.length||chatRun.suppliedEvidence)&&!this.goals.forInput(triggerId)&&freshEvidence(this,chatRun,trigger.text)&&
+         (!retainedDispatch.length||participantGroup(chatRun))&&!this.goals.forInput(triggerId)&&freshEvidence(this,chatRun,trigger.text)&&
          routerBackend&&isApiBackend(routerBackend)&&!this.chat.isReactionInput(triggerId)){
         const roster=this.manager.list(evidenceContext).workers.filter(w=>!w.state||w.state==='enabled')
-        let plan=evidencePlan(trigger.text,roster)
-        if(!plan&&allowedTools.has('worker_manage')&&(!toolFilter||toolFilter.includes('worker_manage'))){
-          const draft=evidencePlan(trigger.text,roster,true)
-          if(draft){
-            const approved=chatRun.suppliedEvidence?.digest===draft.digest&&chatRun.suppliedEvidence.interpreted
-            const verdict=approved?'READ':(await readSuppliedText(evidenceGate(draft),draft.direction)).text.trim()
-            if(verdict==='READ'&&freshEvidence(this,chatRun,trigger.text))plan=draft
+        const mayAssign=allowedTools.has('worker_manage')&&(!toolFilter||toolFilter.includes('worker_manage'))
+        const {plan,group}=mayAssign?await namedEvidenceGroup(trigger.text,roster,this.config.execution.suppliedEvidence==='fold',readSuppliedText,participantGroup(chatRun)):{plan:evidencePlan(trigger.text,roster),group:undefined}
+        validateReplyContext()
+        if(freshEvidence(this,chatRun,trigger.text)){
+          if(group){
+            // Persist the user's participation requirement before the first effect, independently of the route.
+            const latest=this.store.get<ChatRun>('chat-run',triggerId)!
+            const compact=plan&&group.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})
+            const assignmentText=(id:string)=>plan?plan.question+'\n'+evidenceText(workerSections(plan,id)):group.briefs?.[id]
+            const bound=plan&&!compact?{...group,ordinary:true as const,briefs:Object.fromEntries(group.workers.map(id=>[id,assignmentText(id)!]))}:group
+            // Ordinary briefs never create a shared-source grant, including for an older host after rollback.
+            this.store.put('chat-run',triggerId,{...latest,[bound.ordinary?'namedParticipants':'suppliedEvidence']:bound})
+            issueEvidence=compact?plan:undefined
+            try{
+              for(const id of group.workers){
+                if(!freshEvidence(this,chatRun,trigger.text))break
+                const current=participantGroup(this.store.get<ChatRun>('chat-run',triggerId))
+                if(!current||Object.hasOwn(current.tickets,id))continue
+                const text=assignmentText(id)
+                if(!text)continue
+                validateReplyContext()
+                const receipt=await checkedRouterTool('worker_manage',{action:'assign',id,revision:this.settings.current().revision,requestId:'evidence-'+stableDigest([triggerId,group.digest,id]),text})
+                if(!receipt.success)break
+              }
+            }finally{issueEvidence=undefined}
+          }else if(plan&&!plan.workers.length){
+            const reply=await readEvidenceAnswer(plan,answerPacket(plan,plan.sections),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,()=>freshEvidence(this,chatRun,trigger.text))
+            if(reply.check.ok&&freshEvidence(this,chatRun,trigger.text))suppliedResult={...reply.result,text:JSON.stringify({reply:reply.check.text})}
           }
-        }
-        if(plan&&!plan.workers.length){
-          const reply=await readEvidenceAnswer(plan,answerPacket(plan,plan.sections),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,()=>freshEvidence(this,chatRun,trigger.text))
-          if(reply.check.ok&&freshEvidence(this,chatRun,trigger.text))suppliedResult={...reply.result,text:JSON.stringify({reply:reply.check.text})}
-        }
-        else if(plan&&(!toolFilter||toolFilter.includes('worker_manage'))&&allowedTools.has('worker_manage')&&plan.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})){
-          issueEvidence=plan
-          try{
-            for(const id of plan.workers){
-              if(this.store.get<ChatRun>('chat-run',triggerId)?.suppliedEvidence?.tickets[id])continue
-              validateReplyContext()
-              const receipt=await checkedRouterTool('worker_manage',{action:'assign',id,revision:this.settings.current().revision,requestId:'evidence-'+stableDigest([triggerId,plan.digest,id]),
-                text:plan.question+'\n'+evidenceText(workerSections(plan,id))})
-              if(!receipt.success||!this.store.get<ChatRun>('chat-run',triggerId)?.suppliedEvidence?.tickets[id])break
-            }
-          }finally{issueEvidence=undefined}
         }
       }
       if(privateEvidence&&review&&currentReview(this,review)&&!review.question){
-        const marker=this.store.get<{assignmentId:string;author:boolean;repair?:{reason:string}}>('evidence-report',review.ticketId)
-        const stored=marker?.assignmentId===review.assignmentId&&storedEvidence(this,triggerId)
-        if(stored&&stored.plan.workers.every(id=>stored.group.tickets[id])&&Object.values(stored.group.tickets).includes(review.ticketId)){
+        const entry=this.store.get<{assignmentId:string;attemptId?:string;author:boolean;digest?:string;summaryDigest?:string;rows?:string[];repair?:{reason:string}}>('evidence-report',review.ticketId)
+        const marker=entry?.assignmentId===review.assignmentId&&entry.attemptId===review.attemptId?entry:undefined
+        const stored=storedEvidence(this,triggerId)
+        if(stored&&stored.plan.workers.every(id=>Object.hasOwn(stored.group.tickets,id))&&Object.values(stored.group.tickets).includes(review.ticketId)){
           const self=stored.plan.workers.find(id=>stored.group.tickets[id]===review.ticketId)!
           const peers=stored.plan.workers.filter(id=>id!==self)
           const dependencies=()=>evidenceDependencies(this,triggerId,stored.group,peers,scoped)
           const currentSources=()=>!!storedEvidence(this,triggerId)&&currentReview(this,review)&&dependencies().state==='ready'
           const deps=dependencies()
-          if(review.reportedState==='ready'&&deps.state!=='ordinary'){
+          const author=stored.plan.workers.length===1||stored.group.fold&&self===stored.plan.workers.at(-1)
+          const verifyPassage=stored.plan.sharedPassage&&author&&deps.state==='ready'&&
+            !(marker?.author&&marker.digest===stored.plan.digest&&marker.summaryDigest===stableDigest(review.summary)&&marker.rows?.length===stored.plan.sections[0]!.rows.length)
+          if(marker&&review.reportedState==='ready'&&deps.state!=='ordinary'&&!verifyPassage){
             if(deps.state==='pending'||stored.plan.workers.length===1||marker.author){
               internalEvidence=deps.state==='pending'
               suppliedResult={threadId:'',turnId:'evidence:'+job.id,text:JSON.stringify({reply:review.summary})}
             }else{
               const findings=[...deps.findings,review.summary],plan=stored.plan
-              const response=await readEvidenceAnswer(plan,answerPacket(plan,[],findings),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,currentSources)
+              const response=await readEvidenceAnswer(plan,answerPacket(plan,plan.sharedPassage?plan.sections:[],findings),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,currentSources)
               if(response.check.ok&&currentSources())suppliedResult={...response.result,text:JSON.stringify({reply:response.check.text})}
             }
-          }else if(review.reportedState==='blocked'&&marker.author&&marker.repair&&deps.state==='ready'){
+          }else if(verifyPassage||review.reportedState==='blocked'&&marker?.author&&marker.repair&&deps.state==='ready'){
             // The reviewer may read the original private Chat after checking every sibling grant.
             // Keep the failed native proposal and the independently accepted answer as separate receipts.
             const plan=stored.plan,packet=answerPacket(plan,plan.sections,[],true)
-            const result=await readSuppliedText(packet.instructions+' Independently check the original sources and requested format.',packet.input)
+            const result=await readSuppliedText(packet.instructions+' Independently check the original sources and requested format.',packet.input,packet.schema)
             if(currentSources()){
               const checked=checkAnswer(plan.question,result.text,packet)
-              this.store.audit({type:'evidence.review',ticketId:review.ticketId,assignmentId:review.assignmentId,turnId:result.turnId,reason:marker.repair.reason,accepted:checked.ok})
+              this.store.audit({type:'evidence.review',ticketId:review.ticketId,assignmentId:review.assignmentId,turnId:result.turnId,reason:marker?.repair?.reason??'current_source',accepted:checked.ok,...(checked.ok&&checked.rows?{digest:plan.digest,rows:checked.rows}:{})})
               if(checked.ok){reviewedAnswer=checked.text;suppliedResult={...result,text:JSON.stringify({reply:checked.text,decision:'answer'})}}
+              else if(verifyPassage){
+                const prior=priorWorkerChecks(this,review.ticketId,review.assignmentId,triggerId)
+                // Reopen the same ticket once with the missing check. Its next proposal is reviewed
+                // against the original grants again, even when the Worker used the ordinary backend.
+                if(!prior.length)suppliedResult={...result,text:JSON.stringify({reply:'',decision:'continue',nextStep:checked.detail+' Inspect the original request and return the supported result.'})}
+                else suppliedResult={...result,text:JSON.stringify({reply:chinese?'根据现有记录，还无法确认这个答案。':'I could not verify an answer from the available records.',decision:'ask_user'})}
+              }
             }
           }
         }
@@ -1868,6 +1896,20 @@ export class Runtime {
         if(task)saveDispatch({kind:'running',id:task.id,label:workerProfiles(this.config).find(w=>w.id===task.workerId)?.label??task.workerId})
       }
       const dispatchRecords=dispatches()
+      const namedGroup=()=>{
+        const group=privateEvidence&&participantGroup(this.store.get<ChatRun>('chat-run',triggerId))
+        return group&&group.digest===stableDigest(trigger.text)?group:undefined
+      }
+      const required=namedGroup()
+      if(required?.ordinary||required&&required.workers.some(id=>!Object.hasOwn(required.tickets,id))){
+        const missing=required.workers.filter(id=>!Object.hasOwn(required.tickets,id))
+        // Retain the normal Router's tools, questions and progress while it reconciles these obligations.
+        activation={...activation,instructions:activation.instructions+'\nThis input requires the following participants: '+required.workers.join(', ')+'. Existing assignments: '+JSON.stringify(required.tickets)+'. Missing assignments: '+missing.join(', ')+'. Reuse existing tickets. Honor access boundaries for each new brief. A progress reply or genuine user question is allowed before everyone finishes.'}
+        if(review&&required.ordinary&&scoped&&!pendingParticipants(this,triggerId,required,scoped,review.ticketId).length){
+          const reports=required.workers.filter(id=>required.tickets[id]!==review.ticketId).map(worker=>({worker,summary:this.store.tickets.get(required.tickets[worker]!)!.assignments.at(-1)!.report!.summary}))
+          activation={...activation,input:JSON.stringify({context:activation.input,completedParticipantReports:reports})}
+        }
+      }
       const directHandoff=dispatchRecords.length>0&&dispatchRecords.every(d=>d.hostRouted)
       let rebuildAfterDispatch=dispatchRecords.length>0
       const dispatchReply=()=>{
@@ -1944,6 +1986,23 @@ export class Runtime {
       }
       else if(feishuDirect&&!output.reply.trim())output.reply=/\p{Script=Han}/u.test(trigger.text)?'收到。':'Got it.'
       this.store.atomic(()=>{
+        const group=namedGroup()
+        if(group&&scoped&&browserRun&&!appliedInputs.length&&freshEvidence(this,chatRun!,trigger.text)){
+          const missing=group.workers.filter(id=>!Object.hasOwn(group.tickets,id))
+          if(missing.length){
+            // A bounded replay reuses the parent trigger and the same per-worker operation IDs.
+            // Pending approvals and unknown effects keep their normal recovery entry points.
+            const retry='router:named-reconcile:'+stableDigest([triggerId,missing])
+            const waiting=this.permissions.forChat(chatRun!.conversationId).some(p=>p.actor.runId===triggerId&&['pending','approved','executing','uncertain'].includes(p.phase))||!!recovery?.holds.length
+            if(job.id!==retry&&!waiting)this.store.enqueue(retry,'router',{discussion,triggerId})
+            if(dispatches().length)output.reply=handoff!.reply()
+            else if(!waiting&&job.id!==retry)output.reply=chinese?'我在核对这次分工。':'I’m checking the requested assignments.'
+            else if(!waiting)output.reply=chinese?'请说明 '+missing.join('、')+' 各自应核对哪一部分。':'Which material should '+missing.join(', ')+' use for their part?'
+            else if(!output.reply.includes('?')&&!output.reply.includes('？'))output.reply=chinese?'我在核对这次分工的授权。':'I’m checking authorization for the requested assignments.'
+          }else if(pendingParticipants(this,triggerId,group,scoped).length&&!dispatches().length){
+            output.reply=chinese?'已安排指定成员核对。':'The requested participants are checking the material.'
+          }
+        }
         if(review){
           if(!currentReview(this,review)){this.store.put('router-read',review.id,{discussion,reason:'worker_result_superseded'});return}
           // Older reply-only adapters give no new disposition. Preserve the Worker's reported state.
@@ -1952,9 +2011,10 @@ export class Runtime {
           if(output.decision==null&&review.question)output.reply=review.question
           else if(output.decision==null&&!output.reply.trim())output.reply=reportMessage.text
           if(decision==='continue')output.reply=''
+          if(decision==='answer'&&group&&scoped&&Object.values(group.tickets).includes(review.ticketId)&&pendingParticipants(this,triggerId,group,scoped,review.ticketId).length)internalEvidence=true
           decideChatResult(this,review,decision,output.nextStep??'',output.reply,reviewedAnswer)
           if(internalEvidence)output.reply=''
-          if(decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
+          if(!internalEvidence&&decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
         }
         live?.complete()
         if(job.id==='router:'+triggerId&&(chatRun?.interjection?.state==='update'||chatRun?.interjection?.state==='pending')){
@@ -2344,7 +2404,8 @@ export class Runtime {
         }
       }
       const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
-      const read=(instructions:string,input:string)=>this.runModel({...standardRequest,instructions,input,suppliedText:true,schema:{},allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+      const read=(instructions:string,input:string,schema:Record<string,unknown>={})=>this.runModel({...standardRequest,instructions,input,suppliedText:true,schema,allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+        validateSuppliedRead:()=>{if(!canRetryEvidence())throw Error('Supplied source grant changed')},
         attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'},modelTrigger)
       const canRetryEvidence=()=>{
         if(!evidenceAssignment?.parentTrigger||controller.signal.aborted||!currentWorkerAttempt(this,attempt)||!storedEvidence(this,evidenceAssignment.parentTrigger))return false
@@ -2359,8 +2420,8 @@ export class Runtime {
         result=reply.result;answerCheck=reply.check
       }else{
         const {plan,id}=evidenceWorker,packet=readerPacket(plan,id)
-        result=await read(packet.instructions,packet.input)
-        if(!citedEvidence(plan,id,result.text)&&canRetryEvidence())result=await read(packet.instructions+' Use comma-separated integer IDs or *.',packet.input)
+        result=await read(packet.instructions,packet.input,packet.schema)
+        if(!citedEvidence(plan,id,result.text)&&canRetryEvidence())result=await read(packet.instructions+(packet.schema?' Use only valid row numbers.':' Use comma-separated integer IDs or *.'),packet.input,packet.schema)
       }
       delete run.webFetchReplay
       live.accepting=false
@@ -2381,7 +2442,9 @@ export class Runtime {
       const grantsCurrent=evidenceWorker&&canRetryEvidence()?evidenceWorker:undefined
       const evidenceAnswer=grantsCurrent?(grantsCurrent.author?(answerCheck?.ok?answerCheck.text:undefined):citedEvidence(grantsCurrent.plan,grantsCurrent.id,result.text)):undefined
       const usableEvidence=!!evidenceAnswer
-      if(grantsCurrent&&(usableEvidence||answerCheck&&!answerCheck.ok))this.store.put('evidence-report',ticket.id,{author:grantsCurrent.author,assignmentId,turnId:result.turnId,
+      if(grantsCurrent&&(usableEvidence||answerCheck&&!answerCheck.ok))this.store.put('evidence-report',ticket.id,{author:grantsCurrent.author,assignmentId,attemptId:attempt.id,turnId:result.turnId,
+        ...(evidenceAnswer?{summaryDigest:stableDigest(evidenceAnswer)}:{}),
+        ...(answerCheck?.ok&&answerCheck.rows?{digest:grantsCurrent.plan.digest,rows:answerCheck.rows}:{}),
         ...(answerCheck&&!answerCheck.ok?{repair:{reason:answerCheck.reason}}:{})})
       const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined

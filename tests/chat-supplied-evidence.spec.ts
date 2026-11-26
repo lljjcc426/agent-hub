@@ -1,14 +1,15 @@
-import {expect,it} from 'vitest'
+import {expect,it,vi} from 'vitest'
 import {mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {randomUUID} from 'node:crypto'
-import {answerPacket,citedEvidence,evidencePlan,freshEvidence,readerPacket,storedEvidence} from '../src/chat-supplied-evidence.ts'
+import {answerPacket,citedEvidence,evidencePlan,freshEvidence,namedEvidenceGroup,readerPacket,storedEvidence} from '../src/chat-supplied-evidence.ts'
 import {checkedCalculation} from '../src/supplied-calculation.ts'
 import {checkAnswer,repairPacket} from '../src/supplied-answer.ts'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import type {ModelRequest} from '../src/model.ts'
+import {TransientModelError} from '../src/model.ts'
 import type {ChatRun} from '../src/chat.ts'
 
 const roster=[{id:'east',label:'east'},{id:'west',label:'west'}]
@@ -121,15 +122,50 @@ it('admits a shared passage only within the authority of the full message',()=>{
   const p=evidencePlan(user,roster,true)!
   expect(p.workers).toEqual(['east','west'])
   expect(p.direction).toBe(user)
-  const result=citedEvidence(p,'east','2')!,packet=answerPacket(p,p.sections,[result])
+  const result=citedEvidence(p,'east','{"lines":[2]}')!,packet=answerPacket(p,p.sections,[result])
   expect(result).toMatch(/amendment/)
   expect(packet.input.match(/amendment/g)).toHaveLength(1)
-  expect(packet.input).toContain('Reader-selected lines: 2')
+  expect(packet.input).toContain('1 Zeta is listed in aisle A.')
+  expect(packet.input).not.toContain('Reader-selected')
+  expect(citedEvidence(p,'east','{"lines":[3]}')).toBeUndefined()
+  expect(citedEvidence(p,'east','B')).toBeUndefined()
+  expect(checkAnswer(p.question,'B',packet).ok).toBe(false)
+  expect(checkAnswer(p.question,'{"rows":["old","use"],"value":"B"}',packet).ok).toBe(true)
+  for(const value of ['A','Unlisted Person'])expect(checkAnswer(p.question,JSON.stringify({rows:['old','use'],value}),packet).ok).toBe(false)
   expect(evidencePlan('Ink costs 45. Pens cost 30. Please answer directly with the cheaper item.',roster)?.workers).toEqual([])
   for(const invalid of [user.replace('this','confidential files'),user.replace('@west','@absent'),user.replace('amendment','@west amendment'),user.replace('Could @east','Suppose @east'),user.replace('review','publish')]){
     expect(evidencePlan(invalid,roster,true)).toBeUndefined()
   }
   expect(evidencePlan('Ink costs 45. Pens cost 30. Do not answer directly; ask for help.',roster)).toBeUndefined()
+})
+it('binds ordinary briefs to the original participants and never redistributes the message after a negative intake',async()=>{
+  const text='Could @east and @west review these records? One schedule uses A. Another uses B. Which applies?'
+  const answers=['{"route":"PLAN"}','{"access":"individual","briefs":{"east":"Verify your assigned entry.","west":"Review your own addendum."}}']
+  const read=async()=>({text:answers.shift()!,threadId:'t',turnId:'r'})
+  const first=await namedEvidenceGroup(text,roster,true,read)
+  expect(first.group).toMatchObject({workers:['east','west'],ordinary:true,briefs:{east:'Verify your assigned entry.'}})
+  expect(first.plan).toBeUndefined()
+  const replay=await namedEvidenceGroup(text,roster,true,async()=>{throw Error('unexpected replay')},first.group)
+  expect(replay.group).toEqual(first.group)
+  const quoted='Yesterday I wrote “please have @east and @west review these records”. What does that sentence mean?'
+  expect(await namedEvidenceGroup(quoted,roster,true,async()=>{throw Error('no activation expected')})).toEqual({})
+})
+it('requires the original link from the requested key to the cited answer',()=>{
+  const p=evidencePlan('请 @east 和 @west 一起核对。旧编号 K1 对应账册 J7。J7 归 Uma，J8 归 Neri。请只回 K1 当前的保管人姓名。',roster,true)!
+  const packet=answerPacket(p,p.sections)
+  expect(checkAnswer(p.question,JSON.stringify({rows:['other','use'],value:'Uma'}),packet).ok).toBe(false)
+  expect(checkAnswer(p.question,JSON.stringify({rows:['use','use'],value:'Uma'}),packet).ok).toBe(true)
+  const partial=answerPacket(p,[],[citedEvidence(p,'east','{"lines":[2]}')!])
+  expect(partial.input).not.toContain('旧编号')
+  expect(checkAnswer(p.question,'{"r1":"U","value":"Uma"}',partial).ok).toBe(false)
+})
+it('computes a complement only for one complete rounded age distribution',()=>{
+  const q='How many percent were not from 18 to 59? Give only the short answer.'
+  const rows=['16.2% under 18, 61.5% from 18 to 59, and 22.2% aged 60 or older.']
+  expect(checkedCalculation(q,[{heading:'A',rows}])?.complement).toBe(38.5)
+  for(const text of [rows[0]!.replace('under 18','under 20'),rows[0]!.replace('22.2%','12.2%')])
+    expect(checkedCalculation(q,[{heading:'A',rows:[text]}])).toBeUndefined()
+  expect(checkedCalculation(q,[{heading:'A',rows},{heading:'B',rows}])).toBeUndefined()
 })
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]
@@ -206,4 +242,63 @@ it('bounds interpreted admission to explicitly mentioned, available readers and 
  expect(evidencePlan(source.replace('Could','Do not let'),roster,true)).toBeUndefined()
  expect(evidencePlan(source+'\n\n@unlisted / confidential\nsample',roster,true)).toBeUndefined()
  expect(evidencePlan(source+'\n\nSection\nexample'.repeat(50),roster,true)).toBeUndefined()
+})
+
+it('reconciles a partial ordinary dispatch on the original Chat without creating a shared grant or duplicate ticket',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'roppo-participants-')),calls:ModelRequest[]=[]
+ let transient=true,stopGate=false,release=()=>{},entered=false
+ const host=await Runtime.create(configSchema.parse({
+  stateDir:join(dir,'state'),port:0,watchdog:{enabled:false},work:{sandboxDriver:'seatbelt',network:false,autoRecover:false},
+  backends:{test:{kind:'openai-responses',model:'fixture',baseUrl:'http://127.0.0.1:1/v1'}},
+  execution:{backend:'test',router:{backend:'test',mode:'host'},suppliedEvidence:'fold',management:{enabled:true},workers:roster.map(w=>({...w,backend:'test'}))},
+  sources:[{id:'local',kind:'local',cwd:dir,allowedActors:['operator']}]
+ }),{model:{async run(r){
+   calls.push(r)
+   const threadId=randomUUID(),turnId=randomUUID()
+   r.onThread?.(threadId);r.onTurn?.(turnId)
+   if(r.suppliedText&&transient){transient=false;throw new TransientModelError('Transient before any tools')}
+   if(r.suppliedText&&stopGate){entered=true;await new Promise<void>(resolve=>{release=resolve})}
+   let text
+   if(r.suppliedText)text=r.schema.properties&&'route' in (r.schema.properties as object)?'{"route":"PLAN"}':'{"access":"individual","briefs":{"east":"Review receipt Alpha.","west":"Review receipt Beta."}}'
+   else if(r.role==='worker')text=JSON.stringify({state:'ready',summary:'Checked my receipt.',reply:'Checked my receipt.',question:null,askedBy:null,files:[],handbacks:[]})
+   else text=JSON.stringify({reply:'The two receipts agree.',decision:'answer',nextStep:''})
+   return {text,threadId,turnId}
+ }}})
+ try{
+   host.scopes.command({action:'scope.put',operationId:'test',expectedRevision:0,scope:{id:'team',tenantId:'lab',name:'Team',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['east','west'],backendIds:['test']}})
+   const assign=host.manager.call.bind(host.manager),westKeys:string[]=[]
+   vi.spyOn(host.manager,'call').mockImplementation(async(args,...rest)=>{
+     const x=args as {action:string;id:string;requestId:string}
+     if(x.action==='assign'&&x.id==='west'){westKeys.push(x.requestId);if(westKeys.length===1)throw Error('Temporary failure before assignment')}
+     return assign(args,...rest)
+   })
+   const chat=host.chat.create('owner'),input={text:'Could @east and @west review separate records? East may see Alpha. West may see Beta. Give both findings.',clientMessageId:'one'}
+   host.chat.send(chat.id,'owner',input)
+   host.chat.send(chat.id,'owner',input)
+   for(let i=0;i<300;i++){
+     await host.tick()
+     if(host.store.tickets.list().length===2&&host.store.tickets.list().every(t=>t.ended))break
+     await new Promise<void>(ok=>setTimeout(ok,10))
+   }
+   const run=host.store.list<ChatRun>('chat-run')[0]!
+   expect(westKeys).toHaveLength(2)
+   expect(calls[1]!.input).toBe(calls[0]!.input)
+   expect(calls[1]!.threadId).toBeUndefined()
+   expect(new Set(westKeys).size).toBe(1)
+   expect(run.suppliedEvidence).toBeUndefined()
+   expect(Object.keys(run.namedParticipants!.tickets).sort()).toEqual(['east','west'])
+   expect(host.store.tickets.list().map(t=>t.ended?.outcome)).toEqual(['completed','completed'])
+   expect(calls.filter(r=>r.role==='worker'&&r.suppliedText)).toHaveLength(0)
+   const messages=host.chat.view(chat.id,'owner').messages.filter(m=>m.text==='The two receipts agree.'&&!m.recipient)
+   expect(messages).toHaveLength(1)
+   stopGate=true
+   const next=host.chat.create('owner'),accepted=host.chat.send(next.id,'owner',{...input,clientMessageId:'stop'})
+   for(let i=0;i<100&&!entered;i++){await host.tick();await new Promise<void>(ok=>setTimeout(ok,5))}
+   expect(entered).toBe(true)
+   const stopped=host.chat.cancel(next.id,'owner',accepted.runId!)
+   release();await stopped
+   for(let i=0;i<10;i++)await host.tick()
+   expect(host.store.tickets.list()).toHaveLength(2)
+   expect(host.store.get<ChatRun>('chat-run',accepted.runId!)?.cancelled).toBe(true)
+ }finally{await host.close();rmSync(dir,{recursive:true,force:true})}
 })

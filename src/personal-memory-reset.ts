@@ -1,15 +1,26 @@
 import type {Store} from './store.ts'
 import type {HistoryPlan} from './history-cleanup.ts'
-import type {EntryBinding,ManagementScope} from './router-scope.ts'
+import type {EntryBinding,ManagementScope,RouterRoute,TaskOwnership} from './router-scope.ts'
 import {stableDigest} from './sources.ts'
 import {defaultMemoryWriteMode,memoryPolicySchema,type MemoryPolicy} from './memory-policy.ts'
 
 export interface PersonalReset {defaultWriteMode?:MemoryPolicy['writeMode'];settingsKey:string;scopeId:string;entries:string[];spaces:string[];factIds:string[]}
 export function hasForeignHistoryOwner(store:Store,plan:HistoryPlan){
  if(!plan.personalReset)return false
- const owner=(kind:string,id:string)=>store.get<{scopeId?:string}>(kind,id)?.scopeId
- return plan.tickets.some(id=>{const scope=owner('task-ownership',id);return scope&&scope!==plan.scopeId})||
-  plan.triggers.some(id=>{const scope=owner('router-route',id);return scope&&scope!==plan.scopeId})
+ // A personal conversation can be bound to a team. Check the exact entry and
+ // its current owner so a different entry in that team cannot join the reset.
+ const bindings=new Map(plan.personalReset.entries.map(id=>[id,store.get<EntryBinding>('entry-binding',id)]))
+ const belongs=(entry:string,owner:{tenantId:string;scopeId:string})=>{
+  const binding=bindings.get(entry)
+  return !!binding&&binding.scopeId===owner.scopeId&&binding.tenantId===owner.tenantId
+ }
+ return plan.tickets.some(id=>{
+  const owner=store.get<TaskOwnership>('task-ownership',id)
+  return owner&&!belongs(owner.originEntry,owner)
+ })||plan.triggers.some(id=>{
+  const route=store.get<RouterRoute>('router-route',id)
+  return route&&!belongs(route.entryId,route)
+ })
 }
 const bySpace=new Set(['memory-personal','memory-last-extract','memory-maintenance','memory-consolidation','memory-sequence','memory-reflection','memory-reflection-run','memory-reflection-revision'])
 const learning=new Set(['memory-observation','memory-extraction-session','memory-document-use','memory-use','memory-topic','memory-vector','memory-reflection-history'])

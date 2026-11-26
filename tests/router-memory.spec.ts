@@ -27,6 +27,21 @@ function fixture(){
  const remember=(content='Budget 73',group='g1',extra:Record<string,unknown>={})=>{const c=context(group),e=memory.ingest(c);return memory.command(c,{action:'remember',operationId:'write-'+(++seq),expectedRevision:0,subject:'budget',content,sourceIds:[e.id],candidate:false,...extra},true) as MemoryFact}
  return {root,config,store,scopes,memory,source,context,remember}
 }
+it.each(['ticket','route'])('refuses a Chat reset that reaches a different entry in the same team via a %s',kind=>{
+ const f=fixture(),own=f.context('g1'),other=f.context('g2')
+ f.store.put('chat-conversation','chat',{id:'chat',owner:'alice',createdAt:1,sourceId:'local',actor:'alice',nativeId:'g1'})
+ f.store.put('chat-run','own-run',{conversationId:'chat',triggerId:own.trigger.id})
+ if(kind==='ticket'){
+  f.scopes.own('shared-reference',other,'codex')
+  f.store.put('ticket','shared-reference',{parentTrigger:own.trigger.id,assignments:[],text:'Other entry content'})
+ }else{
+  f.store.put('chat-run','stale-run',{conversationId:'chat',triggerId:other.trigger.id})
+ }
+ expect(()=>f.memory.resetChat('alice','reset',['chat'])).toThrow('another workspace owner')
+ expect(readRevocations(f.config.stateDir)).toHaveLength(0)
+ expect(f.store.triggers.get(other.trigger.id)?.text).toBe('Budget 73')
+})
+
 it('narrows a legacy reset to its original owner, resumes verified sessions and replays the amendment over an older snapshot',()=>{
  const f=fixture(),{store,config}=f,scopeId='@chat:'+stableDigest('alice'),id='chat-reset:fixture',at=100
  store.put('chat-conversation','chat',{id:'chat',owner:'alice',createdAt:1,sourceId:'local',actor:'alice'})

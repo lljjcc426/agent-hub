@@ -31,6 +31,7 @@ export class TerminalEditor extends EventEmitter {
   private historyAt = 0
   private scratch = ''
   private paste?: string[]
+  private mouse?: string
   private pastedLength = 0
   private closed = false
   private raw: boolean
@@ -52,7 +53,7 @@ export class TerminalEditor extends EventEmitter {
     process.once('SIGTERM', this.close)
     process.once('SIGHUP', this.close)
     process.once('SIGINT', this.close)
-    this.output.write('\x1b[?2004h')
+    this.output.write('\x1b[?2004h\x1b[?1000h\x1b[?1006h')
     this.updateMenu()
   }
   [Symbol.asyncIterator]() {
@@ -102,7 +103,7 @@ export class TerminalEditor extends EventEmitter {
     process.off('SIGHUP', this.close)
     process.off('SIGINT', this.close)
     this.input.setRawMode(this.raw)
-    this.output.write('\x1b[?2004l')
+    this.output.write('\x1b[?1006l\x1b[?1000l\x1b[?2004l')
     this.queue.push(null)
     this.emit('close')
   }
@@ -251,6 +252,26 @@ export class TerminalEditor extends EventEmitter {
   private keypress = (text: string | undefined, key: Key) => {
     if (this.closed || !key) return
     const seq = key.sequence ?? text ?? ''
+    // readline splits SGR mouse reports into keypresses. Consume the complete
+    // report so wheel/click coordinates never become part of the draft.
+    if (!this.paste && seq === '\x1b[<') {
+      this.mouse = ''
+      return
+    }
+    if (this.mouse !== undefined) {
+      this.mouse += seq
+      if (/^[\d;]*$/.test(this.mouse)) return
+      const report = /^(\d+);\d+;\d+M$/.exec(this.mouse)
+      this.mouse = undefined
+      if (report && (Number(report[1]) & 64)) {
+        const direction = Number(report[1]) & 1 ? 1 : -1
+        if (this.menu?.items.length) {
+          this.vertical(direction)
+          this.emit('change')
+        } else this.emit('page', direction, 3)
+      }
+      return
+    }
     if (this.paste) {
       if (key.name !== 'paste-end') {
         this.pastedLength += seq.length

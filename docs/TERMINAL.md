@@ -95,6 +95,9 @@ A `/config` edit takes effect immediately in the current session, and saves to `
 | Shift+Tab | Open shared-account permissions |
 | Alt+Enter / supported Shift+Enter / trailing `\` + Enter | Insert a newline |
 | Page Up / Page Down | Scroll conversation history |
+| Mouse wheel / trackpad scroll | Scroll the conversation by three lines, or move through the open menu |
+
+The full-screen interface captures mouse events while running. An empty conversation stays fixed; overflowing messages scroll above the input. Exiting restores normal terminal mouse handling. In macOS Terminal, keep **View → Allow Mouse Reporting** enabled for this behavior. To select text with Terminal's native mouse handling, temporarily toggle it off with **Cmd+R**, then turn it back on to resume in-app scrolling.
 
 ## Use in scripts
 

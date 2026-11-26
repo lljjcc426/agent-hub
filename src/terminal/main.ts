@@ -361,8 +361,8 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
   let oldest: number | undefined,
     hasOlder = false,
     loadingOlder = false
-  editor?.on('page', async (direction: number) => {
-    if (!display.scroll(direction) || !hasOlder || oldest === undefined || loadingOlder) return
+  editor?.on('page', async (direction: number, lines?: number) => {
+    if (!display.scroll(direction, lines) || !hasOlder || oldest === undefined || loadingOlder) return
     const revision = display.scrollPositionRevision
     loadingOlder = true
     try {

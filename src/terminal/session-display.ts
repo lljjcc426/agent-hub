@@ -122,11 +122,11 @@ export class SessionDisplay {
     this.paint()
   }
   // Returns true when the user tries to scroll past the oldest loaded page.
-  scroll(direction: number) {
+  scroll(direction: number, lines = Math.max(1, this.capacity - 1)) {
     this.scrollRevision++
     const start = this.top ?? this.end
-    const next = Math.max(0, Math.min(this.end, start + direction * Math.max(1, this.capacity - 1)))
-    this.top = direction < 0 || next < this.end ? next : undefined
+    const next = Math.max(0, Math.min(this.end, start + direction * lines))
+    this.top = this.end > 0 && (direction < 0 || next < this.end) ? next : undefined
     this.paint()
     return direction < 0 && start === 0
   }

@@ -33,8 +33,28 @@ function fixture() {
     input.destroy()
     out.destroy()
   })
-  return { editor, input, lines: editor[Symbol.asyncIterator]() }
+  return { editor, input, out, lines: editor[Symbol.asyncIterator]() }
 }
+it('captures wheel reports without changing the draft and restores terminal mouse handling on exit', () => {
+  const { editor, input, out } = fixture()
+  expect(out.read().toString()).toContain('\x1b[?1000h\x1b[?1006h')
+  const pages: number[][] = []
+  editor.on('page', (...args) => pages.push(args))
+  input.write('draft')
+  input.write('\x1b[<6')
+  input.write('4;20;10M\x1b[<65;20;10M')
+  input.write('\x1b[<0;20;10M\x1b[<0;20;10m')
+  expect(pages).toEqual([[-1, 3], [1, 3]])
+  expect(editor.line).toBe('draft')
+  input.write('\x15/')
+  const selected = editor.menu!.selected
+  input.write('\x1b[<65;20;10M')
+  expect(editor.menu!.selected).toBe(selected + 1)
+  expect(editor.line).toBe('/')
+  expect(pages).toHaveLength(2)
+  editor.close()
+  expect(out.read().toString()).toContain('\x1b[?1006l\x1b[?1000l')
+})
 it('keeps split bracketed paste, Unicode edits and multiline history as one submission', async () => {
   const { input, editor, lines } = fixture()
   input.write('\x1b[20')

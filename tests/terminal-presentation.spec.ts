@@ -6,6 +6,31 @@ import stringWidth from 'string-width'
 import type { Snapshot } from '../src/terminal/client.ts'
 import { draftLines, fit, TerminalLayout } from '../src/terminal/presentation.ts'
 
+it('keeps an empty viewport fixed and follows new content after an empty scroll', () => {
+  let output = ''
+  const out = { columns: 120, rows: 30, write: (value: string) => { output += value } } as NodeJS.WriteStream
+  const display = new SessionDisplay(out, { line: '', cursor: 0 }, false)
+  const view = {
+    conversation: {}, readiness: { workers: [] }, workers: [], calls: [],
+    approvals: [], tasks: [], messages: [], run: null
+  } as unknown as Snapshot
+  display.update(view)
+  output = ''
+  display.scroll(-1, 3)
+  display.scroll(1, 3)
+  expect(output).toBe('')
+  display.scroll(-1, 3)
+  display.update({ ...view, messages: [{ id: 'm', createdAt: 1, role: 'assistant', text: Array.from({ length: 60 }, (_, i) => 'line-' + i).join('\n') }] } as Snapshot)
+  expect(stripVTControlCharacters(output)).toContain('line-59')
+  const caret = /\x1b\[\d+;\d+H$/.exec(output)![0]
+  output = ''
+  display.scroll(-1, 3)
+  expect(stripVTControlCharacters(output)).toContain('line-56')
+  expect(stripVTControlCharacters(output)).not.toContain('line-59')
+  expect(output.endsWith(caret)).toBe(true)
+  display.close()
+})
+
 describe('interactive terminal layout', () => {
   it('positions the cursor in cells across CJK, joined emoji and combining marks', () => {
     const text = 'AB你👩‍💻e\u0301'

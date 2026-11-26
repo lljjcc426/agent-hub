@@ -913,3 +913,35 @@ it('keeps a relinquished assignment open until the Router obtains a checked deli
  expect(end.taskIds).toHaveLength(1);expect(turns).toBe(2)
  expect(f.host.store.list('goal-repair')).toHaveLength(1)
 })
+
+it('replans the existing producer after the direct repair budget, then independently reviews its new version',async()=>{
+ let builds=0,reviews=0,plans=0
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(input.kind==='goal_replanning'||input.kind==='goal_plan_review'){
+   const evidenceIds=input.evidence.map((e:{id:string})=>e.id)
+   for(const id of evidenceIds)await tool(r,'goal_evidence',{id})
+   if(input.kind==='goal_plan_review')return {approved:true,explanation:'Preserves the original acceptance and separate review.',evidenceIds}
+   plans++;expect(input.failedNodeIds).toEqual(['producer'])
+   return {reason:'Correct the existing producer output.',evidenceIds,changes:[{id:'producer',instruction:'Use the corrected source on this same assignment.',dependsOn:[]}],additions:[]}
+  }
+  if(input.kind==='independent_review'){
+   const item=input.files.find((e:{path:string})=>e.path==='value.txt')
+   const page=await tool<{content:string}>(r,'goal_evidence',{id:item.id})
+   reviews++
+   return page.content==='correct'?{verdict:'approved',report:'Independently checked the corrected output.',owners:[],evidenceIds:[item.id]}:
+    {verdict:'changes_requested',report:'Independent review found an incorrect value. Repair the producer output.',owners:['producer'],evidenceIds:[item.id]}
+  }
+  if(r.role==='worker'){writeFileSync(join(r.cwd,'value.txt'),++builds===1?'wrong':'correct');return ready()}
+  return {reply:'Working.'}
+ })
+ const g=f.start('Produce and independently review a retained answer',{maxRepairs:0,maxReplans:1,criteria:[
+  {id:'value',description:'Deliver the value',check:{kind:'file_exists',path:'value.txt'}},
+  {id:'review',description:'Inspect the value',check:{kind:'file_exists',path:'review.md'}}],
+  nodes:[{id:'producer',title:'Create value',instruction:'Prepare the value.',workerId:'builder',criterionIds:['value']},
+   {id:'review',purpose:'review',title:'Independent review',instruction:'Check the result.',workerId:'reviewer',dependsOn:['producer'],criterionIds:['review']}]})
+ await f.until(()=>['completed','held'].includes(f.host.goals.get(g.id)!.state))
+ const final=f.host.goals.get(g.id)!
+ expect(final.state,final.reason).toBe('completed');expect(final.taskIds).toHaveLength(2)
+ expect([builds,reviews,plans]).toEqual([2,2,1])
+})

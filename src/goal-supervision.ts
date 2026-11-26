@@ -2,6 +2,8 @@ import {z} from 'zod'
 import {execFileSync} from 'node:child_process'
 import {readdirSync,realpathSync} from 'node:fs'
 import {dirname,isAbsolute,resolve} from 'node:path'
+import type {ReplanRound} from './goal-replanning.ts'
+import {archivedWorkerCheckpoint} from './backends/opencode-read-recovery.ts'
 import type {Runtime} from './runtime.ts'
 import type {GoalNode,IndependentOpinion} from './goal-contract.ts'
 import type {RouterGoal} from './router-goals.ts'
@@ -182,6 +184,50 @@ export function prepareIndependentReview(h:Runtime,g:RouterGoal,n:GoalNode,run:R
 }
 
 type CheckStore=Pick<Store,'get'|'db'|'list'>
+// A reviewed, applied plan may explicitly give a correction step ownership of
+// an earlier step's files. Only a new passed version differing in those files
+// can release its checkpoint. Unrelated changes require ordinary reconciliation.
+function approvedAddition(store:CheckStore,g:RouterGoal,n:GoalNode){
+ if(!n.derivedFrom||!n.ticketId||!n.outputs?.length||n.recoveries>=5)return false
+ const plans=store.list<ReplanRound>('goal-replan').filter(r=>r.goalId===g.id&&r.state==='applied'&&r.review?.approved&&
+   r.snapshot.planRevision+1===g.planRevision&&r.scopeId===g.scopeId&&r.entryId===g.entryId)
+ if(plans.length!==1)return false
+ const plan=plans[0]!,addition=plan.proposal?.additions.find(a=>a.id===n.id)
+ if(!addition||addition.derivedFrom!==n.derivedFrom||addition.workerId!==n.workerId||addition.instruction!==n.instruction||
+   stableDigest(addition.dependsOn)!==stableDigest(n.dependsOn)||stableDigest(addition.outputs)!==stableDigest(n.outputs)||
+   stableDigest(plan.snapshot.contract)!==stableDigest(g.contract)||stableDigest(plan.snapshot)!==plan.snapshotHash)return false
+ return plan
+}
+export function matchesOutsideOutputs(left:VerificationRound['snapshot'],right:VerificationRound['snapshot'],owner:string,paths:string[]){
+ const take=(snapshot:VerificationRound['snapshot'])=>{
+  const {evidence,...rest}=snapshot
+  return {...rest,evidence:evidence.map(e=>e.kind==='file'&&e.ticketId===owner&&!e.missing&&paths.includes(e.key)
+   ?{kind:e.kind,ticketId:e.ticketId,key:e.key,criterionIds:e.criterionIds}:e)}
+ }
+ return stableDigest(take(left))===stableDigest(take(right))
+}
+export function amendingWorker(h:Runtime,g:RouterGoal,parent:GoalNode,round:VerificationRound){
+ if(!parent.ticketId||!(g.planRevision??0))return
+ const candidates=g.nodes?.filter(n=>n.state==='running'&&n.dependsOn.includes(parent.id)&&n.ticketId&&approvedAddition(h.store,g,n)&&
+  h.store.get<Run>('run',n.ticketId)?.cwd===h.store.get<Run>('run',parent.ticketId!)?.cwd&&
+  h.verification.current(round,g,{readOnly:true,changedFiles:{ticketId:parent.ticketId!,paths:n.outputs!}}))
+ return candidates?.length===1?candidates[0]:undefined
+}
+function acceptedAmendment(store:CheckStore,g:RouterGoal,n:GoalNode){
+ const plan=approvedAddition(store,g,n)
+ if(!plan)return false
+ let changed=false
+ for(const id of n.dependsOn){
+  const parent=g.nodes?.find(p=>p.id===id),prior=plan.snapshot.nodes.find(p=>p.id===id)
+  if(parent?.state!=='passed'||!parent.roundId||prior?.state!=='passed'||!prior.roundId)return false
+  const previous=store.get<VerificationRound>('goal-verification',prior.roundId),current=store.get<VerificationRound>('goal-verification',parent.roundId)
+  if(!previous||!current||[previous,current].some(r=>r.goalId!==g.id||r.nodeId!==id||r.state!=='passed'))return false
+  if(previous.id===current.id)continue
+  if(!parent.ticketId||!matchesOutsideOutputs(previous.snapshot,current.snapshot,parent.ticketId,n.outputs!))return false
+  changed=true
+ }
+ return changed
+}
 /** A dependency hold carries no authority to resume an explicitly stopped goal. Every queued job must be a receipt-only input wake. */
 export function dependencyCheckpoint(store:CheckStore,g:RouterGoal,stateDir?:string){
  const nodes=g.nodes??[],held=nodes.filter(n=>n.state==='held')
@@ -189,7 +235,8 @@ export function dependencyCheckpoint(store:CheckStore,g:RouterGoal,stateDir?:str
    g.state!=='held'||g.nextAt!==undefined||!held.length||held.some(n=>n.reason!==dependencyChanged)||
    g.reason!==held.map(n=>n.title+': '+dependencyChanged).join('; ')||!held.some(n=>reviewNode(n)&&n.ticketId)||
    nodes.some(n=>n.teamTargetId||n.delegationId||!['passed','held','pending'].includes(n.state)))return
- if(nodes.some(n=>n.state==='held'&&n.ticketId&&!reviewNode(n)))return
+ const repairs=held.filter(n=>n.ticketId&&!reviewNode(n))
+ if(repairs.some(n=>!acceptedAmendment(store,g,n)))return
  const ids=nodes.flatMap(n=>n.ticketId?[n.ticketId]:[]),jobs:string[]=[]
  if(ids.length!==g.taskIds.length||g.taskIds.some(id=>!ids.includes(id)))return
  for(const n of nodes){
@@ -202,6 +249,7 @@ export function dependencyCheckpoint(store:CheckStore,g:RouterGoal,stateDir?:str
   const wakes=retainedInputWakes(store,run)
   if(!wakes)return
   jobs.push(...wakes)
+  if(repairs.includes(n)&&(!stateDir||!archivedWorkerCheckpoint(store,stateDir,run)||store.get('goal-delivery',id)))return
   if(n.state==='passed'){const round=n.roundId&&store.get<VerificationRound>('goal-verification',n.roundId)
    if(!round||round.goalId!==g.id||round.nodeId!==n.id||round.state!=='passed'||!store.get('goal-delivery',id))return
   }else{
@@ -224,7 +272,7 @@ export function dependencyCheckpoint(store:CheckStore,g:RouterGoal,stateDir?:str
    if(unresolved.some(row=>row.session===run.threadId||!fenced.has(String(row.effect))))return
   }
  }
- return {ids,jobs,receipts:[]}
+ return {ids,jobs,receipts:[],...(repairs.length?{repairNodes:repairs.map(n=>n.id)}:{})}
 }
 export function superviseDependencies(h:Runtime,g:RouterGoal){
  if(!h.config.work.autoRecover||g.state!=='held'||g.turns>=g.maxTurns||g.failures>=3)return false
@@ -240,18 +288,40 @@ export function superviseDependencies(h:Runtime,g:RouterGoal){
  const nodes=g.nodes!
  for(const n of nodes.filter(n=>n.state==='passed')){const round=h.store.get<VerificationRound>('goal-verification',n.roundId!)!;if(!h.verification.current(round,g,{readOnly:true}))return false}
  const held=nodes.filter(n=>n.state==='held')
- const assignments=held.filter(n=>n.ticketId).map(n=>{
+ const ready=(n:GoalNode)=>n.dependsOn.every(dep=>nodes.find(d=>d.id===dep)?.state==='passed')
+ const repairs=held.filter(n=>checkpoint.repairNodes?.includes(n.id))
+ const assignments=held.filter(n=>n.ticketId&&reviewNode(n)&&ready(n)).map(n=>{
   const run=h.store.get<Run>('run',n.ticketId!)!
   const prior=run.workspaceMode!=='read-only'?run.workerId:n.supervision?.priorWorker
   const reviewer=selectReviewer(h,g,n,prior)
   return {n,run,prior,reviewer}
  })
  if(assignments.some(item=>!item.reviewer))return false
+ for(const n of repairs){
+  const run=h.store.get<Run>('run',n.ticketId!)!
+  h.replanning.assertWorker(g,n.workerId)
+  if(!h.scopes.taskRunnable(n.ticketId!)||!h.webhooks.taskExecutionAllowed(n.ticketId!)||h.webhooks.continuations.pending(n.ticketId!,run.assignmentId))return false
+ }
  h.store.atomic(()=>{
   g.state='active';g.reason=undefined;g.finalRoundId=undefined;g.revision++
   for(const n of held){
    n.reason=undefined;n.failure=undefined;n.roundId=undefined;n.opinion=undefined
-   n.state=n.ticketId?'running':'pending'
+   n.state=n.ticketId?(ready(n)?'running':'waiting_dependency'):'pending'
+  }
+  for(const n of repairs){
+   const id=n.ticketId!,run=h.store.get<Run>('run',id)!,task=h.store.tickets.get(id)!,inputs=task.inputs.map(i=>i.id)
+   const key=stableDigest([g.id,n.id,run.assignmentId,g.planRevision,n.dependsOn.map(dep=>nodes.find(p=>p.id===dep)!.roundId)])
+   if(h.store.get('context-handoff',key))throw Error('This dependency checkpoint was already delivered')
+   h.store.put('context-handoff',key,{ticketId:id,previousThread:run.threadId,previousTurn:run.turnId,backendId:run.backendId,model:run.model,reason:'approved_outputs_reverified',at:Date.now()})
+   const {threadId,turnId,toolsDigest,toolsVersion,error,failure,result,...retained}=run
+   h.store.put('run',id,{...retained,phase:'idle',rebuild:key} satisfies Run)
+   h.scopes.noteInput(id,c);h.memory.moveTaskContext(id,c)
+   h.engine.report(id,{state:'waiting',summary:'上一步的补丁已重新核验，正在接续原工单。',question:null})
+   h.engine.note(id,JSON.stringify({instruction:'Finish this approved correction on the same branch. Inspect the retained files and jobs before doing anything else. Preserve completed changes and report exactly what the authorized environment could verify.',outputs:n.outputs,prerequisites:dependencyBrief(h,g,n)}))
+   allowNewTaskInputs(h.store,id,inputs)
+   const updated=h.store.tickets.get(id)!
+   h.store.enqueue('execute:'+run.assignmentId+':'+stableDigest(updated.undelivered),'execute',{ticketId:id,assignmentId:run.assignmentId})
+   n.recoveries++;h.store.audit({type:'goal.amendment_resumed',goalId:g.id,nodeId:n.id,ticketId:id,assignmentId:run.assignmentId,key})
   }
   for(const {n,run,prior,reviewer} of assignments){
    const id=run.ticketId,workerId=reviewer!,key=stableDigest([g.id,n.id,run.assignmentId,...n.dependsOn.map(dep=>nodes.find(d=>d.id===dep)?.roundId)])

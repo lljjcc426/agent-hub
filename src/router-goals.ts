@@ -1,4 +1,4 @@
-import {reviewNode,selectReviewer,reviewPolicy,dependencyBrief,dependencyChanged,superviseDependencies} from './goal-supervision.ts'
+import {amendingWorker,reviewNode,selectReviewer,reviewPolicy,dependencyBrief,dependencyChanged,superviseDependencies} from './goal-supervision.ts'
 import {hasPausedTurnReader,parkedCheckpoint,readPausedTurn,relatedPause,type ResumedWorker} from './paused-worker-recovery.ts'
 import {unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {recoverGoalEvidence} from './goal-evidence-recovery.ts'
@@ -1133,14 +1133,20 @@ export class RouterGoals {
     for(const n of nodes)if(n.state==='passed'){
      const round=n.roundId?this.host.store.get<VerificationRound>('goal-verification',n.roundId):undefined
      if(!round||!this.host.verification.current(round,g)){
+      const writer=round&&amendingWorker(this.host,g,n,round)
       n.state='verifying';n.roundId=undefined;g.finalRoundId=undefined
       const affected=new Set([n.id]);let grew=true
-      while(grew){grew=false;for(const d of nodes)if(!affected.has(d.id)&&d.dependsOn.some(id=>affected.has(id))){affected.add(d.id);grew=true;d.state='held';d.reason=dependencyChanged}}
+      while(grew){grew=false;for(const d of nodes)if(!affected.has(d.id)&&d.dependsOn.some(id=>affected.has(id))){affected.add(d.id);grew=true
+       // A previously approved writer owns these exact outputs. Its pending
+       // consumers stay behind the ordinary version and independent-review gates.
+       if(writer&&(d.id===writer.id||d.state==='waiting_dependency'||d.state==='pending'&&!d.ticketId&&!d.delegationId))continue
+       d.state='held';d.reason=dependencyChanged}}
      }
     }
     for(const n of nodes){
      if(n.teamTargetId){this.advanceRemote(g,n);continue}
      if(!n.ticketId||n.state==='passed'||n.state==='held')continue
+     if(n.derivedFrom&&n.state==='running'&&n.dependsOn.some(id=>nodes.find(dep=>dep.id===id)?.state!=='passed'))continue
      const paused=this.recoverPausedWorker(g,n,c)
      if(paused==='waiting'||paused==='recovered')continue
      if(paused==='unverified'){

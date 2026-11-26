@@ -510,6 +510,12 @@ export function recordedWorkerCalls(store:Pick<ThreadStore,'get'>,stateDir:strin
  return accountedWorkerTurn(store,stateDir,run,'cancelled')?.calls
 }
 
+export function archivedWorkerCheckpoint(store:Pick<Store,'get'>,stateDir:string,run:Run){
+ const proof=accountedWorkerTurn(store,stateDir,run,'provider')
+ return proof?.failure?.diagnostic?.operation==='transport'&&proof.failure.diagnostic.reason==='turn_checkpoint'
+  ?proof.calls:undefined
+}
+
 // Acknowledgements and status messages do not establish recent task progress.
 function recentWorkerProgress(store:Pick<Store,'db'>,activity:string,ticketId:string,start:number,at:number){
  return start<at&&!!store.db.prepare(`SELECT 1 FROM records WHERE kind='execution-call'

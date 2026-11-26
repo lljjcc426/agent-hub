@@ -1,4 +1,4 @@
-import {originalReviewReport} from './goal-supervision.ts'
+import {matchesOutsideOutputs,originalReviewReport} from './goal-supervision.ts'
 import {evidenceBytes} from './goal-artifacts.ts'
 import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
 
@@ -319,7 +319,7 @@ export class GoalVerification {
   }
   return {...(options.legacyCriteria?{}:{version:2 as const}),contract:stableDigest({objective:g.objective,...(g.contract?.details?{details:g.contract.details}:{}),criteria:g.criteria,nodes:nodes.map(n=>({id:n.id,instruction:n.instruction,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs,dependsOn:n.dependsOn,...(n.teamTargetId?{teamTargetId:n.teamTargetId}:{}),prerequisites:n.dependsOn.map(id=>{const dep=g.nodes?.find(d=>d.id===id);return {id,state:dep?.state,roundId:dep?.roundId}})}))}),tasks,...(delegations.length?{delegations}:{}),evidence,...(finalCommit?{finalCommit}:{})}
  }
- current(round:VerificationRound,g:RouterGoal,options:{readOnly?:boolean}={}):boolean {
+ current(round:VerificationRound,g:RouterGoal,options:{readOnly?:boolean;changedFiles?:{ticketId:string;paths:string[]}}={}):boolean {
   const compare=()=>{
    // Context lookup may create a route when one is missing. Observation must
    // fail closed rather than establish a new authorization fact on a GET.
@@ -330,7 +330,8 @@ export class GoalVerification {
     const evidence=round.snapshot.evidence.find(e=>e.id===id)
     if(evidence?.provider)this.providerContent(evidence)
    }
-   return stableDigest(this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,{...options,includeHandoffs:round.handoffEvidence===true,legacyCriteria:!round.evidenceVersion,providerSnapshot:round.snapshot.evidence}))===stableDigest(round.snapshot)
+   const snapshot=this.snapshot(g,round.nodeId?g.nodes?.find(n=>n.id===round.nodeId):undefined,false,{readOnly:options.readOnly,includeHandoffs:round.handoffEvidence===true,legacyCriteria:!round.evidenceVersion,providerSnapshot:round.snapshot.evidence})
+   return options.changedFiles?matchesOutsideOutputs(round.snapshot,snapshot,options.changedFiles.ticketId,options.changedFiles.paths):stableDigest(snapshot)===stableDigest(round.snapshot)
   }
   try{return options.readOnly?this.host.scopes.readOnly(()=>this.host.memory.readOnly(compare)):compare()}catch{return false}
  }

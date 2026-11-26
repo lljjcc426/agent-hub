@@ -1,5 +1,5 @@
 import {z} from 'zod'
-import {dependencyBrief} from './goal-supervision.ts'
+import {dependencyBrief,reviewNode} from './goal-supervision.ts'
 import type {Runtime} from './runtime.ts'
 import type {RouterGoal} from './router-goals.ts'
 import type {Mandate,Ticket} from './vendor/dsh-core/index.ts'
@@ -25,7 +25,7 @@ export const replanProposalSchema=z.object({reason:z.string().min(1).max(4000),e
 type Proposal=z.infer<typeof replanProposalSchema>
 const reviewSchema=z.object({approved:z.boolean(),explanation:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200)}).strict()
 interface WorkerCapability {id:string;backend:string;tools:string[];sandboxDriver:string;network:boolean;sourceSandbox:string}
-interface ReplanSnapshot {contract:GoalContract;goalRevision:number;planRevision:number;nodes:GoalNode[];failureNodeIds:string[];overallGap?:{roundId:string;checks:import('./goal-verification.ts').VerificationCheck[]};evidence:GoalEvidence[];workerCapabilities?:WorkerCapability[]}
+interface ReplanSnapshot {contract:GoalContract;goalRevision:number;planRevision:number;nodes:GoalNode[];failureNodeIds:string[];repairOwnerIds?:string[];overallGap?:{roundId:string;checks:import('./goal-verification.ts').VerificationCheck[]};evidence:GoalEvidence[];workerCapabilities?:WorkerCapability[]}
 export interface ReplanRound {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;state:'pending'|'planning'|'reviewing'|'approved'|'applied'|'rejected'|'errored'|'stale';snapshot:ReplanSnapshot;snapshotHash:string;proposal?:Proposal;review?:z.infer<typeof reviewSchema>;error?:string;plannerThread?:string;reviewerThread?:string;contextIds?:string[];at:number;appliedAt?:number}
 const activeStates=new Set(['pending','planning','reviewing','approved'])
 const strings={type:'array',items:{type:'string'}}
@@ -72,7 +72,7 @@ export class GoalReplanning {
   if(!round||round.goalId!==g.id||round.nodeId||!['failed','insufficient'].includes(round.state)||!this.host.verification.current(round,g))return
   return {roundId:round.id,checks:round.checks.filter(c=>c.verdict!=='passed')}
  }
- private snapshot(g:RouterGoal,includeCapabilities=true):ReplanSnapshot {
+ private snapshot(g:RouterGoal,includeCapabilities=true,includeReviewOwners=true):ReplanSnapshot {
   const contract=this.contract(g)
   if(!g.managed||!g.nodes?.length||!['active','waiting'].includes(g.state))throw Error('Goal cannot autonomously replan in its current state')
   if(g.taskIds.some(id=>this.host.store.tickets.get(id)?.ended))throw Error('Stopped or ended tasks cannot be revived by replanning')
@@ -88,8 +88,17 @@ export class GoalReplanning {
    const options=agentOptionsSchema.parse(mergeOptions(defaults,profile))
    return {id:w.id,backend:w.backend,tools:localTools.filter(t=>!options.tools||options.tools.includes(t.name)).map(t=>t.name).sort(),sandboxDriver:this.host.config.work.sandboxDriver,network:this.host.config.work.network,sourceSandbox:source.sandbox}
   }).sort((a,b)=>a.id.localeCompare(b.id)):undefined
+  const failed=g.nodes.filter(n=>n.state==='held'),failureNodeIds=failed.map(n=>n.id)
+  const owners=failed.flatMap(n=>{
+   const opinion=n.opinion,parents=n.dependsOn.map(id=>g.nodes!.find(p=>p.id===id))
+   if(!includeReviewOwners||!reviewNode(n)||opinion?.verdict!=='changes_requested'||opinion.workerId!==n.workerId||
+     !parents.every(p=>p?.state==='passed'&&p.roundId)||opinion.version!==stableDigest(parents.map(p=>p!.roundId))||
+     !opinion.owners.length||!opinion.owners.every(id=>parents.some(p=>p!.id===id)))return [n.id]
+   return opinion.owners
+  })
+  const repairOwnerIds=[...new Set(owners)]
   const overallGap=this.overallGap(g)
-  return {contract,...(overallGap?{overallGap}:{}),goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds:g.nodes.filter(n=>n.state==='held').map(n=>n.id),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
+  return {contract,...(overallGap?{overallGap}:{}),goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds,...(stableDigest(repairOwnerIds)!==stableDigest(failureNodeIds)?{repairOwnerIds}:{}),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
  }
  private waitingForAnswer(g:RouterGoal){
   return g.nodes?.some(node=>{
@@ -102,7 +111,7 @@ export class GoalReplanning {
   const g=this.host.goals.get(r.goalId)
   if(!g||g.replanId!==r.id)throw Error('Replanning input, goal state, Worker capabilities or authority changed')
   if(this.waitingForAnswer(g))throw Error('The goal is waiting for a user answer')
-  const snapshot=this.snapshot(g,r.snapshot.workerCapabilities!==undefined)
+  const snapshot=this.snapshot(g,r.snapshot.workerCapabilities!==undefined,r.snapshot.repairOwnerIds!==undefined)
   // Progress updates advance the optimistic-lock revision without changing plan inputs.
   snapshot.goalRevision=r.snapshot.goalRevision
   if(stableDigest(snapshot)!==r.snapshotHash)throw Error('Replanning input, goal state, Worker capabilities or authority changed')
@@ -139,7 +148,7 @@ export class GoalReplanning {
   return true
  }
  private candidate(g:RouterGoal,r:ReplanRound,p:Proposal){
-  const nodes=structuredClone(g.nodes!),byId=new Map(nodes.map(n=>[n.id,n])),affected=new Set(r.snapshot.overallGap?p.changes.map(edit=>edit.id):r.snapshot.failureNodeIds)
+  const nodes=structuredClone(g.nodes!),byId=new Map(nodes.map(n=>[n.id,n])),affected=new Set(r.snapshot.overallGap?p.changes.map(edit=>edit.id):r.snapshot.repairOwnerIds??r.snapshot.failureNodeIds)
   let grew=true;while(grew){grew=false;for(const n of nodes)if(!affected.has(n.id)&&n.dependsOn.some(id=>affected.has(id))){affected.add(n.id);grew=true}}
   if(new Set(p.changes.map(n=>n.id)).size!==p.changes.length)throw Error('Duplicate plan change')
   for(const edit of p.changes){const n=byId.get(edit.id);if(!n||!affected.has(n.id))throw Error('Only failed work and its dependents may change');n.instruction=edit.instruction;n.dependsOn=edit.dependsOn}
@@ -160,7 +169,7 @@ export class GoalReplanning {
   const shape=(ns:GoalNode[])=>ns.map(n=>({id:n.id,instruction:n.instruction,dependsOn:n.dependsOn,workerId:n.workerId,criterionIds:n.criterionIds,supports:n.supports,outputs:n.outputs}))
   const hash=stableDigest(shape(nodes))
   if(hash===stableDigest(shape(g.nodes!))||this.host.store.list<ReplanRound>('goal-replan').some(old=>old.goalId===g.id&&old.state==='applied'&&old.proposal&&stableDigest(shape(old.snapshot.nodes))===hash))throw Error('Replanning must change the failed strategy')
-  for(const id of r.snapshot.failureNodeIds)if(!p.changes.some(n=>n.id===id))throw Error('Every failed node needs an explicit revised strategy')
+  for(const id of r.snapshot.repairOwnerIds??r.snapshot.failureNodeIds)if(!p.changes.some(n=>n.id===id))throw Error('Every failed node needs an explicit revised strategy')
   return {nodes,affected}
  }
  private requireEvidence(ids:string[],read:Set<string>,r:ReplanRound){
@@ -175,7 +184,7 @@ export class GoalReplanning {
     // Old persisted rounds did not carry this field. Preserve their original
     // snapshot hash while checking a fresh capability view around each call.
     const capabilities=r!.snapshot.workerCapabilities??this.snapshot(g).workerCapabilities!
-    const modelInput={kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},workerCapabilities:capabilities,nodes:r!.snapshot.nodes,failedNodeIds:r!.snapshot.failureNodeIds,...(r!.snapshot.overallGap?{unassignedGap:r!.snapshot.overallGap}:{}),evidence:r!.snapshot.evidence.map(({content,...meta})=>meta),requiredEvidenceIds:r!.snapshot.evidence.map(e=>e.id),...(mode==='review'?{proposal:r!.proposal}:{})}
+    const modelInput={kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},workerCapabilities:capabilities,nodes:r!.snapshot.nodes,failedNodeIds:r!.snapshot.repairOwnerIds??r!.snapshot.failureNodeIds,...(r!.snapshot.repairOwnerIds?{reviewReportedBy:r!.snapshot.failureNodeIds,instruction:'Change the listed producer strategies on their existing assignments. Keep independent review read-only.'}:{}),...(r!.snapshot.overallGap?{unassignedGap:r!.snapshot.overallGap}:{}),evidence:r!.snapshot.evidence.map(({content,...meta})=>meta),requiredEvidenceIds:r!.snapshot.evidence.map(e=>e.id),...(mode==='review'?{proposal:r!.proposal}:{})}
     const access=evidenceAccess(r!.snapshot.evidence,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{this.current(r!)},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
     const result=await this.host.runGoalPlanner(g,r!,mode,{input:access.input(modelInput),schema:mode==='plan'?proposalOutput:reviewOutput,tools:access.tools,onTool:access.onTool})
     this.current(r!)

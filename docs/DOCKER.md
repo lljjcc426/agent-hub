@@ -62,7 +62,7 @@ export ROPPO_PORT=4338
 
 容器以 UID/GID `1000:1000` 运行，根文件系统只读，移除全部 capabilities，不挂载 Docker socket 或宿主 HOME。浏览器和临时工具写入专用卷或 tmpfs。Worker 命令仍经过 Bubblewrap；默认来源为只读工作区，默认命令网络关闭。写入和命令网络由已有权限配置决定。
 
-默认 Docker 策略会阻止嵌套沙箱。本方案显式使用基于固定 Moby 默认配置的 syscall 扩展，并设置 `systempaths=unconfined`。这是容器策略放宽，见[具体差异、上游来源与许可](../deployment/SECCOMP.md)。不支持嵌套 user namespace 的宿主会启动失败；检查宿主策略，不要将沙箱静默关闭。裸 Linux 的 AppArmor 等策略可能额外限制启动。
+默认 Docker 策略会阻止嵌套沙箱。本方案显式使用基于固定 Moby 默认配置的 syscall 扩展，并设置 `systempaths=unconfined` 和 `apparmor=unconfined`。后者仅对 Roppo 容器取消外层 AppArmor 限制，使 Bubblewrap 能创建内部挂载空间；宿主 AppArmor 服务和其他容器不受影响。这是容器策略放宽，见[具体差异、上游来源与许可](../deployment/SECCOMP.md)。不支持嵌套 user namespace 的宿主仍会启动失败；检查宿主策略，不要将沙箱静默关闭。
 
 容器不继承 Mac 的 Codex、Feishu CLI 或系统钥匙串登录，镜像未安装原生 Codex / Feishu CLI。首版按 API 模型和本机网页入口验收。原生 CLI、宿主项目挂载、公开 Webhook 入站和跨容器子团队配对需分别设计、验收；本方案未提供这些连接。容器间 loopback 不互通。
 

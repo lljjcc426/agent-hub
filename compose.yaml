@@ -13,6 +13,8 @@ services:
       - no-new-privileges:true
       - seccomp=./deployment/seccomp-bubblewrap.json
       - systempaths=unconfined
+      # docker-default denies the mount propagation change used by nested Bubblewrap.
+      - apparmor=unconfined
     environment:
       HOME: /data/state/home
       ROPPO_PUBLIC_ORIGIN: http://127.0.0.1:${ROPPO_PORT:-4337}

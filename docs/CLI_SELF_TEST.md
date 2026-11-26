@@ -1,10 +1,19 @@
 # CLI 自测记录
 
-日期：2026-11-26。业务代码基于 `f18f883`；本轮补充回归断言与测试记录，没有修改业务代码。
+日期：2026-11-26。首次自测的业务代码基于 `f18f883`。
 
-## 结论
+## 后续远程失败修复
 
-本机 Node 24 全量检查和当前 CLI 的实际交互检查通过，未发现新的 CLI 功能故障。远程 CI 仍有两处上游版本也能复现的失败，因此不能认定所有环境全部通过。
+- Node 22 插件批处理：保留 6,000 条事件及对应的 6,000 次状态写入，将这一项集成测试的等待上限从默认 5 秒调整为 20 秒。它验证分批提交与确认机制，不作为吞吐量基准；其他测试的等待上限不变。本机单独运行约 1.7 秒，远程原失败为 5 秒超时。
+- Docker 启动：新增失败日志后，定位到 `bwrap: Failed to make / slave: Permission denied`。Compose 为 Roppo 服务设置 `apparmor=unconfined`，允许内部 Bubblewrap 建立挂载空间。该容器的外层 AppArmor 限制被移除；非 root、只读根目录、无 capabilities、seccomp 和内部命令沙箱继续生效，宿主和其他容器的 AppArmor 配置不变。
+- 诊断：验收失败时，在清理隔离容器前保存并输出容器日志与健康状态；沙箱探针报告截断后的具体错误。配置链接中的临时配对令牌继续脱敏。
+- 本机相关检查：插件包、容器部署和容器协议夹具共 57 项通过。远程完整结果以 [PR 检查](https://github.com/lljjcc426/agent-hub/pull/1/checks) 为准；下面保留修复前的失败证据。
+
+本次修改文件：`tests/plugin-packages.spec.ts`（仅该压力用例的等待上限）、`compose.yaml`（容器 AppArmor 设置）、`src/sandbox.ts`（探针错误信息）、`examples/container-acceptance.py`（失败诊断）、`deployment/SECCOMP.md` 和 `docs/DOCKER.md`（策略说明），以及本记录。没有删除项目文件。
+
+## 首次自测结论（修复前）
+
+首次自测时，本机 Node 24 全量检查和当前 CLI 的实际交互检查通过，未发现新的 CLI 功能故障。远程 CI 当时有两处上游版本也能复现的失败。
 
 ## 本机检查
 
@@ -39,9 +48,9 @@ git diff --check
 
 本机原始日志保存在忽略目录 `.local/`：`cli-selftest-check.log`、`cli-final-terminal-tests.log`、`cli-pty-check.log`、`cli-background-check.log`、`cli-offline-check.log`。这些日志和测试账号凭据不提交到仓库。
 
-## 远程 CI 的已知失败
+## 修复前的远程 CI 失败记录
 
-以下远程结果对应业务代码提交 `f18f883`，本轮尚未重新推送测试文件。
+以下远程结果对应业务代码提交 `f18f883`，之后的修复见本文开头。
 
 - Node 24：Ubuntu 和 macOS 检查通过，见 [分支 CI](https://github.com/lljjcc426/agent-hub/actions/runs/45766295517)。
 - Node 22.19：2,906 项通过、4 项跳过，只有 `tests/plugin-packages.spec.ts:104` 的一万多次操作批处理测试超过 5 秒。未改动的上游同步分支出现相同失败，见 [基线 CI](https://github.com/lljjcc426/agent-hub/actions/runs/45762890723)。目前未改超时时间，也未认定具体性能原因。

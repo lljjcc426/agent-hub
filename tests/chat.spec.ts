@@ -2012,6 +2012,58 @@ it('publishes a scheduled Worker file on that occurrence and reopens its message
   expect(Buffer.from(recovered.chat.delivery(c.id,'owner',result.files[0]!.id).bytes).toString()).toBe('Worker handover')
 })
 
+it('opens a fresh Chat and streams its saved reply after resetting a schedule that assigned a Worker',async()=>{
+  const {h,root}=fixture(async request=>{
+    if(request.role==='worker')return report
+    const input=JSON.parse(request.input)
+    if(input.schedule&&input.kind==='event'){
+      const pool=await request.onTool!('worker_manage',{action:'list'},'pool')
+      const {revision}=JSON.parse(pool.contentItems[0]!.text!)
+      const assigned=await request.onTool!('worker_manage',{action:'assign',id:'research',revision,requestId:'check-worker',text:'Check the scheduled request'},'assign')
+      expect(assigned.success).toBe(true)
+      return {reply:''}
+    }
+    return {reply:input.kind==='user_message'?'Chat reply: '+input.trigger.text:'Scheduled delivery verified.'}
+  })
+  h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['research'],backendIds:['codex']}})
+  const owner='local-operator',prior=h.chat.create(owner)
+  const sendMessage=(id:string,text:string)=>h.chat.send(id,owner,{text,clientMessageId:randomUUID()})
+  const {runId}=sendMessage(prior.id,'Schedule a check.')
+  const context=h.scopes.context(h.store.triggers.get(runId)!,'local:chat:'+prior.id)!
+  const scopeId=context.route.scopeId
+  h.proactive.command({action:'schedule.put',scopeId,operationId:'create',expectedRevision:0,
+    schedule:{id:'check',name:'Check',prompt:'Check the scheduled request.',triggerId:runId,mode:'standalone',notification:'always',
+      timing:{kind:'daily',startAt:new Date().toISOString(),time:'09:00',timezone:'UTC'}}},context)
+  const occurrence=h.proactive.command({action:'schedule.run',scopeId,id:'check',operationId:'run',expectedRevision:1},context) as {id:string;triggerId:string}
+  await settle(h,()=>h.chat.view(prior.id,owner).schedules[0]?.lastRun?.state==='completed')
+  expect(h.chat.view(prior.id,owner).tasks).toHaveLength(1)
+
+  h.chat.reset(owner,randomUUID())
+  const retained=h.store.get<{triggerId:string;spec?:unknown}>('router-schedule-run',occurrence.id)
+  expect(retained).toMatchObject({triggerId:occurrence.triggerId})
+  expect(retained?.spec).toBeUndefined()
+
+  const fresh=h.chat.create(owner),sent=sendMessage(fresh.id,'A fresh request')
+  await settle(h,()=>h.store.list<{runId:string;role:string;status?:string}>('chat-message').some(m=>m.runId===sent.runId&&m.role==='assistant'&&m.status==='complete'))
+  const host=await serve(h);servers.push(host.server)
+  const headers={authorization:'Bearer '+readFileSync(join(root,'state/access-token'),'utf8').trim()}
+  const endpoint=host.url+'/api/chat/conversations/'+fresh.id
+  const view=await fetch(endpoint+'?withPending=1',{headers})
+  expect(view.status,await view.clone().text()).toBe(200)
+  expect(await view.json()).toMatchObject({tasks:[],schedules:[],messages:[
+    {role:'user',text:'A fresh request'},{role:'assistant',text:'Chat reply: A fresh request',status:'complete'},
+  ]})
+  expect(()=>h.routerIngress.authority(occurrence.triggerId)).toThrow()
+  const controller=new AbortController()
+  try{
+    const events=await fetch(endpoint+'/events',{headers,signal:controller.signal})
+    expect(events.headers.get('content-type')).toBe('text/event-stream')
+    const reader=events.body!.getReader(),first=await reader.read()
+    expect(new TextDecoder().decode(first.value)).toContain('event: change')
+    await reader.cancel()
+  }finally{controller.abort()}
+})
+
 it('keeps every resolved approval on a transcript page containing more than 100 approvals',()=>{
   const {h}=fixture(),c=h.chat.create('owner'),{runId}=send(h,c.id)
   const {createdAt}=h.chat.view(c.id,'owner').messages[0]!

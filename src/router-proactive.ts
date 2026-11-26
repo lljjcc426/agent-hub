@@ -109,7 +109,7 @@ export class RouterProactive {
   const inScope=(v:{scopeId:string})=>v.scopeId===scopeId
   const visible=(entryId:string)=>context?entryId===context.route.entryId:!this.host.scopes.bindings().find(e=>e.id===entryId)?.privateActor
   const acceptedGoals=context?[]:this.host.goals.snapshot().filter(g=>g.scopeId===scopeId&&g.state==='completed'&&g.finalRoundId&&g.nodes?.every(n=>n.workerId)).map(g=>({id:g.id,title:g.title,skill:g.contract?.skill}))
-  return {skills:this.host.skills.list(scopeId,context),acceptedGoals,settings:this.controls(scopeId),duties:this.duties().filter(d=>inScope(d)&&d.entryIds.every(visible)),schedules:this.host.store.list<Schedule>('router-schedule').filter(p=>inScope(p)&&visible(p.entryId)).map(p=>({...p,lifecycle:schedulePlanState(p,this.now())})),runs:this.host.store.list<ScheduledRun>('router-schedule-run').filter(r=>inScope(r)&&r.spec&&visible(r.spec.entryId)).slice(-100).map(r=>({...r,activeWork:this.unsettled(r),pendingNotifications:this.pendingNotifications(r),lifecycle:scheduledRunLifecycle(r,this.host.store.deliveries().filter(m=>!m.channel.address.routerInbox&&!!r.triggerId&&(this.host.store.get<{inputs?:string[]}>('router-reply-owner',m.id)?.inputs??[]).includes(r.triggerId)))})),decisions:this.host.store.list<MessageBatch>('router-batch').filter(b=>inScope(b)&&visible(b.entryId)).slice(-100)}
+  return {skills:this.host.skills.list(scopeId,context),acceptedGoals,settings:this.controls(scopeId),duties:this.duties().filter(d=>inScope(d)&&d.entryIds.every(visible)),schedules:this.host.store.list<Schedule>('router-schedule').filter(p=>inScope(p)&&visible(p.entryId)).map(p=>({...p,lifecycle:schedulePlanState(p,this.now())})),runs:this.host.store.list<ScheduledRun>('router-schedule-run').filter(r=>inScope(r)&&this.readableRun(r)&&visible(r.spec.entryId)).slice(-100).map(r=>({...r,activeWork:this.unsettled(r),pendingNotifications:this.pendingNotifications(r),lifecycle:scheduledRunLifecycle(r,this.host.store.deliveries().filter(m=>!m.channel.address.routerInbox&&!!r.triggerId&&(this.host.store.get<{inputs?:string[]}>('router-reply-owner',m.id)?.inputs??[]).includes(r.triggerId)))})),decisions:this.host.store.list<MessageBatch>('router-batch').filter(b=>inScope(b)&&visible(b.entryId)).slice(-100)}
  }
  private requireManager(scopeId:string,context?:ScopeContext){
   this.host.scopes.scope(scopeId)
@@ -155,7 +155,7 @@ export class RouterProactive {
    const next={...x.duty,scopeId:x.scopeId,revision:(old?.revision??0)+1};store.put('router-duty',key,next);return next
   }
   if(x.action==='run.cancel'){
-   const run=store.get<ScheduledRun>('router-schedule-run',x.id??'');if(!run||run.scopeId!==x.scopeId)throw Error('Unknown run');this.revision(run.revision,x.expectedRevision)
+   const run=this.getRun(x.id??'');if(!run||run.scopeId!==x.scopeId)throw Error('Unknown run');this.revision(run.revision,x.expectedRevision)
    this.checkControlEntry(run.spec.entryId,context)
    if(terminal.has(run.state)&&!this.unsettled(run)&&!this.pendingNotifications(run))return run
    const taskIds=this.ownedTasks(run)
@@ -212,9 +212,19 @@ export class RouterProactive {
   if(!c||c.route.scopeId!==p.scopeId||c.route.entryId!==p.entryId||this.host.scopes.binding(p.entryId).revision!==p.bindingRevision||!this.host.scopes.canManage(c))throw Error('Schedule ownership or entry authority changed')
   return {trigger,context:c,mandate:this.host.routerIngress.authority(trigger.id)}
  }
+ private readableRun(run:Partial<ScheduledRun>|undefined):run is ScheduledRun{
+  // A history reset can leave the occurrence identity for reconciliation and remove its execution spec.
+  return !!run?.id&&!!run.spec?.triggerId&&Array.isArray(run.taskIds)&&
+   !this.host.memory.cleanup.blocked('router-schedule-run',run.id,run)
+ }
+ private getRun(id:string){
+  const run=this.host.store.get<Partial<ScheduledRun>>('router-schedule-run',id)
+  return this.readableRun(run)?run:undefined
+ }
  runForTrigger(id:string){
   const row=this.scheduledRun.get(id)
-  return row?JSON.parse(String(row.body)) as ScheduledRun:undefined
+  const run=row?JSON.parse(String(row.body)) as Partial<ScheduledRun>:undefined
+  return this.readableRun(run)?run:undefined
  }
  skillStart(input:unknown,context:ScopeContext){
   const run=this.runForTrigger(context.trigger.id)
@@ -224,7 +234,8 @@ export class RouterProactive {
   return stableDigest(input)===stableDigest(expected)
  }
  runSkill(id:string){
-  const run=this.host.store.get<ScheduledRun>('router-schedule-run',id)!
+  const run=this.getRun(id)
+  if(!run?.triggerId)throw Error('Missing scheduled source')
   if(run.state==='cancelled'||run.goalId)return
   this.host.store.atomic(()=>{
    this.beforeTurn(run.triggerId!)
@@ -235,7 +246,11 @@ export class RouterProactive {
   })
  }
  private authority(id:string):Mandate|undefined{
-  const run=this.runForTrigger(id);if(!run)return
+  const run=this.runForTrigger(id)
+  if(!run){
+   if(id.startsWith('scheduled:'))throw Error('Scheduled run is no longer authorized')
+   return
+  }
   if(['cancelled','skipped','failed'].includes(run.state))throw Error('Scheduled run is no longer authorized')
   if(run.state==='queued'){
    const current=this.host.store.get<Schedule>('router-schedule',stableDigest([run.scopeId,run.scheduleId]))
@@ -352,7 +367,7 @@ export class RouterProactive {
   return ids.some(id=>{const t=this.host.store.tickets.get(id);return !!t&&!t.ended||this.host.toolConnections.receipts(id).some(r=>r.state!=='complete')})||this.host.work.list().some(w=>ids.includes(w.ticketId)&&['starting','running','uncertain'].includes(w.state))
  }
  async followSchedule(runId:string){
-  const r=this.host.store.get<ScheduledRun>('router-schedule-run',runId);if(!r?.triggerId)throw Error('Missing scheduled source')
+  const r=this.getRun(runId);if(!r?.triggerId)throw Error('Missing scheduled source')
   this.beforeTurn(r.triggerId)
   const t=this.host.store.triggers.get(r.triggerId)!,a=this.host.routerIngress.get(t.id)!,context=this.host.scopes.contextForTask(t,a.discussion,r.spec.ticketId!)!
   const task=this.host.store.tickets.get(r.spec.ticketId!)
@@ -365,7 +380,7 @@ export class RouterProactive {
   if(store.revisions.version('schedule')===this.settledVersion)return
   const version=store.atomic(()=>{
    for(const r of store.list<ScheduledRun>('router-schedule-run')){
-    if(!r.triggerId||!r.spec||!Array.isArray(r.taskIds)||['cancelled','skipped'].includes(r.state))continue
+    if(!r.triggerId||!this.readableRun(r)||['cancelled','skipped'].includes(r.state))continue
     const taskIds=this.ownedTasks(r),ids=JSON.stringify(taskIds)
     const jobs=this.settlementJobs.all(r.triggerId),messages=this.settlementReplies.all(r.triggerId)
     const delivery=messages.some(m=>['failed','uncertain','held','dropped'].includes(String(m.status)))?'failed':messages.some(m=>m.status!=='sent')?'pending':messages.length?'sent':'none'

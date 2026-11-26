@@ -102,7 +102,7 @@ import {reconcileBackendReceipts} from './backend-receipt-recovery.ts'
 import {WorkflowActions} from './workflow-actions.ts'
 import {SavedSkills,skillSpecs} from './saved-skills.ts'
 import {turnContext,withTurnContext} from './turn-context.ts'
-import {RouterProactive,proactiveSpecs,type Intervention,type ScheduledRun} from './router-proactive.ts'
+import {RouterProactive,proactiveSpecs,type Intervention} from './router-proactive.ts'
 import {Knowledge,knowledgeSpecs} from './knowledge.ts'
 import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
@@ -636,8 +636,7 @@ export class Runtime {
   }
   modelInput(input:string,role:NonNullable<ModelRequest['role']>,triggerId?:string,sourceId?:string) {
     const trigger=triggerId?this.store.triggers.get(triggerId):undefined
-    const run=trigger?.id.startsWith('scheduled:')?this.store.get<ScheduledRun>('router-schedule-run',trigger.id.slice('scheduled:'.length)):undefined
-    const schedule=run&&run.triggerId===trigger?.id?run:undefined
+    const schedule=trigger?.id.startsWith('scheduled:')?this.proactive.runForTrigger(trigger.id):undefined
     const anchor=schedule?.spec.triggerId??triggerId
     const client=anchor?this.chat.clientContext(anchor):undefined
     const source=trigger?.source??sourceId

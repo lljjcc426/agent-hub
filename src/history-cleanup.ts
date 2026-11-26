@@ -3,6 +3,7 @@ import {join,resolve,relative,sep,dirname} from 'node:path'
 import {setImmediate as yieldToIO} from 'node:timers/promises'
 import type {PersonalReset} from './personal-memory-reset.ts'
 import type {Store} from './store.ts'
+import {isHistoryId,needsHistoryScopeReview} from './history-fence.ts'
 import {stableDigest} from './sources.ts'
 import type {Model} from './model.ts'
 
@@ -11,7 +12,7 @@ export interface HistoryPlan {
  id:string;scopeId:string;at:number;roots:string[];records:[string,string][];
  tickets:string[];triggers:string[];sessions:{threadId:string;cwd:string}[];files:string[];unresolvedSessions?:string[]
 }
-export interface CleanupReceipt {id:string;scopeId:string;status:'processing'|'completed';phase:'quiescing'|'native_history'|'files'|'database'|'verified';attempts:number;nativeDone:string[];local?:'verified';external:'not_managed';backups:'restore_fenced';error?:string;nextAt?:number;at:number}
+export interface CleanupReceipt {id:string;scopeId:string;status:'processing'|'completed';phase:'quiescing'|'native_history'|'files'|'database'|'verified'|'scope_review';attempts:number;nativeDone:string[];local?:'verified';external:'not_managed';backups:'restore_fenced';error?:string;nextAt?:number;at:number}
 export function protocolTombstone(id:string,value:any){return {id,deleted:true,effectReceipts:value?.effectReceipts??Object.entries(value?.effects??{}).map(([callId,e]:[string,any])=>({callId,digest:e.digest,state:e.state}))}}
 // Configuration, authority identities and memory projections have their own revision
 // semantics. They must never be swept through a free-text or shared-scope join.
@@ -32,6 +33,7 @@ export function redactBody(value:any,key=''):any {
 }
 function references(value:any,ids:ReadonlySet<string>):boolean {
  if(typeof value==='string'){
+  if(!value)return false
   if(ids.has(value))return true
   // Resource names and encoded principals are references, not substring keywords.
   if(value.startsWith('{')||value.startsWith('[')){try{return references(JSON.parse(value),ids)}catch{}}
@@ -47,6 +49,14 @@ function references(value:any,ids:ReadonlySet<string>):boolean {
  return value&&typeof value==='object'?Object.values(value).some(v=>references(v,ids)):false
 }
 const rows=(s:Store)=>s.db.prepare('SELECT kind,id,body FROM records').all().map(r=>({kind:String(r.kind),id:String(r.id),body:JSON.parse(String(r.body))}))
+function planMatcher(plan:HistoryPlan){
+ const exact=new Map<string,Set<string>>(),roots=new Set(plan.roots)
+ for(const [kind,id] of plan.records??[]){
+  const group=exact.get(kind)
+  if(group)group.add(id);else exact.set(kind,new Set([id]))
+ }
+ return (kind:string,id:string,body:unknown)=>exact.get(kind)?.has(id)===true||(!excluded.test(kind)&&roots.size>0&&references(body,roots))
+}
 
 /** Content-free dependency snapshot is written to the revocation ledger before wiping. */
 export function planHistory(store:Store,stateDir:string,scopeId:string,id:string,at:number,sourceEvidence?:string):HistoryPlan {
@@ -66,11 +76,11 @@ export function planHistory(store:Store,stateDir:string,scopeId:string,id:string
 }
 /** A Chat reset starts only from this account's native conversations. */
 export function planChatHistory(store:Store,stateDir:string,scopeId:string,id:string,at:number,conversationIds:string[]):HistoryPlan {
- const conversations=new Set(conversationIds),triggers=rows(store).filter(r=>r.kind==='chat-run'&&conversations.has(r.body.conversationId)).map(r=>r.body.triggerId as string)
+ const conversations=new Set(conversationIds),triggers=rows(store).filter(r=>r.kind==='chat-run'&&conversations.has(r.body.conversationId)).map(r=>r.body.triggerId).filter(isHistoryId)
  return expandPlan(store,stateDir,{id,scopeId,at,roots:[...conversationIds,...triggers],tickets:[],triggers,records:[],sessions:[],files:[]})
 }
 function expandPlan(store:Store,stateDir:string,plan:HistoryPlan):HistoryPlan {
- const all=rows(store),ids=new Set(plan.roots),selected=new Map(plan.records.map(([k,id])=>[k+'\0'+id,[k,id] as [string,string]]))
+ const all=rows(store),ids=new Set(plan.roots.filter(isHistoryId)),selected=new Map(plan.records.map(([k,id])=>[k+'\0'+id,[k,id] as [string,string]]))
  const nonDocumentIds=new Set(all.filter(r=>r.kind!=='knowledge-document').map(r=>r.id))
  for(const [,id] of selected.values())ids.add(id)
  let changed=true
@@ -79,11 +89,11 @@ function expandPlan(store:Store,stateDir:string,plan:HistoryPlan):HistoryPlan {
   // Refuse ambiguous deletion before writing the revocation ledger or clearing data.
   for(const d of all)if(d.kind==='knowledge-document'&&nonDocumentIds.has(d.id)&&(ids.has(d.id)||references(d.body,ids)))throw Error('History cleanup has an ambiguous document ID; reconcile the conflicting records before deleting')
   changed=false;for(const r of all){
-  if(excluded.test(r.kind)||selected.has(r.kind+'\0'+r.id))continue
+  if(!isHistoryId(r.id)||excluded.test(r.kind)||selected.has(r.kind+'\0'+r.id))continue
   if(ids.has(r.id)||references(r.body,ids)){
    selected.set(r.kind+'\0'+r.id,[r.kind,r.id]);ids.add(r.id);changed=true
-   if(r.kind==='ticket'){for(const a of r.body.assignments??[])ids.add(a.id)}
-   if(['run','work','model-session','router-session','router-result','worker-migration','router-migration','context-handoff'].includes(r.kind))for(const threadId of [r.body.threadId,r.body.from?.threadId,r.body.previousThread])if(typeof threadId==='string')ids.add(threadId)
+   if(r.kind==='ticket'){for(const a of r.body.assignments??[])if(isHistoryId(a.id))ids.add(a.id)}
+   if(['run','work','model-session','router-session','router-result','worker-migration','router-migration','context-handoff'].includes(r.kind))for(const threadId of [r.body.threadId,r.body.from?.threadId,r.body.previousThread])if(isHistoryId(threadId))ids.add(threadId)
   }
  }
  for(const j of store.db.prepare('SELECT id,payload FROM jobs').all())if(!ids.has(String(j.id))&&references(JSON.parse(String(j.payload)),ids)){ids.add(String(j.id));changed=true}
@@ -95,7 +105,7 @@ function expandPlan(store:Store,stateDir:string,plan:HistoryPlan):HistoryPlan {
   if(['run','work','model-session','router-session','router-result','worker-migration','router-migration','context-handoff','backend-thread','backend-plugin-thread'].includes(r.kind)&&!r.body.ephemeral){
    const sourceId=r.body.source??all.find(x=>x.kind==='trigger'&&plan.triggers.includes(x.id)&&r.body.discussion===x.body.source+':'+x.body.threads?.[0]?.id)?.body.source
    const cwd=r.body.cwd??r.body.from?.cwd??all.find(x=>x.kind==='run'&&x.id===r.body.ticketId)?.body.cwd??all.find(x=>x.kind==='settings'&&x.id==='current')?.body.config?.sources?.find((s:any)=>s.id===sourceId)?.cwd
-   for(const threadId of [r.body.threadId,r.body.from?.threadId,r.body.previousThread,...(['backend-thread','backend-plugin-thread'].includes(r.kind)?[r.id]:[])])if(typeof threadId==='string'){if(cwd)sessions.set(threadId,{threadId,cwd});else unresolved.add(threadId)}
+   for(const threadId of [r.body.threadId,r.body.from?.threadId,r.body.previousThread,...(['backend-thread','backend-plugin-thread'].includes(r.kind)?[r.id]:[])])if(isHistoryId(threadId)){if(cwd)sessions.set(threadId,{threadId,cwd});else unresolved.add(threadId)}
   }
   if(r.kind==='router-goal'&&r.body.project?.base){
    files.add(join(stateDir,'code-projects',stableDigest(r.id)))
@@ -112,7 +122,16 @@ export class HistoryCleanup {
  onExpand?:(plan:HistoryPlan)=>void
  constructor(readonly store:Store,readonly stateDir:string){
   store.bodyFilter=(kind,id,value)=>this.filter(kind,id,value)
-  for(const plan of this.plans())if(rows(store).some(r=>this.blocked(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body))))this.apply(plan)
+  for(const plan of this.plans()){
+   if(needsHistoryScopeReview(plan)){this.holdScope(plan);continue}
+   const matches=planMatcher(plan)
+   if(rows(store).some(r=>matches(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body))))this.apply(plan)
+  }
+ }
+ private holdScope(plan:HistoryPlan){
+  const r=this.store.get<CleanupReceipt>('history-cleanup',plan.id)
+  if(!r)throw Error('History deletion has no receipt; offline scope reconciliation required')
+  if(r.status!=='completed'&&r.phase!=='scope_review')this.store.put('history-cleanup',plan.id,{...r,phase:'scope_review',error:'Deletion scope contains an empty identity; reconcile ownership before physical cleanup',nextAt:undefined,at:Date.now()})
  }
  plans(){return this.store.list<HistoryPlan>('history-plan')}
  receipts(){return this.store.list<CleanupReceipt>('history-cleanup')}
@@ -139,6 +158,7 @@ export class HistoryCleanup {
   return kind==='backend-thread'?protocolTombstone(id,value):redactBody(value)
  }
  apply(plan:HistoryPlan){
+  if(needsHistoryScopeReview(plan))throw Error('History deletion has an invalid identity; offline scope reconciliation required')
   // Replayed after restore even if the old snapshot claimed cleanup was complete.
   this.store.put('history-plan',plan.id,plan)
   for(const session of plan.sessions)this.store.put('backend-delete-pending',session.threadId,{threadId:session.threadId,cleanupId:plan.id})
@@ -147,9 +167,9 @@ export class HistoryCleanup {
   this.sweep(plan)
  }
  private sweep(plan:HistoryPlan,onlyChanged=false){
-  const ids=new Set(plan.roots)
+  const ids=new Set(plan.roots),matches=planMatcher(plan)
   this.store.atomic(()=>{
-   for(const r of rows(this.store))if(this.blocked(r.kind,r.id,r.body)){
+   for(const r of rows(this.store))if(matches(r.kind,r.id,r.body)){
     if(r.kind==='knowledge-chunk')this.store.db.prepare('DELETE FROM memory_search WHERE id=?').run(r.id)
     if(onlyChanged&&JSON.stringify(r.body)===JSON.stringify(this.filter(r.kind,r.id,r.body)))continue
     this.store.put(r.kind,r.id,r.body)
@@ -164,8 +184,9 @@ export class HistoryCleanup {
   if(this.busy)return;this.busy=true
   try{for(const id of this.store.historyFence.current().planIds){
    let receipt=this.store.get<CleanupReceipt>('history-cleanup',id)!
-   if(receipt.status==='completed'||(receipt.nextAt??0)>Date.now())continue
+   if(receipt.status==='completed'||receipt.phase==='scope_review'||(receipt.nextAt??0)>Date.now())continue
    const old=this.store.get<HistoryPlan>('history-plan',id)!
+   if(needsHistoryScopeReview(old)){this.holdScope(old);continue}
    const plan=expandPlan(this.store,this.stateDir,old)
    this.store.atomic(()=>{
     if(JSON.stringify(plan)!==JSON.stringify(old)){
@@ -203,7 +224,8 @@ export class HistoryCleanup {
     save({phase:'database'})
     await yieldToIO()
     this.sweep(plan,true)
-    for(const r of rows(this.store))if(this.blocked(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body)))throw Error('Body deletion readback failed')
+    const matches=planMatcher(plan)
+    for(const r of rows(this.store))if(matches(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body)))throw Error('Body deletion readback failed')
     this.store.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')")
     if(Number(this.store.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()?.busy)!==0)throw Error('Database readers must release before physical cleanup')
     this.store.db.exec('VACUUM')

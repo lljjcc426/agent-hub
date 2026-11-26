@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {Store} from '../src/store.ts'
-import {HistoryCleanup,type HistoryPlan} from '../src/history-cleanup.ts'
+import {HistoryCleanup,planChatHistory,type HistoryPlan} from '../src/history-cleanup.ts'
 
 it('preserves record, nested resource and scope boundaries across rollback, replacement and another connection',()=>{
  const dir=mkdtempSync(join(tmpdir(),'roppo-fence-')),file=join(dir,'state.sqlite')
@@ -51,5 +51,28 @@ it('reclaims restored bodies on the final pass and leaves already redacted recor
   expect(store.get('sample','restored')).toEqual({id:'restored',text:''})
   expect(store.get('sample','outside')).toEqual({id:'outside',text:'original'})
   expect(cleanup.receipts()[0]).toMatchObject({status:'completed',phase:'verified',local:'verified'})
+ }finally{store.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+it('keeps empty native identifiers out of scope and stops legacy plans before further erasure',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'roppo-empty-history-')),store=new Store(join(dir,'state.sqlite'))
+ try{
+  store.put('chat-run','own-request',{conversationId:'own-chat',triggerId:'own-request'})
+  store.put('work','own-job',{triggerId:'own-request',threadId:'',cwd:dir})
+  store.put('work','foreign-job',{description:'',threadId:'',cwd:dir,text:'keep'})
+  const plan=planChatHistory(store,dir,'account','reset',1,['own-chat'])
+  expect(plan.roots).not.toContain('')
+  expect(plan.sessions).toEqual([])
+  expect(plan.records).toContainEqual(['work','own-job'])
+  expect(plan.records).not.toContainEqual(['work','foreign-job'])
+  const corrupt={...plan,roots:[...plan.roots,''],sessions:[{threadId:'',cwd:dir}]}
+  store.put('history-plan',plan.id,corrupt)
+  store.put('history-cleanup',plan.id,{id:plan.id,status:'processing',phase:'native_history',nativeDone:['saved']})
+  const cleanup=new HistoryCleanup(store,dir)
+  await cleanup.process({run:async()=>{throw Error('unreachable')}},async()=>{throw Error('must not quiesce')})
+  expect(cleanup.receipts()[0]).toMatchObject({phase:'scope_review',nativeDone:['saved']})
+  expect(cleanup.blocked('work','foreign-job',{threadId:'',ref:'ticket//x'})).toBe(false)
+  expect(store.get('work','foreign-job')).toMatchObject({text:'keep'})
+  expect(()=>cleanup.apply(corrupt)).toThrow('invalid identity')
  }finally{store.close();rmSync(dir,{recursive:true,force:true})}
 })

@@ -1,6 +1,12 @@
 import type {DatabaseSync} from 'node:sqlite'
 import type {HistoryPlan} from './history-cleanup.ts'
 
+export function isHistoryId(value:unknown):value is string{return typeof value==='string'&&value.trim().length>0}
+export function needsHistoryScopeReview(plan:HistoryPlan){
+ return (plan.roots??[]).some(id=>!isHistoryId(id))||(plan.records??[]).some(([kind,id])=>!isHistoryId(kind)||!isHistoryId(id))||
+  (plan.sessions??[]).some(s=>!isHistoryId(s.threadId))||(plan.unresolvedSessions??[]).some(id=>!isHistoryId(id))
+}
+
 interface HistoryIndex {
  readonly version:string
  readonly planIds:readonly string[]
@@ -45,9 +51,9 @@ export class HistoryFence {
     if(!ids){ids=new Set();records.set(kind,ids)}
     ids.add(id)
    }
-   for(const id of plan.roots??[])roots.add(id)
-   for(const id of plan.tickets??[])tickets.add(id)
-   for(const id of plan.triggers??[])triggers.add(id)
+   for(const id of plan.roots??[])if(isHistoryId(id))roots.add(id)
+   for(const id of plan.tickets??[])if(isHistoryId(id))tickets.add(id)
+   for(const id of plan.triggers??[])if(isHistoryId(id))triggers.add(id)
   }
   this.cached={version,planIds,records,roots,tickets,triggers}
   return this.cached

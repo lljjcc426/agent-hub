@@ -15,6 +15,7 @@ export const commands = (advanced = false) =>
     { name: '/theme', usage: '', description: ui('Choose a terminal theme', '选择终端主题') },
     { name: '/status', usage: '', description: ui('Connection, session and settings', '连接、会话和设置状态') },
     { name: '/context', usage: '', description: ui('Measured context usage', '实测上下文用量') },
+    { name: '/compact', usage: '[now | auto on/off | threshold PERCENT]', description: ui('Compact context or configure automatic compaction', '压缩上下文或配置自动压缩') },
     { name: '/clear', usage: '', description: ui('Confirm clearing conversation and working context', '确认后清理对话和工作上下文') },
     { name: '/rename', usage: '', description: ui('Choose and rename a Worker', '选择并重命名 Worker') },
     { name: '/files', usage: '', description: ui('Files shared in this conversation', '查看对话中的文件') },

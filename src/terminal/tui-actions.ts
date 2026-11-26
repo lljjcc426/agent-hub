@@ -1,3 +1,4 @@
+import {configureConnection,SetupCancelled} from './setup.ts'
 import { randomUUID } from 'node:crypto'
 import { readdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -15,9 +16,15 @@ import type { ModelCapabilities } from '../reasoning-effort.ts'
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
 export const personalCommands = () => [
+  { name: '/connect', label: ui('Model connections', '模型连接'), detail: ui('API keys, account sign-in and connection checks', 'API 密钥、账号登录与连接检测') },
+  { name: '/workers', label: ui('Workers', 'Worker 管理'), detail: ui('Create, copy, pause, resume or remove', '新增、复制、启停和删除') },
+  { name: '/plugins', label: ui('Plugins', '插件'), detail: ui('Installed plugins', '已安装插件列表') },
+  { name: '/skills', label: ui('Skills', '技能'), detail: ui('Available skills', '已有技能列表') },
+  { name: '/mcp', label: 'MCP', detail: ui('Configured MCP servers', '已配置 MCP 服务列表') },
   { name: '/model', label: ui('Models', '模型'), detail: ui('Choose Router or Worker model · F2', '选择 Router 或 Worker 模型 · F2') },
   { name: '/effort', label: ui('Reasoning effort', '思考强度'), detail: ui('Model reasoning level', '模型思考级别') },
   { name: '/plan', label: ui('Plan mode', '计划模式'), detail: ui('Clarify requirements, then make a detailed plan', '先反问澄清需求，再给详细计划') },
+  { name: '/compact', label: ui('Compact context', '压缩上下文'), detail: ui('Summarize now or configure automatic compaction', '主动压缩或设置自动压缩') },
   { name: '/clear', label: ui('Clear conversation', '清理会话'), detail: ui('Confirm first; keep memory and schedules', '确认后清理，保留记忆和计划事项') },
   { name: '/rename', label: ui('Rename a Worker', '重命名 Worker'), detail: ui('Choose a Worker and edit its name', '选择 Worker 并修改名称') },
   { name: '/diff', label: ui('Worker changes', 'Worker 改动'), detail: ui('Choose a Worker and inspect its task changes', '选择 Worker 查看任务改动') },
@@ -77,6 +84,10 @@ export class TuiCommands {
     }
     if (name === '/settings' || input === '/config') { this.settings(); return }
     if (name === '/model' || name === '/effort') { await this.agentSetting(name === '/model' ? 'model' : 'effort'); return }
+    if (input === '/compact') { await this.compact(); return }
+    if (name === '/connect') { await this.connect(); return }
+    if (name === '/workers') { await this.workers(); return }
+    if (['/plugins', '/skills', '/mcp'].includes(name!)) { await this.capabilities(name as '/plugins' | '/skills' | '/mcp'); return }
     if (name === '/rename') { await this.renameWorker(); return }
     if (name === '/diff') { this.workerDiff(); return }
     if (name === '/clear') { this.clearConversation(); return }
@@ -127,6 +138,59 @@ export class TuiCommands {
     const result = await command(this.client, this.conversation.id, input)
     if (result) this.screen.document(name ?? 'Roppo', result)
     await this.refresh()
+  }
+  private async compact() {
+    const state = await this.client.request<{settings:{automatic:boolean;threshold:number};last:{at:number;beforeBytes:number;afterBytes:number}|null;running:boolean}>(this.path('compact'))
+    const settings = async (value: typeof state.settings) => { await this.client.request(this.path('compact'), {action:'settings',settings:value}); await this.compact() }
+    this.screen.menu({title:ui('Context compaction', '上下文压缩'), detail:ui('Keeps the transcript, memory and tasks. Summarizes older context; recent turns remain intact.', '保留聊天记录、记忆和任务，概括较早上下文，保留最近几轮原文。'), items:[
+      {label:ui('Compact now', '立即压缩'), detail:state.running?ui('In progress', '正在进行'):state.last?ui('Last compacted: ', '上次压缩：')+new Date(state.last.at).toLocaleString():'',run:async()=>{
+        this.screen.setLoading(true);this.screen.notice(ui('Summarizing context…', '正在整理上下文…'))
+        try{const result=await this.client.request<{status:string;last:{beforeBytes:number;afterBytes:number}|null}>(this.path('compact'),{action:'compact'},{timeoutMs:310_000});await this.refresh();this.screen.notice(result.status==='unchanged'?ui('Not enough older context to compact yet.', '较早上下文还很少，暂时无需压缩。'):ui('Context compacted. Original messages are still available.', '上下文已压缩，原始消息仍可查看。'))}finally{this.screen.setLoading(false)}
+      }},
+      {label:ui('Automatic compaction', '自动压缩')+' · '+(state.settings.automatic?'on':'off'),run:()=>settings({...state.settings,automatic:!state.settings.automatic})},
+      {label:ui('Trigger threshold', '触发阈值')+' · '+Math.round(state.settings.threshold*100)+'%',run:()=>this.screen.menu({title:ui('Compact before the next turn when usage reaches…', '用量达到此比例时，在下一轮前压缩……'),items:[0.6,0.7,0.8,0.9].map(threshold=>({label:Math.round(threshold*100)+'%'+(threshold===0.8?' · default':''),run:()=>settings({...state.settings,threshold})}))})}
+    ]})
+  }
+  private async connect() {
+    let detail = ''
+    try {
+      await configureConnection(this.client, {
+        note: text => { detail = text; this.screen.notice(text) },
+        choose: (title, choices) => new Promise((resolve, reject) => {
+          this.screen.menu({ title, detail, cancel: () => reject(new SetupCancelled()), items: choices.map((label, i) => ({ label, run: () => resolve(i) })) }); detail = ''
+        }),
+        text: (title, options = {}) => new Promise((resolve, reject) => this.screen.prompt(title, options.initial ?? '', async value => { resolve(value) }, false, options.secret, { allowEmpty: true, cancel: () => reject(new SetupCancelled()) }))
+      })
+      await this.refresh()
+    } catch (error) { if (!(error instanceof SetupCancelled)) throw error; this.screen.notice(error.message) }
+  }
+  private async workers() {
+    const data = await this.client.request<Pick<ReturnType<import('../worker-manager.ts').WorkerManager['list']>, 'revision' | 'workers' | 'canCreate' | 'connections'>>('/api/terminal/workers')
+    const change = async (body: object) => { await this.client.request('/api/terminal/workers', { ...body, revision: data.revision, requestId: randomUUID() }); await this.refresh(); await this.workers() }
+    this.screen.menu({ title: ui('Workers', 'Worker 管理'), detail: ui('Shared with the web. Router can also manage Workers when authorized.', '与网页共享，Router 也可在授权范围内管理 Worker。'), items: [
+      ...(data.canCreate ? [{ label: ui('Add a Worker', '新增 Worker'), run: () => this.screen.prompt(ui('Worker name', 'Worker 名称'), '', async label => {
+        this.screen.menu({ title: ui('Model connection', '模型连接'), items: data.connections.map(connection => ({ label: connection.label ?? connection.id, run: () => change({ action: 'create', profile: { id: 'worker-' + randomUUID().slice(0, 8), label, backend: connection.id } }) })) })
+      }) }] : []),
+      ...data.workers.map(worker => ({ label: worker.label ?? worker.id, detail: worker.status + ' · ' + (worker.model ?? worker.backend), run: () => this.screen.menu({ title: worker.label ?? worker.id, items: [
+        { label: ui('Rename', '重命名'), run: () => this.screen.prompt(ui('Worker name', 'Worker 名称'), worker.label ?? worker.id, async label => { await this.client.request('/api/terminal/settings', { action: 'rename', worker: worker.id, label, revision: data.revision }); await this.refresh(); await this.workers() }) },
+        ...(data.canCreate ? [{ label: ui('Duplicate', '复制'), run: () => this.screen.prompt(ui('Copy name', '副本名称'), (worker.label ?? worker.id) + ' copy', label => change({ action: 'clone', from: worker.id, id: 'worker-' + randomUUID().slice(0, 8), patch: { label } })) }] : []),
+        { label: worker.state === 'paused' ? ui('Enable', '启用') : ui('Pause new assignments', '暂停接收新任务'), run: () => change({ action: worker.state === 'paused' ? 'resume' : 'pause', id: worker.id }) },
+        { label: ui('Remove Worker…', '删除 Worker…'), run: () => this.screen.menu({ title: ui('Remove this Worker?', '删除此 Worker？'), detail: ui('History is retained. Finish or cancel its active tasks first.', '保留历史记录，需先完成或取消其活动任务。'), items: [
+          { label: ui('Cancel', '取消'), run: () => {} }, { label: ui('Remove', '删除'), run: () => change({ action: 'destroy', id: worker.id, cancelRunning: false }) }
+        ] }) }
+      ] }) }))
+    ] })
+  }
+  private async capabilities(name: '/plugins' | '/skills' | '/mcp') {
+    const kind = name === '/plugins' ? 'plugin' : name === '/skills' ? 'skill' : 'mcp'
+    const library = await this.client.request<import('../capability-types.ts').CapabilitySnapshot>('/api/capability-library')
+    const items = library.items.filter(item => item.kind === kind && item.status !== 'candidate')
+    this.screen.menu({ title: name, detail: ui('Installed/configured items. Ask Router to install, update or remove capabilities.', '已有条目；安装、更新或删除可在对话中交给 Router 处理。'), items: [
+      { label: ui('Ask Router to manage…', '让 Router 管理…'), run: () => this.screen.setDraft(ui('Help me manage ', '帮我管理 ') + name.slice(1) + ': ') },
+      ...items.map(item => ({ label: item.name, detail: [item.status, item.version, item.sourceGroup ?? item.source].filter(Boolean).join(' · '), run: () => this.screen.document(item.name, [item.description, ...(item.facts ?? []), ...(item.tools ?? []).map(tool => tool.name + (tool.description ? ' · ' + tool.description : ''))].filter(Boolean).join('\n'), [
+        { label: ui('Ask Router about this item', '让 Router 处理此项'), run: () => this.screen.setDraft(ui('Help me manage ', '帮我管理 ') + kind + ' “' + item.name + '” (' + item.source + '): ') }
+      ]) }))
+    ] })
   }
   private async agentSetting(action: 'model' | 'effort') {
     const settings = await this.client.request<HostSettings>('/api/terminal/settings')
@@ -212,10 +276,13 @@ export class TuiCommands {
       { label: ui('Interface language', '界面语言'), detail: this.options.preferences.language ?? 'en', run: () => this.screen.menu({ title: ui('Interface language', '界面语言'), items: [
         { label: 'English', run: () => save('language', 'en') }, { label: '中文', run: () => save('language', 'zh') }
       ] }) },
+      { label: ui('Model connections', '模型连接'), run: () => this.execute('/connect') },
+      { label: ui('Workers', 'Worker 管理'), run: () => this.execute('/workers') },
       { label: ui('Models', '模型'), detail: 'Router / Worker', run: () => this.execute('/model') },
       { label: ui('Reasoning effort', '思考强度'), detail: 'Router / Worker', run: () => this.execute('/effort') },
       { label: ui('Rename a Worker', '重命名 Worker'), run: () => this.execute('/rename') },
       { label: ui('Permissions', '权限'), run: () => this.execute('/permissions') },
+      { label: ui('Context compaction', '上下文压缩'), run: () => this.execute('/compact') },
       { label: ui('Connection details', '连接详情'), run: () => this.execute('/status') }
     ] })
   }

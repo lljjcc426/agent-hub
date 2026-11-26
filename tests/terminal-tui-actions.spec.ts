@@ -16,6 +16,7 @@ function fixture() {
     requests.push({ path, body })
     if (path === '/api/terminal/settings') return settings
     if (path.startsWith('/api/terminal/models')) return { models: ['router-model', 'worker-model'], reasoning: { efforts: ['low', 'high'] } }
+    if (path.endsWith('/compact')) return {settings:{automatic:true,threshold:0.8},last:null,running:false,status:'unchanged'}
     if (path === '/api/terminal/tasks') return { diff: '+new text' }
     return {}
   } } as unknown as TerminalClient
@@ -64,4 +65,14 @@ it('keeps single-conversation search, removes session navigation and changes mod
   await f.commands.execute('/resume'); expect(f.requests).toEqual([])
   await f.commands.execute('/plan'); await f.choose('Plan · clarify and design')
   expect(f.requests).toEqual([{ path: '/api/terminal/mode', body: { conversation: 'chat', mode: 'plan' } }])
+})
+
+it('offers explicit context compaction and shared automatic threshold settings',async()=>{
+ const f=fixture()
+ await f.commands.execute('/compact');await f.choose('Automatic compaction · on')
+ expect(f.requests.find(r=>r.body?.action==='settings')?.body).toEqual({action:'settings',settings:{automatic:false,threshold:0.8}})
+ await f.choose('Trigger threshold · 80%');await f.choose('70%')
+ expect(f.requests.filter(r=>r.body?.action==='settings').at(-1)?.body.settings.threshold).toBe(0.7)
+ await f.commands.execute('/compact');await f.choose('Compact now')
+ expect(f.requests.at(-1)).toMatchObject({path:'/api/chat/conversations/chat/compact',body:{action:'compact'}})
 })

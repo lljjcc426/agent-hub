@@ -12,9 +12,9 @@ npm link
 roppo --version
 ```
 
-For a new installation, run `roppo init`, finish personal account and model setup in the browser, and leave the host running. For an existing instance, run `roppo login`. To select a specific local instance, run `roppo login --host http://127.0.0.1:4337`. Match the code printed in the terminal with the browser and click **Connect terminal**. The CLI remembers the selected host. `roppo logout` revokes this terminal credential.
+For a new installation, run `roppo`. The terminal starts the local service when needed, asks you to create a local account, and walks through a model connection, connection check and save. Passwords and API keys are hidden. Save the displayed account recovery code privately. `roppo init` reruns this setup without entering the conversation. API setup supports OpenAI, Anthropic and compatible Chat Completions/Responses/Messages endpoints. ChatGPT OAuth uses the existing provider sign-in link in your browser; account selection, background-use consent and model selection stay in the terminal. Existing local Codex connections can be reused. A fresh setup creates one initial Worker and enables personal memory. Existing Workers retain their settings. For an existing instance, run `roppo login`. To select a specific local instance, run `roppo login --host http://127.0.0.1:4337`. Match the code printed in the terminal with the browser and click **Connect terminal**. The CLI remembers the selected host. `roppo logout` revokes this terminal credential.
 
-The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It uses the URL in that file. `--host` and `ROPPO_HOST` take precedence. Credentials are stored per host in private files under `~/.roppo/terminal`. Set `ROPPO_CLI_HOME` to use a separate profile.
+The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It uses the URL in that file. `--host` and `ROPPO_HOST` take precedence. Credentials are stored per host in private files under `~/.roppo/terminal`. Set `ROPPO_CLI_HOME` to use a separate terminal profile and `ROPPO_HOME` to select the personal service directory (default `~/.agent-hub`). The automatically started service writes logs under that directory’s `logs/terminal-service.log` and continues after the terminal exits; OS login startup remains a separate host setting.
 
 Choose `roppo lang zh` for Chinese or `roppo lang en` for English. This preference applies to future launches. Use `--lang zh` or `--lang en` for a single invocation. The setting controls the terminal interface. Replies follow the host’s existing language policy.
 
@@ -46,6 +46,10 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | --- | --- |
 | `/settings`, `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
 | `/theme` | System, dark, light or monochrome screen colors |
+| `/connect` | Add an API/OAuth connection, test it, then use it for Router or save it to the connection library |
+| `/workers` | Add, duplicate, pause, enable or remove Workers; removal is confirmed and active tasks must finish first |
+| `/plugins`, `/skills`, `/mcp` | Separate existing capability lists, details and a draft request for Router to manage an item |
+| `/compact` | Compact older context now, toggle automatic compaction, or change its threshold |
 | `/model` | Choose Router or Worker, then a specific Worker if needed, a connection and model |
 | `/effort` | Choose Router or Worker, then a supported reasoning level or `default` |
 | `/plan` | Choose Plan (clarify requirements, then produce a detailed plan) or Act (normal conversation) |
@@ -107,6 +111,16 @@ A `/config` edit takes effect immediately in the current session, and saves to `
 | Mouse wheel | Scroll messages or document previews |
 
 The interface restores terminal modes on exit. Keep mouse reporting enabled in your terminal for in-app scrolling and selection. Apple Terminal may send Enter and Shift+Enter identically; Alt+Enter or Ctrl+J works there without changing terminal settings.
+
+## Context compaction
+
+`/compact` opens **Compact now**, **Automatic compaction**, and **Trigger threshold**. Automatic compaction defaults to on at 80%; the picker offers 60%, 70%, 80% and 90%. These settings are stored by the host for the account and also apply to turns sent through the web. `/compact now`, `/compact auto on`, `/compact auto off`, and `/compact threshold 70` work directly. The accepted threshold range is 50–95%.
+
+Before a new personal Router turn, the host uses the most recent measured model context capacity when available; otherwise it uses the serialized host context budget. If neither is available, it uses the retained history size against the personal scope budget (128,000 bytes for an unscoped legacy conversation). Byte limits are not token estimates. Existing backend compaction during a long tool turn remains separate from this between-turn host setting.
+
+Compaction asks the selected Router model for a bounded summary of goals, constraints, decisions, unfinished work and confirmed outcomes. It has no tools or Worker execution. The last three complete turns normally remain verbatim; short histories retain their last complete turn. Earlier original messages stay searchable, scoped journal originals remain readable, and long-term memory, files, schedules and Worker jobs are retained. The next Router inference starts fresh with the summary and current state. A summary may omit detail, so originals remain the source of truth. A failed summary does not replace working context; automatic failure leaves the request available for retry. No compression can make a single oversized new prompt fit automatically.
+
+Manual compaction waits until the Router is idle. A newly sent message queues behind an in-progress summary. `/clear` remains the separate confirmed action that removes shared conversation messages and resets working context.
 
 ## Use in scripts
 

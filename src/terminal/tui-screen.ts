@@ -12,7 +12,7 @@ import { ui } from './language.ts'
 import stringWidth from 'string-width'
 
 export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
-export interface TuiMenu { title: string; items: TuiItem[]; detail?: string }
+export interface TuiMenu { cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
 export interface TuiActions {
   send(text: string): Promise<void>
   command(text: string): Promise<void>
@@ -47,6 +47,7 @@ export class TuiScreen {
   private modalPanel?: BoxRenderable
   private modalSearch?: InputRenderable
   private modalRows?: BoxRenderable
+  private modalCancel?: () => void
   private modalMenu?: TuiMenu
   private modalItems: TuiItem[] = []
   private modalIndex = 0
@@ -306,7 +307,7 @@ export class TuiScreen {
 
   menu(menu: TuiMenu) {
     const panel = this.modal(menu.title)
-    this.modalMenu = menu; this.modalIndex = 0
+    this.modalMenu = menu; this.modalCancel = menu.cancel; this.modalIndex = 0
     this.modalSearch = new InputRenderable(this.renderer, { width: '100%', placeholder: ui('Search…', '搜索…'),
       backgroundColor: this.palette.panel, focusedBackgroundColor: this.palette.panel, textColor: this.palette.fg, focusedTextColor: this.palette.fg })
     this.modalSearch.on('input', () => { this.modalIndex = 0; this.filterMenu() })
@@ -338,7 +339,7 @@ export class TuiScreen {
   }
   private chooseMenu(index: number) {
     const item = this.modalItems[index]; if (!item) return
-    this.closeModal(); this.run(Promise.resolve(item.run()))
+    this.closeModal(false); this.run(Promise.resolve(item.run()))
   }
   private modal(title: string) {
     this.closeModal(); this.dismissCompletions(); this.draft.blur()
@@ -368,22 +369,40 @@ export class TuiScreen {
     }
     scroll.focus()
   }
-  prompt(title: string, initial: string, submit: (value: string) => Promise<void>, multiline = false, secret = false) {
+  prompt(title: string, initial: string, submit: (value: string) => Promise<void>, multiline = false, secret = false, options: { allowEmpty?: boolean; cancel?: () => void } = {}) {
     const panel = this.modal(title)
+    this.modalCancel = options.cancel
+    if (secret) {
+      let value = initial
+      const input = this.text('•'.repeat(value.length), { width: '100%', height: 1, bg: this.palette.selected, selectable: false,
+        onKeyDown: key => {
+          key.preventDefault(); key.stopPropagation()
+          if (key.name === 'return') { if (value || options.allowEmpty) { const answer = value; value = ''; this.closeModal(false); this.run(submit(answer)) }; return }
+          if (key.name === 'backspace') value = Array.from(value).slice(0, -1).join('')
+          else if (key.ctrl && key.name === 'u') value = ''
+          else if (!key.ctrl && !key.meta && !key.sequence.includes('\x1b') && key.sequence >= ' ') value += key.sequence
+          input.content = '•'.repeat(Array.from(value).length)
+        },
+        onPaste: event => { event.preventDefault(); event.stopPropagation(); value += new TextDecoder().decode(event.bytes).replace(/[\r\n]/g, ''); input.content = '•'.repeat(Array.from(value).length) }
+      })
+      input.focusable = true; panel.add(input)
+      panel.add(this.text(ui('enter confirm · ctrl+u clear · esc cancel', 'enter 确认 · ctrl+u 清空 · esc 取消'), { fg: this.palette.muted, marginTop: 1 }))
+      input.focus(); return
+    }
     const input = new TextareaRenderable(this.renderer, { width: '100%', height: multiline ? Math.max(3, Math.min(8, this.renderer.height - 10)) : 1,
       initialValue: initial, backgroundColor: this.palette.selected, focusedBackgroundColor: this.palette.selected,
-      textColor: secret ? this.palette.selected : this.palette.fg, focusedTextColor: secret ? this.palette.selected : this.palette.fg,
-      selectable: !secret, selectionFg: secret ? this.palette.selected : undefined, selectionBg: secret ? this.palette.selected : undefined,
+      textColor: this.palette.fg, focusedTextColor: this.palette.fg,
       keyBindings: [{ name: 'return', ctrl: multiline, action: 'submit' }],
-      onSubmit: () => { const value = input.plainText.trim(); if (!value) return; this.closeModal(); this.run(submit(value)) }
+      onSubmit: () => { const value = input.plainText.trim(); if (!value && !options.allowEmpty) return; this.closeModal(false); this.run(submit(value)) }
     })
     panel.add(input); panel.add(this.text(multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
-    if (secret) panel.add(this.text(ui('Input hidden', '输入内容已隐藏'), { fg: this.palette.muted }))
     input.focus(); input.gotoBufferEnd()
   }
-  closeModal() {
+  closeModal(cancelled = true) {
+    const cancel = this.modalCancel; this.modalCancel = undefined
     this.overlay?.destroyRecursively(); this.overlay = undefined; this.modalSearch = undefined
     this.modalPanel = undefined; this.modalRows = undefined; this.modalMenu = undefined; this.modalItems = []; this.draft?.focus()
+    if (cancelled) cancel?.()
   }
   private key = (key: KeyEvent) => {
     const consume = () => { key.preventDefault(); key.stopPropagation() }

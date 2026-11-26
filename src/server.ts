@@ -1,3 +1,5 @@
+import {compactionSettings} from './chat-compaction.ts'
+import {terminalSetupInfo,terminalSetupAction,terminalWorkerAction,initializeTerminalMemory} from './terminal/setup-host.ts'
 import {messageCharacters} from './execution-limits.ts'
 import {TerminalPairing,pairingPage} from './terminal/pairing.ts'
 import {projectRoot,projectSource} from './terminal/project.ts'
@@ -322,6 +324,32 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       send(res,405,{error:'Method not allowed'});return
     }
     if (!operator) { send(res, 401, { error: 'Operator access required',code:'token_required' }); return }
+    if(path==='/api/terminal/setup'){
+      const owner=account.status(req).user?.id
+      if(!owner){send(res,401,{code:'account_login_required'});return}
+      res.setHeader('cache-control','no-store')
+      if(req.method==='GET'){send(res,200,terminalSetupInfo(runtime,onboarding));return}
+      if(req.method==='POST'){
+        const input=terminalSetupAction.parse(await operatorBody(req))
+        if(input.action==='plan'){send(res,200,onboarding.terminalPlan(input.value));return}
+        if(input.action==='check'){send(res,200,await onboarding.check(input.id));return}
+        if(input.action==='models'){send(res,200,await onboarding.models(input.connection));return}
+        if(input.action==='oauth.start'){const account='account-'+randomUUID();send(res,200,{...await runtime.subscriptions.begin(account),account});return}
+        if(input.action==='oauth.status'){send(res,200,runtime.subscriptions.status(input.attempt));return}
+        if(input.action==='oauth.models'){send(res,200,await runtime.subscriptions.models(input.account));return}
+        changing=true
+        try{const result=await onboarding.applyTerminal(input.id,rebuild,()=>requireApplyOperator(req));if(runtime.chat.readiness().ready)initializeTerminalMemory(runtime,owner);send(res,200,result)}finally{changing=false}
+        return
+      }
+      send(res,405,{code:'method_not_allowed'});return
+    }
+    if(path==='/api/terminal/workers'){
+      if(!account.status(req).user){send(res,401,{code:'account_login_required'});return}
+      res.setHeader('cache-control','no-store')
+      if(req.method==='GET'){const {revision,workers,canCreate,connections}=runtime.manager.list();send(res,200,{revision,workers,canCreate,connections});return}
+      if(req.method==='POST'){send(res,200,await runtime.manager.call(terminalWorkerAction.parse(await operatorBody(req))));return}
+      send(res,405,{code:'method_not_allowed'});return
+    }
     if(path==='/api/terminal/settings'||path==='/api/terminal/models'){
       const owner=account.status(req).user?.id
       if(!owner){send(res,401,{code:'account_login_required'});return}
@@ -803,7 +831,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|task-detail|task-acceptance|approval-history|approvals|decisions|file-reviews))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|compact|team-context|task-detail|task-acceptance|approval-history|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
         if(action==='approval-history'&&req.method==='GET'){
@@ -827,6 +855,15 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           const input=z.object({task:z.string().min(1).max(500),revision:z.number().int().nonnegative().safe()}).strict().parse(await operatorBody(req))
           const result=runtime.chat.retryTaskAcceptance(id,owner,input.task,input.revision)
           send(res,result.state==='held'?200:202,result);return
+        }
+        if(action==='compact'){
+          if(req.method==='GET'){send(res,200,runtime.chat.compactionStatus(id,owner));return}
+          if(req.method==='POST'){
+            const input=z.discriminatedUnion('action',[z.object({action:z.literal('compact')}).strict(),z.object({action:z.literal('settings'),settings:compactionSettings}).strict()]).parse(await operatorBody(req))
+            runtime.chat.compactionStatus(id,owner)
+            if(input.action==='settings'){runtime.chat.compaction.configure(owner,input.settings);send(res,200,runtime.chat.compactionStatus(id,owner));return}
+            send(res,200,await runtime.chat.compact(id,owner));return
+          }
         }
         if(action==='context'&&req.method==='GET'){send(res,200,runtime.chat.contextUsage(id,owner,query.get('activity')??undefined));return}
         if(action==='file-reviews'){

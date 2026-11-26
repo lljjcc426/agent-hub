@@ -50,6 +50,21 @@ try {
   test.mockInput.pressEnter(); await test.renderOnce()
   assert.equal(sent[0], draft)
 
+  let secretValue = '', canceled = 0
+  screen.prompt('API key', '', async value => { secretValue = value }, false, true, { allowEmpty: true, cancel: () => { canceled++ } })
+  await test.mockInput.pasteBracketedText('sk-private-test')
+  await test.mockInput.typeText('x')
+  test.mockInput.pressKey('BACKSPACE')
+  const secretFrame = await capture('secret-input')
+  assert.doesNotMatch(secretFrame, /sk-private-test/)
+  assert.ok(secretFrame.includes('•'))
+  test.mockInput.pressEnter(); await test.renderOnce()
+  assert.equal(secretValue, 'sk-private-test')
+  assert.equal(canceled, 0)
+  screen.prompt('Cancel setup', '', async () => {}, false, false, { cancel: () => { canceled++ } })
+  test.mockInput.pressKey('ESCAPE'); await test.renderOnce()
+  assert.equal(canceled, 1)
+
   screen.setDraft('中文')
   test.mockInput.pressEnter({ shift: true }); await test.mockInput.typeText('第二行')
   assert.equal(screen.draft.plainText, '中文\n第二行')

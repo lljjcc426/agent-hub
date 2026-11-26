@@ -67,13 +67,13 @@ function discoverHost() {
   if (!process.env.ROPPO_CONNECTION_FILE && existsSync(selected))
     return JSON.parse(readFileSync(selected, 'utf8')).url as string
   const path =
-    process.env.ROPPO_CONNECTION_FILE ?? join(homedir(), '.agent-hub', 'state', 'connection.json')
+    process.env.ROPPO_CONNECTION_FILE ?? join(process.env.ROPPO_HOME ?? join(homedir(), '.agent-hub'), 'state', 'connection.json')
   if (!existsSync(path))
     throw new CliError(
       ui(
         'No local host found. Run roppo init or set ROPPO_HOST.',
         '未找到本机实例，请运行 roppo init 或设置 ROPPO_HOST。'
-      )
+      ), 'host_not_found'
     )
   return JSON.parse(readFileSync(path, 'utf8')).url as string
 }
@@ -97,8 +97,9 @@ export class TerminalClient {
       binary,
       bytes,
       signal,
-      method
-    }: { native?: boolean; binary?: Uint8Array; bytes?: boolean; signal?: AbortSignal; method?: 'DELETE' | 'PATCH' } = {}
+      method,
+      timeoutMs = 20_000
+    }: { timeoutMs?: number; native?: boolean; binary?: Uint8Array; bytes?: boolean; signal?: AbortSignal; method?: 'DELETE' | 'PATCH' } = {}
   ): Promise<T> {
     const headers: Record<string, string> = {}
     if (!native) {
@@ -120,8 +121,8 @@ export class TerminalClient {
         redirect: 'error',
         body: binary ? new Uint8Array(binary) : JSON.stringify(data),
         signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
-          : AbortSignal.timeout(20_000)
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs)
       })
     } catch {
       throw new CliError(
@@ -205,6 +206,23 @@ export class TerminalClient {
   }
   get signedIn() {
     return !!this.token
+  }
+  async loginWithPassword(input:{username:string;password:string;displayName?:string},setupToken?:string){
+    const response=await fetch(this.base+(setupToken?'/account/setup':'/account/login'),{
+      method:'POST',headers:{'content-type':'application/json',origin:this.base,...(setupToken?{authorization:'Bearer '+setupToken}:{})},
+      body:JSON.stringify({...input,remember:true}),redirect:'error',signal:AbortSignal.timeout(20_000)
+    })
+    const result=await response.json() as {recoveryCode?:string;error?:string;code?:string}
+    if(!response.ok)throw new CliError(result.error??result.code??'Sign-in failed',result.code)
+    const cookie=response.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ')
+    const pair=await this.request<{id:string;secret:string}>('/api/terminal/pair/start',{}, {native:true})
+    const approved=await fetch(this.base+'/api/terminal/pair/approve',{method:'POST',headers:{'content-type':'application/json',origin:this.base,cookie},body:JSON.stringify({id:pair.id}),redirect:'error',signal:AbortSignal.timeout(20_000)})
+    if(!approved.ok)throw new CliError('Could not connect this terminal. Try roppo login.')
+    const claim=await this.request<{token:string}>('/api/terminal/pair/claim',pair,{native:true})
+    privateWrite(this.profile,{token:claim.token});privateWrite(join(terminalProfileDirectory(),'host.json'),{url:this.base});this.token=claim.token
+    // The temporary browser session has served its purpose; keep only the CLI credential.
+    await fetch(this.base+'/account/logout',{method:'POST',headers:{'content-type':'application/json',origin:this.base,cookie},body:'{}',redirect:'error',signal:AbortSignal.timeout(20_000)})
+    return result
   }
   async login() {
     const pair = await this.request<{ id: string; secret: string }>(

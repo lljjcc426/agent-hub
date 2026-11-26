@@ -72,6 +72,20 @@ export async function controlCommand(client: TerminalClient, conversation: Conve
       { label: ui('Decline', '拒绝'), detail: '', value: '/decline ' + request.ticketId + ' ' + request.id }
     ] } }
   }
+  if (name === '/compact') {
+    const path='/api/chat/conversations/'+conversation.id+'/compact'
+    if (!args.length || args[0]==='now') {
+      const result=await client.request<{status:string}>(path,{action:'compact'},{timeoutMs:310_000})
+      return {text:result.status==='unchanged'?ui('No older context to compact yet.', '暂时无需压缩。'):ui('Context compacted; original messages are retained.', '上下文已压缩，原始消息保留。')}
+    }
+    const current=await client.request<{settings:{automatic:boolean;threshold:number}}>(path)
+    const settings={...current.settings}
+    if(args.length===2&&args[0]==='auto'&&['on','off'].includes(args[1]!))settings.automatic=args[1]==='on'
+    else if(args.length===2&&args[0]==='threshold'&&Number(args[1])>=50&&Number(args[1])<=95)settings.threshold=Number(args[1])/100
+    else throw Error('/compact [now | auto on/off | threshold 50–95]')
+    await client.request(path,{action:'settings',settings})
+    return {text:'Auto: '+(settings.automatic?'on':'off')+' · '+Math.round(settings.threshold*100)+'%'}
+  }
   if (name === '/context') {
     const context = await client.request<{ inputTokens: number | null; capacity: number | null; model: string | null; previous: boolean; budget: {bytes: number; maxBytes: number} | null }>('/api/chat/conversations/' + conversation.id + '/context')
     return { text: [context.model ?? 'Router',

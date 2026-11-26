@@ -1,3 +1,4 @@
+import {accountSetup,configureConnection,setupClient,terminalSetupUI,SetupCancelled} from './setup.ts'
 import { saveTerminalSetting, loadTerminalSettings, type TerminalSettings, type OutputFormat } from './settings.ts'
 import { controlCommand } from './controls.ts'
 import { PrintEvents } from './output.ts'
@@ -589,16 +590,14 @@ export async function main(args: string[]): Promise<number> {
     const screen = tty && process.env.TERM !== 'dumb' && !o.print && !o.json
     const clearScreen = '\x1b[2J\x1b[H'
     if (screen && process.env.ROPPO_LEGACY_TUI === '1' && o.action !== 'logout') process.stdout.write(clearScreen)
+    if (o.action === 'init' && !tty) throw new CliError(ui('Run roppo init in an interactive terminal.','请在交互终端运行 roppo init。'),'usage',2)
+    const dialog = !print || o.action === 'init' ? terminalSetupUI() : undefined
+    const client = dialog ? await setupClient(o.host,dialog) : new TerminalClient(o.host)
     if (o.action === 'init') {
-      const child = spawn(fileURLToPath(new URL('../../start.sh', import.meta.url)), ['setup'], {
-        stdio: 'inherit'
-      })
-      return await new Promise<number>((resolve, reject) => {
-        child.on('error', reject)
-        child.on('exit', (code) => resolve(code ?? 1))
-      })
+      await accountSetup(client,dialog!)
+      await configureConnection(client,dialog!)
+      return 0
     }
-    const client = new TerminalClient(o.host)
     if (o.action === 'login') {
       await client.login()
       process.stderr.write(ui('Connected to ', '已连接 ') + client.base + '\n')
@@ -634,7 +633,11 @@ export async function main(args: string[]): Promise<number> {
         2
       )
     const needsLogin = !client.signedIn && !print
-    if (needsLogin) await client.login()
+    if (needsLogin) await accountSetup(client,dialog!)
+    if (!print) {
+      const setup = await client.request<{ready:boolean}>('/api/terminal/setup')
+      if (!setup.ready) await configureConnection(client,dialog!)
+    }
     if (!o.explicitProject && !o.trust) {
       if (screen && needsLogin) process.stdout.write(clearScreen)
       const conversation = await selectConversation(client, o, undefined, tty && !print)
@@ -670,6 +673,7 @@ export async function main(args: string[]): Promise<number> {
     if (!c) return 0
     return print ? await printRun(client, c, o) : await session(c)
   } catch (e) {
+    if (e instanceof SetupCancelled) { process.stderr.write(e.message+'\n'); return 0 }
     const err = e as Error
     if (json)
       console.log(

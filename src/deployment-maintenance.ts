@@ -149,6 +149,8 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
  let hasProviderCheckpoint=false
  for(const node of nodes){
   const id=node.ticketId
+  if(!id&&node.state==='pending'&&!node.roundId&&!node.teamTargetId&&!node.delegationId&&!node.retryAt&&!node.failure&&
+    node.dependsOn.some(dep=>nodes.some(parent=>parent.id===dep&&parent.state!=='passed')))continue
   if(!id||ids.has(id)||node.teamTargetId||node.delegationId||node.retryAt!==undefined||
    node.failure?.kind==='unconfirmed_effect'||
    !['held','waiting_dependency','passed',...(sourceHold||node===activeNode?['running']:[])].includes(node.state))return

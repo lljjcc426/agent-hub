@@ -14,7 +14,7 @@ import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-gr
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
-import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
+import {isParallelRead,isReadOnlyOperation,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
 import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
@@ -772,7 +772,7 @@ export class Runtime {
     let invokedEffect=false
     if(request.onTool){
       const invoke=request.onTool,{chatOpeningReady,signal}=request,dispatch=new ToolDispatch(signal)
-      request={...request,isReadOnlyTool:isParallelRead,onTool:async(name,args,id)=>{
+      request={...request,isReadOnlyTool:isReadOnlyOperation,onTool:async(name,args,id)=>{
         if(name!==chatOpeningTool.name&&chatOpeningReady&&!await chatOpeningReady()){
           return {success:false,contentItems:[{type:'inputText',text:'Publish chat_opening before executing this tool, then retry this call.'}]}
         }

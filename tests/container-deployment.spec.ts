@@ -10,6 +10,8 @@ import {configSchema} from '../src/config.ts'
 import {serve} from '../src/server.ts'
 import {deploymentBlockers,deploymentMaintenance,inspectDeployment,pauseControl} from '../src/deployment-maintenance.ts'
 import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell,workerCheckpointReady} from '../src/backends/opencode-read-recovery.ts'
+import {browserReceiptId} from '../src/browser-manager.ts'
+import {retainedBackendReceipts} from '../src/backend-receipt-recovery.ts'
 import {ExecutionTrace} from '../src/execution-trace.ts'
 import {heldArtifactReads,unsettledTaskEffects} from '../src/artifact-read-recovery.ts'
 import {artifactReadAssetId} from '../src/goal-artifacts.ts'
@@ -592,7 +594,7 @@ it('preserves a migrated Worker callback only with the completed migration recei
 })
 
 it('accounts for stopped read batches only within their admitted attempt and leaves writes fenced',()=>{
- const h=host(),s=h.store,f=stoppedCallback(h,'code_mode',{source:'return await tools.superagent_read({resource:"catalog"})'},'worker')
+ const h=host(),s=h.store,f=stoppedCallback(h,'code_mode',{source:'const r=await tools.superagent_read({resource:"catalog"});return await tools.superagent_browser({action:"snapshot",requestId:"inspect-session"})'},'worker')
  const m=s.get<{ticketId:string}>('model-session',f.thread.id)!
  const run:Run={ticketId:m.ticketId,assignmentId:'assignment',workerId:'one',backendId:'codex',cwd:f.thread.cwd,
   phase:'uncertain',prepared:true,threadId:f.thread.id,turnId:f.thread.turnId}
@@ -609,7 +611,37 @@ it('accounts for stopped read batches only within their admitted attempt and lea
  const prove=()=>settledProviderTurn(s,h.config.stateDir,run)
  set(read);expect(prove()?.settledBatches.get(f.receiptId)).toMatchObject({state:'complete',children:[{success:false,state:'complete'}]})
  expect(s.get<PluginToolEffect>('backend-plugin-tool',f.receiptId)?.state).toBe('running')
+ const snapshot={...read,name:'superagent_browser',fingerprint:stableDigest(['superagent_browser',{action:'snapshot',requestId:'inspect-session'}])}
+ set(snapshot);expect(prove()?.settledBatches.size).toBe(1)
+ set({...snapshot,fingerprint:stableDigest(['superagent_browser',{action:'click',requestId:'inspect-session'}])});expect(prove()).toBeUndefined()
+ set({...read,name:'superagent_shell',observation:true});expect(prove()).toBeUndefined()
+ set({...read,name:'superagent_browser',observation:true});expect(prove()?.settledBatches.size).toBe(1)
+ set({...read,name:'superagent_browser'});expect(prove()).toBeUndefined()
  set({...read,name:'superagent_shell'});expect(prove()).toBeUndefined()
  set(read);s.put('task-ownership',m.ticketId,{...basis,state:'active',dataRevision:4});expect(prove()).toBeUndefined()
  s.put('task-ownership',m.ticketId,{...basis,state:'active'});s.put('async-worker-revoked','attempt',{at:Date.now()});expect(prove()).toBeUndefined()
+})
+
+
+it('settles a refused delegated Chat browser action only with the original owner and call records',()=>{
+ const h=host(),s=h.store,requestId='open-annotations'
+ const f=stoppedCallback(h,'superagent_browser',{action:'click',sessionId:randomUUID(),ref:'@e1',revision:2,requestId},'subagent')
+ const m=s.get<{ticketId:string;agentId:string;triggerId:string}>('model-session',f.thread.id)!
+ const owner={ticketId:m.ticketId,agentId:m.agentId,assignmentId:'original'},workerId='one',runId='chat-origin'
+ const end=f.thread.lastFailure!.at
+ s.put('model-session',f.thread.id,{...m,workerId})
+ s.put('work',m.agentId,{...s.get<object>('work',m.agentId),...owner})
+ s.put('worker-assignment',m.ticketId,{ticketId:m.ticketId,parentTrigger:runId,workerId})
+ s.put('chat-run',runId,{id:runId,conversationId:'conversation',createdAt:end-50})
+ const call={id:'tool',parentId:f.activity,kind:'tool',name:'superagent_browser',action:'browser:click',state:'failed',
+  ticketId:m.ticketId,workerId,agentId:m.agentId,triggerId:m.triggerId,startedAt:end-10,endedAt:end}
+ const chat={...call,runId,conversationId:'conversation'}
+ s.put('execution-call',call.id,call);s.put('chat-call',call.id,chat)
+ const prove=()=>retainedBackendReceipts(s,h.config.stateDir).find(r=>r.id===f.receiptId)?.recovery?.reason
+ expect(prove()).toBe('subagent_browser_not_dispatched')
+ s.put('chat-call',call.id,{...chat,agentId:'different'})
+ expect(prove()).toBeUndefined()
+ s.put('chat-call',call.id,chat)
+ s.put('browser-receipt',browserReceiptId(owner,requestId),{state:'uncertain'})
+ expect(prove()).toBeUndefined()
 })

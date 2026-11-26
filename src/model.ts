@@ -40,7 +40,7 @@ export interface ModelRequest {
   tools?:ToolSpec[]
   onTool?:(name:string,args:unknown,callId:string)=>Promise<{contentItems:ToolContent[];success:boolean}>
   /** Host classification for calls whose failure cannot leave an unknown write. */
-  isReadOnlyTool?:(name:string)=>boolean
+  isReadOnlyTool?:(name:string,args?:unknown)=>boolean
   workerMcp?:{command:string;args:string[]}
   /** A regular host Router turn can use the managed harness and compose authorized host tools. */
   coordinationTurn?:boolean

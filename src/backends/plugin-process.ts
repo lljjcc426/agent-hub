@@ -27,7 +27,7 @@ import {installBackendPackage,readBackendPackage,backendObjects,validatePluginVa
 
 export interface PluginThread {id:string;backendId:string;pluginId:string;digest:string;stateVersion:number;nativeId?:string;cwd:string;identity:string;accountIdentity?:string;state:'running'|'completed'|'failed'|'interrupted';effectIds:string[];turnId?:string;lastFailure?:{at:number;code:string;diagnostic?:BackendDiagnostic}}
 interface WorkerToolAdmission {attemptId:string;dataRevision:number|null;stage:'admitted'|'not_dispatched'}
-interface ChildEffect {id:string;name:string;fingerprint:string;state:'running'|'complete';success?:boolean;resource?:string;permission?:ToolResult['permission'];admission?:WorkerToolAdmission}
+interface ChildEffect {observation?:true;id:string;name:string;fingerprint:string;state:'running'|'complete';success?:boolean;resource?:string;permission?:ToolResult['permission'];admission?:WorkerToolAdmission}
 export interface PluginToolEffect {fingerprint:string;state:'running'|'complete';result?:ToolResult;failure?:BackendDiagnostic;admission?:WorkerToolAdmission;children?:ChildEffect[]}
 const text=z.string().min(1).max(1000)
 const healthSchema=z.object({available:z.boolean(),authenticated:z.union([z.boolean(),z.literal('unknown')]),remoteVerified:z.literal(false),accountIdentity:z.string().regex(/^[a-f0-9]{64}$/).optional(),version:z.string().max(200).optional()}).strict()
@@ -232,14 +232,14 @@ export class ProcessBackend implements Model {
         const invoke=()=>request.onTool!(p.name,p.args,p.callId)
         if(p.name==='code_mode'&&request.role==='worker'){
          outcome=await workerToolChildren.run(async(name,args,childId,run)=>{
-          const entry:ChildEffect={id:childId,name,fingerprint:stableDigest([name,args]),state:'running'}
+          const entry:ChildEffect={...(request.isReadOnlyTool?.(name,args)?{observation:true as const}:{}),id:childId,name,fingerprint:stableDigest([name,args]),state:'running'}
           effect.children??=[]
           effect.children.push(entry)
           try{
            admit(entry)
            let value:ToolResult
            try{value=await run()}catch(error){
-            if(error instanceof WorkerToolNotDispatched||error instanceof ContextBudgetExceeded||closed||request.signal?.aborted||!request.isReadOnlyTool?.(name))throw error
+            if(error instanceof WorkerToolNotDispatched||error instanceof ContextBudgetExceeded||closed||request.signal?.aborted||!request.isReadOnlyTool?.(name,args))throw error
             value=failedRead(name,error)
            }
            if(request.retainToolResult)entry.resource='model-tool-receipt/'+await request.retainToolResult(childId,value)
@@ -261,7 +261,7 @@ export class ProcessBackend implements Model {
         }else{
          const diagnostic=backendDiagnosticSchema.safeParse((error as any)?.diagnostic)
          effect.failure=diagnostic.success?diagnostic.data:{operation:'tool',reason:'exception'}
-         if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||effect.children?.some(child=>child.state!=='complete')||!request.isReadOnlyTool?.(p.name)){
+         if(closed||request.signal?.aborted||error instanceof ContextBudgetExceeded||effect.children?.some(child=>child.state!=='complete')||!request.isReadOnlyTool?.(p.name,p.args)){
           uncertainTool=true;save();throw error
          }
          outcome=failedRead(p.name,error)

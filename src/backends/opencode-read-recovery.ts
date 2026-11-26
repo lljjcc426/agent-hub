@@ -1,5 +1,6 @@
 import type {PermissionAction} from '../chat-permissions.ts'
 import type {WorkerAttempt,WorkerEventReceipt} from '../async-worker-inbox.ts'
+import {isParallelRead} from '../tool-dispatch.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -300,14 +301,26 @@ function boundWorkerSession(store:Pick<ThreadStore,'get'>,stateDir:string,run:Ru
 /** Old Worker cells recorded admissions before invoking each child but left a
  * throwing read running. A stopped cell has no external effects of its own.
  * Never replay its source or infer a result for an unacknowledged mutation. */
-function settleReadBatch(record:PluginToolEffect,callId:string,owner:{attemptId:string;dataRevision:number|null}){
+// Older cells only persisted argument digests. Candidate literal request IDs
+// are hints: the host must match the complete argument fingerprint for a
+// snapshot before considering that child an observation. Never execute source.
+function isRecordedObservation(child:NonNullable<PluginToolEffect['children']>[number],args:unknown){
+ if(child.name==='superagent_read'||child.observation&&(isParallelRead(child.name)||child.name==='superagent_browser'))return true
+ if(child.name!=='superagent_browser'||!args||typeof args!=='object'||!('source' in args)||typeof args.source!=='string'||args.source.length>16000)return false
+ const ids=args.source.matchAll(/(["'])([a-zA-Z0-9_.:/-]{1,200})\1/g)
+ for(const match of ids){
+  if(stableDigest([child.name,{action:'snapshot',requestId:match[2]}])===child.fingerprint)return true
+ }
+ return false
+}
+function settleReadBatch(record:PluginToolEffect,callId:string,args:unknown,owner:{attemptId:string;dataRevision:number|null}){
  const children=record.children
  const owned=(a:PluginToolEffect['admission'])=>a?.stage==='admitted'&&a.attemptId===owner.attemptId&&a.dataRevision===owner.dataRevision
  if(record.state!=='running'||record.result||record.failure?.operation!=='tool'||record.failure.reason!=='exception'||
     !owned(record.admission)||!children?.length||!children.some(child=>child.state==='running'))return
  const prefix=callId+':code:'
  if(new Set(children.map(child=>child.id)).size!==children.length||children.some(child=>
-    child.name!=='superagent_read'||!child.id.startsWith(prefix)||!/^[1-9]\d*$/.test(child.id.slice(prefix.length))||
+    !isRecordedObservation(child,args)||!child.id.startsWith(prefix)||!/^[1-9]\d*$/.test(child.id.slice(prefix.length))||
     !/^[a-f0-9]{64}$/.test(child.fingerprint)||!owned(child.admission)||child.permission||
     (child.state==='complete'?typeof child.success!=='boolean':child.state!=='running'||child.success!==undefined||!!child.resource)))return
  return {...record,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The previous read batch stopped. Reuse the retained child results. Outstanding reads returned no confirmed result.'}]},
@@ -367,7 +380,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
     let record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
     if(!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
     if(mode==='read_batch'&&turn===last&&!call.result&&call.name==='code_mode'&&handoffAttempt){
-     const settled=settleReadBatch(record,call.id,handoffAttempt)
+     const settled=settleReadBatch(record,call.id,call.args,handoffAttempt)
      if(!settled)return
      record=settled
      settledBatches.set(effectId,settled)

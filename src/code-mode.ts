@@ -4,7 +4,7 @@ import { ContextBudgetExceeded, protocolBytes, receiptReference } from './contex
 import { modelToolCalls } from './execution-limits.ts'
 import type { ModelRequest, ToolSpec } from './model.ts'
 import {WorkerToolNotDispatched,workerToolChildren} from './worker-tool-dispatch.ts'
-import { failedRead, isParallelRead, ToolDispatch } from './tool-dispatch.ts'
+import { failedRead, isParallelRead, isReadOnlyOperation, ToolDispatch } from './tool-dispatch.ts'
 
 const maxSource = 16_000
 const maxOutput = 128 * 1024
@@ -83,7 +83,7 @@ async function runCell(source:string, tools:ToolSpec[], invoke:Invoke, parent:st
         let value:ToolResult
         if(record)value=await record(name,args,id,()=>invoke(name,args,id))
         else try{value=await invoke(name,args,id)}catch(error){
-          if(!open||request.signal?.aborted||error instanceof WorkerToolNotDispatched||error instanceof ContextBudgetExceeded||!isParallelRead(name))throw error
+          if(!open||request.signal?.aborted||error instanceof WorkerToolNotDispatched||error instanceof ContextBudgetExceeded||!isReadOnlyOperation(name,args))throw error
           value=failedRead(name,error)
         }
         if(protocolBytes(value)<=outputLimit)return value

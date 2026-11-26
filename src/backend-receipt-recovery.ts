@@ -1,8 +1,10 @@
 import { stoppedOpenCodeCallbacks } from './backends/opencode-read-recovery.ts'
 import type { PluginThread } from './backends/plugin-process.ts'
-import { browserToolSchema } from './browser-contract.ts'
+import { browserReceiptId } from './browser-manager.ts'
+import { workerRisk } from './chat-permissions.ts'
+import { browserToolSchema, type BrowserToolInput } from './browser-contract.ts'
 import { publicPlanSchema, type ChatPlan } from './chat-workflow.ts'
-import type { ExecutionContext } from './execution-activity.ts'
+import type { ExecutionCall, ExecutionContext } from './execution-activity.ts'
 import { stableDigest } from './sources.ts'
 import type { Run, Store } from './store.ts'
 import type { UsageRecord } from './usage-ledger.ts'
@@ -13,7 +15,7 @@ type Session = ExecutionContext & { threadId: string; cwd: string; ephemeral: bo
 type Callback = ReturnType<typeof stoppedOpenCodeCallbacks>[number]
 type Recovery =
   | { reason: 'interrupted_chat_plan'; confirmed: boolean }
-  | { reason: 'interrupted_browser_snapshot'; confirmed: false }
+  | { reason: 'interrupted_browser_snapshot' | 'subagent_browser_not_dispatched'; confirmed: false }
 type RetainedReceipt = Callback & { recovery?: Recovery }
 
 export function savedChatPlan(store: Pick<Store, 'list'>, activityId: string, args: unknown) {
@@ -80,6 +82,33 @@ function stoppedSession(store: RecoveryStore, thread: PluginThread): Session | u
         AND json_extract(body,'$.source')=? LIMIT 1`).get(thread.id, session.triggerId, session.sourceId)) return session
 }
 
+// In personal Chat, delegated agents cannot dispatch interactive browser actions.
+// The archived call must also belong to that Chat at execution time. A missing
+// browser receipt by itself says nothing about whether an action ran.
+function refusedSubagentBrowser(store: RecoveryStore, session: Session, input: BrowserToolInput) {
+  if (!session.agentId || !session.ticketId || !session.workerId || !workerRisk('superagent_browser', input)) return false
+  const work = store.get<WorkItem>('work', session.agentId)
+  if (!work?.assignmentId || work.ticketId !== session.ticketId ||
+      store.get('browser-receipt', browserReceiptId({...work, agentId:session.agentId}, input.requestId))) return false
+  const rows = store.db.prepare(`SELECT id,body FROM records WHERE kind='execution-call'
+    AND json_extract(body,'$.parentId')=? AND json_extract(body,'$.name')='superagent_browser'
+    AND json_extract(body,'$.action')=?`).all(session.activity, 'browser:'+input.action)
+  if (rows.length !== 1) return false
+  const call = JSON.parse(String(rows[0]!.body)) as ExecutionCall
+  const chat = store.get<ExecutionCall & {runId:string;conversationId:string}>('chat-call', String(rows[0]!.id))
+  if (!chat || call.id !== rows[0]!.id || call.kind !== 'tool' || call.state !== 'failed' ||
+      !call.endedAt || !work.endedAt || call.endedAt > work.endedAt ||
+      call.ticketId !== session.ticketId || call.agentId !== session.agentId || call.workerId !== session.workerId ||
+      call.triggerId !== session.triggerId || chat.id !== call.id || chat.parentId !== session.activity ||
+      chat.ticketId !== call.ticketId || chat.workerId !== call.workerId || chat.agentId !== call.agentId ||
+      chat.triggerId !== call.triggerId || chat.action !== call.action || chat.state !== call.state ||
+      chat.startedAt !== call.startedAt || chat.endedAt !== call.endedAt) return false
+  const assignment = store.get<{parentTrigger:string;workerId:string}>('worker-assignment', session.ticketId)
+  const origin = store.get<{id:string;conversationId:string;createdAt:number}>('chat-run', chat.runId)
+  return assignment?.parentTrigger === chat.runId && assignment.workerId === session.workerId &&
+    origin?.id === chat.runId && origin.conversationId === chat.conversationId && origin.createdAt <= call.startedAt
+}
+
 function recoverableResult(store: RecoveryStore, session: Session, call: Callback): Recovery | undefined {
   if (call.name === 'superagent_plan' && !session.ticketId) {
     const plan = publicPlanSchema.safeParse(call.args)
@@ -93,6 +122,9 @@ function recoverableResult(store: RecoveryStore, session: Session, call: Callbac
     const input = browserToolSchema.safeParse(call.args)
     if (input.success && input.data.action === 'snapshot') {
       return { reason: 'interrupted_browser_snapshot', confirmed: false }
+    }
+    if (input.success && refusedSubagentBrowser(store, session, input.data)) {
+      return {reason:'subagent_browser_not_dispatched', confirmed:false}
     }
   }
 }
@@ -137,7 +169,9 @@ export function reconcileBackendReceipts(store: Store, stateDir: string) {
           type: 'inputText' as const,
           text: reason === 'interrupted_chat_plan'
             ? JSON.stringify({ ok: confirmed, ...(!confirmed ? { status: 'publication_unconfirmed' } : {}) })
-            : 'The interrupted browser snapshot returned no confirmed result.',
+            : reason === 'subagent_browser_not_dispatched'
+              ? 'The Chat host refused this delegated browser action before dispatch.'
+              : 'The interrupted browser snapshot returned no confirmed result.',
         }],
       }
       const reconciliation = { reason, threadId, turnId, at: Date.now() }

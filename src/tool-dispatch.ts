@@ -7,7 +7,7 @@ export function failedRead(tool:string,error:unknown):ToolResult {
   const unavailable=error instanceof ToolResourceUnavailable
   return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({
     status:unavailable?'resource_unavailable':'read_failed',tool,
-    message:unavailable?'This receipt is unavailable. Use an exact resource reference returned by the host.':'The read returned no result. Check its arguments or continue with another authorized source.',
+    message:tool==='superagent_browser'&&error&&typeof error==='object'&&'code' in error&&error.code==='browser_session_required'?'Select the current session using its returned sessionId, then read its snapshot.':unavailable?'This receipt is unavailable. Use an exact resource reference returned by the host.':'The read returned no result. Check its arguments or continue with another authorized source.',
   })}]}
 }
 
@@ -20,6 +20,13 @@ const independentReads = new Set([
 
 export function isParallelRead(name: string): boolean {
   return independentReads.has(name)
+}
+
+// A failed observation has no external write to replay. Stateful readers still
+// use the exclusive queue so a snapshot cannot overtake browser input.
+export function isReadOnlyOperation(name:string,args?:unknown){
+  return isParallelRead(name)||(name==='superagent_browser'&&typeof args==='object'&&args!==null&&
+    'action' in args&&args.action==='snapshot')
 }
 
 /** FIFO admission with a barrier for exclusive calls. */

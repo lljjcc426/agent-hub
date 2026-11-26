@@ -248,7 +248,7 @@ export class WorkerTools {
   if(expectedId&&(!actor||!risk))throw Error('The approved Worker action is no longer available')
   if(!actor&&this.host.chat.hasContext({ticketId:owner.ticketId,triggerId:trigger})&&(workerRisk(name,args)||['superagent_shell','superagent_tool'].includes(name)))throw Error('The task no longer owns its Chat permissions')
   if(actor&&risk){
-    if(owner.agentId)throw Error('Hand this operation back to the root Worker for its scoped permission and receipt')
+    if(owner.agentId)return {success:false,contentItems:[{type:'inputText',text:'This action was not dispatched. Hand it back to the root Worker for its scoped permission and receipt.'}]}
     if(!this.host.validWork(owner))throw Error('Assignment capability has ended')
     const current=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)
     if(!current||current.runId!==actor.runId)throw Error('The task no longer owns its Chat permissions')

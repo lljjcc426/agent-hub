@@ -715,10 +715,22 @@ export class RouterGoals {
     ...(child.admission?.stage==='not_dispatched'?{dispatched:false}:{}),...(child.resource?{resource:child.resource}:{})})):undefined
    return {tool,action,requestId,success,...(readable?{resource:'model-tool-receipt/'+key}:{}),...(children?.length?{children}:{})}
   })
+  let callIndex:string|undefined
+  if(provider&&calls&&Buffer.byteLength(JSON.stringify(calls))>8192){
+   const {activity,scopeId,contextId,workerId,triggerId,sourceId}=provider.model
+   const key=activity+':checkpoint-'+stableDigest([id,run.assignmentId,run.turnId])
+   const index={id:key,activity,scopeId,contextId,workerId,triggerId,sourceId,ticketId:id,assignmentId:run.assignmentId,at:provider.at,result:calls}
+   if(!this.host.memory.cleanup.blocked('model-tool-receipt',key,index)){
+    receipts.set(key,index);callIndex='model-tool-receipt/'+key
+   }
+  }
+  const declared=[...new Set(this.host.verification.criteria(g,n).flatMap(cr=>[...cr.files,...(cr.check?[cr.check.path]:[])]))]
   const continuation=shell?{
    instruction:'Continue the current reviewed task in the retained workspace. The interrupted shell request never started. Inspect existing work and the accepted prerequisite artifacts. Use superagent_artifact_read with each artifact.id. Preserve prior effects.',unstartedRequestId:shell.requestId,
   }:{
-   instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read only the exact receipt resources listed here for previous results. IDs are opaque. Use the retained child results directly and do not generate or enumerate receipt IDs. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:calls,
+   instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read only the exact receipt resources listed here for previous results. IDs are opaque. Use the retained child results directly and do not generate or enumerate receipt IDs. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:callIndex?calls?.slice(-4):calls,
+   ...(callIndex?{callIndex,recordedCallCount:calls!.length}:{}),
+   ...(declared.length?{declaredOutputs:declared,delivery:'Inspect the current declared outputs first. When the requested work and its evidence are ready, hand them back for independent acceptance. Identify any remaining limitation. Reuse completed tests and receipts for the same version.'}:{}),
    ...(provider?.cause==='input_superseded'?{inputHandoff:'Use the newest admitted user input. The previous activation ended. Its undispatched requests did not run.'}:{}),
    ...(liveJobs.length?{runningJobs:liveJobs.map(job=>({id:job.id,resource:'job/'+job.id}))}:{}),
   }

@@ -108,6 +108,9 @@ function finalizedMp4(bytes: Buffer) {
 }
 const hash = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
+export function browserReceiptId(owner: Pick<WorkOwner, "ticketId" | "assignmentId" | "agentId">, requestId: string) {
+  return hash([owner.ticketId, owner.assignmentId, owner.agentId ?? "", requestId]);
+}
 const cleanUrl = (value: string) => {
   try {
     const u = new URL(value);
@@ -1142,12 +1145,7 @@ export class BrowserManager {
   async tool(owner: WorkOwner, input: BrowserToolInput): Promise<unknown> {
     this.enabled();
     const p = this.principal(owner);
-    const key = hash([
-        owner.ticketId,
-        owner.assignmentId,
-        owner.agentId ?? "",
-        input.requestId,
-      ]),
+    const key = browserReceiptId(owner, input.requestId),
       fingerprint = hash(input);
     const record = (state: Receipt["state"], result?: unknown) => {
       this.host.store.put("browser-receipt", key, {

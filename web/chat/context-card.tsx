@@ -3,9 +3,11 @@ import { X } from 'lucide-react'
 import type { ChatSessions } from '../../src/chat.ts'
 import { ContextWindow } from '../ui/agent-decisions.tsx'
 import { InspectorCard } from '../ui/layout.tsx'
+import { SelectField } from '../ui/controls.tsx'
 import { lastRead, rememberRead } from './last-read.ts'
 
 type Usage = ReturnType<ChatSessions['contextUsage']>
+type TeamUsage = ReturnType<ChatSessions['teamContext']>
 type Localize = (en: string, zh: string) => string
 type LoadUsage = (id: string, signal: AbortSignal) => Promise<Usage>
 const readings = 'roppo.chat.context-usage'
@@ -63,13 +65,35 @@ export function useCurrentContext(conversationId: string | null, turnId: string 
 
 export type CurrentContext = { data?: Usage; failed?: boolean; empty?: boolean }
 
-export function ContextCard({ current, L, focusOnReveal, onClose }: {
+export function ContextCard({ current, L, focusOnReveal, onClose, loadTeam, teamRevision, workerLabel, taskLabel }: {
   current: CurrentContext
   L: Localize
   focusOnReveal: boolean
   onClose: () => void
+  loadTeam?: (signal: AbortSignal) => Promise<TeamUsage>
+  teamRevision?: string
+  workerLabel?: (id: string) => string | undefined
+  taskLabel?: (id: string) => string | undefined
 }) {
   const usage = current.data
+  const [team, setTeam] = useState<TeamUsage>([])
+  const [teamFailed, setTeamFailed] = useState(false)
+  const [agent, setAgent] = useState('')
+  useEffect(() => {
+    if (!loadTeam) return
+    const controller = new AbortController()
+    loadTeam(controller.signal).then(rows => {
+      if (controller.signal.aborted) return
+      setTeam(rows)
+      setTeamFailed(false)
+    }, () => {
+      if (!controller.signal.aborted) setTeamFailed(true)
+    })
+    return () => controller.abort()
+  }, [loadTeam, teamRevision])
+  const workers = team.filter(row => row.role === 'worker' && row.workerId)
+  const workerIds = [...new Set(workers.map(row => row.workerId!))]
+  const selectedWorker = workerIds.includes(agent) ? agent : ''
   const closeButton = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (focusOnReveal) closeButton.current?.focus({ preventScroll: true })
@@ -94,6 +118,27 @@ export function ContextCard({ current, L, focusOnReveal, onClose }: {
       <button type="button" ref={closeButton} className="rp-icon-button" onClick={onClose}
         aria-label={L('Close context usage', '关闭上下文用量')}><X size={15} /></button>
     }>
+      {!!workerIds.length && <label className="context-agent-select">
+        <span>{L('Agent', '智能体')}</span>
+        <SelectField label={L('Agent', '智能体')} value={selectedWorker} onChange={event => setAgent(event.currentTarget.value)}>
+          <option value="">Router</option>
+          {workerIds.map(id => <option key={id} value={id}>{workerLabel?.(id) ?? id}</option>)}
+        </SelectField>
+      </label>}
+      {teamFailed && <p className="usage-note" role="status">{L('Could not refresh Worker usage.', '暂时无法刷新 Worker 用量。')}</p>}
+      {selectedWorker ? workers.filter(row => row.workerId === selectedWorker).map(row => {
+        const title = (row.ticketId && taskLabel?.(row.ticketId)) || modelWindow
+        return <section className="usage-section" aria-label={title} key={row.activity}>
+          <h4>{title}</h4>
+          {row.inputTokens != null
+            ? <ContextWindow label={title} capacity={row.capacity} L={L} legend={false}
+              parts={[{id:'input',label:L('Reported model input','模型上报的输入'),tokens:row.inputTokens}]}/>
+            : <p className="usage-note">{row.capacity != null ? '— / ' + row.capacity.toLocaleString(L('en','zh-CN')) + ' tokens'
+              : L('Model token count not reported yet', '模型尚未上报 token 数')}</p>}
+          {row.inputTokens != null && row.capacity == null && <p className="usage-note">{L('Window capacity not reported', '模型未提供窗口容量')}</p>}
+          {row.model && <dl className="usage-model"><dt>{L('Model', '模型')}</dt><dd>{row.model}</dd></dl>}
+        </section>
+      }) : <>
       {usage?.previous && <p className="usage-note">{L('Showing the last recorded usage', '显示上次用量记录')}</p>}
       {status && <p className="usage-note" role="status">{status}</p>}
       {usage && (count != null || usage.capacity != null) && (
@@ -128,6 +173,7 @@ export function ContextCard({ current, L, focusOnReveal, onClose }: {
             ]} />
         </section>
       )}
+      </>}
     </InspectorCard>
   )
 }

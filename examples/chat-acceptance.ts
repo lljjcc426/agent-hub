@@ -49,6 +49,10 @@ const model={
   }
   if(workflow){
     if(r.role==='worker'){
+      if(r.input.includes('Check the approved report')){
+        r.onUsage?.({id:'measured',inputTokens:512,contextWindowTokens:4096})
+        return {threadId,turnId,text:JSON.stringify({state:'ready',summary:'Approved report evidence',reply:'Approved report evidence',question:null,askedBy:null,handbacks:[]})}
+      }
       if(r.input.includes('Write the checklist as a list'))return deliverFile({name:'checklist.md',content:'- Review the release'},'Checklist drafted.')
       if(r.input.includes('Draft the release notes for explicit review'))
         return deliverFile({name:'release-notes.md',content:'# Release notes\n\nLayout verified by Research.',requireApproval:true,pendingNotice:'Sending the release notes needs your approval.'},'Release notes drafted.')
@@ -63,6 +67,21 @@ const model={
       return {threadId,turnId,text:JSON.stringify({state:'ready',summary,reply:summary,question:null,askedBy:null,handbacks:[]})}
     }
     const data=JSON.parse(r.input),text=data.trigger?.text
+    if(data.kind==='chat_planning'){
+      if(r.onTool||r.tools?.length)throw Error('The planning fixture received execution tools')
+      const options=(a:string,b:string)=>[{label:a},{label:b}]
+      const value=data.stage==='question'?(data.userInputs.length===1
+        ?{question:'Who will read the report?',options:options('Leadership','Team')}
+        :{question:'What format should the report use?',options:options('Table','Memo')})
+        :{title:data.userInputs.at(-1).text==='Use a shorter version'?'Short report':'Detailed report',
+          objective:'Verify the report against the evidence.',steps:['Check the source','Write the report'],deliverable:'A report with evidence for each claim.'}
+      return {threadId,turnId,text:JSON.stringify(value)}
+    }
+    if(data.approvedPlan){
+      if(!data.approvedPlan.proposal.includes('Short report'))throw Error('Unexpected proposal revision')
+      await r.onTool!('worker_manage',{action:'assign',id:'research',revision:0,requestId:turnId,text:'Check the approved report'},'approved-report')
+      return reply('Approved work started.')
+    }
     r.onUsage?.({id:'preflight',inputTokens:3000})
     r.onUsage?.({id:'latest',inputTokens:137,contextWindowTokens:8192})
     if(data.fileReviewReceipt)return {threadId,turnId,text:JSON.stringify({reply:''})}

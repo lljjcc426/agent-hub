@@ -43,6 +43,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import {chatScheduleChange} from './chat-schedules.ts'
+import {planningAction} from './chat-planning.ts'
 import {validTimeZone} from './turn-context.ts'
 import { Runtime } from './runtime.ts'
 import { incomingSchema } from './sources.ts'
@@ -784,7 +785,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           res.end(req.method==='HEAD'?undefined:readFileSync(file.path));return
         }
       }
-      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|task-detail|task-acceptance|approval-history|approvals|decisions|file-reviews))?$/)
+      const match=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})(?:\/(messages|events|cancel|files|memory|reactions|schedules|context|team-context|references|planning|task-detail|task-acceptance|approval-history|approvals|decisions|file-reviews))?$/)
       if(match){
         const id=match[1]!,action=match[2]
         if(action==='approval-history'&&req.method==='GET'){
@@ -799,6 +800,15 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,runtime.chat.approvalHistory(id,owner,cursor,{query:search,result}));return
         }
         if(action==='team-context'&&req.method==='GET'){send(res,200,runtime.chat.teamContext(id,owner));return}
+        if(action==='references'&&req.method==='GET'){
+          const search=z.string().trim().max(200).parse(query.get('q')??'')
+          send(res,200,runtime.chat.references(id,owner,search));return
+        }
+        if(action==='planning'&&req.method==='POST'){
+          const input=planningAction.parse(await operatorBody(req))
+          if(input.action==='cancel'){send(res,200,await runtime.chat.cancelPlanning(id,owner,input.planId));return}
+          send(res,202,runtime.chat.confirmPlanning(id,owner,input.messageId,(skillId,project)=>library.chatSkill(runtime,endpoint,project,skillId)));return
+        }
         if(action==='task-detail'&&req.method==='GET'){
           const task=z.string().min(1).max(500).parse(query.get('task'))
           res.setHeader('cache-control','no-store')
@@ -859,7 +869,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
           send(res,200,runtime.chat.react(id,owner,input));return
         }
         if(action==='messages'&&req.method==='POST'){
-          const input=z.object({text:z.string().trim().max(messageCharacters),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(chatUploadLimits.maxFiles).optional(),clientMessageId:z.string().uuid(),skillId:z.string().regex(/^[A-Za-z0-9_-]{28}$/).optional(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
+          const input=z.object({text:z.string().trim().max(messageCharacters),quote:z.object({messageId:z.string().min(1).max(500),excerpt:z.string().trim().min(1).max(8000).optional()}).strict().optional(),attachments:z.array(z.string().uuid()).max(chatUploadLimits.maxFiles).optional(),clientMessageId:z.string().uuid(),skillId:z.string().regex(/^[A-Za-z0-9_-]{28}$/).optional(),startPlan:z.literal(true).optional(),planningId:z.string().uuid().optional(),timeZone:chatTimeZone,openingLocale:z.enum(['en','zh-CN']).optional(),locale:z.string().min(2).max(100).refine(value=>{try{return Intl.getCanonicalLocales(value).length===1}catch{return false}},'Invalid language tag').optional()}).strict().parse(await body(req))
           send(res,202,runtime.chat.send(id,owner,input,(skillId,project)=>library.chatSkill(runtime,endpoint,project,skillId)));return
         }
         if(action==='cancel'&&req.method==='POST'){

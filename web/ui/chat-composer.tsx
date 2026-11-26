@@ -2,18 +2,20 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProp
 import { smartPunctuation } from '../chat/smart-punctuation.ts'
 import { modifierEnterLabel, sendModifier, type SendShortcut } from '../chat/send-shortcut.ts'
 import { createPortal } from 'react-dom'
-import { ArrowLeft, ArrowUp, Box, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
+import { ArrowLeft, ArrowUp, Box, ClipboardList, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
 import { ApprovalOptions, WorkerDiffOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
   type ChatCommand, type Localize, type Mode } from '../chat/composer-commands.tsx'
 import { RouterModelOptions, type ModelConnectionStore } from '../chat/router-model.tsx'
 import type { CurrentContext } from '../chat/context-card.tsx'
 import type { ChatSkill, ChatSkillCatalog, ChatSkillRef } from '../../src/chat-skills.ts'
+import { ReferencePicker, type LoadReferences } from '../chat/reference-picker.tsx'
+import type { ChatQuoteView } from '../../src/chat-interactions.ts'
 import { finishLayerExit } from './overlays.tsx'
 import {setWorkerDiffPreference} from '../chat/worker-diff-preference.ts'
 import '../chat/composer-controls.css'
 
-type Subpage = Exclude<ChatCommand, 'attach' | 'commits'>
-type Source = Subpage | 'slash' | 'plus'
+type Subpage = Exclude<ChatCommand, 'attach' | 'commits' | 'plan'>
+type Source = Exclude<Subpage, 'ref'> | 'slash' | 'plus'
 type Menu = { source: Source; page: Subpage | 'commands'; query: string }
 
 function SendMessage({ canSend, sending, shortcut, L, onClick }: {
@@ -38,11 +40,18 @@ export type ComposerActionsProps = {
   loadSkills?: (signal: AbortSignal) => Promise<ChatSkillCatalog>
   skill?: ChatSkillRef | null
   onSkillChange?: (skill: ChatSkillRef | null) => void
+  loadReferences?: LoadReferences
+  onReference?: (reference: ChatQuoteView) => void
+  planDraft?: boolean
+  onPlanDraft?: (value: boolean) => void
+  planning?: boolean
+  onDraftCleared?: () => void
 }
 export type TextInputProps = Omit<ComponentPropsWithRef<'textarea'>, 'style'>
 
 export function ChatComposer({ L, visible, sending, mode, usage, router, model, modelBackend, uploadDisabled,
   onContext, onUsageOpen, saveMode, onModelSaved, onCommitTrail, onEnter, loadSkills, skill, onSkillChange,
+  loadReferences, onReference, planDraft, onPlanDraft, planning, onDraftCleared,
   sendShortcut = 'enter', Input = 'textarea', value, setText, onSend, canSend, onAttach, modelStore }: ComposerActionsProps & {
   Input?: ComponentType<TextInputProps> | 'textarea'; value?: string; canSend: boolean
   setText: (text: string) => void; onAttach: () => void; onSend: () => void; modelStore?: ModelConnectionStore
@@ -66,7 +75,8 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   const slash = slashList && !closing
   const nested = page !== 'commands' && (source === 'slash' || source === 'plus')
   const query = menu?.query ?? ''
-  const items = matchingCommands(query, L, !!onCommitTrail, showContext)
+  const extraCommands = {ref:!!loadReferences,plan:!!onPlanDraft&&!planning}
+  const items = matchingCommands(query, L, !!onCommitTrail, showContext, slashList ? extraCommands : undefined)
   const skillItems = slashList && loadSkills ? catalog.items.filter(item =>
     item.name.toLowerCase().includes(query) || item.description?.toLowerCase().includes(query)
   ).sort((a,b) => Number(b.name.toLowerCase().startsWith(query)) - Number(a.name.toLowerCase().startsWith(query))) : []
@@ -112,7 +122,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
   }
   function updateQuery(text: string) {
     const query = /^\/[^\s/]*$/u.test(text) ? text.slice(1).toLowerCase() : null
-    if (query === null || (!loadSkills && !matchingCommands(query, L, !!onCommitTrail, showContext).length)) {
+    if (query === null || (!loadSkills && !matchingCommands(query, L, !!onCommitTrail, showContext, extraCommands).length)) {
       if (menu) close(false)
       return
     }
@@ -129,6 +139,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     } else if (command === 'commits') {
       close(false)
       onCommitTrail?.(opener.current)
+    } else if (command === 'plan') {
+      onPlanDraft?.(true)
+      close()
     } else show({ ...menu, page: command })
   }
   function selectSkill(item: ChatSkill) {
@@ -160,7 +173,8 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
       return
     }
     const target = event.target as Element
-    if (page !== 'commands' && page !== 'permissions' && page !== 'diff' && !(page === 'model' && target.closest('[role=menu]'))) return
+    if (page !== 'commands' && page !== 'permissions' && page !== 'diff' && page !== 'ref' && !(page === 'model' && target.closest('[role=menu]'))) return
+    if (page === 'ref' && target.matches('input')) return
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role^=menuitem]:not(:disabled)'))
     if (!options.length) return
@@ -260,12 +274,20 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     const panel = palette.current
     if (!panel || !page || closing) return
     if (slash) { input.current?.focus({ preventScroll: true }); return }
-    const target = panel.querySelector<HTMLElement>('[aria-checked=true], [role=menuitem]:not(:disabled), .palette-details') ?? panel
+    const focusSelector = page === 'ref' ? '[data-reference-search]' : '[aria-checked=true], [role=menuitem]:not(:disabled), .palette-details'
+    const target = panel.querySelector<HTMLElement>(focusSelector) ?? panel
     target.focus({ preventScroll: true })
   }, [page, source, slash, closing])
 
   return <>
     <div className="command-input">
+      {planDraft && !planning && <div className="composer-skill">
+        <ClipboardList size={14}/><span>{L('Plan first','先规划')}</span>
+        <button type="button" aria-label={L('Remove plan mode','移除规划模式')} onClick={() => {
+          onPlanDraft?.(false)
+          input.current?.focus({preventScroll:true})
+        }}><X size={13}/></button>
+      </div>}
       {skill && <div className="composer-skill">
         <Box size={14}/><span>/{skill.name}</span>
         <button type="button" aria-label={L('Remove skill','移除技能')} onClick={() => {
@@ -296,9 +318,13 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
               field.setSelectionRange(result.caret, result.caret)
             }
           }
+          if (!field.value.trim()) onDraftCleared?.()
           updateQuery(field.value)
         }}
-        onCompositionEnd={event => updateQuery(event.currentTarget.value)}
+        onCompositionEnd={event => {
+          if (!event.currentTarget.value.trim()) onDraftCleared?.()
+          updateQuery(event.currentTarget.value)
+        }}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return
           if (slash && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return }
@@ -348,10 +374,10 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
       <div ref={palette} id={paletteId} popover="manual" tabIndex={-1} className="roppo-ui composer-palette"
         data-slash-list={slashList || undefined}
         data-closing={closing ? '' : undefined} inert={closing} aria-hidden={closing || undefined}
-        role={page === 'model' || page === 'context' ? 'dialog' : undefined}
+        role={page === 'model' || page === 'context' || page === 'ref' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Chat model','对话模型') : title} onKeyDown={moveInMenu}>
         <div ref={paletteBody} className="palette-body"><div key={page} className="palette-page" data-page={page}>
-          {(page === 'permissions' || page === 'context' || page === 'diff') && <div className="palette-heading">
+          {(page === 'permissions' || page === 'context' || page === 'diff' || page === 'ref') && <div className="palette-heading">
             {nested && <button type="button" aria-label={L('Back to chat actions','返回对话操作')} onClick={back}><ArrowLeft size={16}/></button>}
             <strong>{page === 'permissions' ? L('How should Roppo ask for approval?', 'Roppo 应如何请求批准？') : title}</strong>
           </div>}
@@ -362,6 +388,10 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} backend={modelBackend} onSaved={onModelSaved}
             onSaving={active => setModelWrites(count => count + (active ? 1 : -1))} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && onContext && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}
+          {page === 'ref' && loadReferences && <ReferencePicker load={loadReferences} L={L} choose={reference => {
+            close()
+            onReference?.(reference)
+          }}/>}
         </div></div>
       </div>, document.body
     )}

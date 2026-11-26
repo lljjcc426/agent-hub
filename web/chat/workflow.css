@@ -144,6 +144,14 @@
 .chat-approval-answer { width: 100%; min-width: 0; }
 .chat-approval-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-top: 2px; }
 .chat-approval-actions .rp-button { min-height: 32px; }
+.planning-status {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 4px 12px; margin-bottom: 5px; padding-inline: 6px; color: var(--c-muted); font-size: 12px;
+}
+.context-agent-select {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px;
+}
+.context-agent-select select { min-width: 0; max-width: 75%; }
 .chat-approval-receipt {
   display: flex;
   justify-content: space-between;

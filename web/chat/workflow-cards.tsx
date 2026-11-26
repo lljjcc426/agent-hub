@@ -114,6 +114,9 @@ type FlowProps = {
   readonly: boolean
   actor:(id:string)=>string
   decide: (id: string, answer: string) => Promise<void>
+  planning: Snapshot['planning']
+  confirmPlan: (id: string) => Promise<void>
+  revisePlan: () => void
   answerWorker:(body:DecisionAttempt)=>Promise<unknown>
   refresh:()=>Promise<void>
   readDraft: (id: string) => Promise<{ text: string }>
@@ -226,6 +229,27 @@ export function RouterDecision({id, decision, archived = false}: {id:string; dec
       answer={decision.answer} custom disabled={busy || readonly || archived || !pendingIds.has(id)}
       onAnswer={answer => void submit(() => decide(id,answer))} footer={archived ? undefined : <RecordLink id={id}/>}/>
     {error}
+  </div>
+}
+
+export function PlanReviewCard({id, confirmed, children}: {id:string;confirmed:boolean;children:ReactNode}) {
+  const {L, planning, confirmPlan, revisePlan, readonly} = useContext(Flow)!
+  const {busy, submit, error} = useSubmit(L)
+  const current = planning?.messageId === id
+  const review = current && planning.state === 'review'
+  return <div className="workflow-card">
+    <ApprovalFrame L={L} id={id} kind="choice" title={L('Proposed plan', '执行方案')}
+      status={review ? L('Awaiting confirmation', '待确认') : confirmed ? L('Confirmed', '已确认')
+        : current && planning.state === 'cancelled' ? L('Cancelled', '已取消') : L('Previous proposal', '先前方案')}>
+      <div data-message-body>{children}</div>
+      {review && !readonly && <div className="chat-approval-actions">
+        <Button type="button" onClick={revisePlan}>{L('Revise plan', '修改方案')}</Button>
+        <Button tone="primary" type="button" disabled={busy} onClick={() => void submit(() => confirmPlan(id))}>
+          {L('Confirm and run', '确认并执行')}
+        </Button>
+      </div>}
+      {error}
+    </ApprovalFrame>
   </div>
 }
 

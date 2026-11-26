@@ -1262,6 +1262,7 @@ export class Runtime {
           if(job.kind==='router'&&this.store.get<ChatRun>('chat-run',payload.triggerId)?.cancelRequested){
             this.store.jobState(job.id,'cancelled');return
           }
+          if(this.closing&&job.kind==='router'&&payload.planning===true){this.store.jobState(job.id,'pending');return}
           if(this.closing&&job.id==='router:'+payload.triggerId&&this.store.db.prepare(`SELECT 1 FROM records WHERE kind='chat-run'
             AND json_extract(body,'$.interjection.parentId')=? AND json_extract(body,'$.interjection.state') IN ('pending','update') LIMIT 1`).get(payload.triggerId)){
             this.store.jobState(job.id,'pending');return
@@ -1269,7 +1270,7 @@ export class Runtime {
           this.store.jobState(job.id, 'failed', String(error))
           this.store.audit({ type: 'job.failed', id: job.id, message: String(error) })
           if(job.kind==='router'||job.kind==='router-admit')this.store.put('router-error',job.id,{discussion:routerDiscussion,triggerId:payload.triggerId,error:String(error).slice(0,500),at:Date.now()})
-          if(job.kind==='router'&&(!payload.messageId||!this.store.get('chat-run',payload.triggerId)))this.goals.finishTurn(payload.triggerId,error)
+          if(job.kind==='router'&&!payload.planning&&(!payload.messageId||!this.store.get('chat-run',payload.triggerId)))this.goals.finishTurn(payload.triggerId,error)
           if (payload.ticketId) {
             const ticket = this.store.tickets.get(payload.ticketId)
             if (ticket && !ticket.ended) this.reportWork(ticket.id, {state:'blocked',summary:String(error).slice(0,500),
@@ -1292,6 +1293,26 @@ export class Runtime {
     return routing?{...original,...routing}:continuation?{...original,parentTrigger:continuation.triggerId,discussion:continuation.discussion}:original
   }
   private async perform(job: Job,dispatch?:{profile:WorkerProfile;reserve:boolean}): Promise<void> {
+    const planJob=job.kind==='router'?job.payload as {planning?:boolean;triggerId?:string;discussion?:string}:undefined
+    if(planJob?.planning===true&&planJob.triggerId&&planJob.discussion){
+      const {triggerId,discussion}=planJob
+      const controller=new AbortController(),key='router:'+discussion
+      this.controllers.set(key,controller)
+      try{
+        await this.chat.preparePlanning(triggerId,async request=>{
+          if(this.model instanceof BackendRegistry&&this.model.definition(request.backendId??this.model.selected('router')).kind==='plugin')
+            throw Error('The selected plugin cannot prepare a tool-free plan')
+          const result=await this.runModel({...request,role:'router',ephemeral:true,managed:true,privateState:this.config.stateDir,
+            sandbox:'read-only',suppliedText:true,allowNativeTools:false,tools:[],signal:controller.signal,
+            options:{...request.options,tools:[],toolConnections:[],prompt:undefined,persona:undefined},
+          })
+          controller.signal.throwIfAborted()
+          return result.text
+        })
+      }finally{this.controllers.delete(key)}
+      this.store.jobState(job.id,this.store.get<ChatRun>('chat-run',triggerId)?.cancelRequested?'cancelled':'done')
+      return
+    }
     if(job.kind==='goal-replan'){if(await this.replanning.perform((job.payload as any).roundId)===false){this.store.jobState(job.id,'pending');return}}
     else if(job.kind==='goal-verify'){if(await this.verification.perform((job.payload as any).roundId)===false){this.store.jobState(job.id,'pending');return}}
     else if(job.kind==='github-confirm'){
@@ -1384,8 +1405,9 @@ export class Runtime {
       }
     }
     const admittedMandate=candidates||followups?undefined:this.routerIngress.authority(triggerId,discussion)
+    const approvedPlan=!messageId?this.chat.approvedPlan(triggerId):undefined
     // An explicit pickup has no execution authority. Finish it before goal, Worker or model routing.
-    if(job.kind==='router'&&!messageId&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId&&trigger.human&&
+    if(job.kind==='router'&&!approvedPlan&&!messageId&&!batchId&&!permissionId&&!fileReviewId&&!teamResultId&&trigger.human&&
        this.chat.binding(triggerId)&&!this.chat.isReactionInput(triggerId)&&!this.chat.skillForTrigger(triggerId)&&
        existingFileRequest(trigger.text)&&!this.store.get<{attachments?:unknown[]}>('chat-message','user:'+triggerId)?.attachments?.length){
       const key='router:'+discussion,controller=new AbortController()
@@ -1429,6 +1451,7 @@ export class Runtime {
     const hostCommand=reviewCommand?{kind:'project_review',message:reviewCommand.message}:
       workflowCommand?{kind:'workflow_decision',state:workflowCommand.state}:undefined
     const currentInput=(job.payload as any).teamResultId?this.delegation.context((job.payload as any).teamResultId,triggerId):followups?followups.card():candidates?candidates.card():messageId?undefined:{kind:this.chat.isReactionInput(triggerId)?'chat_reaction':trigger.human?'user_message':'event',trigger,chat:this.chat.interactionContext(triggerId),replyLocale:this.chat.locale(triggerId),quotedMessage:this.chat.quoteForTrigger(triggerId),mandate,assessment:this.routerIngress.get(triggerId)?.assessment,
+      ...(approvedPlan?{approvedPlan}:{}),
       ...(chatRun?.interjection?.state==='update'?{taskUpdate:{parentTriggerId:chatRun.interjection.parentId,
         instruction:'This message changed a task that ended before confirming the change. Use the authorized conversation and verify existing task or tool receipts before continuing. Do not repeat prior effects.'}}:{}),
       ...(hostCommand?{hostCommand:{...hostCommand,notice:'The host owns this exact decision. Explain its recorded state without executing it again.'}}:{}),
@@ -1744,6 +1767,7 @@ export class Runtime {
           (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, relevant file context and the outcome the user needs. For diagnosis, delegate the question and relevant artifact, leaving the Worker free to choose read-only checks. Delegate file creation. To return an existing file, use chat_artifact_find and chat_artifact_deliver with the selected ID. Clarify ambiguous versions. Do not dispatch a Worker or resume a goal for a pickup. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
+          +(approvedPlan?'\nThe user approved the exact proposal in approvedPlan. Use their original request and clarification answers and perform that plan within the current permissions. Ask the user before materially changing it.':'')
           +(review?'\nReview the Worker report against the actual user objective in this conversation. A reproduced symptom alone does not explain its cause. If an authorized check could answer the open question, choose continue with that concrete next step for the same Worker. Ask which observation would distinguish the proposed cause from alternatives. Check the actual failing entry point and the policy of the exact build. If a live control is unavailable, consider the corresponding implementation or logs before asking the user to operate it. Use answer for a supported conclusion or ask_user for an indispensable human choice or access. For continue, leave reply empty.':'')
           + (showCommentary?'\nWhen your model connection supports a public commentary channel, use it for short updates in the user language at meaningful stages of the task. Decide when an update is worth sending. Report verified progress and what you are doing next. Keep internal reasoning private and continue the work after each update. Return the final reply in the requested format.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
@@ -1825,7 +1849,7 @@ export class Runtime {
       const policyRevision=this.settings.current().revision
       const evidenceContext={discussion,trigger,scoped}
       const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
-      const eligibleInput=this.config.execution.suppliedEvidence&&privateEvidence&&singleChatInput&&!chatRun.interjection&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&
+      const eligibleInput=!approvedPlan&&this.config.execution.suppliedEvidence&&privateEvidence&&singleChatInput&&!chatRun.interjection&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&
         !recovery?.holds.length&&!recoveredUpdates.length&&!this.goals.forInput(triggerId)&&!this.chat.isReactionInput(triggerId)&&currentEvidence(this,chatRun,trigger.text)
       const previousDialogue=chatRun&&(eligibleInput||review&&participantGroup(chatRun)?.historyDigest)?evidenceHistory(this,chatRun):undefined
       const historyDigest=previousDialogue?.length?stableDigest(previousDialogue):undefined

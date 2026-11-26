@@ -90,6 +90,11 @@
 .palette-row > svg { flex: none; }
 .palette-row small, .palette-trailing { color: var(--rp-muted); }
 .palette-row small { font-size: 11px; }
+.palette-reference-search { display: flex; align-items: center; gap: 7px; padding: 4px 8px 8px; color: var(--rp-muted); }
+.palette-reference-search input { min-width: 0; flex: 1; }
+.palette-reference span { display: grid; gap: 2px; }
+.palette-reference strong { font-size: 12px; font-weight: 560; }
+.palette-reference small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: start; }
 .palette-group-label, .palette-empty { padding: 7px 10px; color: var(--rp-muted); }
 .palette-group-label { margin-top: 4px; font-weight: 550; }
 .palette-skill-details { display: grid; gap: 2px; }

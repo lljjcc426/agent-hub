@@ -97,10 +97,10 @@ export class ChatAttachments {
       }finally{closeSync(fd)}
     }))}catch{throw new ChatError('attachment_version_unavailable','This retained file version is unavailable.',404)}
   }
-  resolve(conversationId:string,owner:string,ids:string[]){
+  resolve(conversationId:string,owner:string,ids:string[],planningTurns?:ReadonlySet<string>){
     this.conversation(conversationId,owner)
     if(ids.length>chatUploadLimits.maxFiles||new Set(ids).size!==ids.length)throw new ChatError('attachment_limit','Select up to 32 different files.',400)
-    return ids.map(id=>{const row=this.row(id,conversationId);if(row.triggerId)throw new ChatError('attachment_sent','This file was already sent.');return this.public(row)})
+    return ids.map(id=>{const row=this.row(id,conversationId);if(row.triggerId&&!planningTurns?.has(row.triggerId))throw new ChatError('attachment_sent','This file was already sent.');return this.public(row)})
   }
   bind(ids:string[],triggerId:string){for(const id of ids){const row=this.host.store.get<Upload>('asset',id)!;this.host.store.put('asset',id,{...row,triggerId})}}
   private taskCopy(row:Upload,ticketId:string){const id=stableDigest(['chat-attachment',ticketId,row.id]);return {id,path:join(this.host.config.stateDir,'assets',id,'upload'+extname(row.path))}}

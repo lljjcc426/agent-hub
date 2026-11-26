@@ -31,6 +31,103 @@ function fixture(run?:(r:ModelRequest)=>Promise<unknown>,writable=false){
   return {h,config,model,calls,root}
 }
 const send=(h:Runtime,id:string,text='Hello Router',clientMessageId=randomUUID())=>h.chat.send(id,'owner',{text,clientMessageId})
+it('requires two planning answers and the latest proposal confirmation before admitting work',async()=>{
+  const {h,calls}=fixture(async request=>{
+    const input=JSON.parse(request.input)
+    if(input.kind==='chat_planning'){
+      expect(request).toMatchObject({ephemeral:true,suppliedText:true,tools:[],sandbox:'read-only'})
+      expect(request.onTool).toBeUndefined()
+      if(input.stage==='question'){
+        return input.userInputs.length===1 ? {question:'Who will read the report?',options:[{label:'Leadership'},{label:'Team'}]}
+          : {question:'Which format should I use?',options:[{label:'Table'},{label:'Memo'}]}
+      }
+      const revision=input.userInputs.at(-1).text==='Use the short version'
+      if(revision)expect(input.userInputs.some((turn:{proposal?:string})=>turn.proposal?.includes('Full report'))).toBe(true)
+      return {title:revision?'Short report':'Full report',objective:'Explain the findings',steps:['Review the evidence','Write the report'],deliverable:'A report that ties every claim to the evidence.'}
+    }
+    expect(input.trigger.text).toBe('Prepare the report')
+    expect(input.approvedPlan).toMatchObject({proposal:expect.stringContaining('Short report'),inputs:[
+      {text:'Prepare the report',files:['source.txt']},{text:'Leadership'},{text:'Table'},{text:'Use the short version'},
+    ]})
+    return {reply:'Executed approved plan.'}
+  })
+  const chat=h.chat.create('owner')
+  const file=await upload(h,chat.id,'source.txt',Buffer.from('Fixture source evidence'),'text/plain')
+  h.chat.setApprovalMode('owner','full')
+  const start={text:'Prepare the report',clientMessageId:randomUUID(),startPlan:true as const,attachments:[file.id]}
+  const first=h.chat.send(chat.id,'owner',start)
+  expect(h.chat.send(chat.id,'owner',start)).toEqual({...first,duplicate:true})
+  const view=()=>h.chat.view(chat.id,'owner',undefined,undefined,undefined,undefined,undefined,true)
+  await settle(h,()=>view().planning?.state==='question')
+  const question1=view().planning!.messageId!
+  expect(view().pendingCards.some(card=>card.id===question1)).toBe(true)
+  expect(h.store.triggers.get(first.runId)).toBeUndefined()
+  expect(()=>h.chat.confirmPlanning(chat.id,'owner',question1)).toThrow('latest proposal')
+  const second=h.chat.answerDecision(chat.id,'owner',question1,'Leadership')
+  await settle(h,()=>view().planning?.state==='question')
+  const question2=view().planning!.messageId!
+  expect(question2).not.toBe(question1)
+  const third=h.chat.send(chat.id,'owner',{text:'Table',clientMessageId:randomUUID(),planningId:first.runId})
+  await settle(h,()=>view().planning?.state==='review')
+  const draft=view().planning!.messageId!
+  expect(view().run?.state).toBe('waiting')
+  const fourth=h.chat.send(chat.id,'owner',{text:'Use the short version',clientMessageId:randomUUID(),planningId:first.runId})
+  expect(()=>h.chat.confirmPlanning(chat.id,'owner',draft)).toThrow('latest proposal')
+  await settle(h,()=>view().planning?.state==='review')
+  const revised=view().planning!.messageId!
+  expect(revised).not.toBe(draft)
+  expect(()=>h.chat.confirmPlanning(chat.id,'owner',draft)).toThrow('latest proposal')
+  expect(()=>h.chat.confirmPlanning(chat.id,'foreign',revised)).toThrow('not found')
+  expect(calls).toHaveLength(4)
+  for(const turn of [first,second,third,fourth])expect(h.store.triggers.get(turn.runId)).toBeUndefined()
+  expect(h.store.tickets.list()).toHaveLength(0)
+  const approval=h.chat.confirmPlanning(chat.id,'owner',revised)
+  expect(h.chat.confirmPlanning(chat.id,'owner',revised)).toEqual({...approval,duplicate:true})
+  expect(()=>h.chat.send(chat.id,'owner',{text:'Change it again',clientMessageId:randomUUID(),planningId:first.runId})).toThrow('planning session has closed')
+  await settle(h,()=>view().messages.some(message=>message.text==='Executed approved plan.'))
+  expect(view().planning?.state).toBe('approved')
+  expect(h.store.get<{triggerId:string}>('asset',file.id)?.triggerId).toBe(approval.runId)
+  expect(calls).toHaveLength(5)
+})
+
+it('keeps a cancelled planning session and stale answers from starting work',async()=>{
+  const {h,calls}=fixture(async()=>({question:'Which outcome matters?',options:[{label:'A'},{label:'B'}]}))
+  const chat=h.chat.create('owner'),first=h.chat.send(chat.id,'owner',{text:'/plan Plan the work',clientMessageId:randomUUID()})
+  const view=()=>h.chat.view(chat.id,'owner')
+  await settle(h,()=>view().planning?.state==='question')
+  expect(view().messages[0]?.text).toBe('Plan the work')
+  const stale=view().planning!.messageId!
+  await h.chat.cancelPlanning(chat.id,'owner',first.runId)
+  expect(view().planning?.state).toBe('cancelled')
+  expect(()=>h.chat.answerDecision(chat.id,'owner',stale,'A')).toThrow('no longer active')
+  expect(()=>h.chat.confirmPlanning(chat.id,'owner',stale)).toThrow('latest proposal')
+  await h.tick()
+  expect(calls).toHaveLength(1)
+})
+
+it('rejects a proposal returned before the required planning questions',async()=>{
+  const {h}=fixture(async()=>({title:'Premature plan',objective:'Run work',steps:['Start immediately'],deliverable:'None'}))
+  const chat=h.chat.create('owner'),first=h.chat.send(chat.id,'owner',{text:'Plan the work',clientMessageId:randomUUID(),startPlan:true})
+  await settle(h,()=>h.chat.view(chat.id,'owner').planning?.state==='failed')
+  expect(h.chat.view(chat.id,'owner').messages.some(message=>message.planProposal)).toBe(false)
+  expect(h.store.triggers.get(first.runId)).toBeUndefined()
+  expect(h.store.tickets.list()).toHaveLength(0)
+})
+
+it('finds retained conversation messages by text and returns stable quote IDs',async()=>{
+  const {h}=fixture(async()=>({reply:'The **reference check** is complete.'})),chat=h.chat.create('owner'),other=h.chat.create('other')
+  const first=send(h,chat.id,'Find the article')
+  await settle(h,()=>h.chat.view(chat.id,'owner').run?.state==='completed')
+  const result=h.chat.references(chat.id,'owner','reference check')
+  expect(result).toMatchObject([{text:'The reference check is complete.',role:'assistant'}])
+  expect(h.chat.references(chat.id,'owner','unmatched')).toEqual([])
+  expect(()=>h.chat.references(chat.id,'other','reference')).toThrow('not found')
+  expect(()=>h.chat.send(other.id,'other',{text:'Use this',clientMessageId:randomUUID(),quote:{messageId:result[0]!.messageId}})).toThrow('no longer available')
+  expect(h.chat.references(chat.id,'owner','article')[0]?.messageId).toBe('user:'+first.runId)
+  const next=h.chat.send(chat.id,'owner',{text:'Continue from here',clientMessageId:randomUUID(),quote:{messageId:result[0]!.messageId}})
+  expect(h.chat.quoteForTrigger(next.runId)?.text).toBe('The reference check is complete.')
+})
+
 it.each([false,true])('rebuilds a rejected Chat context once and preserves a completed write (write=%s)',async write=>{
  let count=0,writes=0
  const {h}=fixture(async r=>{

@@ -7,9 +7,10 @@ export function schedulerRoutingKind(kind:string){return ['assess','followup','r
 export function schedulerRoutingKey(id:string){return ['assess:','followup:','router:','router-admit:','router-followup:','router-batch:','workflow-decision:','goal-verify:','goal-replan:'].some(prefix=>id.startsWith(prefix))}
 export function schedulerUserChatTurn(store:Store,job:Job){
  if(job.kind!=='router')return false
- const {triggerId,messageId,permissionId,fileReviewId,teamResultId}=job.payload as {triggerId?:string;messageId?:string;permissionId?:string;fileReviewId?:string;teamResultId?:string}
+ const {triggerId,messageId,permissionId,fileReviewId,teamResultId,planning}=job.payload as {triggerId?:string;messageId?:string;permissionId?:string;fileReviewId?:string;teamResultId?:string;planning?:boolean}
+ const chat=triggerId&&store.get<{planningId?:string}>('chat-run',triggerId)
  return !!triggerId&&!messageId&&!permissionId&&!fileReviewId&&!teamResultId&&
-  !!store.get('chat-run',triggerId)&&store.triggers.get(triggerId)?.human===true
+  !!chat&&(planning===true?!!chat.planningId:store.triggers.get(triggerId)?.human===true)
 }
 export function schedulerInteractiveJob(store:Store,job:Job){
  const ticketId=(job.payload as {ticketId?:string}|null)?.ticketId,ticket=ticketId?store.tickets.get(ticketId):undefined

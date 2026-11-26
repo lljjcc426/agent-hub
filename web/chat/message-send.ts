@@ -12,6 +12,8 @@ export function write(key:string,value:string){
 }
 export const draftKey=(id:string|null)=>'roppo.chat.draft.'+(id??'new')
 export const skillDraftKey=(id:string|null)=>'roppo.chat.draft.skill.'+(id??'new')
+export const planDraftKey=(id:string|null)=>'roppo.chat.draft.plan.'+(id??'new')
+export const planBindingKey=(id:string|null)=>'roppo.chat.draft.plan-binding.'+(id??'new')
 export function savedDraftSkill(id:string|null):ChatSkillRef|null {
   try{
     const value=JSON.parse(read(skillDraftKey(id),'null'))
@@ -19,15 +21,17 @@ export function savedDraftSkill(id:string|null):ChatSkillRef|null {
   }catch{return null}
 }
 export function carryInitialDraft(id:string){
-  const text=read(draftKey(null)),skill=savedDraftSkill(null)
-  if((!text&&!skill)||read(draftKey(id))||savedDraftSkill(id))return
+  const text=read(draftKey(null)),skill=savedDraftSkill(null),plan=read(planDraftKey(null))
+  if((!text&&!skill&&!plan)||read(draftKey(id))||savedDraftSkill(id)||read(planDraftKey(id)))return
   write(draftKey(id),text)
   write(draftKey(null),'')
   write(skillDraftKey(id),JSON.stringify(skill))
   write(skillDraftKey(null),'null')
+  write(planDraftKey(id),plan)
+  write(planDraftKey(null),'')
 }
 const pendingKey=(id:string|null)=>'roppo.chat.pending.'+(id??'new')
-type Pending={id:string;conversationId:string|null;text:string;attachments?:string[];quote?:ChatQuote;draftQuote?:DraftQuote;skill?:ChatSkillRef}
+type Pending={id:string;conversationId:string|null;text:string;attachments?:string[];quote?:ChatQuote;draftQuote?:DraftQuote;skill?:ChatSkillRef;startPlan?:true;planningId?:string}
 
 export function savedPending(id:string|null):Pending|null {
   try{
@@ -39,7 +43,7 @@ export function forgetPending(id:string|null,messageId:string){
   if(savedPending(id)?.id===messageId)write(pendingKey(id),'null')
 }
 
-type MessageInput={text:string;attachments:string[];quote?:ChatQuote;skillId?:string;locale:string;timeZone:string;openingLocale:'en'|'zh-CN'}
+type MessageInput={text:string;attachments:string[];quote?:ChatQuote;skillId?:string;startPlan?:true;planningId?:string;locale:string;timeZone:string;openingLocale:'en'|'zh-CN'}
 type Draft={input:MessageInput;files:readonly CompleteAttachment[];quote:DraftQuote|null;skill?:ChatSkillRef;conversationId:string|null}
 export type OutgoingMessage=Draft&{id:string;createdAt:number;stage:'initial'|'sending'|'slow'|'unconfirmed'|'rejected'|'accepted';error?:string}
 type Transport={
@@ -90,7 +94,8 @@ export function useMessageSend(transport:Transport,adopt:(id:string)=>void){
       publish()
     }
     const remember=()=>write(pendingKey(message.conversationId),JSON.stringify({id,conversationId:message.conversationId,
-      text:input.text,attachments:input.attachments,quote:input.quote,draftQuote:message.quote??undefined,skill:message.skill} satisfies Pending))
+      text:input.text,attachments:input.attachments,quote:input.quote,draftQuote:message.quote??undefined,skill:message.skill,
+      startPlan:input.startPlan,planningId:input.planningId} satisfies Pending))
     update({stage:'initial',error:undefined})
     remember()
     const sending=setTimeout(()=>{if(!signal.aborted)update({stage:'sending'})},2000)
@@ -122,7 +127,8 @@ export function useMessageSend(transport:Transport,adopt:(id:string)=>void){
   function begin(draft:Draft){
     if([...entries.current.values()].some(m=>m.conversationId===draft.conversationId&&m.stage!=='accepted'))return false
     const saved=savedPending(draft.conversationId),{input}=draft
-    const same=saved?.text===input.text&&saved.skill?.id===input.skillId&&JSON.stringify(saved.attachments??[])===JSON.stringify(input.attachments)&&
+    const same=saved?.text===input.text&&saved.skill?.id===input.skillId&&saved.startPlan===input.startPlan&&saved.planningId===input.planningId&&
+      JSON.stringify(saved.attachments??[])===JSON.stringify(input.attachments)&&
       JSON.stringify(saved.quote??null)===JSON.stringify(input.quote??null)
     void transmit({...draft,id:same?saved.id:crypto.randomUUID(),createdAt:Date.now(),stage:'initial'})
     return true

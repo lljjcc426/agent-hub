@@ -58,7 +58,7 @@ import type {HeartbeatChange,HeartbeatStatus} from '../../src/heartbeat.ts';
 import type {TaskExecutionDetail} from '../../src/chat-task-detail.ts';
 import type {AcceptanceRetryResult} from '../../src/goal-acceptance.ts';
 import type {ChatDelivery} from '../../src/chat-deliveries.ts';
-import {WorkflowProvider,WorkflowCards,FileReviewCard,RouterDecision,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
+import {WorkflowProvider,WorkflowCards,FileReviewCard,PlanReviewCard,RouterDecision,PendingTray,groupWorkflow,type ThinkingItem} from './workflow-cards.tsx';
 import {useAppearanceMode} from './appearance-store.ts';
 import './appearance-theme.css';
 import {ComposerControls} from './composer-actions.tsx';
@@ -103,7 +103,7 @@ import type {ChatQuote,ChatQuoteView} from '../../src/chat-interactions.ts';
 import {attachmentError,attachmentParts,createAttachmentAdapter,DraftAttachment,MessageAttachments} from './attachments.tsx';
 import type {ChatAttachment} from '../../src/chat-attachments.ts';
 import type {ChatSkillCatalog,ChatSkillRef} from '../../src/chat-skills.ts';
-import {carryInitialDraft,draftKey,forgetPending,read,savedDraftSkill,savedPending,skillDraftKey,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
+import {carryInitialDraft,draftKey,forgetPending,planBindingKey,planDraftKey,read,savedDraftSkill,savedPending,skillDraftKey,useMessageSend,write,type OutgoingMessage} from './message-send.ts';
 const AppearanceSettings = lazy(() => import('./appearance-settings.tsx').then(module => ({default: module.AppearanceSettings})));
 const RichMarkdown=lazy(()=>import("./markdown.tsx"));
 import "../../src/ui/theme.css";
@@ -212,6 +212,8 @@ function ErrorNotice({ code, clear }: { code: string; clear: () => void }) {
     code==='artifact_unavailable'||code==='delivery_missing'?L('This file is no longer available here.','此文件在当前聊天中已不可用。'):
     code==='file_reveal_failed'?L('Finder could not show the file. You can download it from the file card.','Finder 未能定位文件，可以使用文件卡的下载按钮。'):
     code==='quote_changed'?L('The selected text changed. Please quote it again.','选中的内容已变化，请重新引用。'):
+    code==='plan_closed'?L('This planning session has closed. Review the latest proposal.','该规划已结束，请查看最新方案。'):
+    code==='plan_busy'?L('Roppo is preparing the next planning step. Your draft is saved.','Roppo 正在规划下一步，草稿已保留。'):
     code==='reaction_failed'?L('Reaction wasn’t saved. Try again.','表情未保存，请重试。'):
     code.startsWith("attachment_")?attachmentError(code,L):
     code === "conversation_busy"
@@ -306,7 +308,9 @@ function OutgoingBubble({message,retry,edit,draftHasContext}:{message:OutgoingMe
   const {stage,input,files,quote,createdAt,skill}=message;
   const waiting=stage==='slow'||stage==='unconfirmed';
   const status=stage==='unconfirmed'?L('Delivery not confirmed yet.','还未确认送达。'):
-    stage==='rejected'?L('Message not sent. Your draft is saved.','发送失败，草稿已保留。'):undefined;
+    stage==='rejected'?(message.error==='plan_closed'?L('This plan has closed. Your draft was kept.','此规划已结束，草稿已保留。')
+      :message.error==='plan_backend_unavailable'?L('Choose an API or Codex connection to plan first.','先规划需要 API 或 Codex 连接。')
+        :L('Message not sent. Your draft is saved.','发送失败，草稿已保留。')):undefined;
   const receipt=status?undefined:stage==='accepted'?'read':'sending';
   return <div className="message user-message" data-outgoing={stage}>
     <QuotedMessage quote={quote??undefined}/>
@@ -350,7 +354,8 @@ function AssistantMessage() {
     streaming = status?.type === "running",
     footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
-  const hasCard=!!(deliveries?.length||fileReview||decision);
+  const proposal=useAuiState(s=>s.message.metadata.custom?.planProposal);
+  const hasCard=!!(deliveries?.length||fileReview||decision||proposal);
   const patchReceipt=useAuiState(s=>s.message.metadata.custom?.workerPatchReceipt===true);
   if(patchReceipt && workerReports?.length)return <><div className="workflow-block worker-diff-standalone" data-message-id={id}>
     <WorkerFileDiff reports={workerReports} openAgent={openAgent} L={L}/></div><WorkflowCards anchor={id}/></>;
@@ -362,6 +367,8 @@ function AssistantMessage() {
     body = <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>;
   } else if (decision) {
     body = <RouterDecision id={id} decision={decision}/>;
+  } else if (proposal) {
+    body = <PlanReviewCard id={id} confirmed={proposal==='confirmed'}><MessagePrimitive.Parts components={{ Text: Markdown }}/></PlanReviewCard>;
   } else {
     body = <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }}/></div>;
   }
@@ -975,6 +982,19 @@ function Chat(p: ChatProps) {
     const saved=savedPending(id),draft=read(draftKey(id));
     return savedDraftSkill(id)??(saved&&!p.sends.has(saved.id)&&(!draft||draft.trim()===saved.text)?saved.skill??null:null);
   });
+  const [planDraft,setPlanDraft]=useState(()=>{
+    const saved=savedPending(id);
+    return read(planDraftKey(id))==='true'||!!(saved?.startPlan&&!p.sends.has(saved.id));
+  });
+  const planDraftCurrent=useRef(planDraft);
+  const planningDraftId=useRef(read(planBindingKey(id))||savedPending(id)?.planningId||'');
+  const clearDraftBinding=useCallback(()=>{
+    planningDraftId.current='';write(planBindingKey(id),'');
+  },[id]);
+  const savePlanDraft=useCallback((value:boolean)=>{
+    if(value)clearDraftBinding();
+    planDraftCurrent.current=value;setPlanDraft(value);write(planDraftKey(id),value?'true':'');
+  },[id,clearDraftBinding]);
   const skillCurrent=useRef(skill);
   const locateAfterLoad=useRef<string|null>(null),locateRequest=useRef(0),quoteCurrent=useRef(quote);quoteCurrent.current=quote;
   const queuedEnter=useRef<string|null>(null);
@@ -1071,10 +1091,18 @@ function Chat(p: ChatProps) {
       attachmentBlocked ||
       sending;
   const welcome=!readonly&&!loading&&!snapshot?.messages.length&&!localMessages.length&&!running;
+  const planning=snapshot?.conversation.id===id?snapshot?.planning??null:null;
+  const livePlan=planning&&planning.state!=='approved'&&planning.state!=='cancelled'?planning:null;
+  const activePlanId=useRef(livePlan?.id);activePlanId.current=livePlan?.id;
+  const loadReferences=useCallback((query:string,signal:AbortSignal)=>
+    api<ChatQuoteView[]>('/conversations/'+id+'/references?'+new URLSearchParams({q:query}),undefined,'GET',signal),[id]);
+  const loadTeamContext=useCallback((signal:AbortSignal)=>
+    api<ReturnType<ChatSessions['teamContext']>>('/conversations/'+id+'/team-context',undefined,'GET',signal),[id]);
   const firstChat=welcome&&p.offerPersonalization&&route==='/chat';
   const preferenceStarter=welcome&&p.preferences?.purpose&&p.preferences.purpose!=='general'
     ?chatPersonalizationCopy(L).purposes[p.preferences.purpose]:undefined;
   const routerCall = snapshot?.calls.findLast(call => call.runId === run?.id && call.kind === 'router');
+  const teamUsageRevision=snapshot?.calls.filter(call=>call.kind==='worker').map(call=>[call.id,call.usageRevision,call.state].join(':')).join('|');
   const [usageRefresh, setUsageRefresh] = useState(0);
   const usage = useCurrentContext(configuring || readonly ? null : id, run?.id, ready?.model, ready?.backend,
     routerCall?.id, routerCall?.usageRevision, running || (panel && sidebarCards.items.includes('context')), loadContext, usageRefresh);
@@ -1292,7 +1320,7 @@ function Chat(p: ChatProps) {
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
         continuedReview:continuedReviews.has(m.id),speaker: m.speaker, recipient: showTranscriptDetails ? m.recipient : undefined, attachments: m.attachments, deliveries: m.deliveries,
-        inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length && !m.skill, ticketId: m.ticketId, decision:m.decision, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, skill:m.skill, reactions: m.reactions, agentReactions: m.agentReactions,
+        inlineAnswer:inlineAnswers.has(m.id) && around!==m.id && !m.attachments?.length && !m.skill, ticketId: m.ticketId, decision:m.decision, planProposal:m.planProposal, fileReview:m.fileReview && {...m.fileReview,name:m.text}, quote: m.quote, skill:m.skill, reactions: m.reactions, agentReactions: m.agentReactions,
       } },
       content: [{ type: "text", text: m.text }],
       ...(m.role === "assistant"
@@ -1318,15 +1346,19 @@ function Chat(p: ChatProps) {
         .trim();
       const files=message.attachments??[],attachments=files.map(a=>a.id),sentQuote=quoteCurrent.current;
       const sentSkill=skillCurrent.current??undefined;
+      const planningId=planningDraftId.current||livePlan?.id;
+      const startPlan=planDraftCurrent.current&&!planningId?true:undefined;
       if ((!text&&!attachments.length) || sending || readonly) return;
       if(!p.sends.begin({
         conversationId:id??uploadConversationId.current,files,quote:sentQuote,skill:sentSkill,
-        input:{text,attachments,quote:quoteReference(sentQuote),skillId:sentSkill?.id,locale:navigator.language||lang,
+        input:{text,attachments,quote:quoteReference(sentQuote),skillId:sentSkill?.id,startPlan,planningId,locale:navigator.language||lang,
           timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,openingLocale:lang},
       }))return;
       setError("");
       if(sentQuote)saveQuote(null);
       if(sentSkill)saveSkill(null);
+      if(planDraftCurrent.current)savePlanDraft(false);
+      clearDraftBinding();
       if(around)setAround(undefined);
       motion.latest();
     },
@@ -1358,6 +1390,8 @@ function Chat(p: ChatProps) {
     composer.setText(message.input.text);
     saveQuote(message.quote);
     saveSkill(message.skill??null);
+    savePlanDraft(message.input.startPlan===true);
+    planningDraftId.current=message.input.planningId??'';write(planBindingKey(id),planningDraftId.current);
     for(const file of message.files)await composer.addAttachment(file);
     if(message.error)setError(message.error);
     threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus();
@@ -1381,6 +1415,11 @@ function Chat(p: ChatProps) {
     runtime.thread.composer.setText(read(draftKey(id))||restoredPending.current?.text||'');
     return runtime.thread.composer.subscribe(() => {
       const composer=runtime.thread.composer.getState(),text=composer.text;write(draftKey(id),text);
+      // The assistant runtime may clear the textarea before calling onNew.
+      // Keep a planning draft bound until submission or an explicit clear in the editor.
+      if((text.trim()||composer.attachments.length)&&activePlanId.current&&!planningDraftId.current){
+        planningDraftId.current=activePlanId.current;write(planBindingKey(id),activePlanId.current);
+      }
       setAttachmentBlocked(composer.attachments.some(a=>a.status.type==='running'||a.status.type==='incomplete'));
       if(uploadConversationId.current&&uploadConversationId.current!==id)write(draftKey(uploadConversationId.current),text);
     });
@@ -1404,6 +1443,8 @@ function Chat(p: ChatProps) {
       if(JSON.stringify(quoteReference(quote)??null)===JSON.stringify(saved.quote??null))saveQuote(null);
       const restoredText=runtime.thread.composer.getState().text===saved.text;
       if(restoredText&&saved.skill&&skillCurrent.current?.id===saved.skill.id)saveSkill(null);
+      if(restoredText&&saved.startPlan)savePlanDraft(false);
+      if(restoredText&&saved.planningId)clearDraftBinding();
       for(const [index,file] of [...runtime.thread.composer.getState().attachments.entries()].reverse())
         if(saved.attachments?.includes(file.id))void runtime.thread.composer.getAttachmentByIndex(index).remove();
       if (restoredText)
@@ -1561,7 +1602,10 @@ function Chat(p: ChatProps) {
         arrivals:arrivals.current,
       }}
     >
-      <WorkflowProvider value={{L,blocks,readonly,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,thinking:item=><ThinkingCalls item={item} workers={workers} live={connected&&!around}/>,
+      <WorkflowProvider value={{L,blocks,readonly:readonly||!!snapshot?.conversation.archived,conversation:id??'',pendingIds:new Set(pendingCards.map(c=>c.id)),actor:id=>participants.find(p=>p.id===id)?.label??id,thinking:item=><ThinkingCalls item={item} workers={workers} live={connected&&!around}/>,
+        planning,
+        confirmPlan:async messageId=>{try{await api('/conversations/'+id+'/planning',{action:'confirm',messageId});motion.latest()}finally{await refresh()}},
+        revisePlan:()=>threadRef.current?.querySelector<HTMLTextAreaElement>('.composer-input')?.focus(),
         decide:async(messageId,answer)=>{try{await api('/conversations/'+id+'/decisions',{messageId,answer,locale:navigator.language||lang,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});if(matchMedia('(max-width:600px)').matches)closeTray()}finally{await refresh()}},
         answerWorker:body=>api('/conversations/'+id+'/decisions',body),refresh,
         readDraft:(messageId)=>api('/conversations/'+id+'/file-reviews?message='+encodeURIComponent(messageId)),
@@ -1758,12 +1802,26 @@ function Chat(p: ChatProps) {
                       </div>
                     ) : null}
                     <Readiness ready={ready} />
+                    {livePlan&&!readonly&&!snapshot?.conversation.archived&&<div className="planning-status">
+                      <span role="status">{livePlan.state==='review'?L('Send a message to revise the plan.','发送消息可修改方案。'):
+                        livePlan.state==='question'?L('Answer the question to continue planning.','回答问题后继续拟定方案。'):
+                        livePlan.state==='failed'?L('Planning stopped. Send a message to try again.','方案生成中断，可发送消息重试。'):
+                        L('Preparing the plan…','正在拟定方案…')}</span>
+                      <button type="button" className="text-button" onClick={async ()=>{
+                        try{await api('/conversations/'+id+'/planning',{action:'cancel',planId:livePlan.id});savePlanDraft(false)}
+                        catch(error){setError(error instanceof ApiError?error.code:'plan_closed')}
+                        finally{await refresh()}
+                      }}>{L('Cancel plan','取消规划')}</button>
+                    </div>}
                     {readonly ? <div className="composer worker-readonly"><textarea disabled rows={1} aria-label={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")} placeholder={L("Message "+currentRouter.label+" to continue", "请与 "+currentRouter.label+" 对话")}/><button onClick={()=>selectAgent(currentRouter.id)}>{L("Message "+currentRouter.label, "前往 "+currentRouter.label)}</button></div> : <ComposerPrimitive.AttachmentDropzone asChild disabled={sending||loadingAttachments||!ready?.ready}><ComposerPrimitive.Root className="composer">
                       <QuotePreview quote={quote} L={L} onClear={()=>saveQuote(null)}/>
                       <div className="composer-attachments"><ComposerPrimitive.Attachments components={{Attachment:ComposerAttachment}}/></div>
                       <ComposerControls visible={!configuring} L={L} sendShortcut={p.sendShortcut} sending={outstanding?.stage==='sending'} router={currentRouter.label}
                         model={ready?.model || ready?.backend} modelBackend={ready?.backend} mode={p.approvalMode} usage={usage}
                         loadSkills={loadSkills} skill={skill} onSkillChange={saveSkill}
+                        loadReferences={id ? loadReferences : undefined} onReference={quoteMessage}
+                        planDraft={planDraft} onPlanDraft={savePlanDraft} planning={!!livePlan}
+                        onDraftCleared={clearDraftBinding}
                         uploadDisabled={sending || loadingAttachments || !ready?.ready}
                         onContext={() => revealCard('context')}
                         onUsageOpen={() => setUsageRefresh(value => value + 1)}
@@ -1810,6 +1868,9 @@ function Chat(p: ChatProps) {
                   cards={!configuring && !readonly && displayedSession.cards.items.length > 0 && displayedSession.cards.items.map(card =>
                     card === 'context' && <ContextCard key={JSON.stringify([card, id, current?.backend, current?.model])}
                       current={usage} L={L} focusOnReveal={panelOverlay && displayedSession.cards.revealing}
+                      loadTeam={id ? loadTeamContext : undefined} teamRevision={teamUsageRevision}
+                      workerLabel={workerId=>workers.find(worker=>worker.id===workerId)?.label}
+                      taskLabel={ticketId=>snapshot?.tasks.find(task=>task.id===ticketId)?.title}
                       onClose={()=>dismissCard(card)} />
                   )}
                   locateMessage={messageId=>{if(panelOverlay)showPanel(false);requestAnimationFrame(()=>void locateMessage(messageId))}}

@@ -175,7 +175,7 @@ export function freshEvidence(host:Runtime,run:ChatRun,text:string){
 export function evidenceHistory(host:Runtime,run:ChatRun){
   const input=host.store.get<ChatMessage>('chat-message','user:'+run.id)
   if(!input)return
-  const rows=host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')<>? AND json_extract(body,'$.sequence')<? AND json_extract(body,'$.opening') IS NULL ORDER BY json_extract(body,'$.sequence') LIMIT 9").all(run.conversationId,run.id,input.sequence)
+  const rows=host.store.db.prepare("SELECT body FROM records WHERE kind='chat-message' AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.runId')<>? AND json_extract(body,'$.sequence')<? AND json_extract(body,'$.opening') IS NULL AND json_extract(body,'$.planningOnly') IS NULL ORDER BY json_extract(body,'$.sequence') LIMIT 9").all(run.conversationId,run.id,input.sequence)
   if(rows.length>8)return
   const messages=rows.map(r=>JSON.parse(String(r.body)) as ChatMessage)
   if(messages.some(m=>m.recipient||m.ticketId||m.handoff||m.decision||m.fileReview||m.skill||m.quote||m.reactions?.length||m.agentReactions?.length||m.attachments?.length||m.deliveries?.length||!m.text.trim()||

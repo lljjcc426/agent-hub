@@ -945,3 +945,23 @@ it('replans the existing producer after the direct repair budget, then independe
  expect(final.state,final.reason).toBe('completed');expect(final.taskIds).toHaveLength(2)
  expect([builds,reviews,plans]).toEqual([2,2,1])
 })
+
+
+it('delivers the current supervisory decision once in its original Chat and suppresses a superseded decision',async()=>{
+ const f=fixture(async()=>({reply:'OK'})),g=f.start('Review my retained task'),h=f.host
+ const goal={...g,state:'held' as const,reason:'The independent review needs a working runner.'}
+ h.store.put('router-goal',g.id,goal)
+ h.goals.notice(goal,'The review is retained. The original runner cannot start.',true)
+ await h.flush()
+ const notice=h.store.deliveries().find(d=>d.id.startsWith('goal-notice:'))!
+ expect(notice.status).toBe('sent')
+ expect(h.chat.view(f.chat.id,owner).messages.filter(m=>m.text===notice.text)).toHaveLength(1)
+ h.chat.deliveredGoalNotice(notice)
+ expect(h.chat.view(f.chat.id,owner).messages.filter(m=>m.text===notice.text)).toHaveLength(1)
+ const other=h.chat.create('another')
+ expect(h.chat.view(other.id,'another').messages).toHaveLength(0)
+ h.goals.notice(goal,'Stale outcome',true)
+ h.store.put('router-goal',g.id,{...goal,state:'active',revision:g.revision+1})
+ await h.flush()
+ expect(h.chat.view(f.chat.id,owner).messages.some(m=>m.text==='Stale outcome')).toBe(false)
+})

@@ -2800,7 +2800,7 @@ export class Runtime {
       let receipt:unknown,externalDelivered=false
       try {
         if(source.config.kind==='delegation')await this.delegation.deliver(message);else {receipt=await source.deliver(message);externalDelivered=true}
-        this.store.atomic(()=>{retainDeliveryReceipt(this.store,message,receipt,deliveryRevision,deliveryFingerprint);this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
+        this.store.atomic(()=>{retainDeliveryReceipt(this.store,message,receipt,deliveryRevision,deliveryFingerprint);this.chat.deliveredGoalNotice(message);this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
       catch (error) { const uncertain=externalDelivered||error instanceof UncertainDelivery;this.store.deliveryFailed(message.id, message.attempts + 1, String(error).slice(0,300), uncertain);if(!uncertain&&message.attempts+1>=3)blocked.delete(channel);else blocked.add(channel) }
     }
   }

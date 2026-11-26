@@ -265,7 +265,8 @@ export class RouterGoals {
    })
    const id='goal-notice:'+stableDigest([g.id,g.revision,text])
    // The run remains the authority for delayed delivery to its original requester's channel.
-   this.host.store.put('router-reply-owner',id,{goalId:g.id,discussion:g.discussion,triggerId:g.triggerId,inputs:[g.triggerId],manifests})
+   this.host.store.put('router-reply-owner',id,{goalId:g.id,discussion:g.discussion,triggerId:g.triggerId,inputs:[g.triggerId],manifests,
+    ...(review&&g.state==='held'&&this.host.chat.hasContext({triggerId:g.triggerId})?{chatGoalRevision:g.revision}:{})})
    this.host.store.outbox.send({id,channel,kind:'reply',text:review?text:'目标「'+g.title+'」尚未完成：'+text})
   }catch{}
  }

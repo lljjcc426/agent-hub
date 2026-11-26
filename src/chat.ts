@@ -1060,6 +1060,18 @@ export class ChatSessions {
     this.message(c,{id:'reply:'+jobId,runId:triggerId,role:'assistant',text,status:'complete'})
     this.changed(c.id)
   }
+  deliveredGoalNotice(message:{id:string;text:string}){
+    if(!message.id.startsWith('goal-notice:')||this.host.store.get('chat-message','reply:'+message.id))return
+    const owner=this.host.store.get<{goalId?:string;triggerId:string;discussion:string;chatGoalRevision?:number;manifests?:ContextManifest[]}>('router-reply-owner',message.id)
+    if(!owner?.goalId||owner.chatGoalRevision===undefined||!Array.isArray(owner.manifests))return
+    const goal=this.host.goals.get(owner.goalId),run=this.host.store.get<ChatRun>('chat-run',owner.triggerId)
+    const chat=run&&this.host.store.get<Conversation>('chat-conversation',run.conversationId)
+    if(!goal||goal.revision!==owner.chatGoalRevision||goal.state!=='held'||goal.supersededBy||goal.cancelledByUser||
+      goal.triggerId!==owner.triggerId||!run||run.cancelled||run.cancelRequested||!chat||chat.archived||
+      chat.discussion!==goal.discussion||chat.discussion!==owner.discussion||this.host.memory.cleanup.blocked('chat-conversation',chat.id,chat))return
+    try{this.host.goals.context(goal);for(const manifest of owner.manifests)this.host.memory.validate(manifest)}catch{return}
+    this.reply(message.id,run.id,message.text)
+  }
   deliveredClarification(message:{id:string;text:string}){
     if(!message.id.startsWith('router-clarify:')||this.host.store.get('chat-message','reply:'+message.id))return
     const owner=this.host.store.get<{triggerId:string;inputs:string[];manifest?:ContextManifest}>('router-reply-owner',message.id)

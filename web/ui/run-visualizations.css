@@ -88,7 +88,7 @@
 .rv-thought-pulse i:nth-child(2) { height: 11px; }
 .rv-thinking[data-state=running] .rv-thought-pulse { color: var(--rv-green, var(--rp-ink)); }
 @media (prefers-reduced-motion: no-preference) {
-  :root:not([data-appearance-motion=off]) .rv-thinking[data-state=running] .rv-thought-pulse i {
+  :root:not([data-appearance-motion=on]) .rv-thinking[data-state=running] .rv-thought-pulse i {
     animation: rv-thought-wave 1.15s ease-in-out var(--wave-delay,0s) infinite;
   }
   .rv-thinking .rv-thought-pulse i:nth-child(2) { --wave-delay: -860ms; }

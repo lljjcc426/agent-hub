@@ -86,7 +86,7 @@
   .patch-side {grid-template-columns:2.7ch 1.2ch minmax(0,1fr);padding-inline:2px}
   .patch-disclose,.patch-file-link,.patch-drawer-title {min-height:44px}
 }
-:root[data-appearance-motion=off] :is(.worker-diff-reveal,.patch-fold,.patch-disclose svg,.patch-drawer-title svg,.patch-open-icon) {transition:none}
+:root[data-appearance-motion=on] :is(.worker-diff-reveal,.patch-fold,.patch-disclose svg,.patch-drawer-title svg,.patch-open-icon) {transition:none}
 @media(prefers-reduced-motion:reduce) {
   .worker-diff-reveal,.patch-fold,.patch-disclose svg,.patch-drawer-title svg,.patch-open-icon {transition:none}
 }

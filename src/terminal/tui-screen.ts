@@ -1,6 +1,7 @@
+import {TerminalCompanion,brailleCells,companionWidth} from './companion.ts'
 import {
   BoxRenderable, TextRenderable, TextareaRenderable, InputRenderable, ScrollBoxRenderable,
-  MarkdownRenderable, SyntaxStyle, type CliRenderer, type KeyEvent
+  MarkdownRenderable, SyntaxStyle, StyledText, RGBA, type CliRenderer, type KeyEvent
 } from '@opentui/core'
 import type { Snapshot } from './client.ts'
 import { clean } from './client.ts'
@@ -32,6 +33,11 @@ export class TuiScreen {
   readonly frame: BoxRenderable
   readonly transcript: ScrollBoxRenderable
   readonly draft: TextareaRenderable
+  private companion = new TerminalCompanion()
+  private companionBox: BoxRenderable
+  private companionArt: TextRenderable
+  private companionLabel: TextRenderable
+  private companionPulse?: ReturnType<typeof setInterval>
   private header: TextRenderable
   private home: BoxRenderable
   private compose: BoxRenderable
@@ -85,6 +91,10 @@ export class TuiScreen {
     renderer.root.add(this.frame)
     this.header = this.text('roppo / personal', { height: 1, flexShrink: 0, fg: p.muted })
     this.frame.add(this.header)
+    this.companionBox = new BoxRenderable(renderer, {height:4,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
+    this.companionArt = this.text('', {width:companionWidth,height:3,selectable:false})
+    this.companionLabel = this.text('', {width:32,height:1,fg:p.muted,selectable:false})
+    this.companionBox.add(this.companionArt);this.companionBox.add(this.companionLabel);this.frame.add(this.companionBox)
     this.home = new BoxRenderable(renderer, { flexGrow: 1, minHeight: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 1, paddingBottom: 2 })
     this.home.add(this.text('█▀▀▄ █▀▀█ █▀▀█ █▀▀█ █▀▀█\n█▄▄▀ █  █ █▄▄█ █▄▄█ █  █\n█  █ ▀▀▀▀ █    █    ▀▀▀▀'))
     this.home.add(this.text(ui('A little more room for your life.', '给生活留一点空间。'), { fg: p.muted }))
@@ -144,14 +154,17 @@ export class TuiScreen {
   private resize = () => {
     const narrow = this.renderer.width < 65
     this.frame.paddingX = narrow ? 1 : 3
+    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 18
+    this.companionLabel.width = Math.min(32,this.renderer.width-4)
     this.compose.width = this.home.visible ? Math.min(78, this.renderer.width - (narrow ? 2 : 6)) : '100%'
     this.compose.alignSelf = 'center'
-    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18) / 2)) : 0
+    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? 4 : 0)) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.footer.content = this.connected
       ? ui(narrow ? 'Personal · ctrl+p commands' : 'Personal · synced with web                  enter send · ctrl+p commands', narrow ? '个人对话 · ctrl+p 命令' : '个人对话 · 与网页同步                  enter 发送 · ctrl+p 命令')
       : ui('Reconnecting to local service…', '正在重新连接本机服务…')
     if (this.host) this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
+    this.syncCompanion()
     if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu() }
   }
 
@@ -253,6 +266,7 @@ export class TuiScreen {
   }
 
   private syncActivity() {
+    this.syncCompanion()
     const working = this.busy || this.loading
     this.activity.visible = working
     if (working && !this.started) this.started = Date.now()
@@ -260,6 +274,25 @@ export class TuiScreen {
     if (working && this.prefs.motion !== 'reduced' && !this.pulse) this.pulse = setInterval(() => this.paintActivity(), 125)
     if ((!working || this.prefs.motion === 'reduced') && this.pulse) { clearInterval(this.pulse); this.pulse = undefined }
     if (working) this.paintActivity()
+  }
+  private syncCompanion() {
+    this.companion.update(this.view,this.connected,this.loading,this.companionBox.visible)
+    const moving=this.companionBox.visible && this.prefs.motion !== 'reduced' && this.connected
+    if(moving&&!this.companionPulse)this.companionPulse=setInterval(()=>this.paintCompanion(),100)
+    if(!moving&&this.companionPulse){clearInterval(this.companionPulse);this.companionPulse=undefined}
+    if(this.companionBox.visible)this.paintCompanion()
+  }
+  private paintCompanion() {
+    const frame=this.companion.frame(Date.now(),this.prefs.motion==='reduced')
+    const colors=[this.palette.bg,this.palette.fg,this.palette.muted,this.palette.warm,this.palette.accent].map(c=>RGBA.fromHex(c))
+    this.companionArt.content=new StyledText(brailleCells(frame.pixels).flatMap((row,index)=>[
+      ...row.map(cell=>({__isChunk:true as const,text:cell.text,fg:colors[cell.color]})),
+      ...(index<2?[{__isChunk:true as const,text:'\n'}]:[])
+    ]))
+    let label=clean(frame.label),width=Math.min(32,this.renderer.width-4)
+    while(stringWidth(label)>width-1)label=label.slice(0,-1)
+    this.companionLabel.content=' '.repeat(Math.max(0,Math.floor((width-stringWidth(label))/2)))+label
+    this.companionLabel.fg=this.palette.muted
   }
   private paintActivity() {
     const seconds = Math.floor((Date.now() - this.started) / 1000), head = Math.floor((Date.now() - this.started) / 125) % 12
@@ -449,7 +482,7 @@ export class TuiScreen {
     }
   }
   close() {
-    this.closed = true; clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
+    this.closed = true; clearInterval(this.companionPulse); clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
     this.renderer.keyInput.off('keypress', this.key); this.renderer.off('resize', this.resize); this.renderer.off('theme_mode', this.themeChanged)
     this.overlay?.destroyRecursively(); this.frame.destroyRecursively(); this.style.destroy()
   }

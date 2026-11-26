@@ -12,6 +12,7 @@ export const commands = (advanced = false) =>
     { name: '/model', usage: '', description: ui('Choose a Router or Worker model', '选择 Router 或 Worker 模型') },
     { name: '/effort', usage: '', description: ui('Choose reasoning effort', '选择思考强度') },
     { name: '/permissions', usage: '', description: ui('Shared account permissions', '账号共享权限') },
+    { name: '/animation', usage: '', description: ui('Toggle the top companion animation', '开关顶部角色动效') },
     { name: '/theme', usage: '', description: ui('Choose a terminal theme', '选择终端主题') },
     { name: '/status', usage: '', description: ui('Connection, session and settings', '连接、会话和设置状态') },
     { name: '/context', usage: '', description: ui('Measured context usage', '实测上下文用量') },

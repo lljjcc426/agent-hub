@@ -33,6 +33,7 @@ export const personalCommands = () => [
   { name: '/schedules', label: ui('Scheduled actions', '计划事项'), detail: ui('Reminders and routines', '提醒和定时事项') },
   { name: '/approvals', label: ui('Pending requests', '待处理请求'), detail: ui('Permissions and questions · ctrl+y', '授权和提问 · ctrl+y') },
   { name: '/permissions', label: ui('Permissions', '权限'), detail: ui('Shared account access', '账号共享权限') },
+  { name: '/animation', label: ui('Companion animation', '顶部动效'), detail: ui('Toggle the web-style companion on or off', '开关网页版同款角色动效') },
   { name: '/settings', label: ui('Settings', '设置'), detail: ui('Appearance and interaction', '外观和交互') },
   { name: '/history', label: ui('Search conversation', '搜索对话'), detail: ui('Find a message · ctrl+k', '查找消息 · ctrl+k') },
   { name: '/tools', label: ui('Capabilities', '能力'), detail: ui('Tools, skills and MCP servers', '工具、技能和 MCP 服务') },
@@ -124,6 +125,7 @@ export class TuiCommands {
         if (control.preferences.language) configureLanguage(control.preferences.language)
         this.screen.preferences(this.options.preferences)
       }
+      if (name === '/animation') { this.screen.notice(control.text!); return }
       if (control.menu) this.screen.menu({ title: control.menu.title, detail: control.text, items: control.menu.items.map(item => ({ label: item.label, detail: item.detail,
         run: () => this.execute(item.value) })) })
       else if (control.text) this.screen.document(name ?? 'Roppo', control.text)
@@ -272,6 +274,7 @@ export class TuiCommands {
     }
     this.screen.menu({ title: ui('Settings', '设置'), detail: ui('Appearance is local. Agent settings are shared with the web.', '外观仅影响此终端；Agent 设置与网页共享。'), items: [
       { label: ui('Color mode', '配色'), detail: this.options.preferences.theme ?? 'system', run: () => this.screen.menu({ title: ui('Color mode', '配色'), items: ['system', 'dark', 'light', 'mono'].map(theme => ({ label: theme, run: () => save('theme', theme) })) }) },
+      { label: ui('Top companion', '顶部角色动效'), detail: this.options.preferences.animation === false ? 'off' : 'on', run: () => this.execute('/animation') },
       { label: ui('Animations', '动效'), detail: this.options.preferences.motion === 'reduced' ? 'off' : 'on', run: () => save('motion', this.options.preferences.motion === 'reduced' ? 'full' : 'reduced') },
       { label: ui('Interface language', '界面语言'), detail: this.options.preferences.language ?? 'en', run: () => this.screen.menu({ title: ui('Interface language', '界面语言'), items: [
         { label: 'English', run: () => save('language', 'en') }, { label: '中文', run: () => save('language', 'zh') }

@@ -16,6 +16,11 @@ const shared = () => ui('Shared with web · applies to future Router turns', '�
 export async function controlCommand(client: TerminalClient, conversation: Conversation, input: string,
   cwd: string, preferences: TerminalSettings, sources: string[]): Promise<ControlResult | undefined> {
   const [name, ...args] = input.trim().split(/\s+/)
+  if (name === '/animation') {
+    const saved=saveTerminalSetting(cwd,'animation',String(preferences.animation===false))
+    if(!sources.includes(saved.path))sources.push(saved.path)
+    return {preferences:saved.patch,text:saved.patch.animation?ui('Companion animation on','顶部动效已开启'):ui('Companion animation off','顶部动效已关闭')}
+  }
   if (name === '/config' || name === '/theme') {
     if (name === '/theme' && args[0]) args[0] = 'theme=' + args[0]
     if (args.length) {

@@ -30,6 +30,8 @@ The main transcript shows your messages and public Router replies. Internal Work
 
 Type `/` to browse commands and `@` to browse local files and directories. File names with spaces are quoted on insertion. Ctrl+P opens a searchable command palette. Arrow keys select, Enter confirms, and Esc closes a menu while preserving the draft and cursor. Shift+Enter (where supported), Alt+Enter or Ctrl+J inserts a newline. Bracketed paste stays in the draft until Enter, including pasted slash commands.
 
+The top-center companion reuses the web’s activity states and recreates its R-shaped character as terminal dots: greeting, breathing, blinking, thinking, typing, reading and task handoffs. It occupies three character rows plus one caption row, outside the transcript. `/animation` immediately hides or restores it and saves the choice. The existing reduced-motion setting shows a static character; terminals shorter than 18 rows temporarily hide it to preserve the input area.
+
 The screen uses OpenTUI's alternate screen, native text input, Markdown and scroll container. Empty conversations show a centered wordmark and compact filled input with no scrollable filler. Existing conversations open directly. Messages scroll above the fixed composer. Internal Workers stay out of the transcript; `/tasks` opens execution details on demand.
 
 An eight-cell activity strip runs during real work and disappears on completion or when a response is needed. Replies update from host events without an artificial typing delay. Reading older messages pauses automatic following; Ctrl+End returns to the latest reply. `/settings` offers animation and theme controls. Esc or Ctrl+C interrupts the current run when no menu is open. Idle Ctrl+C clears a draft, or exits from an empty input. Ctrl+D on an empty prompt and `/exit` leave the host running.
@@ -49,6 +51,7 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | `/connect` | Add an API/OAuth connection, test it, then use it for Router or save it to the connection library |
 | `/workers` | Add, duplicate, pause, enable or remove Workers; removal is confirmed and active tasks must finish first |
 | `/plugins`, `/skills`, `/mcp` | Separate existing capability lists, details and a draft request for Router to manage an item |
+| `/animation` | Toggle the small top-center companion; on by default, preference saved between launches |
 | `/compact` | Compact older context now, toggle automatic compaction, or change its threshold |
 | `/model` | Choose Router or Worker, then a specific Worker if needed, a connection and model |
 | `/effort` | Choose Router or Worker, then a supported reasoning level or `default` |

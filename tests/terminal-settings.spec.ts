@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadTerminalSettings, saveTerminalSetting, settingsPaths } from '../src/terminal/settings.ts'
 import { parseArgs } from '../src/terminal/main.ts'
+import {controlCommand} from '../src/terminal/controls.ts'
+import type {TerminalClient,Conversation} from '../src/terminal/client.ts'
 import { PrintEvents } from '../src/terminal/output.ts'
 import type { Snapshot } from '../src/terminal/client.ts'
 
@@ -61,4 +63,16 @@ it('emits replacements only for changed public messages in the requested run', (
     expect.objectContaining({ type: 'assistant', message: expect.objectContaining({ id: 'm', text: 'first' }) }),
     expect.objectContaining({ type: 'assistant', message: expect.objectContaining({ id: 'm', text: 'finished' }) })
   ])
+})
+
+it('defaults the companion on and persists consecutive /animation toggles without touching other settings',async()=>{
+ const {project}=fixture()
+ saveTerminalSetting(project,'theme','light')
+ const prefs=loadTerminalSettings(project).settings
+ expect(prefs.animation).toBe(true)
+ const toggle=()=>controlCommand({} as TerminalClient,{} as Conversation,'/animation',project,prefs,[])
+ Object.assign(prefs,(await toggle())!.preferences)
+ expect(loadTerminalSettings(project).settings).toMatchObject({animation:false,theme:'light'})
+ Object.assign(prefs,(await toggle())!.preferences)
+ expect(loadTerminalSettings(project).settings).toMatchObject({animation:true,theme:'light'})
 })

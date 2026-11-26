@@ -14,7 +14,7 @@ const screen = new TuiScreen(test.renderer, { theme: 'dark', motion: 'reduced' }
   send: async text => { sent.push(text) }, command: async text => { commands.push(text) },
   complete: async () => [], interrupt: async () => { interrupted++ }, older: async () => {}, review: async () => {}, quit: () => {}
 })
-const view = { conversation: {}, messages: [], approvals: [], tasks: [], schedules: [], deliveries: [], run: null } as unknown as Snapshot
+const view = { conversation: {id:'personal',sequence:0}, workers:[], calls:[], browsers:[], messages: [], approvals: [], tasks: [], schedules: [], deliveries: [], run: null } as unknown as Snapshot
 const capture = async (name: string) => {
   await test.renderOnce()
   if (process.env.ROPPO_TUI_CAPTURES) {
@@ -29,6 +29,16 @@ try {
   const home = await capture('home')
   assert.match(home, /Ask Roppo anything/)
   assert.equal(screen.transcript.scrollHeight, 0)
+  assert.match(home, /Ready when you are/)
+  const composerY=screen.draft.y
+  screen.preferences({theme:'dark',motion:'reduced',animation:false})
+  const hidden=await capture('companion-off')
+  assert.doesNotMatch(hidden,/Ready when you are/)
+  assert.equal(screen.transcript.scrollHeight,0)
+  screen.preferences({theme:'dark',motion:'reduced',animation:true})
+  await test.renderOnce()
+  assert.equal(screen.draft.y,composerY)
+
   test.mockInput.pressKey('\x1b[5~'); await test.renderOnce()
   assert.equal(test.captureCharFrame(), home, 'empty page must not scroll')
 
@@ -89,6 +99,9 @@ try {
   await capture('approval'); test.mockInput.pressTab(); test.mockInput.pressEnter(); assert.equal(chosen, 'decline')
   test.resize(60, 20); await capture('narrow')
   assert.ok(screen.draft.y + screen.draft.height < 20, 'composer must stay in viewport')
+  test.resize(60, 16); const short=await capture('short')
+  assert.doesNotMatch(short,/Ready when you are/)
+  assert.ok(screen.draft.y + screen.draft.height < 16, 'short terminals keep the composer visible')
   test.resize(120, 34); await test.renderOnce()
   test.mockInput.pressEscape(); assert.equal(interrupted, 1)
   console.log('TUI checks passed: empty viewport, Unicode paste, newline, menu draft, scroll follow, approval keys, resize and interrupt')

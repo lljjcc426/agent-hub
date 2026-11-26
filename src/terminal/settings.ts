@@ -9,6 +9,7 @@ export const terminalSettingsSchema = z.object({
   theme: z.enum(['system', 'dark', 'light', 'mono']).optional(),
   language: z.enum(['en', 'zh']).optional(),
   verbose: z.boolean().optional(),
+  animation: z.boolean().optional(),
   motion: z.enum(['full', 'reduced']).optional(),
   outputFormat: z.enum(['text', 'json', 'stream-json']).optional(),
   timeout: z.number().positive().max(86400).optional()
@@ -16,7 +17,7 @@ export const terminalSettingsSchema = z.object({
 export type TerminalSettings = z.infer<typeof terminalSettingsSchema>
 export type Theme = NonNullable<TerminalSettings['theme']>
 export type OutputFormat = NonNullable<TerminalSettings['outputFormat']>
-export const defaultSettings = { theme: 'system', verbose: false, motion: 'full', outputFormat: 'text', timeout: 600 } as const
+export const defaultSettings = { theme: 'system', verbose: false, motion: 'full', animation: true, outputFormat: 'text', timeout: 600 } as const
 export const settingsPaths = (cwd: string) => ({
   user: join(terminalProfileDirectory(), 'settings.json'),
   project: join(cwd, '.roppo', 'settings.json'),
@@ -59,7 +60,7 @@ export function loadTerminalSettings(cwd: string, extra?: string, overrides: Ter
   return { settings: { ...settings, ...overrides }, sources }
 }
 export function saveTerminalSetting(cwd: string, key: string, raw: string, scope: 'user' | 'project' | 'local' = 'user') {
-  const value = key === 'verbose' ? (raw === 'true' ? true : raw === 'false' ? false : raw)
+  const value = (key === 'verbose' || key === 'animation') ? (raw === 'true' ? true : raw === 'false' ? false : raw)
     : key === 'timeout' ? Number(raw) : raw
   const patch = parse({ [key]: value }, '/config')
   const path = settingsPaths(cwd)[scope]

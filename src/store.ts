@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import type { Repositories, Trigger, TriggerDisposition, Thread, Ticket, Decision, OutboundMessage } from './vendor/dsh-core/index.ts'
 import {RuntimeRevisions} from './runtime-revisions.ts'
 import {HistoryFence} from './history-fence.ts'
+function deletedMemoryBody(value:unknown){return typeof value==='object'&&value!==null&&'deleted' in value&&value.deleted===true}
 // 8/9 are reserved for Webhook grants/continuations. Delegation must fence
 // Webhook-only releases from reopening service-authorized delegated work.
 export const DELEGATION_DB_SCHEMA=10
@@ -153,6 +154,14 @@ export class Store implements Repositories {
   }
   list<T>(kind: string): T[] {
     return this.db.prepare('SELECT body FROM records WHERE kind=? ORDER BY rowid').all(kind).map(row => JSON.parse(String(row.body)) as T)
+  }
+  /** A cleared learning projection retains a storage receipt but has no usable value. */
+  memoryRow<T>(kind:`memory-${string}`,id:string):T|undefined{
+    const value=this.get<T>(kind,id)
+    return deletedMemoryBody(value)?undefined:value
+  }
+  memoryRows<T>(kind:`memory-${string}`):T[]{
+    return this.list<T>(kind).filter(value=>!deletedMemoryBody(value))
   }
   readonly triggers = {
     get: (id: string) => this.get<Trigger>('trigger', id),

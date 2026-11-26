@@ -35,7 +35,7 @@ function inputs(engine:AgentMemory,c:ScopeContext){
 const signature=(facts:MemoryFact[])=>stableDigest(facts.map(f=>[f.id,f.revision]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))))
 export function reflectionView(engine:AgentMemory,c:ScopeContext){
  if(!engine.enabled(c))return undefined
- const row=engine.host.store.get<MemoryReflection>('memory-reflection',engine.space(c))
+ const row=engine.host.store.memoryRow<MemoryReflection>('memory-reflection',engine.space(c))
  if(!row||row.generation!==engine.host.memory.generation(c.route.scopeId)||row.actor!==c.actor||row.entryId!==c.route.entryId)return undefined
  const allowed=inputs(engine,c)
  const points=row.points.filter(p=>p.refs.every(ref=>allowed.some(f=>f.id===ref.id&&f.revision===ref.revision)))
@@ -52,17 +52,17 @@ export async function reflectMemories(engine:AgentMemory,c:ScopeContext,signal:A
  if(engine.observations().some(row=>row.space===space&&['pending','running'].includes(row.state)))return {status:'deferred'}
  const facts=inputs(engine,c)
  if(facts.length<2)return {status:'insufficient'}
- const hash=signature(facts),previous=host.store.get<MemoryReflection>('memory-reflection',space)
+ const hash=signature(facts),previous=host.store.memoryRow<MemoryReflection>('memory-reflection',space)
  if(previous?.signature===hash)return {status:'unchanged'}
- const last=host.store.get<{at:number;id:string}>('memory-reflection-run',space)
- const latest=Math.max(host.store.get<number>('memory-last-extract',space)??0,...facts.map(f=>f.createdAt))
+ const last=host.store.memoryRow<{at:number;id:string}>('memory-reflection-run',space)
+ const latest=Math.max(host.store.memoryRow<number>('memory-last-extract',space)??0,...facts.map(f=>f.createdAt))
  if(engine.now()-latest<Math.max(90000,policy.delayMs)||last&&engine.now()-last.at<Math.max(300000,policy.minIntervalMs))return {status:'deferred'}
- const revision=engine.policyRevision(c),generation=host.memory.generation(c.route.scopeId),sequence=host.store.get<number>('memory-sequence',space)??0,attempt=randomUUID()
+ const revision=engine.policyRevision(c),generation=host.memory.generation(c.route.scopeId),sequence=host.store.memoryRow<number>('memory-sequence',space)??0,attempt=randomUUID()
  host.store.put('memory-reflection-run',space,{id:attempt,at:engine.now(),status:'running'})
  try{
   const result=await modelJSON(engine,c,'reflect',{notes:facts.map((f,index)=>({index,content:f.content,origin:f.origin,condition:f.learning?.condition??'',inferred:f.learning?.inferred??false,protected:!!f.protected}))},schema,signal,[c.trigger.id],facts,{instructions}) as z.infer<typeof schema>
   signal.throwIfAborted()
-  if(!engine.enabled(c)||revision!==engine.policyRevision(c)||generation!==host.memory.generation(c.route.scopeId)||sequence!==(host.store.get<number>('memory-sequence',space)??0)||signature(inputs(engine,c))!==hash||host.store.get<{id:string}>('memory-reflection-run',space)?.id!==attempt)throw Error('reflection_inputs_changed')
+  if(!engine.enabled(c)||revision!==engine.policyRevision(c)||generation!==host.memory.generation(c.route.scopeId)||sequence!==(host.store.memoryRow<number>('memory-sequence',space)??0)||signature(inputs(engine,c))!==hash||host.store.memoryRow<{id:string}>('memory-reflection-run',space)?.id!==attempt)throw Error('reflection_inputs_changed')
   const points=result.points.map(p=>{
    const refs=p.evidence.map(e=>{
     const f=facts[e.index]
@@ -72,18 +72,18 @@ export async function reflectMemories(engine:AgentMemory,c:ScopeContext,signal:A
    if(new Set(refs.map(r=>r.id)).size!==refs.length)throw Error('duplicate_reflection_source')
    return {section:p.section,content:safeMemoryText(p.content),condition:p.condition?safeMemoryText(p.condition):'',refs}
   })
-  const next:MemoryReflection={space,scopeId:c.route.scopeId,entryId:c.route.entryId,actor:c.actor,triggerId:c.trigger.id,discussion:c.route.discussion,generation,revision:(host.store.get<number>('memory-reflection-revision',space)??previous?.revision??0)+1,at:engine.now(),signature:hash,points}
+  const next:MemoryReflection={space,scopeId:c.route.scopeId,entryId:c.route.entryId,actor:c.actor,triggerId:c.trigger.id,discussion:c.route.discussion,generation,revision:(host.store.memoryRow<number>('memory-reflection-revision',space)??previous?.revision??0)+1,at:engine.now(),signature:hash,points}
   host.store.atomic(()=>{
    host.store.requireReflectionSchema()
    if(previous)host.store.put('memory-reflection-history',space+':'+previous.revision,previous)
    host.store.put('memory-reflection',space,next)
    host.store.put('memory-reflection-revision',space,next.revision)
    host.store.put('memory-reflection-run',space,{id:attempt,at:engine.now(),status:'completed'})
-   for(const old of host.store.list<MemoryReflection>('memory-reflection-history').filter(r=>r.space===space).sort((a,b)=>b.revision-a.revision).slice(5))host.store.db.prepare("DELETE FROM records WHERE kind='memory-reflection-history' AND id=?").run(space+':'+old.revision)
+   for(const old of host.store.memoryRows<MemoryReflection>('memory-reflection-history').filter(r=>r.space===space).sort((a,b)=>b.revision-a.revision).slice(5))host.store.db.prepare("DELETE FROM records WHERE kind='memory-reflection-history' AND id=?").run(space+':'+old.revision)
   })
   return {status:'completed',revision:next.revision,points:points.length}
  }catch(error){
-  if(host.store.get<{id:string}>('memory-reflection-run',space)?.id===attempt)host.store.put('memory-reflection-run',space,{id:attempt,at:engine.now(),status:signal.aborted?'interrupted':'failed'})
+  if(host.store.memoryRow<{id:string}>('memory-reflection-run',space)?.id===attempt)host.store.put('memory-reflection-run',space,{id:attempt,at:engine.now(),status:signal.aborted?'interrupted':'failed'})
   throw error
  }
 }

@@ -60,7 +60,7 @@ export class AgentMemory {
  space(c:ScopeContext){return stableDigest([c.route.tenantId,c.route.scopeId,c.route.entryId,c.actor])}
  policy(c:ScopeContext):MemoryPolicy{return memoryPolicySchema.parse(this.host.store.get<any>('memory-policy',c.route.scopeId)?.value??{})}
  policyRevision(c:ScopeContext){return this.host.store.get<any>('memory-policy',c.route.scopeId)?.revision??0}
- enabled(c:ScopeContext){this.host.scopes.assertCurrent(c);return this.host.scopes.scope(c.route.scopeId).memoryEnabled&&this.policy(c).enabled&&this.host.store.get<any>('memory-personal',this.space(c))?.enabled!==false}
+ enabled(c:ScopeContext){this.host.scopes.assertCurrent(c);return this.host.scopes.scope(c.route.scopeId).memoryEnabled&&this.policy(c).enabled&&this.host.store.memoryRow<any>('memory-personal',this.space(c))?.enabled!==false}
  context(row:MemoryObservation,refreshEpoch=false){
   const t=this.host.store.triggers.get(row.triggerId);if(!t)throw Error('source_unavailable')
   const c=this.host.scopes.context(t,row.discussion)
@@ -69,7 +69,7 @@ export class AgentMemory {
   this.host.memory.capture(c,[row.sourceId,...(row.parentSourceId?[row.parentSourceId]:[])])
   return c
  }
- observations(){return this.host.store.list<MemoryObservation>('memory-observation')}
+ observations(){return this.host.store.memoryRows<MemoryObservation>('memory-observation')}
  private pending(now:number){return this.dueObservations.all(now).map(row=>JSON.parse(String(row.body)) as MemoryObservation)}
  saveObservation(row:MemoryObservation){this.host.store.put('memory-observation',row.id,row)}
  observe(c:ScopeContext){
@@ -86,10 +86,10 @@ export class AgentMemory {
   this.host.store.atomic(()=>{
    for(let start=0;start<length;start+=12000){
    const end=Math.min(length,start+12000),id=stableDigest([space,kind?e.id:c.trigger.id,e.version,this.host.memory.generation(c.route.scopeId),start])
-   if(this.host.store.get('memory-observation',id))continue
-   const sequence=(this.host.store.get<number>('memory-sequence',space)??0)+1
+   if(this.host.store.memoryRow('memory-observation',id))continue
+   const sequence=(this.host.store.memoryRow<number>('memory-sequence',space)??0)+1
    this.host.store.put('memory-sequence',space,sequence)
-   const last=this.host.store.get<number>('memory-last-extract',space)??0
+   const last=this.host.store.memoryRow<number>('memory-last-extract',space)??0
    this.saveObservation({id,kind,parentSourceId,space,triggerId:c.trigger.id,discussion:c.route.discussion,scopeId:c.route.scopeId,entryId:c.route.entryId,actor:c.actor,session:c.route.discussion,sourceId:e.id,start,end,generation:this.host.memory.generation(c.route.scopeId),epoch:c.route.epoch,policyRevision:this.policyRevision(c),sequence,state:sensitive?'held':'pending',...(sensitive?{error:'sensitive_content'}:{}),attempts:0,nextAt:Math.max(this.now()+p.delayMs,last+p.minIntervalMs)})
    }
   })
@@ -134,12 +134,12 @@ export class AgentMemory {
  private vectorModel(c:ScopeContext){const e=this.policy(c).embedding;return e?stableDigest([e.url,e.model]):''}
  private rankingSignature(c:ScopeContext,items=this.applicable(c)){
   const model=this.vectorModel(c)
-  return stableDigest(items.map(f=>{const v=this.host.store.get<Vector>('memory-vector',stableDigest([f.id,model]));return [f.id,f.revision,v?.revision,v?.generation,v?.vector.length]}).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))))
+  return stableDigest(items.map(f=>{const v=this.host.store.memoryRow<Vector>('memory-vector',stableDigest([f.id,model]));return [f.id,f.revision,v?.revision,v?.generation,v?.vector.length]}).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))))
  }
  private rankings(c:ScopeContext,query:string,items:MemoryProjection[],vector?:number[]){
   const model=this.vectorModel(c)
   const lexical=items.map(f=>({f,score:lexicalScore(query,f.subject+' '+f.content+' '+(f.learning?.quote??''))})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score||a.f.id.localeCompare(b.f.id))
-  const dense=vector?items.flatMap(f=>{const v=this.host.store.get<Vector>('memory-vector',stableDigest([f.id,model]));return v&&v.revision===f.revision&&v.generation===f.generation&&v.vector.length===vector.length?[{f,score:cosine(vector,v.vector)}]:[]}).sort((a,b)=>b.score-a.score||a.f.id.localeCompare(b.f.id)):[]
+  const dense=vector?items.flatMap(f=>{const v=this.host.store.memoryRow<Vector>('memory-vector',stableDigest([f.id,model]));return v&&v.revision===f.revision&&v.generation===f.generation&&v.vector.length===vector.length?[{f,score:cosine(vector,v.vector)}]:[]}).sort((a,b)=>b.score-a.score||a.f.id.localeCompare(b.f.id)):[]
   return {lexical,dense}
  }
  prepare(c:ScopeContext,query:string){
@@ -187,11 +187,11 @@ export class AgentMemory {
   if(this.queries.size>=100)this.queries.delete(this.queries.keys().next().value!)
   this.queries.set(key,{vector,mode,at:this.now(),epoch:c.route.epoch,generation,policyRevision:revision,signature,reranked,verified})
  }
- similar(c:ScopeContext,a:MemoryFact,b:MemoryFact){const model=this.vectorModel(c),av=this.host.store.get<Vector>('memory-vector',stableDigest([a.id,model])),bv=this.host.store.get<Vector>('memory-vector',stableDigest([b.id,model]));return av?.revision===a.revision&&bv?.revision===b.revision&&av.generation===a.generation&&bv.generation===b.generation?cosine(av.vector,bv.vector):0}
+ similar(c:ScopeContext,a:MemoryFact,b:MemoryFact){const model=this.vectorModel(c),av=this.host.store.memoryRow<Vector>('memory-vector',stableDigest([a.id,model])),bv=this.host.store.memoryRow<Vector>('memory-vector',stableDigest([b.id,model]));return av?.revision===a.revision&&bv?.revision===b.revision&&av.generation===a.generation&&bv.generation===b.generation?cosine(av.vector,bv.vector):0}
  rank(c:ScopeContext,query:string,items=this.applicable(c)){
   const cached=this.queries.get(this.queryKey(c,query)),model=this.vectorModel(c)
   const q=cached&&cached.epoch===c.route.epoch&&cached.generation===this.host.memory.generation(c.route.scopeId)&&this.now()-cached.at<60000?cached:undefined
-  const incomplete=q?.vector&&items.some(f=>{const v=this.host.store.get<Vector>('memory-vector',stableDigest([f.id,model]));return !v||v.revision!==f.revision||v.generation!==f.generation||v.vector.length!==q.vector!.length})
+  const incomplete=q?.vector&&items.some(f=>{const v=this.host.store.memoryRow<Vector>('memory-vector',stableDigest([f.id,model]));return !v||v.revision!==f.revision||v.generation!==f.generation||v.vector.length!==q.vector!.length})
   if(this.policy(c).verifyRelevance&&(!q?.verified||q.signature!==this.rankingSignature(c)))return {items:[] as MemoryProjection[],mode:q?.verified?'relevance_stale':q?.mode??'relevance_not_prepared'}
   if(q?.reranked&&q.signature===this.rankingSignature(c))return {items:q.reranked.flatMap(ref=>{const f=items.find(f=>f.id===ref.id&&f.revision===ref.revision);return f?[f]:[]}),mode:incomplete?'embedding_index_incomplete':q.mode}
   const {lexical,dense}=this.rankings(c,query,items,q?.vector),vectors=dense.filter(x=>x.score>=.5)
@@ -235,7 +235,7 @@ export class AgentMemory {
   let count=0
   for(const f of facts){
    try{assertNoMemorySecret(f.subject+' '+f.content)}catch{continue}
-   const id=stableDigest([f.id,model]),old=this.host.store.get<Vector>('memory-vector',id);if(old?.revision===f.revision&&old.generation===f.generation)continue
+   const id=stableDigest([f.id,model]),old=this.host.store.memoryRow<Vector>('memory-vector',id);if(old?.revision===f.revision&&old.generation===f.generation)continue
    signal.throwIfAborted();if(count++>=20)break
    let vector:number[]
    try{vector=validateMemoryVector(await this.embed(f.subject+' '+f.content,p.embedding,AbortSignal.any([signal,AbortSignal.timeout(10000)])))}catch{return}
@@ -251,8 +251,8 @@ export class AgentMemory {
    try{const current=this.context(row,true);this.saveObservation({...row,epoch:current.route.epoch,state:row.state==='held'?'held':'pending',lease:undefined,error:row.state==='held'?row.error:'context_refreshed'})}
    catch{this.saveObservation({...row,state:'stale',lease:undefined,error:'source_or_scope_changed'})}
   }
-  for(const row of store.list<Vector>('memory-vector')){const f=this.host.memory.fact(row.factId);if(!f||f.archived||f.state!=='active'||f.revision!==row.revision||f.generation!==this.host.memory.generation(f.scopeId)||f.sources.some(s=>{const e=this.host.memory.evidence(s.id);return !e||e.revoked||e.version!==s.version}))store.db.prepare("DELETE FROM records WHERE kind='memory-vector' AND id=?").run(row.id)}
-  for(const row of store.list<Topic>('memory-topic')){const aliases=row.aliases.filter(alias=>!this.host.memory.topicSuppressed(row.scopeId,alias));if(aliases.length!==row.aliases.length)store.put('memory-topic',row.id,{...row,aliases});if(row.proposalId==='forgotten'||this.host.memory.topicSuppressed(row.scopeId,row.label)||row.generation!==this.host.memory.generation(row.scopeId)||row.sources.some(s=>{const e=this.host.memory.evidence(s.id);return !e||e.revoked||e.version!==s.version}))store.db.prepare("DELETE FROM records WHERE kind='memory-topic' AND id=?").run(row.id)}
+  for(const row of store.memoryRows<Vector>('memory-vector')){const f=this.host.memory.fact(row.factId);if(!f||f.archived||f.state!=='active'||f.revision!==row.revision||f.generation!==this.host.memory.generation(f.scopeId)||f.sources.some(s=>{const e=this.host.memory.evidence(s.id);return !e||e.revoked||e.version!==s.version}))store.db.prepare("DELETE FROM records WHERE kind='memory-vector' AND id=?").run(row.id)}
+  for(const row of store.memoryRows<Topic>('memory-topic')){const aliases=row.aliases.filter(alias=>!this.host.memory.topicSuppressed(row.scopeId,alias));if(aliases.length!==row.aliases.length)store.put('memory-topic',row.id,{...row,aliases});if(row.proposalId==='forgotten'||this.host.memory.topicSuppressed(row.scopeId,row.label)||row.generation!==this.host.memory.generation(row.scopeId)||row.sources.some(s=>{const e=this.host.memory.evidence(s.id);return !e||e.revoked||e.version!==s.version}))store.db.prepare("DELETE FROM records WHERE kind='memory-topic' AND id=?").run(row.id)}
   const groups=new Map<string,MemoryFact[]>()
   for(const f of store.list<MemoryFact>('memory-fact'))if(!f.archived&&f.generation===this.host.memory.generation(f.scopeId)&&['active','candidate'].includes(f.state)){
    const key=stableDigest([f.scopeId,f.entryId,f.owner,f.state]);groups.set(key,[...groups.get(key)??[],f])
@@ -287,7 +287,7 @@ export class AgentMemory {
     context=this.context(row)
     const policy=this.policy(context)
     if(!this.enabled(context)||policy.writeMode==='explicit_only'||row.kind&&policy.writeMode!=='adaptive')continue
-    if(now<(store.get<number>('memory-last-extract',row.space)??0)+policy.minIntervalMs)continue
+    if(now<(store.memoryRow<number>('memory-last-extract',row.space)??0)+policy.minIntervalMs)continue
    }catch{continue}
    this.controller=new AbortController()
    this.active=this.process(context,row,this.controller.signal).catch(()=>{}).finally(()=>{this.active=undefined;this.controller=undefined})
@@ -306,7 +306,7 @@ export class AgentMemory {
    try{
     const c=this.host.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(!c||c.actor!==fact.owner||!this.enabled(c))continue
     this.host.routerIngress.authority(trigger.id)
-    const p=this.policy(c),space=this.space(c),last=this.host.store.get<number>('memory-maintenance',space)??0
+    const p=this.policy(c),space=this.space(c),last=this.host.store.memoryRow<number>('memory-maintenance',space)??0
     if(!p.embedding&&p.writeMode==='explicit_only')continue
     if(now-last<maintenanceInterval){next=Math.min(next,last+maintenanceInterval);continue}
     this.host.store.put('memory-maintenance',space,now);this.controller=new AbortController()
@@ -315,7 +315,7 @@ export class AgentMemory {
      await this.index(c,signal)
      if(!this.enabled(c))return
      for(const f of this.authorized(c))if(f.owner===c.actor&&f.kind==='task'&&!f.protected&&(f.lastUsedAt??f.createdAt)<this.now()-45*86400000&&(f.importance??3)>1)this.host.store.put('memory-fact',f.id,{...f,importance:1})
-     const review=this.host.store.get<any>('memory-consolidation',space)
+     const review=this.host.store.memoryRow<any>('memory-consolidation',space)
      if(this.policy(c).writeMode!=='explicit_only'&&(review?.status==='interrupted'||this.now()-(review?.at??0)>=86400000)&&this.authorized(c).filter(f=>f.owner===c.actor).length>=6)await consolidateMemories(this,c,signal)
      await reflectMemories(this,c,signal)
     })().catch(()=>{}).finally(()=>{this.active=undefined;this.controller=undefined})
@@ -342,7 +342,7 @@ export class AgentMemory {
    })
    await this.index(c,signal)
   }catch(error){
-   for(const r of batch){const current=this.host.store.get<MemoryObservation>('memory-observation',r.id);if(current?.state!=='running'||current.lease!==lease)continue
+   for(const r of batch){const current=this.host.store.memoryRow<MemoryObservation>('memory-observation',r.id);if(current?.state!=='running'||current.lease!==lease)continue
     const reason=error instanceof Error&&['daily_model_budget','unverifiable_memory_source','invalid_memory_target','sensitive_content','invalid_memory_expiry','memory_policy_changed'].includes(error.message)?error.message:'extraction_failed'
     const attempts=current.attempts,state=signal.aborted?'pending':attempts>=3||['daily_model_budget','sensitive_content'].includes(reason)?'held':'pending'
     this.saveObservation({...current,state,lease:undefined,nextAt:this.now()+(signal.aborted?0:Math.min(300000,1000*2**attempts)),error:signal.aborted?'interrupted':reason})
@@ -352,13 +352,13 @@ export class AgentMemory {
  assertBatch(c:ScopeContext,batch:MemoryObservation[],lease:string,capture:MemoryCapture,revision:number){
   this.host.scopes.assertCurrent(c)
   if(!this.enabled(c)||this.policy(c).writeMode==='explicit_only'||batch.some(r=>r.kind==='experience')&&this.policy(c).writeMode!=='adaptive'||this.policyRevision(c)!==revision||capture.generation!==this.host.memory.generation(c.route.scopeId))throw Error('memory_policy_changed')
-  for(const r of batch){this.context(r);const current=this.host.store.get<MemoryObservation>('memory-observation',r.id);if(current?.state!=='running'||current.lease!==lease)throw Error('memory_lease_lost')}
+  for(const r of batch){this.context(r);const current=this.host.store.memoryRow<MemoryObservation>('memory-observation',r.id);if(current?.state!=='running'||current.lease!==lease)throw Error('memory_lease_lost')}
  }
  observeTopics(c:ScopeContext,labels:string[],batch:MemoryObservation[]){
   const space=this.space(c),generation=this.host.memory.generation(c.route.scopeId)
   for(const label of labels){
    if(this.host.memory.topicSuppressed(c.route.scopeId,label))continue
-   const candidates=this.host.store.list<Topic>('memory-topic').filter(t=>t.space===space&&t.generation===generation)
+   const candidates=this.host.store.memoryRows<Topic>('memory-topic').filter(t=>t.space===space&&t.generation===generation)
    const same=candidates.find(t=>[t.label,...t.aliases].some(x=>normalizeMemory(x)===normalizeMemory(label)))
    const id=same?.id??stableDigest([space,generation,normalizeMemory(label)])
    const row:Topic=same??{id,space,scopeId:c.route.scopeId,generation,label,aliases:[],sources:[],sessions:[]}
@@ -378,7 +378,7 @@ export class AgentMemory {
  }
  affinity(c:ScopeContext,documentId:string,revision:number){
   if(!this.enabled(c)||!this.policy(c).retrievalConditioning)return 1
-  const count=this.host.store.list<any>('memory-document-use').filter(r=>{if(r.space!==this.space(c)||r.generation!==this.host.memory.generation(c.route.scopeId)||r.documentId!==documentId||r.revision!==revision)return false;const t=this.host.store.triggers.get(r.triggerId);try{if(!t)return false;this.host.scopes.assertTrigger(t);return true}catch{return false}}).length
+  const count=this.host.store.memoryRows<any>('memory-document-use').filter(r=>{if(r.space!==this.space(c)||r.generation!==this.host.memory.generation(c.route.scopeId)||r.documentId!==documentId||r.revision!==revision)return false;const t=this.host.store.triggers.get(r.triggerId);try{if(!t)return false;this.host.scopes.assertTrigger(t);return true}catch{return false}}).length
   return count<2?1:1+Math.min(.15,Math.log1p(count)/Math.log(9)*.15)
  }
  async consolidate(c:ScopeContext,signal=AbortSignal.timeout(120000)){
@@ -400,7 +400,7 @@ export class AgentMemory {
    const origin=fact?.entryId===c.route.entryId
    const evidence=origin?fact!.sources.flatMap(s=>{try{this.host.memory.capture(c,[s.id]);return [this.host.memory.evidence(s.id)!]}catch{return []}}):[]
    const versions=fact&&origin?this.host.store.list<MemoryFact>('memory-version').filter(v=>v.id===fact.id&&v.entryId===c.route.entryId&&v.sources.every(s=>{const e=this.host.memory.evidence(s.id);return e&&!e.revoked&&e.version===s.version})):[]
-   return {policy:this.policy(c),revision:this.policyRevision(c),enabled:this.enabled(c),canConfigure:this.host.scopes.canManage(c),learningAvailable:this.host.scopes.scope(c.route.scopeId).memoryEnabled&&this.host.store.get<any>('memory-personal',this.space(c))?.enabled!==false,scopeName:this.host.scopes.scope(c.route.scopeId).name,items,adaptation:{coldStart:this.learning(c).coldStart,preferences:this.applicable(c).filter(f=>f.kind==='preference'),recent:items.filter(f=>f.origin==='extracted'||f.origin==='experience').sort((a,b)=>b.createdAt-a.createdAt).slice(0,10)},detail:fact?{fact,evidence,versions}:undefined,consolidation:this.host.store.get('memory-consolidation',this.space(c)),observations:this.observations().filter(r=>r.space===this.space(c)),topics:this.host.store.list<Topic>('memory-topic').filter(r=>r.space===this.space(c)&&r.generation===this.host.memory.generation(c.route.scopeId)),uses:this.host.store.list<any>('memory-use').filter(r=>r.space===this.space(c)&&r.generation===this.host.memory.generation(c.route.scopeId)),archived:this.host.store.list<MemoryFact>('memory-fact').filter(f=>f.archived&&f.entryId===c.route.entryId&&f.owner===c.actor&&f.generation===this.host.memory.generation(c.route.scopeId)).map(f=>({id:f.id,revision:f.revision,kind:f.kind,createdAt:f.createdAt}))}
+   return {policy:this.policy(c),revision:this.policyRevision(c),enabled:this.enabled(c),canConfigure:this.host.scopes.canManage(c),learningAvailable:this.host.scopes.scope(c.route.scopeId).memoryEnabled&&this.host.store.memoryRow<any>('memory-personal',this.space(c))?.enabled!==false,scopeName:this.host.scopes.scope(c.route.scopeId).name,items,adaptation:{coldStart:this.learning(c).coldStart,preferences:this.applicable(c).filter(f=>f.kind==='preference'),recent:items.filter(f=>f.origin==='extracted'||f.origin==='experience').sort((a,b)=>b.createdAt-a.createdAt).slice(0,10)},detail:fact?{fact,evidence,versions}:undefined,consolidation:this.host.store.memoryRow('memory-consolidation',this.space(c)),observations:this.observations().filter(r=>r.space===this.space(c)),topics:this.host.store.memoryRows<Topic>('memory-topic').filter(r=>r.space===this.space(c)&&r.generation===this.host.memory.generation(c.route.scopeId)),uses:this.host.store.memoryRows<any>('memory-use').filter(r=>r.space===this.space(c)&&r.generation===this.host.memory.generation(c.route.scopeId)),archived:this.host.store.list<MemoryFact>('memory-fact').filter(f=>f.archived&&f.entryId===c.route.entryId&&f.owner===c.actor&&f.generation===this.host.memory.generation(c.route.scopeId)).map(f=>({id:f.id,revision:f.revision,kind:f.kind,createdAt:f.createdAt}))}
   }
   if(!this.host.scopes.canManage(c))throw Error('Memory management requires scope manager')
   if(x.action==='configure'){
@@ -413,7 +413,7 @@ export class AgentMemory {
    const row=this.observations().find(r=>r.id===x.id&&r.space===this.space(c));if(!row||row.state!=='held')throw Error('Held extraction required');this.context(row);this.saveObservation({...row,state:'pending',attempts:0,nextAt:this.now(),policyRevision:this.policyRevision(c),error:undefined});return {state:'pending'}
   }
   if(x.action==='topics.forget'){
-   const topic=this.host.store.get<Topic>('memory-topic',x.id??'');if(!topic||topic.space!==this.space(c))throw Error('Topic unavailable')
+   const topic=this.host.store.memoryRow<Topic>('memory-topic',x.id??'');if(!topic||topic.space!==this.space(c))throw Error('Topic unavailable')
    // Reuse the durable content-free revocation ledger, including all known aliases.
    let f=topic.proposalId?this.host.memory.fact(topic.proposalId):undefined
    if(!f||!['candidate','active'].includes(f.state))f=this.host.memory.command(c,{action:'remember',operationId:'topic-fence:'+topic.id,expectedRevision:0,subject:'interest:'+topic.label,content:topic.label,kind:'interest',topicAliases:topic.aliases,sourceIds:topic.sources.slice(-30).map(s=>s.id),candidate:true},true) as MemoryFact

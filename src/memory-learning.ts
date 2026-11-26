@@ -60,7 +60,7 @@ export async function extractMemories(engine:AgentMemory,c:ScopeContext,batch:Me
  const all=engine.applicable(c).filter(f=>f.owner===c.actor&&f.entryId===c.route.entryId)
  const ranked=engine.rank(c,query,all).items
  const existing=[...ranked,...all.filter(f=>!ranked.includes(f))].slice(0,15)
- const topics=host.store.list<any>('memory-topic').filter(t=>t.space===engine.space(c)&&t.generation===host.memory.generation(c.route.scopeId)).slice(-40)
+ const topics=host.store.memoryRows<any>('memory-topic').filter(t=>t.space===engine.space(c)&&t.generation===host.memory.generation(c.route.scopeId)).slice(-40)
  const rejected=host.memory.suppressions(c).map(r=>({factId:r.factId}))
  const result=await modelJSON(engine,c,'extract',{referenceTime:new Date(engine.now()).toISOString(),messages:messages.map((m,index)=>({...m,index})),existing:existing.map((f,index)=>({index,kind:f.kind,topic:f.subject,content:f.content,protected:f.protected,learning:f.learning,expiresAt:f.expiresAt??null})),topics:topics.map((t,index)=>({index,label:t.label,aliases:t.aliases})),rejected},extractionSchema,signal,batch.map(r=>r.triggerId),existing) as z.infer<typeof extractionSchema>
  // Validate the complete result before committing anything or advancing progress.
@@ -99,7 +99,7 @@ export async function extractMemories(engine:AgentMemory,c:ScopeContext,batch:Me
     engine.acceptNote(c,fact)
    }catch(error){if(!String(error).includes('Fact was forgotten'))throw error}
   }
-  for(const t of resolvedTopics)if(t.id&&t.alias&&!host.memory.topicSuppressed(c.route.scopeId,t.alias)){const old=host.store.get<any>('memory-topic',t.id);if(old)host.store.put('memory-topic',t.id,{...old,aliases:[...new Set([...old.aliases,t.alias])].slice(-12)})}
+  for(const t of resolvedTopics)if(t.id&&t.alias&&!host.memory.topicSuppressed(c.route.scopeId,t.alias)){const old=host.store.memoryRow<any>('memory-topic',t.id);if(old)host.store.put('memory-topic',t.id,{...old,aliases:[...new Set([...old.aliases,t.alias])].slice(-12)})}
   engine.observeTopics(c,[...new Set(resolvedTopics.map(t=>t.label))],batch)
  }}
 }
@@ -107,7 +107,7 @@ export async function extractMemories(engine:AgentMemory,c:ScopeContext,batch:Me
 const consolidationSchema=z.object({merges:z.array(z.object({indices:z.array(z.number().int().min(0)).min(2).max(10),content:z.string().min(1).max(1200)}).strict()).max(3)}).strict()
 export async function consolidateMemories(engine:AgentMemory,c:ScopeContext,signal:AbortSignal){
  const {host}=engine;if(!engine.enabled(c))throw Error('Memory disabled')
- const space=engine.space(c),previous=host.store.get<any>('memory-consolidation',space)
+ const space=engine.space(c),previous=host.store.memoryRow<any>('memory-consolidation',space)
  if(previous?.status==='running')return {status:'busy'}
  if(previous&&previous.status!=='interrupted'&&engine.now()-previous.at<60000)return {status:'rate_limited'}
  const candidates=engine.applicable(c).filter(f=>f.owner===c.actor&&f.entryId===c.route.entryId)

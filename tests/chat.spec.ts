@@ -1778,6 +1778,9 @@ it('resets all personal learning and methods, rotates context, and replays over 
  for(const kind of ['memory-maintenance','memory-consolidation','memory-sequence','memory-last-extract'])h.store.put(kind,space,{content:'OLD_PERSONAL_LEARNING'})
  h.store.put('memory-personal',space,{enabled:false})
  h.store.put('memory-extraction-session','old-extraction',{space,content:'OLD_PERSONAL_LEARNING'})
+ const topic={id:'old-topic',space,scopeId:c.route.scopeId,entryId:c.route.entryId,generation:h.memory.generation(c.route.scopeId),aliases:['old alias'],label:'old topic',sources:[]}
+ h.store.put('memory-topic',topic.id,topic)
+ h.store.put('memory-vector','old-vector',{id:'old-vector',factId:fact.id,vector:[1],revision:fact.revision,generation:fact.generation,scopeId:c.route.scopeId})
  h.store.put('memory-suppression','old-suppression',{factId:fact.id,scopeId:c.route.scopeId,content:'OLD_PERSONAL_LEARNING'})
  const backup=join(f.root,'personal-before-reset.sqlite');h.store.db.prepare('VACUUM INTO ?').run(backup)
  const op=randomUUID(),reset=h.chat.reset('owner',op)
@@ -1785,6 +1788,10 @@ it('resets all personal learning and methods, rotates context, and replays over 
  expect(h.store.get<any>('memory-policy',c.route.scopeId)?.value.writeMode).toBe('adaptive')
  expect(h.store.get('memory-suppression','old-suppression')).toBeUndefined()
  expect(h.store.get('memory-consolidation',space)).toEqual({deleted:true})
+ expect(h.store.get('memory-topic',topic.id)).toEqual({deleted:true})
+ expect(h.store.memoryRows('memory-topic')).not.toContainEqual({deleted:true})
+ expect(h.store.memoryRow('memory-vector','old-vector')).toBeUndefined()
+ expect(h.store.memoryRow('memory-sequence',space)).toBeUndefined()
  h.store.put('memory-consolidation',space,{status:'completed',content:'OLD_PERSONAL_LEARNING'});expect(h.store.get('memory-consolidation',space)).toEqual({deleted:true})
  const fresh=h.chat.space('owner',true).conversation!,next=send(h,fresh.id,'A fresh task'),current=h.scopes.context(h.store.triggers.get(next.runId)!,'local:chat:'+fresh.id)!
  expect(current.route.entryId).not.toBe(c.route.entryId);expect(h.agentMemory.space(current)).not.toBe(space)

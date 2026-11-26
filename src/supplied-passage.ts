@@ -26,7 +26,44 @@ type Status=typeof statuses[number]
 const statusSet=new Set<unknown>(statuses)
 const statusCodes:Record<string,Status>={U:'use',S:'old',P:'draft',C:'conflict',X:'other'}
 const answerSchema=objectSchema({rows:{type:'string'},value:{type:'string'}})
-export interface PassageBasis {rows:string[];complete:boolean}
+export interface PassageBasis {rows:string[];complete:boolean;winningRow?:number}
+
+// In a short comparison, show exact subtraction only for an explicitly withheld or returned
+// quantity. Do not project through percentages, conversions, unknown adjustments or ties.
+function netComparison(question:string,rows:string[]){
+  if(rows.length<2||rows.length>8)return
+  const reserve=/\bunreserved\b|可用/iu.test(question),net=/\bnet\b|净/iu.test(question)
+  const most=/\b(?:more|most|larger|greater|largest|greatest)\b|最多|更多/iu.test(question),least=/\b(?:less|fewest|fewer|smallest|least)\b|最少|更少/iu.test(question)
+  if(reserve===net||most===least)return
+  const adjustment=reserve?/\breserv(?:ed|ation)\b|预留/iu:/\breturn(?:ed|s)?\b|退回/iu
+  const none=reserve?/\b(?:none|nothing|no items?) (?:are |were |was )?reserved\b|未预留|没有预留/iu:/\b(?:no returns|none returned|nothing (?:was )?returned)\b|没有退回|未退回/iu
+  const amounts:number[]=[],notes:string[]=[],units=new Set<string>()
+  for(const row of rows){
+    if(/[.%％/\-]\d|\d[.%％/]\d|[%％]|\b(?:per|rate|ratio|about|estimate|not all|dollars?|euros?|hours?|kg)\b|每|大约|汇率|单价|公斤|小时/iu.test(row))return
+    const nums=[...row.matchAll(/\d+/gu)]
+    if(!nums.length||nums.length>2||nums.some(n=>n[0].length>8||/[A-Za-z_-]/u.test(row[n.index!-1]??'')))return
+    for(const n of nums){
+      const suffix=row.slice(n.index!+n[0].length).trimStart()
+      const unit=/^(items?|crates?|boxes|box|units?|cartons?|packets?|pieces?)\b|^([件箱个包台枚])/iu.exec(suffix)
+      if(unit)units.add(unit[0].toLowerCase().replace(/boxes$/u,'box').replace(/s$/u,''))
+      else if(suffix&&!/^[,.;，。；]|^(?:are|were|is|was|reserved|returned)\b|^(?:已|被|预留|退回)/iu.test(suffix))return
+    }
+    if(units.size>1)return
+    const base=Number(nums[0]![0])
+    if(nums.length===1){
+      if(adjustment.test(row)&&!none.test(row))return
+      amounts.push(base);notes.push(String(base));continue
+    }
+    const parts=row.split(/[,;，；]|\b(?:but|though|of which)\b|其中|随后/iu).filter(s=>s.trim())
+    if(parts.length!==2||!adjustment.test(parts[1]!)||adjustment.test(parts[0]!)||none.test(parts[1]!)||!/\d/u.test(parts[1]!)||/\b(?:net|unreserved|excluding)\b|净|已扣除|可用/iu.test(parts[0]!))return
+    const deduction=Number(nums[1]![0]);if(deduction>base)return
+    amounts.push(base-deduction);notes.push(base+' - '+deduction+' = '+(base-deduction))
+  }
+  if(!notes.some(n=>n.includes(' = ')))return
+  const extreme=(most?Math.max:Math.min)(...amounts),winner=amounts.indexOf(extreme)
+  if(amounts.lastIndexOf(extreme)!==winner)return
+  return {winner,note:'Net counts in row order: '+notes.join('; ')+'.'}
+}
 
 /** Every status in the model reply addresses an original row visible to this recipient. */
 export function passagePacket(question:string,rows:string[],complete:boolean):AnswerPacket{
@@ -37,28 +74,32 @@ export function passagePacket(question:string,rows:string[],complete:boolean):An
   const shape=ids.length?objectSchema({...Object.fromEntries(ids.map(id=>[id,{type:'string',enum:Object.keys(statusCodes)}])),value:{type:'string'}}):answerSchema
   const template=Object.fromEntries([...ids.map(id=>[id,'<letter>']),['value','<answer>']])
   const statusFields=ids.length?'Use this flat JSON shape: '+JSON.stringify(template)+'.':'In "rows", write one letter per numbered row ('+rows.length+' letters).'
-  return {evidence,input:evidence+'\n'+question,schema:shape,passage:{rows,complete},
-    instructions:statusFields+' U=used fact or link, S=superseded, P=proposal, C=unresolved conflict, X=other. Apply effective changes even within one row. Order alone gives no precedence. In "value" return only the requested answer, including specified uncertainty. Outside work: NEED_CONTEXT. Return one JSON object.'}
+  const numericComparison=rows.some(row=>/\d/u.test(row))&&/\b(?:more|most|fewer|fewest|higher|lower|greater|largest|smallest)\b|最[多少高低大]|[更较][多少高低]/iu.test(question)
+  const net=complete?netComparison(question,rows):undefined
+  return {evidence,input:[evidence,net?.note,question].filter(Boolean).join('\n'),schema:shape,passage:{rows,complete,winningRow:net?.winner},
+    instructions:statusFields+' U=used fact or link (even if the row also has unrelated facts), S=superseded, P=proposal, C=unresolved conflict, X=other. Apply effective changes even within one row. Order alone gives no precedence.'+(numericComparison?' Calculate each net quantity from its own figures before comparing.':'')+' In "value" return only the requested answer, including specified uncertainty. Outside work: NEED_CONTEXT. Return one JSON object.'}
 }
 const codes=(line:string)=>new Set((line.match(/(?<![A-Za-z\d_-])(?=[A-Za-z\d_-]*\d)[A-Za-z][A-Za-z\d_-]*\d[A-Za-z\d_-]*(?![A-Za-z\d_-])/gu)??[]).map(k=>k.toLowerCase()))
 const includesValue=(line:string,value:string)=>{
   const literal=value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
   return new RegExp((/^[\da-z]/iu.test(value)?'(?<![a-z\\d_-])':'')+literal+(/[a-z\d]$/iu.test(value)?'(?![a-z\\d_-])':''),'iu').test(line)
 }
-// When the query gives one record key and requests a literal value, retain the source path to it.
-function linkedValue(rows:string[],key:string,value:string){
-  const reached=new Set([key]),records=rows.map(line=>({line,keys:codes(line)}))
-  for(let i=0;i<records.length;i++){
+// A second item on the same printed line may concern an unrelated key. Follow only explicit
+// lookup clauses, preserving the original row addresses of every hop.
+function lookupPath(rows:string[],key:string,value:string,allowed:(i:number)=>boolean){
+  const reached=new Map<string,number[]>([[key,[]]])
+  const clauses=rows.flatMap((row,i)=>!allowed(i)?[]:row.split(/[,;，；。]|\b(?:whereas|while|but)\b/iu).map(line=>({i,line,keys:[...codes(line)]})))
+  for(let pass=0;pass<=clauses.length;pass++){
     const size=reached.size
-    for(const r of records){
-      if([...r.keys].some(k=>reached.has(k))){
-        if(includesValue(r.line,value))return true
-        for(const k of r.keys)reached.add(k)
-      }
+    for(const {i,line,keys} of clauses){
+      const [from,to]=keys,path=from&&reached.get(from)
+      if(!path||clauses.some(c=>c.line!==line&&c.keys[0]===from)||!/(?:对应|映射|归|由|保管|存[在放]|换成|\b(?:maps? to|uses?|feeds?|points? to|belongs? to|held by|assigned to|stored (?:in|at))\b)/iu.test(line))continue
+      const next=[...new Set([...path,i])]
+      if(includesValue(line,value))return next
+      if(keys.length===2&&to&&!reached.has(to))reached.set(to,next)
     }
     if(reached.size===size)break
   }
-  return false
 }
 export function checkPassage(question:string,raw:string,basis:PassageBasis):AnswerCheck{
   if(!basis.complete)return {ok:false,reason:'sources',detail:'Read the complete authorized passage before checking the answer.'}
@@ -84,10 +125,20 @@ export function checkPassage(question:string,raw:string,basis:PassageBasis):Answ
   const literal=/\b(?:just|only) (?:with )?(?:the |a )?(?:[\w-]+ )?(?:name|code|letter|identifier)\b|只(?:给|回|写|答|返回).{0,32}(?:名|编号|代码)/iu.test(question)||
     /^[A-Za-z]+\d+[A-Za-z\d-]*$/u.test(value)&&/只(?:给|回|写|答)|\b(?:just|only)\b/iu.test(question)
   if(literal&&!uncertain){
-    if(!relevant.some(row=>includesValue(row,value)))return {ok:false,reason:'values',detail:'Give the exact value from the effective records.'}
+    if(basis.winningRow!==undefined&&!includesValue(basis.rows[basis.winningRow]!,value))return {ok:false,reason:'values',detail:'Return the full label in the row with the requested net count.'}
     const ids=[...codes(question)]
-    if(ids.length===1&&basis.rows.some(row=>codes(row).has(ids[0]!))&&!linkedValue(relevant,ids[0]!,value))
-      return {ok:false,reason:'sources',detail:'Include the applicable row for every link from the requested key to the value.'}
+    if(ids.length===1&&basis.rows.some(row=>codes(row).has(ids[0]!))&&basis.rows.some(row=>!codes(row).has(ids[0]!)&&includesValue(row,value))){
+      const path=lookupPath(basis.rows,ids[0]!,value,i=>marks[i]==='use')
+      if(!path){
+        // Reconcile a reader's omitted link only in unqualified lookup records. Never use a
+        // superseded, proposed or contradictory row to reinstate a value.
+        const plain=basis.rows.every(row=>!(/\b(?:old|originally|previous|draft|propos\w*|cancel\w*|withdraw\w*|except|formerly|maybe|not|never|may|if)\b|草案|已撤|曾经|已废|不再|可能|如果|并非/iu.test(row)))
+        const restored=plain&&marks.every(m=>m==='use'||m==='other')?lookupPath(basis.rows,ids[0]!,value,()=>true):undefined
+        if(restored?.length)return {ok:true,text:value,rows:marks.map((m,i)=>restored.includes(i)?'use':m)}
+        return {ok:false,reason:'sources',detail:'Trace the requested key through each applicable clause to the answer. Mark each required row U.'}
+      }
+    }
+    if(!relevant.some(row=>includesValue(row,value)))return {ok:false,reason:'values',detail:'Give the exact value from the effective records.'}
   }
   return {ok:true,text:value,rows:marks as Status[]}
 }

@@ -147,7 +147,7 @@ it('binds ordinary briefs to the original participants and never redistributes t
   expect(first.plan).toBeUndefined()
   const replay=await namedEvidenceGroup(text,roster,true,async()=>{throw Error('unexpected replay')},first.group)
   expect(replay.group).toEqual(first.group)
-  const plainLayout='Could @east and @west review these records?\nDifferent layout\nWhat applies?'
+  const plainLayout='Could @east and @west review the files?\nDifferent layout\nWhat applies?'
   const decisions=['{"route":"READ"}','{"access":"shared","briefs":{"east":"","west":""}}']
   const ordinary=await namedEvidenceGroup(plainLayout,roster,true,async()=>({text:decisions.shift()!,threadId:'x',turnId:'y'}))
   expect(ordinary.group).toMatchObject({ordinary:true,workers:['east','west']})
@@ -158,7 +158,9 @@ it('binds ordinary briefs to the original participants and never redistributes t
 it('requires the original link from the requested key to the cited answer',()=>{
   const p=evidencePlan('请 @east 和 @west 一起核对。旧编号 K1 对应账册 J7。J7 归 Uma，J8 归 Neri。请只回 K1 当前的保管人姓名。',roster,true)!
   const packet=answerPacket(p,p.sections)
-  expect(checkAnswer(p.question,JSON.stringify({rows:['other','use'],value:'Uma'}),packet).ok).toBe(false)
+  expect(checkAnswer(p.question,JSON.stringify({rows:['other','use'],value:'Uma'}),packet)).toMatchObject({ok:true,rows:['use','use']})
+  expect(checkAnswer(p.question,JSON.stringify({rows:['old','use'],value:'Uma'}),packet).ok).toBe(false)
+  expect(checkAnswer(p.question,JSON.stringify({rows:['use','use'],value:'Neri'}),packet).ok).toBe(false)
   expect(checkAnswer(p.question,JSON.stringify({rows:['use','use'],value:'Uma'}),packet).ok).toBe(true)
   const partial=answerPacket(p,[],[citedEvidence(p,'east','{"lines":[2]}')!])
   expect(partial.input).not.toContain('旧编号')
@@ -171,6 +173,16 @@ it('computes a complement only for one complete rounded age distribution',()=>{
   for(const text of [rows[0]!.replace('under 18','under 20'),rows[0]!.replace('22.2%','12.2%')])
     expect(checkedCalculation(q,[{heading:'A',rows:[text]}])).toBeUndefined()
   expect(checkedCalculation(q,[{heading:'A',rows},{heading:'B',rows}])).toBeUndefined()
+})
+it('checks explicit net counts across alternatives and leaves mixed-unit comparisons to the reader',()=>{
+  const q='Which location has more unreserved stock? Give only the name.'
+  const message='Could @east and @west review these records? Cedar has 9 units, of which 5 are reserved. Maple has 7 units. '+q
+  const plan=evidencePlan(message,roster,true)!,packet=answerPacket(plan,plan.sections)
+  expect(packet.passage?.winningRow).toBe(1)
+  expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Cedar"}',packet).ok).toBe(false)
+  expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Maple"}',packet).ok).toBe(true)
+  const mixed=evidencePlan(message.replace('7 units','7 boxes'),roster,true)!
+  expect(answerPacket(mixed,mixed.sections).passage?.winningRow).toBeUndefined()
 })
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]

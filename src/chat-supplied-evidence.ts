@@ -71,8 +71,8 @@ export async function namedEvidenceGroup(text:string,roster:readonly Profile[],f
   return {group:{...group,ordinary:true as const,briefs}}
 }
 function prosePlan(text:string,profiles:readonly Profile[],interpreted:boolean):EvidencePlan|undefined{
-  if(text.length<35||text.length>6000||/[\r\n]/u.test(text)||requireOrdinary.test(text)||offMessage.test(text))return
-  const sentences=text.trim().split(/(?<=[。！？])\s*|(?<=[.!?])\s+/u).filter(Boolean)
+  if(text.length<35||text.length>6000||requireOrdinary.test(text)||offMessage.test(text))return
+  const sentences=text.trim().split(/[\r\n]+|(?<=[。！？])\s*|(?<=[.!?])\s+/u).map(s=>s.trim()).filter(Boolean)
   if(sentences.length<2||!asks.test(sentences.at(-1)!))return
   const mentions=[...text.matchAll(/@([a-z][a-z\d_-]*)/giu)].map(m=>m[1]!)
   const first=sentences[0]!,namedRequest=mentions.length>0

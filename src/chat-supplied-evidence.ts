@@ -11,7 +11,7 @@ import {stableDigest} from './sources.ts'
 /** Only a new private Chat with an explicit read-only request can start this opt-in path. */
 export interface EvidenceGroup { digest:string; workers:string[]; tickets:Record<string,string>; fold?:boolean; interpreted?:boolean; labels?:Record<string,string> }
 export interface Section { heading:string; rows:string[] }
-export interface EvidencePlan { question:string; direction:string; workers:string[]; sections:Section[]; digest:string; labels:Record<string,string>; interpreted?:true }
+export interface EvidencePlan { question:string; direction:string; workers:string[]; sections:Section[]; digest:string; labels:Record<string,string>; interpreted?:true; sharedPassage?:true }
 
 const direct=/^(?:answer directly[.!]?|直接(?:回答|作答)[。！]?|respond directly[.!]?)$/iu
 const delegation=/^(?:please (?:have|ask)\b|use\b|have\b|ask\b|assign\b|let\b|请|让|交给|由)/iu
@@ -22,9 +22,39 @@ const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
 function named(text:string,word:string){
   return new RegExp('(?<![a-z0-9_-])'+escaped(word)+'(?![a-z0-9_-])','iu').test(text)
 }
+const explicitDirect=/\b(?:answer directly|based (?:solely|only) on (?:this|these)|using only (?:this|these))\b|请?直接(?:告诉我|回答|给出)|仅根据(?:这些|上述|以下)/iu
+const offMessage=/https?:\/\/|(?:^|\s)[/~][\w.-]+\/|[<>]|[\x60“”"]|\b(?:files?|logs?|website|internet|latest online|browser|database|run a command|open the|call the|send|email|schedule (?:a|an)|edit|create|post|approve|modify|update the|contact|privately|confidential|separately|simulate|pretend|hypothetically)\b|私下|保密|单独|分别|仅限|只给\s*@|代发|发送|预约|查询系统|日志|本机|文件|联网|假设让|修改|创建|代办|审批|转发|操作后台/iu
+const asks=/[?？]|\b(?:who|which|how many|reply|respond|answer|give|please tell|based only|using only)\b|告诉我|请|只回|只给|最后|谁|哪|多少/iu
+type Profile=Pick<WorkerProfile,'id'|'label'>
+function prosePlan(text:string,profiles:readonly Profile[],interpreted:boolean):EvidencePlan|undefined{
+  if(text.length<35||text.length>6000||/[\r\n]/u.test(text)||requireOrdinary.test(text)||offMessage.test(text))return
+  const sentences=text.trim().split(/(?<=[。！？])\s*|(?<=[.!?])\s+/u).filter(Boolean)
+  if(sentences.length<2||!asks.test(sentences.at(-1)!))return
+  const mentions=[...text.matchAll(/@([a-z][a-z\d_-]*)/giu)].map(m=>m[1]!)
+  const first=sentences[0]!,namedRequest=mentions.length>0
+  const found=profiles.filter(w=>mentions.some(x=>x.toLowerCase()===w.id.toLowerCase()||x.toLowerCase()===w.label?.toLowerCase()))
+  if(namedRequest){
+    // The first sentence explicitly addresses every reader. The semantic check sees the entire
+    // request and must confirm permission to share one passage with them all.
+    if(!interpreted||mentions.length>4||found.length!==mentions.length||negative.test(first)||!inspection.test(first)||
+      !/^(?:please\b|ask\b|have\b|could\b|can\b|would\b|请|让)/iu.test(first)||sentences.slice(1).some(x=>x.includes('@')))return
+  }else if(interpreted||/\b(?:do not|don.t|never) (?:answer|use)|不要直接|别直接/iu.test(text)||!explicitDirect.test(text)||profiles.some(w=>named(text,w.id)||!!w.label&&named(text,w.label)))return
+  let index=sentences.length-1
+  while(index>(namedRequest?2:1)&&asks.test(sentences[index-1]!))index--
+  const rows=sentences.slice(namedRequest?1:0,index)
+  if(!rows.length)return
+  // Preserve a request line that also supplies a fact instead of silently dropping its second clause.
+  if(namedRequest&&/[,;，；:：]/u.test(first))return
+  return {direction:text,question:[...(namedRequest?[first]:[]),...sentences.slice(index)].join(' '),workers:found.map(w=>w.id),labels:Object.fromEntries(found.map(w=>[w.id,w.label??w.id])),
+    digest:stableDigest(text),sections:[{heading:'Shared passage',rows}],sharedPassage:true,...(interpreted?{interpreted:true as const}:{})}
+}
+export function evidenceGate(plan:EvidencePlan){
+  return plan.sharedPassage?'Return READ only if this user now asks every named person to read the same facts in this message and give one answer. If any part needs outside information, action, separate access, separate reports, or the request is conditional or quoted, return OTHER. One word.':'Classify this user request. Return READ only if the user is now requesting all named people to inspect the supplied sources and provide one answer, with no external action, separate sign-off or additional context. A mere mention, hypothetical, quoted request, earlier work or ambiguity is OTHER. Return one word.'
+}
 export function evidencePlan(text:string,profiles:readonly Pick<WorkerProfile,'id'|'label'>[],interpreted=false):EvidencePlan|undefined{
   const [header,...blocks]=text.trim().split(/\r?\n[ \t]*\r?\n/u)
-  if(!header||!blocks.length||blocks.length>48||text.length>90_000)return
+  if(!blocks.length)return prosePlan(text,profiles,interpreted)
+  if(!header||blocks.length>48||text.length>90_000)return
   const [first,...rest]=header.includes('\n')?header.split(/\r?\n/):header.split(/(?<=[.!?。！？])\s+(?=\S)/u)
   const direction=interpreted?header:first
   const question=interpreted?header:rest.join('\n').trim()
@@ -127,6 +157,20 @@ function excerpts(rows:string[],question:string,limit:number){
   return rows.filter((_,i)=>ids.has(i))
 }
 export function answerPacket(plan:EvidencePlan,sections:Section[],findings:string[]=[],expanded=false){
+  if(plan.sharedPassage){
+    const source=plan.sections[0]!,original=evidenceText([source]),readerRows=new Set<number>()
+    // Accepted reports may only point to verbatim lines of the same shared source.
+    for(const finding of findings){
+      if(!finding.startsWith(source.heading+'\n'))continue
+      for(const line of finding.slice(source.heading.length+1).split('\n')){
+        const index=source.rows.indexOf(line)
+        if(index>=0)readerRows.add(index+1)
+      }
+    }
+    const focus=!expanded&&readerRows.size&&readerRows.size<source.rows.length?'\nReader-selected lines: '+[...readerRows].join(','):''
+    const body=sections.length||findings.includes(original)?focus?evidenceText([source],true):original:findings.join('\n')
+    return {instructions:'Answer the question using only this passage. Follow the requested wording and length. If any part requires an external action, another conversation or outside information, return NEED_CONTEXT.',input:body+focus+'\n'+plan.question,evidence:body}
+  }
   const docs=expanded?sections:catalogue(plan)?rank(plan,sections,findings).slice(0,3):selected(plan,sections)
   const view=!expanded&&catalogue(plan)?(s:Section)=>s.rows.join('\n').length>1800?excerpts(s.rows,questionOnly(plan.question),4):s.rows:undefined
   return buildAnswerPacket(plan.question,plan.sections,sections,docs,findings,evidenceText,view)
@@ -134,7 +178,7 @@ export function answerPacket(plan:EvidencePlan,sections:Section[],findings:strin
 export async function readEvidenceAnswer(plan:EvidencePlan,start:AnswerPacket,expand:()=>AnswerPacket,
   read:(instructions:string,input:string)=>Promise<ModelResult>,canRetry:()=>boolean){
   let packet=start,result=await read(packet.instructions,packet.input),check=checkAnswer(plan.question,result.text,packet)
-  if(!check.ok&&canRetry()){
+  if(!check.ok&&!(plan.sharedPassage&&!plan.workers.length&&check.reason==='missing')&&canRetry()){
     packet=repairPacket(check.reason==='missing'||check.reason==='sources'?expand():packet,check,result.text)
     result=await read(packet.instructions,packet.input);check=checkAnswer(plan.question,result.text,packet)
   }
@@ -163,6 +207,10 @@ function indices(text:string,n:number){
 }
 export function citedEvidence(plan:EvidencePlan,id:string,text:string){
   const sections=selected(plan,workerSections(plan,id))
+  if(plan.sharedPassage&&text.trim()){
+    const source=sections[0]!,refs=indices(text,source.rows.length)
+    return evidenceText(refs?.length?[{...source,rows:source.rows.filter((_,i)=>refs.includes(i))}]:sections)
+  }
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
     // Small evidence is already bound to the real ticket at dispatch. A reader response is retained
     // in its native transcript. Only the granted source crosses to the final reader, even on abstention.

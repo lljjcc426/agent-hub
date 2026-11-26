@@ -115,6 +115,22 @@ it('honors short quantities and retains compound or explicitly requested units',
   const extra=make(q+' Include units.')
   expect(checkAnswer(extra.question,'3 years',answerPacket(extra,extra.sections))).toEqual({ok:true,text:'3 years'})
 })
+it('admits a shared passage only within the authority of the full message',()=>{
+  const user='Could @east and @west review this? Zeta is listed in aisle A. An amendment moves Zeta to B. Which aisle holds Zeta? Reply only with the letter.'
+  expect(evidencePlan(user,roster)).toBeUndefined()
+  const p=evidencePlan(user,roster,true)!
+  expect(p.workers).toEqual(['east','west'])
+  expect(p.direction).toBe(user)
+  const result=citedEvidence(p,'east','2')!,packet=answerPacket(p,p.sections,[result])
+  expect(result).toMatch(/amendment/)
+  expect(packet.input.match(/amendment/g)).toHaveLength(1)
+  expect(packet.input).toContain('Reader-selected lines: 2')
+  expect(evidencePlan('Ink costs 45. Pens cost 30. Please answer directly with the cheaper item.',roster)?.workers).toEqual([])
+  for(const invalid of [user.replace('this','confidential files'),user.replace('@west','@absent'),user.replace('amendment','@west amendment'),user.replace('Could @east','Suppose @east'),user.replace('review','publish')]){
+    expect(evidencePlan(invalid,roster,true)).toBeUndefined()
+  }
+  expect(evidencePlan('Ink costs 45. Pens cost 30. Do not answer directly; ask for help.',roster)).toBeUndefined()
+})
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]
   let directChecks=0,checkDirect=false,breakAuthor=false

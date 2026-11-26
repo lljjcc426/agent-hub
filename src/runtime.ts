@@ -18,7 +18,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
 import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
-import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
+import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidenceGate,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -1799,7 +1799,7 @@ export class Runtime {
           const draft=evidencePlan(trigger.text,roster,true)
           if(draft){
             const approved=chatRun.suppliedEvidence?.digest===draft.digest&&chatRun.suppliedEvidence.interpreted
-            const verdict=approved?'READ':(await readSuppliedText('Classify this user request. Return READ only if the user is now requesting all named people to inspect the supplied sources and provide one answer, with no external action, separate sign-off or additional context. A mere mention, hypothetical, quoted request, earlier work or ambiguity is OTHER. Return one word.',draft.direction)).text.trim()
+            const verdict=approved?'READ':(await readSuppliedText(evidenceGate(draft),draft.direction)).text.trim()
             if(verdict==='READ'&&freshEvidence(this,chatRun,trigger.text))plan=draft
           }
         }

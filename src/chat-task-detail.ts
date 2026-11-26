@@ -101,6 +101,7 @@ export function taskExecutionDetail(store: Store, conversationId: string, activi
   const handoffs: TaskExecutionHandoff[] = []
   for (const row of store.db.prepare(`SELECT body FROM records WHERE kind='chat-message'
     AND id NOT GLOB 'card-preview:*' AND json_extract(body,'$.conversationId')=?
+    AND json_extract(body,'$.commentary') IS NULL
     AND ((json_extract(body,'$.handoff') IN ('assignment','result','files')
         AND json_extract(body,'$.status')='complete'
         AND json_extract(body,'$.ticketId') IN (SELECT value FROM json_each(?)))

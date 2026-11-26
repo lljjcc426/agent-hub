@@ -31,7 +31,7 @@ const definition=(kind:Kind,url:string,extra:any={}):ApiDefinition=>backendDefin
 const schema={type:'object',additionalProperties:false,properties:{answer:{type:'string'}},required:['answer']}
 const request=(extra:Partial<ModelRequest>={}):ModelRequest=>({cwd:tmpdir(),instructions:'Synthetic test',input:'read marker',schema,managed:true,tools:[{type:'function',name:'read_marker',description:'Read a synthetic marker',inputSchema:{type:'object',additionalProperties:false,properties:{path:{type:'string'}},required:['path']}}],...extra})
 it.each(kinds)('%s integrates streaming text with the managed tool loop without replaying tools',async kind=>{
- const frame=(v:any)=>'data: '+(typeof v==='string'?v:JSON.stringify(v))+'\n\n',requests:any[]=[],deltas:string[]=[];let tools=0,finalSent=false,sawLive=false
+ const frame=(v:any)=>'data: '+(typeof v==='string'?v:JSON.stringify(v))+'\n\n',requests:any[]=[],deltas:string[]=[],commentary:string[]=[];let tools=0,finalSent=false,sawLive=false
  const fixture=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=chunk;const b=JSON.parse(raw);requests.push(b)
   const tool=requests.length===1,text=JSON.stringify({answer:'Streamed marker'}),call={id:'stream-tool',name:'read_marker',args:{path:'marker.txt'}}
@@ -39,6 +39,11 @@ it.each(kinds)('%s integrates streaming text with the managed tool loop without 
   if(kind==='openai-responses'){
    data=tool?[]:[{type:'response.output_text.delta',item_id:'answer',content_index:0,delta:text.slice(0,12)},{type:'response.output_text.delta',item_id:'answer',content_index:0,delta:text.slice(12)}]
    terminal={type:'response.completed',response:output(kind,tool?'':text,tool?[call]:[])}
+   const id=tool?'progress-before-tool':'progress-before-reply',note=tool?'Reading the marker.':'I found the marker.'
+   const item={id,type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:note}]}
+   data.unshift({type:'response.output_item.added',item:{...item,content:[]}},{type:'response.output_text.delta',item_id:id,content_index:0,delta:note},{type:'response.output_item.done',item})
+   const {phase:_,...completedItem}=item
+   terminal.response.output.unshift(completedItem)
   }else if(kind==='openai-chat'){
    data=tool?[{choices:[{index:0,delta:{tool_calls:[{index:0,id:call.id,type:'function',function:{name:call.name,arguments:JSON.stringify(call.args)}}]},finish_reason:'tool_calls'}]}]:[{choices:[{index:0,delta:{content:text.slice(0,12)}}]},{choices:[{index:0,delta:{content:text.slice(12)},finish_reason:'stop'}]}]
    terminal='[DONE]'
@@ -50,9 +55,13 @@ it.each(kinds)('%s integrates streaming text with the managed tool loop without 
   setTimeout(()=>{if(!tool)finalSent=true;res.end(frame(terminal))},30)
  });servers.push(fixture);await new Promise<void>(r=>fixture.listen(0,'127.0.0.1',r))
  const model=new ApiModel('stream',definition(kind,'http://127.0.0.1:'+(fixture.address() as any).port),memory(),5000)
- const result=await model.run(request({onOutput:e=>{if(e.type==='delta'){deltas.push(e.text??'');if(!finalSent)sawLive=true}},onTool:async(name,args)=>{tools++;expect(name).toBe('read_marker');expect(args).toEqual({path:'marker.txt'});return {success:true,contentItems:[{type:'inputText',text:'marker'}]}}}))
+ const result=await model.run(request({onOutput:e=>{if(e.phase==='commentary'){if(e.type==='end')commentary.push(e.text!);return}if(e.type==='delta'){deltas.push(e.text??'');if(!finalSent)sawLive=true}},onTool:async(name,args)=>{tools++;expect(name).toBe('read_marker');expect(args).toEqual({path:'marker.txt'});return {success:true,contentItems:[{type:'inputText',text:'marker'}]}}}))
  expect(requests.every(b=>b.stream===true)).toBe(true);expect(tools).toBe(1);expect(sawLive).toBe(true)
  expect(JSON.parse(deltas.join(''))).toEqual({answer:'Streamed marker'});expect(JSON.parse(result.text)).toEqual({answer:'Streamed marker'})
+ if(kind==='openai-responses'){
+  expect(commentary).toEqual(['Reading the marker.','I found the marker.'])
+  expect(requests[1].input).toContainEqual({type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'Reading the marker.',annotations:[]}]})
+ }
 })
 function results(kind:Kind,b:any){return kind==='openai-chat'?b.messages.filter((m:any)=>m.role==='tool'):kind==='anthropic'?b.messages.flatMap((m:any)=>Array.isArray(m.content)?m.content.filter((c:any)=>c.type==='tool_result'):[]):b.input.filter((i:any)=>i.type==='function_call_output')}
 it('admits up to 32 independent reads and preserves write order and provider result pairing',async()=>{

@@ -17,7 +17,8 @@ import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
-import {answerPacket,answerInstructions,answerNeedsReview,cleanEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
+import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
+import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -1777,17 +1778,13 @@ export class Runtime {
       const recoveredUpdates=live?.takeUpdates()??[]
       if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
-      let suppliedResult:ModelResult|undefined,internalEvidence=false
+      let suppliedResult:ModelResult|undefined,internalEvidence=false,reviewedAnswer:string|undefined
       const readSuppliedText=async(instructions:string,input:string)=>{
         const reply=await this.runModel({role:'router',activity:{triggerId,sourceId:source.id},backendId:request.backendId,model:request.model,useConnectionDefault:request.useConnectionDefault,
           options:{...request.options,tools:[],toolConnections:[]},contextId:request.contextId,cwd:request.cwd,signal:controller.signal,managed:true,
           ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema:{},suppliedText:true,instructions,input},triggerId)
         validateReplyContext()
         return reply
-      }
-      const renderEvidence=async(input:string)=>{
-        const reply=await readSuppliedText(answerInstructions,input)
-        return reply.text.trim()==='NEED_CONTEXT'?undefined:{...reply,text:JSON.stringify({reply:reply.text})}
       }
       const evidenceContext={discussion,trigger,scoped}
       const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
@@ -1807,13 +1804,8 @@ export class Runtime {
           }
         }
         if(plan&&!plan.workers.length){
-          const packet=answerPacket(plan,plan.sections)
-          let reply=await readSuppliedText(packet.instructions,packet.input)
-          if(answerNeedsReview(plan,reply.text,packet.input)&&freshEvidence(this,chatRun,trigger.text)){
-            const complete=answerPacket(plan,plan.sections,[],true)
-            reply=await readSuppliedText(complete.instructions+' Recheck each requested value against the original sources. Give one final record without any explanation.',complete.input)
-          }
-          if(freshEvidence(this,chatRun,trigger.text)&&!answerNeedsReview(plan,reply.text,evidenceText(plan.sections)))suppliedResult={...reply,text:JSON.stringify({reply:cleanEvidenceAnswer(plan,reply.text)})}
+          const reply=await readEvidenceAnswer(plan,answerPacket(plan,plan.sections),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,()=>freshEvidence(this,chatRun,trigger.text))
+          if(reply.check.ok&&freshEvidence(this,chatRun,trigger.text))suppliedResult={...reply.result,text:JSON.stringify({reply:reply.check.text})}
         }
         else if(plan&&(!toolFilter||toolFilter.includes('worker_manage'))&&allowedTools.has('worker_manage')&&plan.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})){
           issueEvidence=plan
@@ -1828,19 +1820,34 @@ export class Runtime {
           }finally{issueEvidence=undefined}
         }
       }
-      if(privateEvidence&&review&&currentReview(this,review)&&review.reportedState==='ready'&&!review.question&&
-        this.store.get<{assignmentId:string}>('evidence-report',review.ticketId)?.assignmentId===review.assignmentId){
-        const stored=storedEvidence(this,triggerId)
+      if(privateEvidence&&review&&currentReview(this,review)&&!review.question){
+        const marker=this.store.get<{assignmentId:string;author:boolean;repair?:{reason:string}}>('evidence-report',review.ticketId)
+        const stored=marker?.assignmentId===review.assignmentId&&storedEvidence(this,triggerId)
         if(stored&&stored.plan.workers.every(id=>stored.group.tickets[id])&&Object.values(stored.group.tickets).includes(review.ticketId)){
           const self=stored.plan.workers.find(id=>stored.group.tickets[id]===review.ticketId)!
           const peers=stored.plan.workers.filter(id=>id!==self)
-          const deps=evidenceDependencies(this,triggerId,stored.group,peers,scoped)
-          if(deps.state!=='ordinary'){
-            const author=this.store.get<{author?:boolean;assignmentId:string}>('evidence-report',review.ticketId)
-            if(deps.state==='pending'||stored.plan.workers.length===1||author?.author&&author.assignmentId===review.assignmentId){
+          const dependencies=()=>evidenceDependencies(this,triggerId,stored.group,peers,scoped)
+          const currentSources=()=>!!storedEvidence(this,triggerId)&&currentReview(this,review)&&dependencies().state==='ready'
+          const deps=dependencies()
+          if(review.reportedState==='ready'&&deps.state!=='ordinary'){
+            if(deps.state==='pending'||stored.plan.workers.length===1||marker.author){
               internalEvidence=deps.state==='pending'
               suppliedResult={threadId:'',turnId:'evidence:'+job.id,text:JSON.stringify({reply:review.summary})}
-            }else suppliedResult=await renderEvidence([stored.plan.question,...deps.findings,review.summary].join('\n'))
+            }else{
+              const findings=[...deps.findings,review.summary],plan=stored.plan
+              const response=await readEvidenceAnswer(plan,answerPacket(plan,[],findings),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,currentSources)
+              if(response.check.ok&&currentSources())suppliedResult={...response.result,text:JSON.stringify({reply:response.check.text})}
+            }
+          }else if(review.reportedState==='blocked'&&marker.author&&marker.repair&&deps.state==='ready'){
+            // The reviewer may read the original private Chat after checking every sibling grant.
+            // Keep the failed native proposal and the independently accepted answer as separate receipts.
+            const plan=stored.plan,packet=answerPacket(plan,plan.sections,[],true)
+            const result=await readSuppliedText(packet.instructions+' Independently check the original sources and requested format.',packet.input)
+            if(currentSources()){
+              const checked=checkAnswer(plan.question,result.text,packet)
+              this.store.audit({type:'evidence.review',ticketId:review.ticketId,assignmentId:review.assignmentId,turnId:result.turnId,reason:marker.repair.reason,accepted:checked.ok})
+              if(checked.ok){reviewedAnswer=checked.text;suppliedResult={...result,text:JSON.stringify({reply:checked.text,decision:'answer'})}}
+            }
           }
         }
       }
@@ -1945,7 +1952,7 @@ export class Runtime {
           if(output.decision==null&&review.question)output.reply=review.question
           else if(output.decision==null&&!output.reply.trim())output.reply=reportMessage.text
           if(decision==='continue')output.reply=''
-          decideChatResult(this,review,decision,output.nextStep??'',output.reply)
+          decideChatResult(this,review,decision,output.nextStep??'',output.reply,reviewedAnswer)
           if(internalEvidence)output.reply=''
           if(decision==='answer'&&review.reportedState==='ready'&&!review.question)this.chat.deliveredWorker({...reportMessage,taskResult:1})
         }
@@ -2322,38 +2329,38 @@ export class Runtime {
         onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;turnStarted=true;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
       }
       const evidenceAssignment=this.store.get<{parentTrigger?:string;workerId:string;suppliedEvidence?:true}>('worker-assignment',ticket.id)
-      let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;findings:string[]}|undefined
-      let activation=standardRequest
+      let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;findings:string[];checkPeers?:()=>boolean}|undefined
       if(evidenceAssignment?.suppliedEvidence&&!saved?.threadId&&!permissionReceipts.length&&!hasInquiry){
         const link=evidenceAssignment.parentTrigger&&storedEvidence(this,evidenceAssignment.parentTrigger)
         const id=evidenceAssignment.workerId
         if(link&&link.group.tickets[id]===ticket.id){
-          const single=link.plan.workers.length===1
-          const tail=link.group.fold&&link.plan.workers.at(-1)===id&&!single
+          const single=link.plan.workers.length===1,tail=link.group.fold&&link.plan.workers.at(-1)===id&&!single
           const authority=this.taskAuthority(ticket.id),origin=this.store.triggers.get(evidenceAssignment.parentTrigger!)
           const scope=origin&&authority&&this.scopes.contextForTask(origin,authority.discussion,ticket.id)
-          const deps=tail&&scope?evidenceDependencies(this,origin!.id,link.group,link.plan.workers.slice(0,-1),scope):undefined
-          const author=single||deps?.state==='ready'
-          evidenceWorker={plan:link.plan,id,author,findings:deps?.findings??[]}
-          const packet=author?answerPacket(link.plan,workerSections(link.plan,id),deps?.findings):readerPacket(link.plan,id)
-          activation={...standardRequest,...packet,suppliedText:true,schema:{},allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
-            attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'}
+          const dependencies=tail&&scope?()=>evidenceDependencies(this,origin!.id,link.group,link.plan.workers.slice(0,-1),scope):undefined
+          const deps=dependencies?.()
+          evidenceWorker={plan:link.plan,id,author:single||deps?.state==='ready',findings:deps?.findings??[],
+            ...(deps?.state==='ready'&&dependencies?{checkPeers:()=>{const current=dependencies();return current.state==='ready'&&stableDigest(current.findings)===stableDigest(deps.findings)}}:{})}
         }
       }
       const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
-      let checkedInput=activation.input
-      let result=await this.runModel(activation,modelTrigger)
-      if(evidenceWorker&&evidenceAssignment?.parentTrigger&&!controller.signal.aborted&&currentWorkerAttempt(this,attempt)&&storedEvidence(this,evidenceAssignment.parentTrigger)){
-        const {plan,id,author,findings}=evidenceWorker
-        const retry=author?answerNeedsReview(plan,result.text,activation.input):!citedEvidence(plan,id,result.text)
-        if(retry){
-          if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
-          const more=author?answerPacket(plan,workerSections(plan,id),findings,true):readerPacket(plan,id)
-          if(author)more.instructions+=' Recheck each requested value against the original sources. Give one final record without any explanation.'
-          else more.instructions+=' Return a sequence of integer IDs (example: 1,2) or *. Do not answer the underlying question.'
-          checkedInput=more.input
-          result=await this.runModel({...activation,...more},modelTrigger)
-        }
+      const read=(instructions:string,input:string)=>this.runModel({...standardRequest,instructions,input,suppliedText:true,schema:{},allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+        attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'},modelTrigger)
+      const canRetryEvidence=()=>{
+        if(!evidenceAssignment?.parentTrigger||controller.signal.aborted||!currentWorkerAttempt(this,attempt)||!storedEvidence(this,evidenceAssignment.parentTrigger))return false
+        if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
+        return evidenceWorker?.checkPeers?.()??true
+      }
+      let result:ModelResult,answerCheck:AnswerCheck|undefined
+      if(!evidenceWorker)result=await this.runModel(standardRequest,modelTrigger)
+      else if(evidenceWorker.author){
+        const {plan,id,findings}=evidenceWorker,own=workerSections(plan,id)
+        const reply=await readEvidenceAnswer(plan,answerPacket(plan,own,findings),()=>answerPacket(plan,own,findings,true),read,canRetryEvidence)
+        result=reply.result;answerCheck=reply.check
+      }else{
+        const {plan,id}=evidenceWorker,packet=readerPacket(plan,id)
+        result=await read(packet.instructions,packet.input)
+        if(!citedEvidence(plan,id,result.text)&&canRetryEvidence())result=await read(packet.instructions+' Use comma-separated integer IDs or *.',packet.input)
       }
       delete run.webFetchReplay
       live.accepting=false
@@ -2371,9 +2378,11 @@ export class Runtime {
         continueChangedInput()
         return
       }
-      const evidenceAnswer=evidenceWorker?(evidenceWorker.author?cleanEvidenceAnswer(evidenceWorker.plan,result.text):citedEvidence(evidenceWorker.plan,evidenceWorker.id,result.text)):undefined
-      const usableEvidence=!!evidenceAnswer&&!/\bNEED_CONTEXT\b/u.test(evidenceAnswer)&&(!evidenceWorker?.author||!answerNeedsReview(evidenceWorker.plan,evidenceAnswer,checkedInput))
-      if(evidenceWorker&&usableEvidence)this.store.put('evidence-report',ticket.id,{author:evidenceWorker.author,assignmentId,turnId:result.turnId})
+      const grantsCurrent=evidenceWorker&&canRetryEvidence()?evidenceWorker:undefined
+      const evidenceAnswer=grantsCurrent?(grantsCurrent.author?(answerCheck?.ok?answerCheck.text:undefined):citedEvidence(grantsCurrent.plan,grantsCurrent.id,result.text)):undefined
+      const usableEvidence=!!evidenceAnswer
+      if(grantsCurrent&&(usableEvidence||answerCheck&&!answerCheck.ok))this.store.put('evidence-report',ticket.id,{author:grantsCurrent.author,assignmentId,turnId:result.turnId,
+        ...(answerCheck&&!answerCheck.ok?{repair:{reason:answerCheck.reason}}:{})})
       const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
       const output=chatOutput??report.parse(rawOutput)

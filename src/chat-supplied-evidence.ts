@@ -4,6 +4,8 @@ import type {WorkerProfile} from './backend-config.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {currentReview,type ChatResultReview} from './chat-result-review.ts'
 import type {ScopeContext} from './router-scope.ts'
+import {buildAnswerPacket,checkAnswer,repairPacket,type AnswerPacket} from './supplied-answer.ts'
+import type {ModelResult} from './model.ts'
 import {stableDigest} from './sources.ts'
 
 /** Only a new private Chat with an explicit read-only request can start this opt-in path. */
@@ -76,7 +78,6 @@ export function evidenceText(sections:Section[],numbered=false){
   let ix=0
   return sections.map(s=>{const view=display(s);return view.heading+'\n'+view.rows.map(r=>(numbered?String(++ix)+' ':'')+r).join('\n')}).join('\n')
 }
-export const answerInstructions='Use all relevant records. Copy names and identifiers exactly; compare all alternatives and compute requested values. Return only the requested answer. If insufficient return NEED_CONTEXT.'
 // Only explicit exact-key restrictions permit projecting a homogeneous keyed relation.
 // Keep every version of the key, including contradictory, superseded and missing records.
 function exactKey(plan:EvidencePlan){
@@ -117,17 +118,24 @@ function rank(plan:EvidencePlan,sections:Section[],hints:string[]=[]){
 }
 export function answerPacket(plan:EvidencePlan,sections:Section[],findings:string[]=[],expanded=false){
   const docs=expanded?sections:catalogue(plan)?rank(plan,sections,findings).slice(0,3):selected(plan,sections)
-  const instructions=/\bJSON\b/iu.test(plan.question)?'Use the sources. Reply as bare JSON. Give the shortest exact answer and original titles supporting every step. If evidence is missing return NEED_CONTEXT.':answerInstructions
-  const evidence=[...findings,evidenceText(docs)].filter(Boolean).join('\n\n')
-  return {instructions,input:/\bJSON\b/iu.test(plan.question)?evidence+'\n\n'+plan.question:plan.question+'\n\n'+evidence}
+  return buildAnswerPacket(plan.question,plan.sections,sections,docs,findings,evidenceText)
+}
+export async function readEvidenceAnswer(plan:EvidencePlan,start:AnswerPacket,expand:()=>AnswerPacket,
+  read:(instructions:string,input:string)=>Promise<ModelResult>,canRetry:()=>boolean){
+  let packet=start,result=await read(packet.instructions,packet.input),check=checkAnswer(plan.question,result.text,packet)
+  if(!check.ok&&canRetry()){
+    packet=repairPacket(check.reason==='missing'||check.reason==='sources'?expand():packet,check,result.text)
+    result=await read(packet.instructions,packet.input);check=checkAnswer(plan.question,result.text,packet)
+  }
+  return {result,check}
 }
 export function readerPacket(plan:EvidencePlan,id:string){
   const sections=selected(plan,workerSections(plan,id)),q=questionOnly(plan.question)
   const focus=exactKey(plan)?'Key '+exactKey(plan):q
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
-    return {instructions:'Read your assigned source. Briefly identify the evidence relevant to the question. Use exact names and numbers.',input:focus+'\n'+evidenceText(sections)}
+    return {instructions:'Read your source. Reply only with the relevant row numbers, or * for all.',input:focus+'\n'+evidenceText(sections,true)}
   }
-  const prompt='Select source IDs needed for this question, including indirect links. Reply only with IDs separated by commas, * for all or 0 for none.'
+  const prompt='Select supporting source IDs, including indirect links. Output IDs, * (all), or 0 (none).'
   if(catalogue(plan)){
     const brief=sections.map((s,i)=>String(i+1)+'. '+title(s)+': '+(s.rows[0]??'').slice(0,230)).join('\n')
     return {instructions:prompt,input:brief+'\nQuestion: '+focus}
@@ -135,7 +143,7 @@ export function readerPacket(plan:EvidencePlan,id:string){
   return {instructions:'Read the numbered records. Return only supporting row IDs separated by commas, * for all or 0 for none.',input:evidenceText(sections,true)+'\nSelect rows for: '+focus}
 }
 function indices(text:string,n:number){
-  let ref=text.trim().replace(/^(?:rows?|sources?|ids?)\s*:\s*/iu,'').replace(/[。.]$/u,'').replace(/^'|'$/g,'').replace(/^\[([\d,\s]*)\]$/u,'$1').trim()
+  const ref=text.trim().replace(/^(?:(?:supporting|relevant|selected)\s+)?(?:(?:rows?|sources?|documents?)(?:\s+ids?)?|ids?)\s*[:：]\s*/iu,'').replace(/[。.]$/u,'').replace(/^'|'$/g,'').replace(/^\[([\d,\s]*)\]$/u,'$1').trim()
   if(ref==='0'||/^none$/iu.test(ref)||ref==='')return text.trim()?[]:undefined
   if(ref==='*')return Array.from({length:n},(_,i)=>i)
   if(!/^[1-9]\d*(?:\s*,\s*[1-9]\d*)*$/u.test(ref))return
@@ -161,46 +169,6 @@ export function citedEvidence(plan:EvidencePlan,id:string,text:string){
   let heading='';const lines:string[]=[]
   for(const i of refs){const row=all[i]!;if(row.heading!==heading){heading=row.heading;lines.push(heading)}lines.push(row.row)}
   return lines.join('\n')
-}
-export function cleanEvidenceAnswer(plan:EvidencePlan,text:string){
-  const reply=text.trim()
-  if(!/\bJSON\b/iu.test(plan.question)){
-    const fields=fieldsRequested(plan.question)
-    if(fields.length){
-      const lines=reply.split(/\r?\n/u).map(l=>l.trim().replace(/^\*\*(.*?)\*\*$/u,'$1')).filter(l=>/^RESULT\s/u.test(l))
-      if(lines.length===1&&fields.every(key=>new RegExp('(?:^|\\s)'+escaped(key)+'=').test(lines[0]!)))return lines[0]!
-    }
-    return reply
-  }
-  const m=/^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(reply)
-  if(m){try{JSON.parse(m[1]!);return m[1]!.trim()}catch{}}
-  return reply
-}
-function fieldsRequested(q:string){
-  const pos=q.lastIndexOf('RESULT ')
-  if(pos<0)return []
-  return [...q.slice(pos).matchAll(/(?:^|\s)([a-zA-Z][a-zA-Z0-9_-]*)=</gu)].map(m=>m[1]!)
-}
-export function answerNeedsReview(plan:EvidencePlan,text:string,rawSources:string){
-  if(/\bNEED_CONTEXT\b/u.test(text))return true
-  const result=cleanEvidenceAnswer(plan,text)
-  if(/\bJSON\b/iu.test(plan.question)){
-    try{
-      const record=JSON.parse(result)
-      if(/\btitles\b.*\boriginal\b|\boriginal\b.*\btitles\b/iu.test(plan.question)){
-        const titles=plan.sections.map(title)
-        return !Array.isArray(record?.titles)||record.titles.some((s:unknown)=>typeof s!=='string'||!titles.includes(s))
-      }
-      return false
-    }catch{return true}
-  }
-  const fields=fieldsRequested(plan.question)
-  if(!fields.length)return false
-  const pairs=[...result.matchAll(/(?:^|\s)([A-Za-z][\w-]*)=([^=]+?)(?=\s+[A-Za-z][\w-]*=|$)/gu)]
-  if(!result.startsWith('RESULT ')||fields.join('|')!==pairs.map(m=>m[1]).join('|'))return true
-  const corpus=(rawSources+' '+plan.question).toLowerCase()
-  // A new numeric quantity may be calculated. A novel textual value deserves one recheck with the same grant.
-  return pairs.some(m=>{const v=m[2]!.trim().replace(/[.。]$/u,'');return /[\p{L}]/u.test(v)&&!named(corpus,v)})
 }
 /** Re-read the normal ticket and source grants before using a sibling’s accepted report. */
 export function evidenceDependencies(host:Runtime,runId:string,group:EvidenceGroup,ids:string[],scope:ScopeContext){

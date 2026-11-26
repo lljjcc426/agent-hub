@@ -5,7 +5,7 @@ import {stableDigest} from './sources.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 
 export interface ChatResultReview {
- id:string;ticketId:string;assignmentId:string;triggerId:string;inputDigest:string;summary:string;reportedState:WorkerReport['state'];question?:string;askedBy?:string;decision?:Decision;nextStep?:string;
+ id:string;ticketId:string;assignmentId:string;triggerId:string;inputDigest:string;summary:string;reportedState:WorkerReport['state'];question?:string;askedBy?:string;decision?:Decision;nextStep?:string;reviewedAnswer?:string;
 }
 type Decision='answer'|'continue'|'ask_user'|'retain_blocked'
 function alreadyRequested(host:Runtime,r:ChatResultReview,nextStep:string){
@@ -73,8 +73,9 @@ export function currentReview(host:Runtime,r:ChatResultReview){
 }
 
 /** The Router decision and its one effect commit with the inbox acknowledgement. */
-export function decideChatResult(host:Runtime,r:ChatResultReview,decision:Decision,nextStep:string,reply:string){
+export function decideChatResult(host:Runtime,r:ChatResultReview,decision:Decision,nextStep:string,reply:string,reviewedAnswer?:string){
  if(!currentReview(host,r))throw Error('Worker result was superseded')
+ if(reviewedAnswer!==undefined&&(decision!=='answer'||r.reportedState!=='blocked'||reviewedAnswer!==reply||!reply.trim()))throw Error('Invalid independently reviewed answer')
  if(decision==='continue'){
   if(!nextStep.trim()||alreadyRequested(host,r,nextStep.trim()))
    throw Error('Choose a new check grounded in this report or answer from the available evidence')
@@ -83,10 +84,10 @@ export function decideChatResult(host:Runtime,r:ChatResultReview,decision:Decisi
   allowNewTaskInputs(host.store,t.id,prior)
  }else{
   if(!reply.trim())throw Error('Reviewed Chat result requires a visible answer')
-  if(decision==='answer')host.commitChatReview(r.ticketId,{state:'ready',summary:r.summary,question:null})
+  if(decision==='answer')host.commitChatReview(r.ticketId,{state:'ready',summary:reviewedAnswer??r.summary,question:null})
   else if(decision==='ask_user')host.commitChatReview(r.ticketId,{state:'blocked',summary:r.summary,question:reply,askedBy:r.askedBy})
   else if(decision==='retain_blocked'&&r.reportedState==='blocked')host.commitChatReview(r.ticketId,{state:'blocked',summary:r.summary,question:null})
   else throw Error('Invalid Chat result decision')
  }
- host.store.put('chat-result-review',r.id,{...r,decision,...(decision==='continue'?{nextStep:nextStep.trim()}:{})})
+ host.store.put('chat-result-review',r.id,{...r,decision,...(reviewedAnswer!==undefined?{reviewedAnswer}:{}),...(decision==='continue'?{nextStep:nextStep.trim()}:{})})
 }

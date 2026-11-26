@@ -1207,7 +1207,7 @@ export class Runtime {
               this.store.jobState(job.id,'done')
             continue
           }
-          if(!this.webhooks.taskExecutionAllowed(payload.ticketId))continue
+          if(!this.webhooks.taskExecutionAllowed(payload.ticketId)||this.goals.pendingPausedWorker(g,payload.ticketId))continue
         }
         if(['start','execute'].includes(job.kind)&&this.watchdog.recovering(payload.ticketId))continue
         if(payload.ticketId&&!['cancel','cleanup'].includes(job.kind)&&!this.scopes.taskRunnable(payload.ticketId)){this.store.jobState(job.id,'blocked','Task ownership requires reconciliation');continue}
@@ -1747,7 +1747,8 @@ export class Runtime {
           return value
         },
         ...(!review&&!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
-          if(controller.signal.aborted||handoff?.yielded&&!resumedAfterHandoff||live?.pending||live?.changed)return
+          if(controller.signal.aborted||handoff?.yielded&&!resumedAfterHandoff||live?.pending||live?.changed||
+             event.phase!=='commentary'&&dispatches().some(item=>item.kind==='resumed'))return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
           catch(error){controller.abort(error);return}
@@ -2020,6 +2021,7 @@ export class Runtime {
       if(pendingMessages.some(m=>!authorizedMessage(m)))throw Error('Worker result authorization withdrawn')
       const output=JSON.parse(result.text);if(typeof output.reply!=='string')throw Error('Invalid Router reply')
       if(quiet)output.reply=''
+      else if(handoff&&dispatches().some(item=>item.kind==='resumed'))output.reply=handoff.reply()
       else if(reportMessage?.inquiryId&&!output.reply.trim())output.reply=reportMessage.text
       else if(browserRun&&!permissionId&&!fileReviewId&&!teamResultId&&!hostCommand&&!output.reply.trim()&&!this.chat.hasVisibleAnswer(triggerId)&&
               !/^(?:请?(?:先|暂时)?(?:不用|不要|无需|别)回复(?:这条消息|我)?|(?:please\s+)?(?:do not reply|don't reply|no reply (?:needed|required)))[。.!！\s]*$/iu.test(trigger.text.trim())){
@@ -2305,6 +2307,9 @@ export class Runtime {
     const continueChangedInput=()=>this.store.atomic(()=>{
       const attempt=eventAttempt,current=this.store.tickets.get(ticket.id)
       if(!attempt||controller.signal.aborted||!current||current.ended||latestAssignment(current)?.id!==assignmentId||this.store.get<{attemptId:string}>('async-worker-current',ticket.id)?.attemptId!==attempt.id)return
+      if(this.store.get('async-worker-paused',attempt.id)){
+        run.phase='idle';persist(true);return
+      }
       const source=this.sources.get(current.mandate.actor.source)?.config
       if(!source||!this.validWork({ticketId:ticket.id,assignmentId,cwd:run.cwd,sandbox:source.sandbox,depth:0,network:false}))return
       const pending=taskView(this.store,current).undelivered

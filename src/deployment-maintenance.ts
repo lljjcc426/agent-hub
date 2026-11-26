@@ -12,6 +12,7 @@ import {acceptanceRetryTarget,retainedGoalDelivery} from './goal-acceptance.ts'
 import type {Run,Store} from './store.ts'
 import {consumedInputWake,retainedInputWakes} from './task-context.ts'
 import {heldQuestionNode,type RouterGoal} from './router-goals.ts'
+import {readPausedTurn,relatedPause} from './paused-worker-recovery.ts'
 import {legacyAnsweredGoalReply,type BusinessDecisionView} from './business-decisions.ts'
 import type {Ticket} from './vendor/dsh-core/index.ts'
 import type {ChatDelivery} from './chat-deliveries.ts'
@@ -160,7 +161,10 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?unstartedWorkerShell(store,stateDir,run):undefined
   const provider=run&&!shell&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?settledProviderTurn(store,stateDir,run):undefined
-  const stopped=shell||provider
+  const pause=run&&!provider&&!shell&&!refused&&node.state==='held'&&node.failure?.kind==='uncertain'
+   ?relatedPause(store,goal,id):undefined
+  const paused=run&&pause?readPausedTurn(store,stateDir,goal,run,pause):undefined
+  const stopped=shell||provider||paused
   if(node.failure?.kind==='uncertain'&&!refused&&!stopped)return
   if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!stopped||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
@@ -202,12 +206,17 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
    if(!run.threadId||!run.turnId||ticket.attention||assignment.report?.state!=='blocked')return
    for(const inputId of ticket.undelivered){
     const input=ticket.inputs.find(item=>item.id===inputId)
-    if(provider&&input?.kind==='note')continue
+    if((provider||paused)&&input?.kind==='note')continue
     const trigger=input?.kind==='trigger'&&store.get<{human:boolean;actor:{source:string;id:string}}>('trigger',input.triggerId)
     if(!trigger||!trigger.human||!trigger.actor||JSON.stringify([trigger.actor.source,trigger.actor.id])!==goal.actor)return
    }
    if(shell)receipts.push({id:shell.callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_shell'})
-   else{
+   else if(paused){
+    // The old native writer is stopped and every effect is accounted for. Keep
+    // the hold and its original receipts intact for the replacement host.
+    if(!attempt||paused.jobs.some(job=>!['completed','failed'].includes(store.get<{state:string}>('work',job.id)?.state??'')))return
+    hasProviderCheckpoint=true
+   }else if(provider){
     const wakes=retainedInputWakes(store,run)
     if(!attempt||!wakes)return
     for(const receiptId of provider!.settledBatches.keys())receipts.push({id:receiptId,threadId:run.threadId,turnId:run.turnId,tool:'code_mode'})

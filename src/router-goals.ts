@@ -1,3 +1,4 @@
+import {hasPausedTurnReader,readPausedTurn,relatedPause,type ResumedWorker} from './paused-worker-recovery.ts'
 import {unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {recoverGoalEvidence} from './goal-evidence-recovery.ts'
 import {businessDecision,captureReportedQuestion,decisionActorMatches,decisionAsker,hasOutstandingQuestion} from './business-decisions.ts'
@@ -541,6 +542,68 @@ export class RouterGoals {
    !host.work.list(id).some(j=>(j.state==='starting'||j.state==='running')&&(j.assignmentId!==run.assignmentId||j.agentId||j.cwd!==run.cwd||!host.work.ownsRunningShell(j)))&&
    workerCheckpointReady(host.store,host.config.stateDir,run)
  }
+ /** A resume on an interrupted native writer must pass reconciliation before the scheduler can reuse it. */
+ pendingPausedWorker(g:RouterGoal|undefined,id:string,run=this.host.store.get<Run>('run',id)){
+  const {store}=this.host
+  if(!g||!run||!['active','waiting','held','paused'].includes(g.state)||!hasPausedTurnReader(store,run)||
+    g.state!=='paused'&&g.triggerId===g.contract?.triggerId)return
+  const previous=store.get<ResumedWorker>('goal-worker-continuation',id)
+  if(g.state!=='paused'&&previous?.goalId===g.id&&previous.assignmentId===run.assignmentId&&previous.triggerId===g.triggerId)return
+  const pause=relatedPause(store,g,id)
+  if(pause&&!(previous?.goalId===g.id&&previous.assignmentId===run.assignmentId&&previous.pauseRevision===pause.revision))return pause
+ }
+ private recoverPausedWorker(g:RouterGoal,n:GoalNode,c:ScopeContext){
+  const id=n.ticketId,host=this.host,{store}=host
+  if(!id||n.state==='passed'||n.state==='verifying'||n.state==='waiting_dependency')return
+  const run=store.get<Run>('run',id),pause=this.pendingPausedWorker(g,id,run)
+  if(!pause||!run)return
+  if(host.executionActive(id))return 'waiting'
+  const task=store.tickets.get(id)
+  if(!task||task.ended||!this.workerCanContinue(g,n,run,task)||host.memory.cleanup.blocked('ticket',id,task)||
+     g.triggerId!==c.trigger.id||!c.trigger.human)return 'unverified'
+  const proof=readPausedTurn(store,host.config.stateDir,g,run,pause)
+  if(!proof)return 'unverified'
+  const jobs=host.work.list(id)
+  if(jobs.some(job=>['starting','running'].includes(job.state))){
+   return jobs.filter(job=>['starting','running'].includes(job.state)).every(job=>
+    proof.jobs.some(item=>item.id===job.id)&&host.work.ownsRunningShell(job))?'waiting':'unverified'
+  }
+  if(run.phase!=='idle'&&run.phase!=='uncertain'||!this.effectsSettledAtPhase(id,run.phase)||
+    unsettledTaskEffects(store,id,0,run.assignmentId))return 'unverified'
+  const manifest=store.get<{manifest:ContextManifest}>('task-context',id)?.manifest
+  if(!manifest)return 'unverified'
+  host.scopes.checkTask(id,c,true)
+  host.memory.validate(manifest)
+  const worker=workerProfiles(host.config).find(item=>item.id===run.workerId)
+  if(!worker||worker.state==='paused'||worker.backend!==run.backendId||
+    (run.model&&(worker.model??host.config.backends[worker.backend]?.model??host.config.models.worker)!==run.model))return 'unverified'
+  host.model.describe?.(run.threadId)
+  const previous=store.get<ResumedWorker>('goal-worker-continuation',id)
+  const savedJobs=[...new Map([...(previous?.assignmentId===run.assignmentId?previous.jobs:[]),...proof.jobs].map(job=>[job.id,job])).values()]
+  const note=JSON.stringify({
+   instruction:'Continue the same assignment and its original deliverable in the retained workspace. The user has explicitly resumed the task. Inspect the completed job receipts and existing files, then do the next unfinished work with current tools. Never rerun a completed command or clone/download work already present. Earlier reads may be reused as evidence when their source is still authorized.',
+   completedJobs:savedJobs.map(job=>({id:job.id,resource:'job/'+job.id})),
+   recordedToolResults:'Use superagent_read to inspect model-tool-receipts for this assignment.',
+  })
+  if(Buffer.byteLength(note)>host.scopes.scope(g.scopeId).contextBytes)return 'unverified'
+  return store.atomic(()=>{
+   if(store.get<ResumedWorker>('goal-worker-continuation',id)?.id===proof.continuationId)return 'recovered'
+   const {threadId,turnId,result,error,failure,toolsDigest,toolsVersion,waitingForWriter,webFetchReplay,...retained}=run
+   store.put('context-handoff',proof.continuationId,{ticketId:id,previousThread:threadId,previousTurn:turnId,
+    backendId:run.backendId,model:run.model,reason:'user_resumed_from_checkpoint',calls:proof.calls,at:this.now()})
+   store.put('goal-worker-continuation',id,{id:proof.continuationId,goalId:g.id,ticketId:id,assignmentId:run.assignmentId,
+    triggerId:c.trigger.id,pauseRevision:pause.revision,jobs:savedJobs} satisfies ResumedWorker)
+   // Settle the parked wake only after the new input is durably queued. The old adapter journal remains a receipt.
+   store.put('run',id,{...retained,phase:'idle',rebuild:proof.continuationId} satisfies Run)
+   n.state='running';n.reason=undefined;n.failure=undefined;n.retryAt=undefined;n.providerWait=undefined
+   g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
+   const prior=task.inputs.map(input=>input.id)
+   host.engine.note(id,note);allowNewTaskInputs(store,id,prior)
+   store.audit({type:'worker.pause_recovered',goalId:g.id,ticketId:id,assignmentId:run.assignmentId,triggerId:c.trigger.id,
+    continuationId:proof.continuationId,previousThread:threadId,previousTurn:turnId,completedJobs:savedJobs.map(job=>job.id)})
+   return 'recovered'
+  })
+ }
  private recoverStoppedWorker(g:RouterGoal,n:GoalNode,c:ScopeContext){
   const id=n.ticketId,store=this.host.store
   if(!id||this.host.executionActive(id))return false
@@ -979,7 +1042,7 @@ export class RouterGoals {
      this.nextEvidenceCheck.delete(g.id)
     }
     if(checkHeldRead){
-     if(!held.some(node=>this.recoverStoppedWorker(g,node,c)))this.recoverInterruptedReads(g,c,held)
+     if(!held.some(node=>this.recoverPausedWorker(g,node,c)==='recovered'||this.recoverStoppedWorker(g,node,c)))this.recoverInterruptedReads(g,c,held)
      continue
     }
     if(confirmed?.length){
@@ -1012,6 +1075,12 @@ export class RouterGoals {
     for(const n of nodes){
      if(n.teamTargetId){this.advanceRemote(g,n);continue}
      if(!n.ticketId||n.state==='passed'||n.state==='held')continue
+     const paused=this.recoverPausedWorker(g,n,c)
+     if(paused==='waiting'||paused==='recovered')continue
+     if(paused==='unverified'){
+      n.state='held';n.reason='The previous execution needs reconciliation before continuing.'
+      n.failure={kind:'uncertain',reason:n.reason};continue
+     }
      if(n.state==='waiting_dependency'){
       if(n.dependsOn.every(id=>nodes.find(d=>d.id===id)?.state==='passed')&&this.effectsSettled(n.ticketId)){
        const dependent=this.host.store.tickets.get(n.ticketId)
@@ -1237,6 +1306,11 @@ export class RouterGoals {
    if(x.action!=='start'&&!g)throw Error('Goal unavailable')
    if(x.action!=='start'&&(x.objective!==undefined||x.criteria!==undefined)&&g?.contract)throw Error('Original goal objective and acceptance criteria are immutable; use a new explicitly authorized goal')
    if((g?.revision??0)!==x.expectedRevision)throw Error('Goal revision conflict')
+   if(x.action==='resume'&&g?.state==='active'&&g.nodes?.some(node=>node.ticketId&&relatedPause(store,g!,node.ticketId))){
+    store.put('goal-receipt',key,{scopeId:g.scopeId,entryId:g.entryId,triggerId:c.trigger.id,goalId:g.id,
+     fingerprint,result:g,action:'resume_duplicate',at:this.now()})
+    return this.visibleGoal(g)
+   }
    if(x.action==='start'){
     if(g)throw Error('Goal already exists')
     if(!x.objective||!x.criteria)throw Error('Starting a goal requires objective and criteria')
@@ -1290,11 +1364,22 @@ export class RouterGoals {
    }else if(x.action==='pause'||x.action==='cancel'){
     g={...g,state:x.action==='pause'?'paused':'cancelled',nextAt:undefined,reason:x.reason??'User requested '+x.action}
     if(x.action==='pause'&&store.list<import('./delegation/manager.ts').OutboundTask>('delegation-outbound').some(t=>t.goal?.goalId===g!.id&&t.desired==='running'&&!['ready','cancelled'].includes(t.remote?.state??'unknown')))throw Error('Remote execution pause is unsupported; cancel the goal or wait for the candidate before pausing verification')
-    if(g.project&&x.action==='pause'){
+    if(x.action==='pause'){
      for(const node of g.nodes??[]){
-      if(node.ticketId&&this.host.executionActive(node.ticketId))node.pausedAssignment=store.get<Run>('run',node.ticketId)?.assignmentId
+      const ticketId=node.ticketId
+      if(!ticketId||!this.host.executionActive(ticketId))continue
+      const run=store.get<Run>('run',ticketId)
+      if(!run)continue
+      if(g.project)node.pausedAssignment=run.assignmentId
+      if(g.managed&&!g.project&&hasPausedTurnReader(store,run)){
+       const current=store.get<{assignmentId:string;attemptId:string}>('async-worker-current',ticketId)
+       if(current?.assignmentId!==run.assignmentId)continue
+       node.pausedAssignment=run.assignmentId
+       store.put('async-worker-paused',current.attemptId,{goalId:g.id,ticketId,assignmentId:run.assignmentId,
+        triggerId:c.trigger.id,revision:g.revision+1,at:this.now()})
+      }
      }
-     this.host.stopProject(g,'User requested '+x.action)
+     if(g.project)this.host.stopProject(g,'User requested '+x.action)
     }
     if(x.action==='cancel'){
      const taskIds=this.taskIdsForGoal(g)
@@ -1347,6 +1432,7 @@ export class RouterGoals {
      for(const node of g.nodes??[]){
       if(deferred.has(node.id))continue
       const run=node.ticketId?store.get<Run>('run',node.ticketId):undefined
+      if(node.ticketId&&this.pendingPausedWorker(g,node.ticketId,run)){delete node.pausedAssignment;continue}
       const pausedAssignment=node.pausedAssignment??(g.project&&g.state==='paused'&&node.state==='running'&&run?.phase==='idle'?run.assignmentId:undefined)
       if(pausedAssignment&&node.ticketId){
        const task=store.tickets.get(node.ticketId)
@@ -1393,7 +1479,7 @@ export class RouterGoals {
     store.put('router-goal',prior.id,stopped)
     this.fenceCancelled(stopped)
    }
-   store.put('router-goal',g.id,g);store.put('goal-receipt',key,{scopeId:g.scopeId,entryId:g.entryId,triggerId:c.trigger.id,goalId:g.id,fingerprint,result:g})
+   store.put('router-goal',g.id,g);store.put('goal-receipt',key,{scopeId:g.scopeId,entryId:g.entryId,triggerId:c.trigger.id,goalId:g.id,fingerprint,result:g,action:x.action,at:this.now()})
    return this.list(c).find(item=>item.id===g.id)!
   })
   // Stop executors after the state and its receipt commit. Startup and duplicate

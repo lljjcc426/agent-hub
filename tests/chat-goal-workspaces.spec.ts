@@ -10,6 +10,9 @@ import type {ContextManifest} from '../src/router-memory.ts'
 import type {RouterGoal} from '../src/router-goals.ts'
 import {stableDigest} from '../src/sources.ts'
 import {Runtime} from '../src/runtime.ts'
+import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
+import {BackendPluginError} from '../src/backends/plugin-contract.ts'
+import {readPausedTurn,relatedPause} from '../src/paused-worker-recovery.ts'
 import type {Run} from '../src/store.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import {deploymentMaintenance,deploymentBlockers} from '../src/deployment-maintenance.ts'
@@ -51,7 +54,7 @@ function fixture(handler:(r:ModelRequest)=>Promise<unknown>,options:{git?:boolea
  }
  const ids=['builder','reviewer','parallel']
  const config=configSchema.parse({
-  stateDir:join(root,'state'),watchdog:{enabled:false},work:{network:false,sandboxDriver:options.shell?'seatbelt':'disabled'},
+  stateDir:join(root,'state'),watchdog:{enabled:false},work:{network:false,sandboxDriver:options.shell?(process.platform==='darwin'?'seatbelt':'bubblewrap'):'disabled'},
   execution:{router:{mode:'host'},management:{enabled:true,maxWorkers:ids.length},workers:ids.map(id=>({id,backend:'codex'}))},
   sources:[{id:'local',kind:'local',cwd:source,sandbox:'workspace-write',workspace:{mode:options.git?'git-worktree':'directory'},allowedActors:['operator']}],
  })
@@ -704,3 +707,105 @@ it.each(['live','restart','question','changed','rejected','pending_effect'] as c
  expect([upstreamRuns,downstreamRuns]).toEqual([1,1])
  expect(f.host.chat.view(f.chat.id,owner).pendingCards).toEqual([])
 })
+
+it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('uses the original repository ticket after 好了 without replaying either completed command',async()=>{
+ const initial='仔细了解 agent-hub 仓库',pause='停止先，我还没配置 GitHub 连接器',resume='好了'
+ const commands=['printf x >> command-one.count','printf y >> command-two.count']
+ let releaseWriter!:()=>void,readyToPause=false,attempts=0,nextRead=false
+ const waitForPause=new Promise<void>(resolve=>{releaseWriter=resolve})
+ let nativeSource='',retainedWorkspace=''
+ const f=fixture(async r=>{
+  const input=JSON.parse(r.input)
+  if(r.role!=='worker'){
+   const goal=f.host.store.list<RouterGoal>('router-goal')[0]
+   if(input.trigger?.text===pause||input.trigger?.text===resume){
+    const action=input.trigger.text===pause?'pause':'resume'
+    await tool(r,'router_goal',{action,id:goal!.id,expectedRevision:goal!.revision,operationId:action})
+    return {reply:action==='pause'?'已暂停。':'已恢复。'}
+   }
+   return {reply:'收到。'}
+  }
+  r.onBackend?.('codex')
+  attempts++
+  const id=r.activity!.ticketId!,store=f.host.store,run=store.get<Run>('run',id)!
+  if(attempts===1){
+   retainedWorkspace=r.cwd
+   const current=store.get<{attemptId:string}>('async-worker-current',id)!
+   const basis=store.get<{basis:{dataRevision:number|null}}>('async-worker-attempt',current.attemptId)!.basis
+   const threadId=run.threadId!,turnId=run.turnId!,identity='a'.repeat(64),digest='b'.repeat(64),folder=randomUUID(),nativeId='fixture-repository'
+   const data=join(f.config.stateDir,'backend-plugin-data','codex',identity,'threads',stableDigest(threadId))
+   const session=join(data,'sessions',folder)
+   mkdirSync(session,{recursive:true});mkdirSync(join(data,'index'))
+   writeFileSync(join(data,'index',createHash('sha256').update(nativeId).digest('hex')+'.json'),JSON.stringify({id:nativeId,folder}))
+   writeFileSync(join(session,turnId+'.ready'),'ready')
+   nativeSource=join(session,'session.json')
+   const calls=[],effectIds=[]
+   for(const [index,command] of commands.entries()){
+    const args={command,requestId:'before-'+index}
+    const callId='shell-'+index
+    const result=await r.onTool!('superagent_shell',args,callId)
+    expect(result.success).toBe(true)
+    calls.push({id:callId,name:'superagent_shell',args,result})
+    const effectId=stableDigest([threadId,turnId,callId]);effectIds.push(effectId)
+    store.put('backend-plugin-tool',effectId,{state:'complete',fingerprint:stableDigest(['superagent_shell',args]),result,
+     admission:{stage:'admitted',attemptId:current.attemptId,dataRevision:basis.dataRevision}})
+   }
+   const saved={id:threadId,backendId:'codex',pluginId:'opencode-cli',digest,stateVersion:1,nativeId,cwd:realpathSync(r.cwd),identity,state:'running',effectIds,turnId}
+   store.put('backend-plugin-thread',threadId,saved)
+   store.put('backend-binding',threadId,{id:'codex',harness:bundledEngineId,harnessDigest:digest})
+   readyToPause=true
+   await waitForPause
+   writeFileSync(nativeSource,JSON.stringify({format:1,cwd:saved.cwd,folder,nativeId,turns:[{id:turnId,state:'interrupted',tools:calls}]}))
+   store.put('backend-plugin-thread',threadId,{...saved,state:'failed',lastFailure:{code:'outcome_unknown',at:Date.now(),diagnostic:{operation:'run',reason:'exception'}}})
+   throw new BackendPluginError('outcome_unknown','codex',{operation:'run',reason:'exception'})
+  }
+  expect(r.threadId).toBeUndefined()
+  expect(r.cwd).toBe(retainedWorkspace)
+  expect(r.input).toContain('completedJobs')
+  for(const [index,command] of commands.entries()){
+   const reused=await tool<{replayed:boolean}>(r,'superagent_shell',{command,requestId:'new-'+index})
+   expect(reused.replayed).toBe(true)
+  }
+  const fresh=await tool<{output?:string}>(r,'superagent_shell',{command:'cat command-one.count command-two.count',requestId:'read-repository'})
+  expect(fresh.output).toContain('xy')
+  nextRead=true
+  mkdirSync(join(r.cwd,'reports'),{recursive:true})
+  writeFileSync(join(r.cwd,'reports','agent-hub-research.md'),'# agent-hub\nChecked the retained repository evidence.\n')
+  return {...ready('Repository research verified'),reply:'Repository research verified',files:['reports/agent-hub-research.md']}
+ },{shell:true})
+ try{
+  const goal=f.start(initial,{criteria:[{id:'verification',description:'Inspect the repository and write the sourced research report',files:['reports/agent-hub-research.md']}]})
+  await f.until(()=>readyToPause)
+  const ticket=f.host.goals.get(goal.id)!.taskIds[0]!,assignment=f.host.store.tickets.get(ticket)!.assignments[0]!.id
+  const stopped=f.send(pause)
+  await f.until(()=>f.host.goals.get(goal.id)?.state==='paused')
+  releaseWriter()
+  await f.until(()=>!f.host.executionActive(ticket)&&!!f.host.store.get('router-result','router:'+stopped))
+  const oldJournal=readFileSync(nativeSource,'utf8')
+  const store=f.host.store,paused=f.host.goals.get(goal.id)!,run=store.get<Run>('run',ticket)!
+  const checkpoint=relatedPause(store,paused,ticket)
+  expect(checkpoint).toBeDefined()
+  expect(readPausedTurn(store,f.config.stateDir,paused,run,checkpoint!)).toMatchObject({jobs:[{},{}]})
+  const effect=store.get<{effectIds:string[]}>('backend-plugin-thread',run.threadId!)!.effectIds[0]!
+  const receipt=store.get<object>('backend-plugin-tool',effect)!
+  store.put('backend-plugin-tool',effect,{...receipt,state:'running'})
+  expect(readPausedTurn(store,f.config.stateDir,paused,run,checkpoint!)).toBeUndefined()
+  store.put('backend-plugin-tool',effect,receipt)
+
+  await f.restart()
+  expect(f.host.goals.get(goal.id)?.state).toBe('paused')
+  const request={text:resume,clientMessageId:randomUUID(),locale:'zh-CN'}
+  const resumed=f.host.chat.send(f.chat.id,owner,request).runId
+  expect(f.host.chat.send(f.chat.id,owner,request).runId).toBe(resumed)
+  await f.until(()=>f.host.goals.get(goal.id)?.state==='completed')
+  await f.until(()=>f.host.chat.view(f.chat.id,owner).messages.some(m=>m.runId===resumed&&m.text.includes('核对')))
+  expect(f.host.goals.get(goal.id)!.taskIds).toEqual([ticket])
+  expect(f.host.store.tickets.get(ticket)!.assignments.at(-1)!.id).toBe(assignment)
+  expect(f.host.work.list(ticket)).toHaveLength(3)
+  expect(readFileSync(join(retainedWorkspace,'command-one.count'),'utf8')).toBe('x')
+  expect(readFileSync(join(retainedWorkspace,'command-two.count'),'utf8')).toBe('y')
+  expect(readFileSync(nativeSource,'utf8')).toBe(oldJournal)
+  expect(nextRead&&attempts===2).toBe(true)
+  expect(f.host.store.get('goal-delivery',ticket)).toBeDefined()
+ }finally{releaseWriter()}
+},25000)

@@ -92,7 +92,7 @@ ${goal.reason}`:`“${goal.label}” needs your answer in Pending requests.
 ${goal.reason}`)
       else if(goal.kind==='blocked')lines.push(this.chinese?`「${goal.label}」的进度已保留。`:`Progress on “${goal.label}” is saved.`)
       else if(goal.kind==='running')lines.push(this.chinese?`${goal.label} 正在处理这项任务。`:`${goal.label} is working on this task.`)
-      else if(goal.kind==='resumed')lines.push(this.chinese?`已恢复「${goal.label}」。`:`I resumed “${goal.label}”.`)
+      else if(goal.kind==='resumed')lines.push(this.chinese?`收到，我会核对「${goal.label}」上次的进度后接着做。`:`Got it. I’ll check the saved progress before continuing “${goal.label}”.`)
       else lines.push(this.chinese?`已安排「${goal.label}」进入执行队列。`:`I queued “${goal.label}” for execution.`)
     }
     return lines.join('\n')||(this.chinese?'任务已提交。':'The task was submitted.')

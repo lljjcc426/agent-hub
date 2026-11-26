@@ -1,3 +1,4 @@
+import type {ResumedWorker} from './paused-worker-recovery.ts'
 import {resourcePage,maxJobWaitMs,messageCharacters,maxInlineImageBytes,memoryCapacity} from './execution-limits.ts'
 import {observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,type WorkerAttempt} from './async-worker-inbox.ts'
 import {execFile} from 'node:child_process'
@@ -116,6 +117,16 @@ export class WorkerTools {
    return {success:false,contentItems:[{type:'inputText',text:'Prior job body is quarantined; use retained effect identities.'}]}
   }
   if(continuation&&['superagent_ack','superagent_review','superagent_follow'].includes(name))throw Error('Rebuilt task requires Router review for prior channels and source history')
+  if(name==='superagent_shell'&&!expectedId&&!owner.agentId){
+   const checkpoint=this.host.store.get<ResumedWorker>('goal-worker-continuation',owner.ticketId)
+   const prior=checkpoint?.assignmentId===owner.assignmentId
+    ?checkpoint.jobs.find(job=>job.commandDigest===stableDigest(args.command)):undefined
+   if(prior){
+    const job=this.host.work.read(owner,prior.id)
+    checkAuthority()
+    return {success:job.state==='completed',contentItems:[{type:'inputText',text:JSON.stringify({...job,replayed:true})}]}
+   }
+  }
   const authority=this.host.taskAuthority(owner.ticketId)
   const trigger=authority?.parentTrigger??this.host.store.tickets.get(owner.ticketId)!.origin.triggerId
   const actor=this.host.chat.permissionActor(trigger,owner.ticketId,owner.agentId)

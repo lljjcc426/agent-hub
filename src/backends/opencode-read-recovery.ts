@@ -316,9 +316,9 @@ function settleReadBatch(record:PluginToolEffect,callId:string,owner:{attemptId:
 
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input'|'read_batch',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input'|'read_batch'|'pause',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
  try{
-  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'||mode==='read_batch'
+  const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'||mode==='read_batch'||mode==='pause'
   const bound=boundWorkerSession(store,stateDir,run,boundary)
   if(!bound)return
   const {thread,session,root,last}=bound
@@ -327,6 +327,9 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
    if(thread.state!=='running'||last.state!=='running')return
   }else if(mode==='cancelled'){
    if(thread.state!=='interrupted'||failure?.code!=='cancelled')return
+  }else if(mode==='pause'){
+   if(last.state!=='interrupted'||!(thread.state==='interrupted'&&failure?.code==='cancelled'||
+      thread.state==='failed'&&failure?.code==='outcome_unknown'&&failure.diagnostic?.operation==='run'&&failure.diagnostic.reason==='exception'))return
   }else{
    if(thread.state!=='failed')return
    if(mode==='denied_reads'&&failure?.code!=='outcome_unknown')return
@@ -344,6 +347,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
   const directEffects=new Map<string,number>()
   const settledBatches=new Map<string,PluginToolEffect>()
   let hostConfirmed=false
+  const jobs:{id:string;commandDigest:string}[]=[]
   const calls:{tool:string;effectId:string;success:boolean;callId?:string;action?:string;requestId?:string}[]=[],denied:InterruptedCallback[]=[]
   if(effects.size!==thread.effectIds.length)return
   for(const turn of session.turns){
@@ -377,7 +381,25 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
     }
     // The writer may stop after the host commits a result but before the CLI acknowledges it.
     const admission=record.admission
-    const confirmed=mode==='input'&&turn===last&&admission&&handoffAttempt&&admission.attemptId===handoffAttempt.attemptId&&
+    if(mode==='pause'&&turn===last){
+     if(!admission||!handoffAttempt||admission.attemptId!==handoffAttempt.attemptId||admission.dataRevision!==handoffAttempt.dataRevision)return
+     if(admission.stage==='not_dispatched'){
+      if(record.state!=='complete'||record.result?.success!==false||call.result?.success===true||record.children?.length)return
+      continue
+     }
+     if(admission.stage!=='admitted')return
+     if(call.name==='superagent_shell'){
+      const command=(call.args as {command?:unknown}|null)?.command
+      const returned=record.result?.contentItems.flatMap(item=>{
+       try{return item.type==='inputText'?[JSON.parse(item.text??'')]:[]}catch{return []}
+      }).find(item=>item?.kind==='shell'&&typeof item.id==='string')
+      const job=returned&&store.get<WorkItem>('work',returned.id)
+      if(typeof command!=='string'||!job||job.kind!=='shell'||job.agentId||job.ticketId!==run.ticketId||
+         job.assignmentId!==run.assignmentId||job.cwd!==run.cwd||job.command!==command)return
+      jobs.push({id:job.id,commandDigest:stableDigest(command)})
+     }
+    }
+    const confirmed=(mode==='input'||mode==='pause')&&turn===last&&admission&&handoffAttempt&&admission.attemptId===handoffAttempt.attemptId&&
      admission.dataRevision===handoffAttempt.dataRevision&&record.state==='complete'&&record.result&&
      (admission.stage==='admitted'||admission.stage==='not_dispatched'&&!record.result.success)
     if(confirmed&&(!call.result||admission.stage==='not_dispatched'))hostConfirmed=true
@@ -414,8 +436,13 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
    }
    if(native.size)return
   }
-  if(!effects.size&&(mode==='input'||(mode==='denied_reads'?denied.length:calls.length))&&(boundary||stoppedWriter(root)))return {calls,denied,failure,directEffects,hostConfirmed,settledBatches}
+  if(!effects.size&&(mode==='input'||mode==='pause'||(mode==='denied_reads'?denied.length:calls.length))&&(boundary||stoppedWriter(root)))return {calls,denied,failure,directEffects,hostConfirmed,settledBatches,jobs}
  }catch{/* Missing history keeps the original reconciliation fence. */}
+}
+
+export function pausedOpenCodeTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,attempt:WorkerAttempt){
+ const proof=accountedWorkerTurn(store,stateDir,run,'pause',{attemptId:attempt.id,dataRevision:attempt.basis.dataRevision})
+ if(proof)return {calls:proof.calls,jobs:proof.jobs}
 }
 
 export function recordedWorkerCalls(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run){

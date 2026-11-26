@@ -51,7 +51,7 @@ function authorized(host:Runtime,attempt:Pick<WorkerAttempt,'ticketId'|'assignme
  }catch{return false}
 }
 function currentReason(host:Runtime,attempt:WorkerAttempt):WorkerEventReceipt['reason'] {
- if(host.store.get('async-worker-revoked',attempt.id))return 'authority_changed'
+ if(host.store.get('async-worker-revoked',attempt.id)||host.store.get('async-worker-paused',attempt.id))return 'authority_changed'
  if(host.store.get<{attemptId:string}>('async-worker-current',attempt.ticketId)?.attemptId!==attempt.id)return 'attempt_superseded'
  if(host.store.get('async-worker-terminal',attempt.id))return 'terminal_observed'
  if(!authorized(host,attempt))return 'authority_changed'

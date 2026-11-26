@@ -170,6 +170,10 @@ it('computes a complement only for one complete rounded age distribution',()=>{
   const q='How many percent were not from 18 to 59? Give only the short answer.'
   const rows=['16.2% under 18, 61.5% from 18 to 59, and 22.2% aged 60 or older.']
   expect(checkedCalculation(q,[{heading:'A',rows}])?.complement).toBe(38.5)
+  const p=evidencePlan('Answer directly.\n'+q+'\n\nA\n'+rows[0],[])!
+  expect(checkAnswer(q,'16.2;22.2',answerPacket(p,p.sections))).toMatchObject({ok:true,text:'38.5',arithmetic:expect.any(String)})
+  const multipart=q+' Also describe the median.'
+  expect(answerPacket({...p,question:multipart},p.sections).calculation).toBeUndefined()
   for(const text of [rows[0]!.replace('under 18','under 20'),rows[0]!.replace('22.2%','12.2%')])
     expect(checkedCalculation(q,[{heading:'A',rows:[text]}])).toBeUndefined()
   expect(checkedCalculation(q,[{heading:'A',rows},{heading:'B',rows}])).toBeUndefined()

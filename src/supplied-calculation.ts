@@ -2,7 +2,7 @@
 export interface SuppliedRows {heading:string; rows:string[]}
 export interface CheckedCalculation {
   note:string
-  /** The final reader still chooses the answer. These values identify inconsistent computations. */
+  /** Totals constrain the reader's proposed identifiers and values. */
   winner?:{key:string;total:number}
   count?:number
   complement?:number
@@ -65,6 +65,8 @@ function threshold(question:string){
 function percentageComplement(question:string,sources:SuppliedRows[]):CheckedCalculation|undefined{
   const band=/^\s*(?:how many percent|what percentage)(?: of (?:the )?(?:population|people|residents))? (?:were|was|are|is) (?:not (?:from |aged )?|outside (?:the range )?)(\d{1,3}) (?:to|through) (\d{1,3})\?/iu.exec(question)
   if(!band||Number(band[1])>=Number(band[2]))return
+  const tail=question.slice(band[0].length).trim()
+  if(tail&&!tail.split(/(?<=[.!])\s+/u).every(s=>/^(?:(?:give|return|reply with|answer with) (?:only )?(?:the |a )?(?:short answer|number)(?: only)?(?: from the passage)?[.!]?|if (?:several|multiple) spans are required, separate them with a (?:semicolon|comma)[.]?)$/iu.test(s)))return
   const distributions=sources.flatMap(s=>s.rows).filter(row=>row.includes('%'))
   if(distributions.length!==1)return
   const row=distributions[0]!,matches=[...row.matchAll(/(?<![-+\d.])(\d+(?:\.\d+)?)%\s+(under (?:the age of )?\d+|from \d+ (?:to|through) \d+|(?:who (?:were |are )?|aged )?\d+ (?:years (?:of age )?)?(?:or |and )?(?:older|over|above))(?=,|\.|;|$)/giu)]

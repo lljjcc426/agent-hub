@@ -135,6 +135,9 @@ export function checkAnswer(question:string,raw:string,packet:AnswerPacket):Answ
   if(packet.passage)return checkPassage(question,text,packet.passage)
   if(packet.references)return checkedCitations(text,packet)
   if(packet.calculation?.complement!==undefined){
+    // The complete distribution and a single requested numeric answer have a host-verified
+    // result. Keep the model proposal as evidence and commit the same computed value to Chat.
+    if(packet.shortUnit==='percent')return {ok:true,text:String(packet.calculation.complement),arithmetic:packet.calculation.note}
     const number=/^(\d+(?:\.\d+)?)\s*(?:%|percent)?[.]?$/iu.exec(text)
     if(!number||Number(number[1])!==packet.calculation.complement)return bad('values',packet.calculation.note)
     return yes(packet.shortUnit?number[1]!:text)

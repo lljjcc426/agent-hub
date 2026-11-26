@@ -1,4 +1,5 @@
 import {githubRepositorySchema} from './github-read.ts'
+import {chatWorkerInputsSchema} from './chat-retained-artifacts.ts'
 import {isAbsolute,normalize} from 'node:path'
 import {z} from 'zod'
 import type {ExecutionFailure} from './execution-failure.ts'
@@ -28,7 +29,7 @@ export type GoalCriterion=z.infer<typeof criterionSchema>
 export const nodeSchema=z.object({
  id,title:z.string().min(1).max(300),instruction:z.string().min(1).max(16000),workerId:id.optional(),teamTargetId:id.optional(),
  dependsOn:z.array(id).max(100).default([]),criterionIds:z.array(id).max(50),derivedFrom:id.optional(),supports:z.array(id).min(1).max(50).optional(),
- purpose:z.enum(['work','review']).optional(),reviewReport:evidencePath.optional(),outputs:z.array(evidencePath).min(1).max(20).optional(),workspace:z.enum(['read-only','worktree']).optional(),
+ purpose:z.enum(['work','review']).optional(),reviewReport:evidencePath.optional(),outputs:z.array(evidencePath).min(1).max(20).optional(),workspace:z.enum(['read-only','worktree']).optional(),inputFiles:chatWorkerInputsSchema.optional(),
 }).strict().refine(n=>!!n.workerId!==!!n.teamTargetId,'A node needs exactly one workerId or teamTargetId')
 export interface IndependentOpinion {
  version:string;workerId:string;verdict:'approved'|'changes_requested'|'insufficient';

@@ -35,12 +35,21 @@ const maxCatalogRows=240
 const artifactId=z.string().max(800).regex(/^(?:[a-f\d-]{36}(?:\.[a-f\d]{64})?|report\.[a-z0-9_-]+\.[a-f\d]{64})$/i)
 export const findChatArtifactInput=z.object({query:z.string().trim().max(180).optional(),ticketId:z.string().min(1).max(200).optional()}).strict()
 export const deliverChatArtifactInput=z.object({id:artifactId}).strict()
+const workspaceInput=z.object({
+ sourceTicketId:z.string().min(1).max(200),
+ path:z.string().min(1).max(1000).refine(validRetainedPath).describe('Exact relative path already handed back by the source task. Use its current retained workspace version.'),
+}).strict()
+type WorkspaceInput=z.infer<typeof workspaceInput>
+export const chatWorkerInputsSchema=z.array(z.union([deliverChatArtifactInput,workspaceInput])).min(1).max(32)
+ .refine(files=>new Set(files.map(file=>stableDigest(file))).size===files.length,'Duplicate input file')
+ .describe('Read-only inputs from this Chat. Use {id} for an exact file from chat_artifact_find, or {sourceTicketId,path} for a declared file in an idle task’s retained workspace.')
+export type ChatWorkerInput=z.infer<typeof chatWorkerInputsSchema>[number]
 
 export const chatArtifactFind='chat_artifact_find'
 export const chatArtifactOpen='chat_artifact_open'
 export const chatArtifactDeliver='chat_artifact_deliver'
 export const chatArtifactSpecs:ToolSpec[]=[
- {type:'function',name:chatArtifactFind,description:'Find already published files and verifiable candidates handed back by the requesting Chat’s original Worker. A worker-candidate is a draft, never acceptance evidence. Search by distinctive filename or platform, such as Windows, or the original task ID. Workers can inspect a matching file using chat_artifact_open with its ID. Attach the file to Chat when the user requests delivery. Check this before asking for a repeat upload or delegating retrieval of an existing file.',inputSchema:z.toJSONSchema(findChatArtifactInput,{target:'draft-7',io:'input'})},
+ {type:'function',name:chatArtifactFind,description:'Find already published files and verifiable candidates handed back by the requesting Chat’s original Worker. A worker-candidate is a draft, never acceptance evidence. Search by distinctive filename or platform, such as Windows, or the original task ID. Pass the exact ID as an inputFiles item when assigning a Worker. Workers can also inspect a matching file using chat_artifact_open with its ID. Attach the file to Chat when the user requests delivery. Check this before asking for a repeat upload or delegating retrieval of an existing file.',inputSchema:z.toJSONSchema(findChatArtifactInput,{target:'draft-7',io:'input'})},
  {type:'function',name:chatArtifactDeliver,description:'Attach the exact existing file returned by chat_artifact_find to the current private Chat. Use this when the human asks for that file and its version is clear. On success, point the user to the file card. If local is true, the card reveals the original in Finder on this Mac and offers Download separately.',inputSchema:z.toJSONSchema(deliverChatArtifactInput,{target:'draft-7',io:'input'})},
 ]
 
@@ -49,11 +58,12 @@ type ChatRun={conversationId:string;cancelled?:boolean;cancelRequested?:boolean}
 type Context={chat:Conversation;trigger:Trigger;scoped?:ScopeContext}
 type Delivery=ChatDelivery&{published?:boolean;originalPath?:string}
 type Transcript={ticketId:string;turnId:string;text:string;status?:string}
-type Item={id:string;name:string;size:number;sha256?:string;ticketId?:string;kind?:string}
-type Candidate={item:Item;delivery?:Delivery;savedCopy?:boolean;original?:{ticketId:string;path:string;sha256:string}}
+type Item={id:string;name:string;size:number;sha256?:string;ticketId?:string;kind?:string;workspaceInput?:WorkspaceInput}
+type Candidate={item:Item;delivery?:Delivery;savedCopy?:boolean;original?:{ticketId:string;path:string;sha256?:string};workspaceSignature?:string}
 export interface OpenedChatArtifact {
  id:string;kind:'chat-artifact-input';ticketId:string;assignmentId:string;triggerId:string;artifactId:string;
  name:string;path:string;bytes:number;sha256:string;fileSignature:string;resource:string
+ workspaceInput?:WorkspaceInput;routerAssigned?:true
 }
 export type RetainedChatFile={id:string;signature?:string;sha256:string}
 
@@ -129,6 +139,7 @@ export class ChatRetainedArtifacts {
    const candidate=candidates[0]!
    candidate.original={ticketId:delivery.ticketId,path:delivery.originalPath,sha256:delivery.sha256}
    candidate.item.sha256=delivery.sha256
+   if(chat.id===c.chat.id)candidate.item.workspaceInput={sourceTicketId:delivery.ticketId,path:delivery.originalPath}
    candidate.savedCopy=true
   }
   if(candidateOnly||!delivery.ticketId||!delivery.name.toLowerCase().endsWith('.json')||delivery.size>maxManifestBytes)return candidates
@@ -237,6 +248,52 @@ export class ChatRetainedArtifacts {
   return candidate
  }
 
+ private declaredWorkspaceInputs(triggerId:string,sourceTicketId:string,path?:string){
+  const c=this.context(triggerId)
+  if(!this.taskAllowed(c,c.chat,sourceTicketId))throw unavailable()
+  const rows=this.host.store.db.prepare(`SELECT id,body FROM records WHERE kind='chat-delivery'
+   AND json_extract(body,'$.conversationId')=? AND json_extract(body,'$.ticketId')=?
+   AND json_type(body,'$.originalPath')='text' AND (? IS NULL OR json_extract(body,'$.originalPath')=?)
+   ORDER BY rowid DESC`).all(c.chat.id,sourceTicketId,path??null,path??null)
+  const paths=new Set<string>()
+  for(const row of rows){
+   const delivery=JSON.parse(String(row.body)) as Delivery
+   if(delivery.originalPath&&validRetainedPath(delivery.originalPath)&&delivery.mime&&!delivery.retained&&
+      !this.host.memory.cleanup.blocked('chat-delivery',String(row.id),delivery))paths.add(delivery.originalPath)
+   if(paths.size>=32||path&&paths.size)break
+  }
+  return [...paths].map(path=>({sourceTicketId,path}))
+ }
+
+ workspaceInputs(triggerId:string,sourceTicketId:string){
+  try{return this.declaredWorkspaceInputs(triggerId,sourceTicketId)}
+  catch(error){if(error instanceof ChatError)return [];throw error}
+ }
+
+ private declaredWorkspaceInput(triggerId:string,{sourceTicketId,path}:WorkspaceInput){
+  if(!validRetainedPath(path)||!this.declaredWorkspaceInputs(triggerId,sourceTicketId,path).length)throw unavailable()
+ }
+
+ validateWorkerInputs(triggerId:string,files:readonly ChatWorkerInput[]){
+  for(const file of files) {
+   if('id' in file)this.resolve(triggerId,file.id,true)
+   else this.declaredWorkspaceInput(triggerId,file)
+  }
+ }
+
+ private workspaceCandidate(triggerId:string,input:WorkspaceInput,id:string):Candidate{
+  this.declaredWorkspaceInput(triggerId,input)
+  const ticketId=input.sourceTicketId,run=this.host.store.get<Run>('run',ticketId)
+  if(!run?.prepared||run.phase!=='idle'||this.host.executionActive(ticketId)||
+     this.host.work.list(ticketId).some(work=>work.state==='starting'||work.state==='running'))throw unavailable()
+  try{
+   const stat=lstatSync(join(run.cwd,input.path),{bigint:true})
+   if(!stat.isFile()||stat.nlink!==1n||stat.size>BigInt(chatDownloadMaxBytes))throw unavailable()
+   return {item:{id,name:basename(input.path),size:Number(stat.size),ticketId,kind:'worker-candidate'},
+    original:{ticketId,path:input.path},workspaceSignature:signature(stat)}
+  }catch{throw unavailable()}
+ }
+
  private async file(candidate:Candidate,wanted?:string){
   const source=candidate.original
   if(!source)throw unavailable()
@@ -321,10 +378,13 @@ export class ChatRetainedArtifacts {
  /** A ticket consumes an immutable copy. Its source task is only ever read. */
  canReadInput(input:OpenedChatArtifact,owner:Pick<WorkOwner,'ticketId'|'assignmentId'|'agentId'>){
   try{
+   const trigger=this.host.taskAuthority(owner.ticketId)?.parentTrigger
    if(this.host.store.get('task-continuation',owner.ticketId)||owner.agentId||input.ticketId!==owner.ticketId||input.assignmentId!==owner.assignmentId||
-      this.host.taskAuthority(owner.ticketId)?.parentTrigger!==input.triggerId||
+      !trigger||
       this.host.memory.cleanup.blocked('asset',input.id,input))return false
-   this.resolve(input.triggerId,input.artifactId,true)
+   if(trigger!==input.triggerId&&(!input.routerAssigned||this.context(trigger).chat.id!==this.context(input.triggerId).chat.id))return false
+   if(input.workspaceInput)this.declaredWorkspaceInput(trigger,input.workspaceInput)
+   else this.resolve(trigger,input.artifactId,true)
    return signature(lstatSync(input.path,{bigint:true}))===input.fileSignature
   }catch{return false}
  }
@@ -333,13 +393,13 @@ export class ChatRetainedArtifacts {
  private async copyForWorker(candidate:Candidate,path:string,signal?:AbortSignal){
   if(candidate.original){
    try{
-    const source=await this.file(candidate)
+    const source=await this.file(candidate,candidate.workspaceSignature)
     try{
      const digest=createHash('sha256'),stream=source.handle.createReadStream({autoClose:false})
      await pipeline(stream.on('data',chunk=>digest.update(chunk)),createWriteStream(path,{mode:0o400,flags:'wx'}),{signal})
      await source.verify()
      const sha256=digest.digest('hex')
-     if(sha256!==candidate.original.sha256)throw unavailable()
+     if(candidate.original.sha256&&sha256!==candidate.original.sha256)throw unavailable()
      return sha256
     }finally{await source.handle.close()}
    }catch(error){
@@ -354,21 +414,26 @@ export class ChatRetainedArtifacts {
   return sha256
  }
 
- async openForWorker(owner:WorkOwner,id:string,current:()=>void,signal?:AbortSignal){
+ async openForWorker(owner:WorkOwner,input:string|ChatWorkerInput,current:()=>void,signal?:AbortSignal){
+  const workspace=typeof input!=='string'&&'path' in input?input:undefined
+  const id=typeof input==='string'?input:'id' in input?input.id:stableDigest(['workspace-file',input])
   const trigger=this.host.taskAuthority(owner.ticketId)?.parentTrigger
-  if(!trigger||owner.agentId||this.host.store.get('task-continuation',owner.ticketId))throw unavailable()
-  const authorize=()=>{
+  if(!trigger||owner.agentId||workspace?.sourceTicketId===owner.ticketId||this.host.store.get('task-continuation',owner.ticketId))throw unavailable()
+  const assertCurrent=()=>{
    current()
    if(!this.host.validWork(owner)||this.host.taskAuthority(owner.ticketId)?.parentTrigger!==trigger)throw unavailable()
-   return this.resolve(trigger,id,true)
   }
-  const candidate=authorize(),name=basename(candidate.item.name)
-  if(!validRetainedPath(name))throw unavailable()
+  const select=()=>workspace?this.workspaceCandidate(trigger,workspace,id):this.resolve(trigger,id,true)
   const assetId=stableDigest([chatArtifactOpen,owner.ticketId,owner.assignmentId,id])
   const get=()=>this.host.store.get<OpenedChatArtifact>('asset',assetId)
-  const describe=(a:OpenedChatArtifact)=>({id:a.artifactId,resource:a.resource,path:a.path,name:a.name,bytes:a.bytes,sha256:a.sha256})
+  const describe=(a:OpenedChatArtifact)=>({id:a.artifactId,resource:a.resource,path:a.path,name:a.name,bytes:a.bytes,sha256:a.sha256,
+   ...(a.workspaceInput?{sourceTicketId:a.workspaceInput.sourceTicketId,relativePath:a.workspaceInput.path}:{}),
+  })
+  assertCurrent()
   const existing=get()
   if(existing&&this.canReadInput(existing,owner))return describe(existing)
+  const candidate=select(),name=basename(candidate.item.name)
+  if(!validRetainedPath(name))throw unavailable()
   const base=join(this.host.config.stateDir,'assets')
   await mkdir(base,{recursive:true,mode:0o700})
   const dir=await mkdtemp(join(base,'chat-input-')),path=join(dir,name)
@@ -376,12 +441,15 @@ export class ChatRetainedArtifacts {
   try{
    const sha256=await this.copyForWorker(candidate,path,signal)
    return this.host.store.atomic(()=>{
-    authorize()
+    assertCurrent()
     const winner=get()
     if(winner&&this.canReadInput(winner,owner))return describe(winner)
+    const latest=select()
+    if(latest.workspaceSignature!==candidate.workspaceSignature||winner&&winner.sha256!==sha256)throw unavailable()
     const asset:OpenedChatArtifact={id:assetId,kind:'chat-artifact-input',ticketId:owner.ticketId,assignmentId:owner.assignmentId,
      triggerId:trigger,artifactId:id,name,path,bytes:candidate.item.size,sha256,
-     fileSignature:signature(lstatSync(path,{bigint:true})),resource:'asset/'+assetId}
+     fileSignature:signature(lstatSync(path,{bigint:true})),resource:'asset/'+assetId,
+     ...(workspace?{workspaceInput:workspace}:{}),...(typeof input==='string'?{}:{routerAssigned:true})}
     this.host.store.requireChatResultReviewSchema()
     this.host.store.put('asset',assetId,asset)
     committed=true

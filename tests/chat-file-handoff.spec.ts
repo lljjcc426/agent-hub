@@ -83,12 +83,28 @@ async function fixture(missing=false,nameSource=false,blockAfterAnswer=false){
  await until(host,()=>host.goals.get(goal.id)?.state==='held'&&host.chat.businessDecisions(chat.id,owner)[0]?.status==='pending')
  const decision=host.chat.businessDecisions(chat.id,owner)[0]!
  const input={action:'answer' as const,id:decision.id,version:decision.version,requestId:randomUUID(),text:'可以'}
- return {host,owner,chat,sourceId,cwd,reviews,decision,input,open,until,goal,ticketId:decision.ticketId}
+ const answerLegacy=(current=host)=>{
+  const result=current.chat.decide(chat.id,owner,input)
+  const triggerId=current.chat.view(chat.id,owner).run!.id
+  // Older releases already persisted this grant with the answer before the upgrade.
+  current.store.put('chat-file-handoff',decision.id,{ticketId:decision.ticketId,conversationId:chat.id,
+   triggerId,question:originalQuestion,paths:[patch,report]})
+  return result
+ }
+ return {host,owner,chat,sourceId,cwd,reviews,decision,input,answerLegacy,open,until,goal,ticketId:decision.ticketId}
 }
+
+it('records an affirmative business answer without inferring permission to transfer files',async()=>{
+ const f=await fixture(),{host,chat,owner,decision,ticketId}=f
+ expect(host.chat.decide(chat.id,owner,f.input).decision.status).toBe('answered')
+ await f.until(host,()=>f.reviews.length===2&&!host.executionActive(ticketId))
+ expect(JSON.parse(f.reviews[1]!.input)).not.toHaveProperty('chatFiles')
+ expect(host.store.get('chat-file-handoff',decision.id)).toBeUndefined()
+})
 
 it('delivers newly recovered evidence once to a legacy blocked Worker without a captured output',async()=>{
  const f=await fixture(false,false,true),{host,chat,owner,ticketId}=f
- host.chat.decide(chat.id,owner,f.input)
+ f.answerLegacy()
  await f.until(host,()=>f.reviews.length===2&&host.goals.get(f.goal.id)?.state==='held')
  // The older host recorded the answer and files, but did not give the exchange to the Worker.
  host.store.db.prepare("DELETE FROM records WHERE kind='worker-handoff-evidence' AND id=?").run(ticketId)
@@ -158,7 +174,7 @@ it.each([false,true])('keeps the approval and resumes the same held task with ex
   expect(current.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'pending'})])
  }
  expect(hasOutstandingQuestion(current,current.store.tickets.get(ticketId)!)).toBe(true)
- expect(current.chat.decide(chat.id,owner,f.input).decision.status).toBe('answered')
+ expect(f.answerLegacy(current).decision.status).toBe('answered')
  expect(hasOutstandingQuestion(current,current.store.tickets.get(ticketId)!)).toBe(false)
  expect(current.chat.decide(chat.id,owner,f.input).duplicate).toBe(true)
  await f.until(current,()=>f.reviews.length===2&&!current.executionActive(ticketId))
@@ -195,7 +211,7 @@ it.each([false,true])('keeps the approval and resumes the same held task with ex
 it.each(['absent','changed'] as const)('reports the %s package on the answered record without another model call',async state=>{
  const f=await fixture(state==='absent'),{host,chat,owner,ticketId,decision}=f
  if(state==='changed')writeFileSync(join(f.cwd,installer),Buffer.from([0,1,2,3,5]))
- host.chat.decide(chat.id,owner,f.input)
+ f.answerLegacy()
  await f.until(host,()=>host.chat.businessDecisions(chat.id,owner)[0]?.fileHandoff?.state==='missing'&&!host.executionActive(ticketId))
  expect(f.reviews).toHaveLength(1)
  expect(host.chat.businessDecisions(chat.id,owner)).toEqual([expect.objectContaining({id:decision.id,status:'answered',fileHandoff:{state:'missing',missing:[installer]}})])
@@ -204,10 +220,10 @@ it.each(['absent','changed'] as const)('reports the %s package on the answered r
  expect(host.store.list('asset')).toHaveLength(0)
 })
 
-it.each([false,true])('recovers the approved handoff after a legacy startup failure (maintenance: %s)',async maintenance=>{
+it.each([false,true])('recovers the recorded file handoff after a legacy startup failure (maintenance: %s)',async maintenance=>{
  const f=await fixture(),{host,chat,owner,ticketId,decision}=f
  const defer=vi.spyOn(host.goals,'resumeAnsweredQuestion').mockReturnValue(false)
- host.chat.decide(chat.id,owner,f.input)
+ f.answerLegacy()
  defer.mockRestore()
  const task=host.store.tickets.get(ticketId)!
  const followup=task.inputs.find(item=>item.kind==='trigger'&&item.triggerId.startsWith('router-followup:'))!
@@ -216,7 +232,6 @@ it.each([false,true])('recovers the approved handoff after a legacy startup fail
  const original=host.store.triggers.get(followup.triggerId)!
  const run=host.store.get<Run>('run',ticketId)!
  host.store.atomic(()=>{
-  host.store.db.prepare("DELETE FROM records WHERE kind='chat-file-handoff' AND id=?").run(decision.id)
   host.store.db.prepare("UPDATE jobs SET state='done' WHERE kind='execute' AND json_extract(payload,'$.ticketId')=?").run(ticketId)
   host.store.put('run',ticketId,{...run,phase:'uncertain',error:'Error: async_worker_goal_unavailable'})
   const update=host as unknown as {reportWork:(id:string,value:{state:'blocked';summary:string;question:string;askedBy:string})=>void}
@@ -280,7 +295,7 @@ it('keeps an uncertain execution after the saved answer as a blocked status acro
 
 it('binds acceptance to the original delivered question, human reply and task handoff, while retaining older rounds',async()=>{
  const f=await fixture(),{host,owner,chat,sourceId,ticketId,decision}=f
- host.chat.decide(chat.id,owner,f.input)
+ f.answerLegacy()
  await f.until(host,()=>f.reviews.length===2&&!host.executionActive(ticketId))
  const goal=host.goals.get(f.goal.id)!,node=goal.nodes!.find(n=>n.ticketId===ticketId)!
  const receipt=host.store.get<object>('chat-file-handoff',decision.id)!
@@ -319,8 +334,8 @@ it('binds acceptance to the original delivered question, human reply and task ha
  expect(host.verification.current(round,goal,{readOnly:true})).toBe(true)
 })
 
-it.each([true,false])('includes only explicitly linked questions for a restored manifest (named source=%s)',async named=>{
- const f=await fixture(false,named),{host,ticketId,sourceId,chat,owner}=f
+it('does not infer a question link for an explicitly restored manifest',async()=>{
+ const f=await fixture(false,true),{host,ticketId,sourceId,chat,owner}=f
  const files=[patch,report,installer].map(path=>{
   const binary=readFileSync(join(f.cwd,path))
   return {path,bytes:binary.length,sha256:createHash('sha256').update(binary).digest('hex')}
@@ -334,7 +349,7 @@ it.each([true,false])('includes only explicitly linked questions for a restored 
  const [proof]=read()
  expect(proof).toMatchObject({receiptId:restored.id,sourceTicketId:sourceId})
  expect(proof!.files.map(f=>[f.relativePath,f.sha256]).sort()).toEqual(files.map(f=>[f.path,f.sha256]).sort())
- expect(proof!.exchanges.map(e=>e.answer.text)).toEqual(named?[text]:[])
+ expect(proof!.exchanges).toEqual([])
  const asset=restored.files[0]!.id,saved=host.store.get<object>('asset',asset)!
  host.store.put('asset',asset,{...saved,sha256:'0'.repeat(64)})
  expect(read()).toEqual([])

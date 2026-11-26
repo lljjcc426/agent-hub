@@ -2,10 +2,11 @@ import { ui } from './language.ts'
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { openLocalBrowser } from '../personal-launch.ts'
+import { publicMessage } from './conversation.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalClient, CliError, type Snapshot } from './client.ts'
 
-export const commands = () =>
+export const commands = (advanced = false) =>
   [
     { name: '/config', usage: '', description: ui('Terminal settings', '终端设置') },
     { name: '/model', usage: '', description: ui('Choose the shared Router model', '选择共享 Router 模型') },
@@ -17,7 +18,8 @@ export const commands = () =>
     { name: '/clear', usage: '', description: ui('Start a new conversation; keep history', '开始新对话，保留历史') },
     { name: '/resume', usage: '', description: ui('Resume a saved conversation', '继续历史会话') },
     { name: '/rename', usage: 'TITLE', description: ui('Rename this conversation', '重命名当前会话') },
-    { name: '/tasks', usage: '', description: ui('Inspect Worker tasks', '查看 Worker 任务') },
+    { name: '/files', usage: '', description: ui('Files shared in this conversation', '查看对话中的文件') },
+    { name: '/tasks', usage: '', description: ui('Inspect internal tasks', '查看内部任务') },
     {
       name: '/diff',
       usage: 'TICKET',
@@ -25,8 +27,8 @@ export const commands = () =>
     },
     {
       name: '/approvals',
-      usage: 'TICKET',
-      description: ui('Inspect pending requests and their scope', '查看待审批请求及范围')
+      usage: '',
+      description: ui('Review actions awaiting your permission', '查看需要你授权的操作')
     },
     {
       name: '/plan',
@@ -50,8 +52,8 @@ export const commands = () =>
     },
     {
       name: '/stop',
-      usage: '[TICKET]',
-      description: ui('Stop the current run or a Worker task', '停止本轮运行或 Worker 任务')
+      usage: '',
+      description: ui('Stop the current request', '停止当前请求')
     },
     {
       name: '/approve',
@@ -78,7 +80,7 @@ export const commands = () =>
       usage: '',
       description: ui('Leave the session running', '退出终端，后台继续运行')
     }
-  ] as const
+  ].filter(c => advanced || !['/tasks', '/diff', '/approve', '/decline', '/answer'].includes(c.name))
 
 const commandHelp = () =>
   commands()
@@ -117,7 +119,15 @@ export async function command(client: TerminalClient, id: string, input: string)
   const [name, ...args] = input.trim().split(/\s+/),
     ticket = args[0],
     approval = args[1]
-  if (name === '/help') return commandHelp()
+  if (name === '/help') return args[0] === 'advanced'
+    ? commands(true).map(c => (c.name + ' ' + c.usage).padEnd(27) + c.description).join('\n')
+    : commandHelp()
+  if (name === '/files') {
+    const view = await client.view(id)
+    const files = view.deliveries.map(d => d.name + '\n  ' + client.base + '/api/chat/conversations/' + id + '/deliveries/' + d.id)
+    const attachments = view.messages.filter(publicMessage).flatMap(m => (m.attachments ?? []).map(f => f.name))
+    return [...files, ...new Set(attachments)].join('\n\n') || ui('No files shared yet. Attach one with @ or --file.', '还没有文件，可用 @ 或 --file 添加。')
+  }
   if (name === '/plan') {
     const { publicPlans, run } = await client.view(id)
     const plans = publicPlans.filter((p) => p.runId === run?.id)
@@ -234,7 +244,7 @@ export async function command(client: TerminalClient, id: string, input: string)
     if (!run || !['running', 'queued', 'waiting', 'cancel_requested'].includes(run.state))
       return ui('No active run.', '当前没有运行中的任务。')
     await client.request('/api/chat/conversations/' + id + '/cancel', { runId: run.id })
-    return ui('Stopped ', '已停止 ') + run.id
+    return ui('Stop requested.', '已请求停止。')
   }
   if (!['/stop', '/approvals', '/approve', '/decline', '/answer', '/diff'].includes(name!))
     throw new CliError(ui('Unknown command. Type /help.', '未知命令，输入 /help 查看帮助。'))
@@ -281,12 +291,12 @@ export async function command(client: TerminalClient, id: string, input: string)
       : ui('No pending requests.', '没有待处理请求。')
   return action === 'stop'
     ? ui('Stopped ', '已停止 ') + ticket
-    : ui('Answered ', '已答复 ') + approval
+    : ui('Response submitted.', '已提交答复。')
 }
 
 export function runResult(view: Snapshot, runId: string, status: string) {
   const messages = view.messages.filter(
-    (m) => m.runId === runId && m.role === 'assistant' && !m.opening && !m.recipient && m.status !== 'streaming'
+    (m) => m.runId === runId && m.role === 'assistant' && publicMessage(m) && m.status !== 'streaming'
   )
   const router = messages.filter((m) => m.speaker?.kind !== 'worker').at(-1)
   const deliveries = view.deliveries
@@ -307,12 +317,7 @@ export function runResult(view: Snapshot, runId: string, status: string) {
             .filter(Boolean)
             .join('\n')
         : '') ||
-      router?.text ||
-      messages.at(-1)?.text ||
-      view.tasks
-        .map((t) => t.summary)
-        .filter(Boolean)
-        .join('\n'),
+      router?.text || '',
     tasks: view.tasks,
     deliveries
   }

@@ -69,7 +69,7 @@ export function suggestions(
   const before = line.slice(0, cursor)
   if (/^\/[\w-]*$/.test(before) && cursor === line.length) {
     const q = before.slice(1).toLowerCase()
-    const list = commands()
+    const list = commands(!!q)
     const exact = list.find((c) => c.name === before)
     const matches = exact
       ? [exact]

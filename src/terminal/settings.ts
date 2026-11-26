@@ -9,13 +9,14 @@ export const terminalSettingsSchema = z.object({
   theme: z.enum(['dark', 'light', 'mono']).optional(),
   language: z.enum(['en', 'zh']).optional(),
   verbose: z.boolean().optional(),
+  motion: z.enum(['full', 'reduced']).optional(),
   outputFormat: z.enum(['text', 'json', 'stream-json']).optional(),
   timeout: z.number().positive().max(86400).optional()
 }).strict()
 export type TerminalSettings = z.infer<typeof terminalSettingsSchema>
 export type Theme = NonNullable<TerminalSettings['theme']>
 export type OutputFormat = NonNullable<TerminalSettings['outputFormat']>
-export const defaultSettings = { theme: 'dark', verbose: false, outputFormat: 'text', timeout: 600 } as const
+export const defaultSettings = { theme: 'dark', verbose: false, motion: 'full', outputFormat: 'text', timeout: 600 } as const
 export const settingsPaths = (cwd: string) => ({
   user: join(terminalProfileDirectory(), 'settings.json'),
   project: join(cwd, '.roppo', 'settings.json'),

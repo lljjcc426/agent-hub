@@ -4,6 +4,7 @@ import type { ModelCapabilities } from '../reasoning-effort.ts'
 import type { Choice } from './suggestions.ts'
 import { saveTerminalSetting, type TerminalSettings } from './settings.ts'
 import { ui } from './language.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 
 export interface ControlResult {
   text?: string
@@ -30,7 +31,8 @@ export async function controlCommand(client: TerminalClient, conversation: Conve
     const items: Choice[] = (['dark', 'light', 'mono'] as const).map(value => ({ label: 'theme = ' + value,
       detail: preferences.theme === value ? '✓' : '', value: '/config theme=' + value }))
     if (name === '/config') items.push(
-      { label: 'verbose = ' + !preferences.verbose, detail: ui('Tool details', '工具详情'), value: '/config verbose=' + !preferences.verbose },
+      { label: 'verbose = ' + !preferences.verbose, detail: ui('Execution details', '内部执行详情'), value: '/config verbose=' + !preferences.verbose },
+      { label: 'motion = ' + (preferences.motion === 'reduced' ? 'full' : 'reduced'), detail: ui('Activity animations', '活动动效'), value: '/config motion=' + (preferences.motion === 'reduced' ? 'full' : 'reduced') },
       ...(['zh', 'en'] as const).map(value => ({ label: 'language = ' + value, detail: ui('Interface language', '界面语言'), value: '/config language=' + value })),
       { label: '/model', detail: shared(), value: '/model' },
       { label: '/permissions', detail: ui('Shared account permissions', '账号共享权限'), value: '/permissions' }
@@ -42,13 +44,33 @@ export async function controlCommand(client: TerminalClient, conversation: Conve
     return { text: [
       'Roppo · ' + client.base,
       ui('Session: ', '会话：') + conversation.id,
-      ui('Project: ', '项目：') + (conversation.project ?? ui('Personal chat', '个人对话')),
+      ...(conversation.project ? [ui('Project: ', '项目：') + conversation.project] : [ui('Personal conversation · shared with web', '个人对话 · 与网页同步')]),
       ui('Router: ', 'Router：') + settings.backend + ' / ' + (settings.model ?? 'default'),
       ui('Permissions: ', '权限：') + settings.approvalMode + ui(' (shared account)', '（账号共享）'),
       ui('Readiness: ', '就绪状态：') + view.readiness.code,
-      ui('Workers: ', 'Worker：') + view.readiness.workers.length,
       ui('Terminal settings: ', '终端设置：') + (sources.join(', ') || ui('defaults', '默认值'))
     ].join('\n') }
+  }
+  if (name === '/approvals' && args.length <= 1) {
+    const view = await client.view(conversation.id)
+    const pending = view.approvals.filter(a => isApprovalPending(a))
+    if (!pending.length && !args.length) return { text: ui('No pending requests.', '没有待授权的操作。') }
+    if (!args.length) return { menu: {
+      title: ui('Actions awaiting your permission', '需要你授权的操作'),
+      items: pending.map(a => ({
+        label: a.facts.command ?? a.questions[0]?.question ?? a.facts.reason ?? ui('Review permission', '查看授权请求'),
+        detail: a.facts.cwd ?? '', value: '/approvals ' + a.id
+      }))
+    } }
+    const request = pending.find(a => a.id === args[0])
+    if (!request) return undefined // Preserve explicit task-level diagnostic commands.
+    if (request.method === 'item/tool/requestUserInput') return { text:
+      request.questions.map(q => q.question).join('\n') + '\n' + ui('Open the conversation to answer: ', '打开对话回答：') + client.link(conversation.id) }
+    return { text: Object.entries(request.facts).map(([key, value]) => key + ': ' + value).join('\n'),
+      menu: { title: request.facts.command ?? request.facts.reason ?? ui('Allow this action?', '允许此操作？'), items: [
+      { label: ui('Allow', '允许'), detail: request.facts.cwd ?? '', value: '/approve ' + request.ticketId + ' ' + request.id },
+      { label: ui('Decline', '拒绝'), detail: '', value: '/decline ' + request.ticketId + ' ' + request.id }
+    ] } }
   }
   if (name === '/context') {
     const context = await client.request<{ inputTokens: number | null; capacity: number | null; model: string | null; previous: boolean; budget: {bytes: number; maxBytes: number} | null }>('/api/chat/conversations/' + conversation.id + '/context')

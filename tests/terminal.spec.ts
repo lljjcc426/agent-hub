@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { TerminalPairing } from '../src/terminal/pairing.ts'
 import { clean, localOrigin, TerminalClient } from '../src/terminal/client.ts'
 import { controlCommand } from '../src/terminal/controls.ts'
+import { command } from '../src/terminal/commands.ts'
 import { loadTerminalSettings } from '../src/terminal/settings.ts'
 import { parseArgs } from '../src/terminal/main.ts'
 import { configSchema, type Config } from '../src/config.ts'
@@ -240,7 +241,16 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect((await post('/api/terminal/session', { id: fresh.id }, auth)).status).toBe(200)
     expect((await (await post('/api/chat/space', {}, { cookie })).json()).conversation.id).toBe(fresh.id)
     await post('/api/terminal/session', { id: sharedId }, auth)
-    const first = await cli(['-p', 'delegate', '--json', '--file', 'notes.txt'], 'piped context')
+    const personalPrint = await cli(['-p', 'personal hello', '--json'])
+    expect(personalPrint.code, personalPrint.stderr).toBe(0)
+    expect(JSON.parse(personalPrint.stdout)).toMatchObject({ conversationId: sharedId, text: 'Echo personal hello' })
+    const personalContinue = await cli(['-c', '-p', 'personal again', '--json'])
+    expect(JSON.parse(personalContinue.stdout)).toMatchObject({ conversationId: sharedId, text: 'Echo personal again' })
+    const personalResume = await cli(['-r', fresh.id, '-p', 'resume personal', '--json'])
+    expect(JSON.parse(personalResume.stdout)).toMatchObject({ conversationId: fresh.id })
+    expect((await (await post('/api/chat/space', {}, { cookie })).json()).conversation.id).toBe(fresh.id)
+    await post('/api/terminal/session', { id: sharedId }, auth)
+    const first = await cli(['--cwd', project, '-p', 'delegate', '--json', '--file', 'notes.txt'], 'piped context')
     expect(first.code, first.stderr + first.stdout).toBe(0)
     const run = JSON.parse(first.stdout)
     expect(run.conversationId).not.toBe(sharedId)
@@ -250,7 +260,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
       tasks: [{ workerId: 'research', state: 'completed' }]
     })
     expect(cwds.every((c) => c === realpathSync(project))).toBe(true)
-    const streamed = await cli(['-r', run.conversationId, '-p', 'streamed', '--output-format', 'stream-json'])
+    const streamed = await cli(['--cwd', project, '-r', run.conversationId, '-p', 'streamed', '--output-format', 'stream-json'])
     expect(streamed.code, streamed.stderr).toBe(0)
     const events = streamed.stdout.trim().split('\n').map(line => JSON.parse(line))
     expect(events[0]).toMatchObject({ type: 'system', subtype: 'init', conversationId: run.conversationId })
@@ -259,7 +269,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect(events.some(e => e.type === 'assistant' && e.message.text === 'Echo streamed')).toBe(true)
     const context = await fetch(host.url + '/api/chat/conversations/' + run.conversationId + '/context', { headers: auth })
     expect(context.status).toBe(200)
-    const next = await cli(['-c', '-p', 'second', '--json'])
+    const next = await cli(['--cwd', project, '-c', '-p', 'second', '--json'])
     expect(next.code, next.stdout + next.stderr).toBe(0)
     expect(JSON.parse(next.stdout)).toMatchObject({
       conversationId: run.conversationId,
@@ -275,7 +285,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
         { headers: auth }
       )
     ).json()) as any
-    expect(view.messages[0]).toMatchObject({
+    expect(view.messages.find((m: any) => m.role === 'user')).toMatchObject({
       text: 'delegate\n\npiped context',
       attachments: [{ name: 'notes.txt' }]
     })
@@ -292,7 +302,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
       auth
     )
     expect(crossTask.status).toBe(404)
-    const resumed = await cli(['-p', 'slow', '--timeout', '0.04', '--json', '-r', run.conversationId])
+    const resumed = await cli(['--cwd', project, '-p', 'slow', '--timeout', '0.04', '--json', '-r', run.conversationId])
     expect(resumed.code, resumed.stdout + resumed.stderr).toBe(124)
     const timeout = JSON.parse(resumed.stdout)
     expect(timeout).toMatchObject({ status: 'timeout', conversationId: run.conversationId })
@@ -385,7 +395,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect(diff.diff).toContain('+change in task')
     expect(diff.untracked).toEqual(['new.txt'])
     expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('visible')
-    const interrupted = await cli(['-r', run.conversationId, '-p', 'slow', '--output-format', 'stream-json'], '', undefined, true)
+    const interrupted = await cli(['--cwd', project, '-r', run.conversationId, '-p', 'slow', '--output-format', 'stream-json'], '', undefined, true)
     expect(interrupted.code, interrupted.stderr + interrupted.stdout).toBe(130)
     const cancelledResult = JSON.parse(interrupted.stdout.trim().split('\n').at(-1)!)
     expect(cancelledResult).toMatchObject({ type: 'result', status: 'cancelled' })
@@ -453,7 +463,12 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     const approvalView = await client.view(approvalRun.conversationId)
     const approval = approvalView.approvals.find(a => a.state === 'pending')!
     expect(approval).toBeDefined()
-    await client.request('/api/terminal/tasks', { conversation: approvalRun.conversationId, ticket: approval.ticketId, action: 'answer', approval: approval.id, answer: 'decline' })
+    const permissionMenu = (await controlCommand(client, approvalView.conversation, '/approvals', project, preferences, []))!
+    expect(permissionMenu.menu!.items.some(item => item.value === '/approvals ' + approval.id)).toBe(true)
+    expect(permissionMenu.menu!.items.every(item => !item.label.includes(approval.ticketId))).toBe(true)
+    const choices = (await controlCommand(client, approvalView.conversation, '/approvals ' + approval.id, project, preferences, []))!
+    expect(choices.menu!.items.map(item => item.label)).toEqual(['Allow', 'Decline'])
+    expect(await command(client, approvalRun.conversationId, choices.menu!.items[1]!.value)).toBe('Response submitted.')
     expect((await cli(['logout'])).code).toBe(0)
     expect((await fetch(host.url + '/api/chat/readiness', { headers: auth })).status).toBe(401)
   } finally {

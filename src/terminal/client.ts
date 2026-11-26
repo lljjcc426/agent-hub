@@ -260,7 +260,7 @@ export class TerminalClient {
   create(cwd: string) {
     return this.request<Conversation>('/api/terminal/conversations', { cwd })
   }
-  async list(cwd: string) {
+  async list(cwd?: string) {
     return (
       await this.request<{ conversations: Conversation[] }>('/api/chat/conversations')
     ).conversations.filter((c) => c.project === cwd)

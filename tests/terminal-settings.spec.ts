@@ -21,13 +21,14 @@ it('merges user, project, local, supplied settings and launch flags without repl
   const { project, paths } = fixture()
   saveTerminalSetting(project, 'theme', 'light')
   saveTerminalSetting(project, 'verbose', 'true')
+  saveTerminalSetting(project, 'motion', 'reduced')
   writeFileSync(paths.project, JSON.stringify({ theme: 'dark', timeout: 120 }))
   writeFileSync(paths.local, JSON.stringify({ theme: 'mono' }))
   const loaded = loadTerminalSettings(project, '{"theme":"light","timeout":30}', { timeout: 5 })
   expect(loaded.settings).toMatchObject({ theme: 'light', timeout: 5, verbose: true })
   expect(loaded.sources).toEqual([paths.user, paths.project, paths.local, '--settings (JSON)'])
   saveTerminalSetting(project, 'language', 'zh')
-  expect(JSON.parse(readFileSync(paths.user, 'utf8'))).toEqual({ theme: 'light', verbose: true, language: 'zh' })
+  expect(JSON.parse(readFileSync(paths.user, 'utf8'))).toEqual({ theme: 'light', verbose: true, motion: 'reduced', language: 'zh' })
   expect(JSON.parse(readFileSync(paths.project, 'utf8'))).toEqual({ theme: 'dark', timeout: 120 })
 })
 it('reports invalid settings before connecting and refuses permission keys in project preferences', () => {
@@ -48,6 +49,7 @@ it('emits replacements only for changed public messages in the requested run', (
   const view = { conversation: { id: 'c' }, tasks: [], messages: [
     { id: 'm', runId: 'r', role: 'assistant', text: 'first', status: 'streaming' },
     { id: 'private', runId: 'r', role: 'assistant', recipient: 'worker', text: 'private' },
+    { id: 'worker', runId: 'r', role: 'assistant', speaker: { kind: 'worker' }, text: 'internal reply' },
     { id: 'old', runId: 'old-run', role: 'assistant', text: 'old' }
   ] } as unknown as Snapshot
   output.update(view, 'r')

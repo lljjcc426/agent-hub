@@ -2,6 +2,7 @@ import { saveTerminalSetting, loadTerminalSettings, type TerminalSettings, type 
 import { controlCommand } from './controls.ts'
 import { PrintEvents } from './output.ts'
 import {messageCharacters} from '../execution-limits.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalEditor } from './editor.ts'
 import { TerminalLayout } from './presentation.ts'
@@ -19,13 +20,13 @@ import { configureLanguage, parseLanguage, saveLanguage, ui, type Language } fro
 
 const help = () =>
   ui(
-    `Roppo — work with your Router and Workers from this directory.
+    `Roppo — your personal agent, shared with web Chat.
 
   roppo [prompt]                  Continue the conversation shared with web Chat
-  roppo -c                        Continue the latest conversation in this project
-  roppo -r [id]                   Choose or resume a project conversation
+  roppo -c                        Continue your personal conversation
+  roppo -r [id]                   Choose or resume a personal conversation
   roppo -p "prompt"               Print the result of one request
-  git diff | roppo -p "Review"    Send piped text with an instruction
+  cat notes.txt | roppo -p "Summarize"   Send piped text with an instruction
   roppo login | logout | init     Connect an account or start local setup
 
   --output-format FORMAT         text, json or stream-json (print mode)
@@ -36,19 +37,19 @@ const help = () =>
   --file PATH                    Attach a file (repeatable)
   --trust-project                Register the project on first use
   --timeout SECONDS              Wait limit for print mode (default 600)
-  --cwd DIRECTORY                Select a project directory
+  --cwd DIRECTORY                Explicit project mode (optional)
   --host URL                     Select a local Roppo instance
   roppo lang zh | en              Save the interface language
   --lang zh | en                  Interface language for this invocation
   --help, --version
 
-  In a conversation, type /help for tasks, diffs, tools and approvals.`,
-    `Roppo — 在终端里继续与 Router 和 Worker 对话。
+  In a conversation, type /help for settings, files and pending requests.`,
+    `Roppo — 与网页端同步的个人助手。
 
   roppo [消息]                 打开网页端的同一段对话，自动加载历史
-  roppo --cwd 目录             在指定项目中开始对话
-  roppo -c                     继续当前项目最近的会话
-  roppo -r [会话 ID]           选择一个已有项目会话
+  roppo --cwd 目录             显式进入项目模式（可选）
+  roppo -c                     继续个人对话
+  roppo -r [会话 ID]           选择已有个人对话
   roppo -p "消息"              运行一次并输出回复，可接收管道输入
   roppo login | logout | init  登录、退出账号或初始化本机实例
   roppo lang zh | en           保存界面语言
@@ -173,23 +174,27 @@ async function ask(text: string) {
 async function selectConversation(
   client: TerminalClient,
   o: Options,
-  project: string,
+  project: string | undefined,
   tty: boolean
 ) {
-  if (!o.latest && o.resume === undefined) return client.create(project)
+  if (!project && o.resume === undefined) {
+    const { conversation } = await client.request<{ conversation: Conversation }>('/api/chat/space', {})
+    return conversation
+  }
+  if (!o.latest && o.resume === undefined) return client.create(project!)
   const list = await client.list(project)
   if (!list.length)
     throw new CliError(
       ui(
-        'No saved conversations in this project. Start one with roppo --cwd .',
-        '这个项目还没有会话，可用 roppo --cwd . 新建。'
+        'No saved conversations here. Start one with roppo.',
+        '还没有保存的对话，可用 roppo 开始。'
       )
     )
   if (o.latest) return list[0]!
   if (o.resume) {
     const match = list.find((c) => c.id === o.resume)
     if (match) return match
-    throw new CliError(ui('Conversation not found in this project.', '这个项目中找不到该会话。'))
+    throw new CliError(project ? ui('Conversation not found in this project.', '这个项目中找不到该会话。') : ui('Personal conversation not found.', '找不到该个人对话。'))
   }
   if (!tty)
     throw new CliError(
@@ -201,8 +206,8 @@ async function selectConversation(
       2
     )
   if (process.env.TERM !== 'dumb') {
-    const input = new TerminalEditor(process.stdin, process.stderr, project, (query) => ({
-      title: ui('Resume conversation', '继续项目会话'),
+    const input = new TerminalEditor(process.stdin, process.stderr, project ?? o.cwd, (query) => ({
+      title: ui('Resume conversation', '继续对话'),
       start: 0,
       end: query.length,
       empty: ui('No matching conversations', '没有匹配的会话'),
@@ -234,7 +239,7 @@ async function selectConversation(
     !!process.stderr.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
   )
   const choices = [
-    ...layout.result(ui('Resume a conversation · ', '继续项目会话 · ') + basename(project))
+    ...layout.result(ui('Resume a conversation · ', '继续对话 · ') + (project ? basename(project) : ui('Personal chat', '个人对话')))
   ]
   for (const [i, c] of list.entries()) {
     choices.push(
@@ -342,6 +347,7 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
   const lines: AsyncIterable<string> = rl
   if (editor) editor.expanded = o.preferences.verbose ?? false
   const display = new SessionDisplay(process.stdout, rl, plain, false, o.preferences.theme)
+  display.motion = o.preferences.motion ?? 'full'
   let nextConversation: Conversation | undefined
   const stream = new AbortController()
   let stopped = false,
@@ -361,6 +367,14 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
   let oldest: number | undefined,
     hasOlder = false,
     loadingOlder = false
+  const syncAnimation = () => {
+    const waiting = latest?.run?.state === 'waiting' || latest?.approvals.some(a => isApprovalPending(a))
+    const busy = display.sending || display.loading || !waiting && (latest?.run?.state === 'running' || latest?.run?.state === 'queued' ||
+      latest?.run?.state === 'cancel_requested' || latest?.tasks.some(t => ['queued', 'running'].includes(t.state)))
+    const animate = editor && busy && display.motion !== 'reduced'
+    if (animate && !tick) tick = setInterval(requestDraw, 150).unref()
+    if (!animate && tick) { clearInterval(tick); tick = undefined }
+  }
   editor?.on('page', async (direction: number, lines?: number) => {
     if (!display.scroll(direction, lines) || !hasOlder || oldest === undefined || loadingOlder) return
     const revision = display.scrollPositionRevision
@@ -390,21 +404,23 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
     latest = view
     editor?.setView(view)
     display.update(view)
-    const busy =
-      view.run?.state === 'running' ||
-      view.run?.state === 'queued' ||
-      view.tasks.some((t) => ['queued', 'running'].includes(t.state))
-    if (editor && busy && !tick) tick = setInterval(requestDraw, 150).unref()
-    if (!busy && tick) {
-      clearInterval(tick)
-      tick = undefined
-    }
+    syncAnimation()
   }
   const say = (value: string, error = false) => {
     if (!stopped) display.notice((l) => l.result(value, error))
   }
-  const send = async (text: string, files: string[] = []) =>
-    client.send(c.id, text, [...files, ...mentionedFiles(text, o.cwd)], locale())
+  const send = async (text: string, files: string[] = []) => {
+    display.sending = true
+    display.paint()
+    syncAnimation()
+    try {
+      await client.send(c.id, text, [...files, ...mentionedFiles(text, o.cwd)], locale())
+    } finally {
+      display.sending = false
+      display.paint()
+      syncAnimation()
+    }
+  }
   editor?.on('change', requestDraw)
   editor?.on('redraw', () => display.redraw())
   editor?.on('notice', (message) => say(message, true))
@@ -467,7 +483,10 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
       }
       try {
         if (text.startsWith('/') && !text.includes('\n')) {
-          if (!text.startsWith('/choose ') && !text.startsWith('/tools --inspect '))
+          display.loading = true
+          display.paint()
+          syncAnimation()
+          if (!['/choose ', '/tools --inspect ', '/approvals ', '/approve ', '/decline ', '/answer '].some(prefix => text.startsWith(prefix)))
             display.notice((l) => l.message('You', text, true))
           const control = await controlCommand(client, c, text, o.cwd, o.preferences, o.settingsSources)
           if (control) {
@@ -476,13 +495,14 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
               Object.assign(o.preferences, control.preferences)
               if (control.preferences.language) configureLanguage(control.preferences.language)
               if (control.preferences.theme) display.setTheme(control.preferences.theme)
+              if (control.preferences.motion) display.motion = control.preferences.motion
               if (editor && control.preferences.verbose !== undefined) editor.expanded = control.preferences.verbose
             }
             if (control.menu) {
               if (editor) editor.pick(control.menu.title, control.menu.items)
               else say(control.menu.title + '\n' + control.menu.items.map(item => item.value + '  ' + item.label).join('\n'))
             }
-            if (control.text && (!control.menu || !editor || text.startsWith('/model '))) say(control.text)
+            if (control.text && (!control.menu || !editor || text.startsWith('/model ') || text.startsWith('/approvals '))) say(control.text)
             await refresh()
             basic?.prompt()
             continue
@@ -497,8 +517,11 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
       } catch (e) {
         editor?.restoreDraft(text)
         say((e as Error).message, true)
+      } finally {
+        display.loading = false
+        syncAnimation()
+        display.paint()
       }
-      display.paint()
       basic?.prompt()
     }
   } finally {
@@ -608,13 +631,12 @@ export async function main(args: string[]): Promise<number> {
       )
     const needsLogin = !client.signedIn && !print
     if (needsLogin) await client.login()
-    if (!print && !o.explicitProject && !o.trust && !o.latest && o.resume === undefined) {
+    if (!o.explicitProject && !o.trust) {
       if (screen && needsLogin) process.stdout.write(clearScreen)
-      const { conversation } = await client.request<{ conversation: Conversation }>(
-        '/api/chat/space',
-        {}
-      )
-      return await session(conversation)
+      const conversation = await selectConversation(client, o, undefined, tty && !print)
+      if (!conversation) return 0
+      if (o.resume !== undefined) await client.request('/api/terminal/session', { id: conversation.id })
+      return print ? await printRun(client, conversation, o) : await session(conversation)
     }
     const project = await client.project(o.cwd, o.trust)
     if (!project.registered) {

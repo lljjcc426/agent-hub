@@ -2,6 +2,7 @@ import type { TerminalEditor } from './editor.ts'
 import { TerminalLayout } from './presentation.ts'
 import type { Theme } from './settings.ts'
 import type { Snapshot } from './client.ts'
+import { publicMessage } from './conversation.ts'
 
 type Draw = (layout: TerminalLayout) => string[]
 interface Entry {
@@ -9,6 +10,7 @@ interface Entry {
   sequence?: number
   draw: Draw
   lines?: string[]
+  detail?: boolean
 }
 const position = (row: number, col: number) => '\x1b[' + (row + 1) + ';' + (col + 1) + 'H'
 
@@ -29,6 +31,10 @@ export class SessionDisplay {
   private view?: Snapshot
   private cachedLayout?: { columns: number; layout: TerminalLayout }
   continuation = false
+  sending = false
+  loading = false
+  motion: 'full' | 'reduced' = 'full'
+  private expanded = false
 
   constructor(
     private out: NodeJS.WriteStream,
@@ -60,6 +66,7 @@ export class SessionDisplay {
   redraw() { this.screen = []; this.paint() }
   private history(layout: TerminalLayout) {
     return (this.rows ??= [...this.entries.values()]
+      .filter(e => !e.detail || this.editor.expanded)
       .sort(
         (a, b) =>
           a.at - b.at ||
@@ -67,10 +74,10 @@ export class SessionDisplay {
       )
       .flatMap((e) => (e.lines ??= e.draw(layout))))
   }
-  private record(key: string, at: number, draw: Draw, sequence?: number) {
-    this.entries.set(key, { at, draw, sequence })
+  private record(key: string, at: number, draw: Draw, sequence?: number, detail = false) {
+    this.entries.set(key, { at, draw, sequence, detail })
     this.rows = undefined
-    if (this.plain) this.out.write(draw(this.layout).join('\n') + '\n')
+    if (this.plain && (!detail || this.editor.expanded)) this.out.write(draw(this.layout).join('\n') + '\n')
   }
   notice(draw: Draw) {
     this.record('notice/' + ++this.noticeId, Date.now(), draw)
@@ -78,7 +85,7 @@ export class SessionDisplay {
   }
   private addMessages(messages: Snapshot['messages']) {
     for (const m of messages) {
-      if (m.recipient) continue
+      if (!publicMessage(m)) continue
       const old = this.messages.get(m.id)
       if (
         old &&
@@ -141,7 +148,7 @@ export class SessionDisplay {
           this.view.tasks.some((t) => t.id === task.id && t.state === task.state)
         )
           continue
-        this.record('task/' + task.id, task.updatedAt, (l) => ['', l.task(task, view)])
+        this.record('task/' + task.id, task.updatedAt, (l) => ['', l.task(task, view)], undefined, true)
       }
       for (const call of view.calls) {
         if (
@@ -158,10 +165,16 @@ export class SessionDisplay {
           view.tasks.some((t) => t.workerId === call.target)
         )
           continue
-        this.record('tool/' + call.id, call.endedAt ?? call.startedAt, (l) => [l.activity(call)])
+        this.record('tool/' + call.id, call.endedAt ?? call.startedAt, (l) => [l.activity(call)], undefined, true)
       }
     }
     this.addMessages(view.messages)
+    for (const file of view.deliveries ?? []) {
+      const key = 'file/' + file.id
+      if (!this.entries.has(key)) this.record(key, file.createdAt, l => l.result(
+        '📎 ' + file.name + '  ·  /files'
+      ))
+    }
     if (this.plain && view.run && view.run.state !== this.view?.run?.state)
       this.out.write(this.layout.workStatus(view) + '\n')
     this.view = view
@@ -169,6 +182,11 @@ export class SessionDisplay {
   }
   paint() {
     if (this.plain) return
+    if (this.expanded !== !!this.editor.expanded) {
+      this.expanded = !!this.editor.expanded
+      this.rows = undefined
+      this.top = undefined
+    }
     const layout = this.layout,
       height = Math.max(1, this.out.rows || 24)
     const history = this.history(layout)
@@ -188,6 +206,9 @@ export class SessionDisplay {
         picker: this.picker || this.editor.picking,
         menu: this.editor.menu,
         expanded: this.editor.expanded,
+        motion: this.motion,
+        sending: this.sending,
+        loading: this.loading,
         history: !!history.length
       }
     )

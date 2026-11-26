@@ -110,13 +110,9 @@ export class TerminalLayout {
         readiness.routerLabel ||
         'Router'
     )
-    const workers = readiness.workers.filter(
-      (w) => !['paused', 'retiring'].includes(w.state)
-    ).length
     const router = oneLine(readiness.routerLabel || '')
     const team = [
-      ...new Set([router, model].filter(Boolean)),
-      workers + ui(workers === 1 ? ' worker' : ' workers', ' 位 Worker')
+      ...new Set([router, model].filter(Boolean))
     ].join('  ·  ')
     return { project, team }
   }
@@ -145,7 +141,7 @@ export class TerminalLayout {
       fit(team, width - 4),
       fit(view.conversation.project || ui('Personal chat · shared with the web workspace', '个人对话 · 与网页端同步'), width - 4),
       '',
-      ui('/help commands  ·  /config settings  ·  /resume conversations', '/help 命令  ·  /config 设置  ·  /resume 历史会话')
+      ui('/help commands  ·  /config settings  ·  /files your files', '/help 命令  ·  /config 设置  ·  /files 你的文件')
     ]
     if (rows < 20) return this.header(view)
     return ['', this.margin + this.ink('╭' + '─'.repeat(width - 2) + '╮', 'rule'),
@@ -285,9 +281,23 @@ export class TerminalLayout {
       (title ? this.ink('  ·  ', 'quiet') + title : '')
     )
   }
-  workStatus(view: Snapshot) {
+  workStatus(view: Snapshot, details = false) {
     const state = view.run?.state
     if (state === 'cancel_requested') return runLabels()[state]!
+    if (!details) {
+      if (view.approvals.some(a => isApprovalPending(a))) return ui('Your permission is needed', '需要你的授权')
+      if (state === 'waiting') return runLabels()[state]!
+      if (view.messages.some(m => m.runId === view.run?.id && !m.recipient && m.speaker?.kind !== 'worker' && m.status === 'streaming'))
+        return ui('Writing reply', '正在回复')
+      const router = view.calls.findLast(c => c.runId === view.run?.id && c.kind === 'router' && c.state === 'running')
+      if (router?.status?.label) return router.status.label
+      const working = state === 'running' || state === 'queued' || view.tasks.some(t => ['running', 'queued'].includes(t.state))
+      if (working) {
+        const step = view.publicPlans?.filter(p => p.runId === view.run?.id).flatMap(p => p.steps).find(s => s.state === 'running')
+        return step?.title ?? ui('Working on your request', '正在处理你的请求')
+      }
+      return state ? (runLabels()[state] ?? state) : ui('Ready', '就绪')
+    }
     const tasks = view.tasks.filter((t) => t.state === 'running' || t.state === 'queued')
     const calls = view.calls.filter(
       (c) =>
@@ -383,6 +393,9 @@ export class TerminalLayout {
       now?: number
       picker?: boolean
       history?: boolean
+      sending?: boolean
+      loading?: boolean
+      motion?: 'full' | 'reduced'
     } = {}
   ) {
     const lines: string[] = []
@@ -392,20 +405,21 @@ export class TerminalLayout {
       view?.tasks.filter((t) => ['queued', 'running', 'waiting'].includes(t.state)) ?? []
     const calls = view?.calls ?? []
     const live = state === 'running' || state === 'queued' || state === 'cancel_requested'
-    const busy = live || tasks.some((t) => t.state === 'running' || t.state === 'queued')
+    const waiting = state === 'waiting' || view?.approvals.some(a => isApprovalPending(a, now))
+    const busy = options.sending || options.loading || !waiting && (live || tasks.some((t) => t.state === 'running' || t.state === 'queued'))
     const showWork = maxRows >= 10 && !options.picker
-    if (showWork && view && (state || tasks.length)) {
-      const label = this.workStatus(view)
+    if (showWork && view && (options.sending || options.loading || state || tasks.length)) {
+      const label = options.sending ? ui('Sending message', '正在发送消息') : options.loading ? ui('Loading', '正在加载') : this.workStatus(view, expanded)
       const elapsed = Math.max(0, Math.floor((now - (view.run?.createdAt ?? now)) / 1000))
       const time =
         elapsed >= 60
           ? Math.floor(elapsed / 60) + ui('m ', ' 分 ') + (elapsed % 60) + ui('s', ' 秒')
           : elapsed + ui('s', ' 秒')
       const glyph = busy
-        ? ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
+        ? options.motion === 'reduced' ? '·' : ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
         : state === 'failed'
           ? '×'
-          : state === 'waiting'
+          : waiting
             ? '?'
             : '✓'
       const status = oneLine(label)
@@ -413,18 +427,18 @@ export class TerminalLayout {
         ? 'accent'
         : state === 'failed'
           ? 'error'
-          : state === 'waiting'
+          : waiting
             ? 'attention'
             : 'quiet'
       lines.push(
         '',
         this.margin +
           this.ink(
-            glyph + ' ' + fit(status + (busy && view.run ? '  ·  ' + time : ''), this.width - 3),
+            glyph + ' ' + fit(status + (busy && view.run && !options.sending && !options.loading ? '  ·  ' + time : ''), this.width - 3),
             tone
           )
       )
-      if (!menu || maxRows >= 22) {
+      if (expanded && (!menu || maxRows >= 22)) {
         for (const t of tasks.slice(0, maxRows >= 18 ? 3 : 1)) lines.push(this.task(t, view))
         const visibleCalls = expanded
           ? calls.filter((c) => c.kind === 'tool' && c.runId === view.run?.id).slice(-4)
@@ -500,8 +514,12 @@ export class TerminalLayout {
         ? ui('/choose answer question', '/choose 回答问题')
         : needsApproval
           ? ui('/approvals review request', '/approvals 查看请求')
+          : options.loading
+            ? ui('Loading command…', '正在加载命令…')
+          : options.sending
+            ? ui('Sending…', '正在发送…')
           : busy
-            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('/stop task', '/stop 停止任务')) +
+            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('Background activity', '后台处理中')) +
               ui('    Ctrl+O activity', '    Ctrl+O 查看活动')
             : this.width < 40
               ? ui('/help   @ files', '/help   @ 文件')

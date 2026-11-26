@@ -1,6 +1,6 @@
 # Roppo CLI
 
-Run `roppo` from any directory to open your account’s personal Chat and load its recent messages. Page Up and Page Down scroll history. Paging back at the beginning loads earlier messages. Terminal and web sessions use the same account, messages, tasks and files. Workers run on the host and continue after the terminal exits.
+Run `roppo` from any directory to continue your personal conversation with the Router. `roppo -c` and `roppo -p "prompt"` use that same personal Chat by default. The current directory is used for attachments and terminal preferences; it does not create a project conversation. Page Up and Page Down scroll history. Paging back at the beginning loads earlier messages. Terminal and web sessions use the same account, messages, tasks and files. Workers run on the host and continue after the terminal exits.
 
 ## Install and connect
 
@@ -18,29 +18,28 @@ The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It 
 
 Choose `roppo lang zh` for Chinese or `roppo lang en` for English. This preference applies to future launches. Use `--lang zh` or `--lang en` for a single invocation. The setting controls the terminal interface. Replies follow the host’s existing language policy.
 
-## Work in a project
+## Your personal conversation
 
 ```sh
-cd ~/work/my-project
-roppo --cwd . "Review the change and run the relevant tests"
+roppo
 roppo -c
+roppo -p "Help me plan tomorrow"
 roppo -r
-roppo -r <conversation-id>
 ```
 
-On first use of a new folder, Roppo shows its resolved project path and requested access. Subdirectories use the nearest Git root or a more specific registered workspace. Git projects with an existing commit use per-task worktrees. Empty repositories and other new directories use read-only access. Existing sources keep their configured workspace and permissions. Registering a new source uses the host's configuration update and requires an idle host. A subscription restricted to a specific source uses that registered source.
+The main transcript shows your messages and public Router replies. Internal Worker conversations and task logs stay out of the default view. Delivered files appear as file notices and remain available through `/files`. The welcome screen does not ask you to select a project or manage Workers.
 
-Type `/` to browse commands and `@` to search project files. Use ↑ and ↓ to select, Tab to complete and Esc to dismiss. Git projects include tracked files and non-ignored untracked files. File names with spaces are quoted on insertion. Alt+Enter inserts a newline. Pasting several lines in a terminal with bracketed paste keeps them together until you press Enter.
+Type `/` to browse commands and `@` to search local files. Use ↑ and ↓ to select, Tab to complete and Esc to dismiss. Git projects include tracked files and non-ignored untracked files. File names with spaces are quoted on insertion. Alt+Enter inserts a newline. Pasting several lines in a terminal with bracketed paste keeps them together until you press Enter.
 
-Run `roppo -r` to search this project's conversations by title. Press Enter to resume a match or use `roppo -c` for the most recent conversation.
+Run `roppo -r` to search personal conversation history by title. Selecting a conversation also makes it current in the web workspace. `/clear` explicitly starts a fresh conversation and retains the previous history and background work.
 
-Interactive startup shows a compact, left-aligned welcome card and a warm accent color. The input uses horizontal rules and a `❯` prompt. Messages align left and the composer stays at the bottom through window resizing and incoming replies. Ctrl+O shows workspace details while idle.
+Interactive startup shows a compact, left-aligned welcome card and a warm accent color. The input uses horizontal rules and a `❯` prompt. Messages align left and the composer stays at the bottom through window resizing and incoming replies. Ctrl+O explicitly expands execution diagnostics; they stay collapsed by default.
 
-During a run, the status names the active Router or Worker alongside its public update, observed tool operation, or assigned task. Ctrl+O expands recent tools. Esc or Ctrl+C interrupts the current run when the picker is closed. Idle Ctrl+C clears the draft; on an empty prompt, press it twice within one second to exit. Ctrl+D on an empty prompt or `/exit` leaves work running.
+Sending a message and loading command options show immediate animated feedback. During execution, the status uses the Router’s public update, a published plan step, or a simple activity label. Replies update as real streamed content arrives. Ctrl+O expands internal tasks and tools. `/config motion=reduced` disables periodic animation; `motion=full` restores it. Animations do not move the input or override your history scroll position. Esc or Ctrl+C interrupts the current run when the picker is closed. Idle Ctrl+C clears the draft; on an empty prompt, press it twice within one second to exit. Ctrl+D on an empty prompt or `/exit` leaves work running.
 
-Use `/plan` to read published steps or `/choose` to answer an open Router question. Type `/diff` followed by a space to select a Worker task and inspect its changes. `/approvals` shows pending requests for a selected task. `/approve`, `/decline` and `/answer` let you pick a task and request, then submit your response. `/tools Codex` filters the capability picker by source or name. Press Enter to inspect the selected capability. `/open` opens the same conversation in the web workspace.
+Use `/plan` to read published steps, `/choose` to answer a Router question, and `/files` to see shared attachments and delivered files. `/approvals` lists actions that need your permission; select an action, review its scope, then choose Allow or Decline. Complex structured questions currently link to the same web conversation. `/tools` searches available capabilities; `/open` opens the shared conversation in the browser.
 
-[Current welcome and settings preview](images/product/terminal-cli-preview.svg), rendered from `TerminalLayout` using a deterministic fixture. The image demonstrates layout; it is not a live-provider execution capture.
+Internal task and Git inspection commands remain available through `/help advanced` and explicit command names. They are not the default conversation navigation. See [the product boundary](CLI_PRODUCT.md) for the design and current limits.
 
 ## Settings and session controls
 
@@ -54,11 +53,13 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | `/model CONNECTION MODEL` | Select an explicit model ID; `--default` uses the connection default |
 | `/effort` | Choose an effort advertised by the selected model, or `default` |
 | `/permissions` | Select `ask` or `full` for the **shared account**; existing source sandbox limits still apply |
-| `/status` | Host, session, project, Router, readiness and loaded preference files |
+| `/status` | Connection, shared conversation, model, permissions and loaded preference files |
 | `/context` | Recorded input-token/context measurements; unavailable measurements are shown as unavailable |
 | `/clear` | Start a new conversation without deleting the old one or stopping its work |
 | `/resume` | Search saved conversations in the current project, or personal Chat when outside a project session |
 | `/rename TITLE` | Rename the current conversation |
+| `/files` | Shared attachments and delivered file links |
+| `/approvals` | Review and answer pending permission requests without entering task IDs |
 
 Model changes apply to subsequent Router turns, including those submitted from the web. They do not change Worker profiles or a turn's already captured model binding. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; Shift+Tab opens it without granting access automatically. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
 
@@ -71,7 +72,7 @@ Terminal preferences load from these sources, from lowest to highest priority:
 5. `--settings '{"theme":"mono"}'` or `--settings path/to/settings.json`.
 6. Dedicated launch flags such as `--theme`, `--verbose`, `--lang` and `--timeout`.
 
-Supported keys are `theme` (`dark`, `light`, `mono`), `language` (`en`, `zh`), `verbose` (boolean), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
+Supported keys are `theme` (`dark`, `light`, `mono`), `language` (`en`, `zh`), `verbose` (boolean), `motion` (`full` or `reduced`), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
 
 ```sh
 roppo --theme dark --verbose
@@ -102,13 +103,13 @@ The full-screen interface captures mouse events while running. An empty conversa
 ## Use in scripts
 
 ```sh
-git diff | roppo -p "Review this diff"
+cat notes.txt | roppo -p "Summarize these notes"
 roppo -p "Summarize the supplied file" --file notes.md --json
 roppo -c -p "Report the results" --timeout 120
 roppo -p "Summarize progress" --output-format stream-json
 ```
 
-For a new project, scripts can register the folder explicitly with `--trust-project`. A print invocation waits for its own run and associated Worker tasks. Plain output contains the reply. With `--json`, stdout contains one object with `conversationId`, `runId`, `status`, `text`, `tasks` and `deliveries`. Startup and transport errors return an error object. Use the conversation ID with `-r` to continue.
+Only explicit project mode needs folder registration: use `--cwd DIRECTORY --trust-project` for a new project. A print invocation waits for its own run and associated Worker tasks. Plain output contains the reply. With `--json`, stdout contains one object with `conversationId`, `runId`, `status`, `text`, `tasks` and `deliveries`. Startup and transport errors return an error object. Use the conversation ID with `-r` to continue.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -132,9 +133,22 @@ For a new project, scripts can register the folder explicitly with `--trust-proj
 
 The client polls run snapshots, so a fast reply may appear only once. This is Roppo's event schema, not Claude's wire protocol. Ctrl+C requests cancellation and exits with 130. Reaching `--timeout` exits with 124 while the host continues working.
 
+## Optional project compatibility
+
+```sh
+cd ~/work/my-project
+roppo --cwd . "Review the change and run the relevant tests"
+roppo --cwd . -c
+roppo --cwd . -r
+roppo --cwd . -r <conversation-id>
+```
+
+On first use of a new folder, Roppo shows its resolved project path and requested access. Subdirectories use the nearest Git root or a more specific registered workspace. Git projects with an existing commit use per-task worktrees. Empty repositories and other new directories use read-only access. Existing sources keep their configured workspace and permissions. Registering a new source uses the host's configuration update and requires an idle host. A subscription restricted to a specific source uses that registered source.
+
+
 ## Claude Code alignment
 
-This fork uses Claude Code's terminal interaction conventions as a reference while retaining Roppo's shared host and Router/Worker execution model. See [CLI compatibility and remaining work](CLI_COMPATIBILITY.md) for implemented behavior and gaps. It does not read or modify `~/.claude` configuration or use Claude's branding.
+This fork uses Claude Code’s terminal layout, input, feedback and keyboard conventions as a reference. Its default experience is one personal conversation with the Router, with internal Worker collaboration retained behind the scenes. See [CLI compatibility and remaining work](CLI_COMPATIBILITY.md) for implemented behavior and gaps. It does not read or modify `~/.claude` configuration or use Claude's branding.
 
 ## References
 

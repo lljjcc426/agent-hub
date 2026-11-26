@@ -11,6 +11,13 @@ import type { Snapshot, TerminalClient } from '../src/terminal/client.ts'
 import { draftLines } from '../src/terminal/presentation.ts'
 
 const cleanups: (() => void)[] = []
+it('offers personal actions first while retaining explicit diagnostic commands', () => {
+  const menu = suggestions('/', 1, [])!
+  expect(menu.items.map(i => i.label)).toContain('/files')
+  expect(menu.items.map(i => i.label)).not.toContain('/tasks')
+  expect(suggestions('/tasks', 6, [])!.items[0]!.value).toBe('/tasks')
+  expect(suggestions('/stop', 5, [])!.items[0]!.submit).toBe(true)
+})
 afterEach(() => {
   for (const fn of cleanups.splice(0).reverse()) fn()
 })

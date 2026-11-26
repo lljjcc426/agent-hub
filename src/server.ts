@@ -2,6 +2,7 @@ import {messageCharacters} from './execution-limits.ts'
 import {TerminalPairing,pairingPage} from './terminal/pairing.ts'
 import {projectRoot,projectSource} from './terminal/project.ts'
 import {terminalTask} from './terminal/tasks.ts'
+import {terminalHostSettings,terminalHostChange,changeTerminalHostSettings} from './terminal/host-settings.ts'
 import {CapabilityLibrary} from './capability-library.ts'
 import {ModelCapabilityCatalog} from './model-capabilities.ts'
 import {workerProfiles} from './worker-pool.ts'
@@ -321,10 +322,35 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       send(res,405,{error:'Method not allowed'});return
     }
     if (!operator) { send(res, 401, { error: 'Operator access required',code:'token_required' }); return }
+    if(path==='/api/terminal/settings'||path==='/api/terminal/models'){
+      const owner=account.status(req).user?.id
+      if(!owner){send(res,401,{code:'account_login_required'});return}
+      res.setHeader('cache-control','no-store')
+      if(path==='/api/terminal/models'&&req.method==='GET'){
+        const query=z.object({backend:z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),model:z.string().trim().min(1).max(300).optional()}).strict().parse(Object.fromEntries(new URL(req.url!,requestOrigin).searchParams))
+        send(res,200,await modelCapabilities.read(runtime,query.backend,query.model,options.configurationPreview===true));return
+      }
+      if(path==='/api/terminal/settings'&&req.method==='GET'){send(res,200,terminalHostSettings(runtime,owner));return}
+      if(path==='/api/terminal/settings'&&req.method==='POST'){
+        const input=terminalHostChange.parse(await operatorBody(req))
+        if(input.action==='effort'&&input.effort!==null){
+          const selected=terminalHostSettings(runtime,owner)
+          const capabilities=await modelCapabilities.read(runtime,selected.backend,selected.model,options.configurationPreview===true)
+          requireCurrentOperator(req)
+          if(!capabilities.reasoning.efforts.includes(input.effort)){send(res,400,{code:'unsupported_effort',error:'This model does not advertise that reasoning effort.'});return}
+        }
+        send(res,200,changeTerminalHostSettings(runtime,owner,input));return
+      }
+      send(res,405,{code:'method_not_allowed'});return
+    }
     if(req.method==='POST'&&path.startsWith('/api/terminal/')){
       const owner=account.status(req).user?.id
       if(!owner){send(res,401,{code:'account_login_required'});return}
       const raw=await operatorBody(req)
+      if(path==='/api/terminal/session'){
+        const {id}=z.object({id:z.string().uuid()}).strict().parse(raw)
+        send(res,200,runtime.chat.selectTerminalSession(owner,id));return
+      }
       if(path==='/api/terminal/logout'){account.revokeTerminal(req);send(res,200,{ok:true});return}
       if(path==='/api/terminal/tasks'){
         const input=z.object({conversation:z.string().uuid(),ticket:z.string().min(1).max(500),action:z.enum(['diff','stop','approvals','answer']),approval:approvalIdSchema.optional(),answer:z.unknown().optional()}).strict().parse(raw)

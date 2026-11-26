@@ -124,7 +124,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
                 {
                   action: 'assign',
                   id: 'research',
-                  revision: 0,
+                  revision: host.runtime.settings.current().revision,
                   requestId: randomUUID(),
                   text: 'Review notes'
                 },
@@ -204,6 +204,23 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
       body: JSON.stringify({ approvalMode: 'full' })
     })
     expect(patch.status).toBe(401)
+    const settingsResponse = await fetch(host.url + '/api/terminal/settings', { headers: auth })
+    expect(settingsResponse.status).toBe(200)
+    const terminalSettings = await settingsResponse.json() as any
+    expect(terminalSettings).toMatchObject({ approvalMode: 'ask', backend: 'codex' })
+    expect(terminalSettings).not.toHaveProperty('config')
+    const modelChange = await post('/api/terminal/settings', { action: 'model', revision: terminalSettings.revision, backend: 'codex', model: 'fixture-model' }, auth)
+    expect(modelChange.status).toBe(200)
+    expect(host.runtime.config.execution.router?.model).toBe('fixture-model')
+    expect((await post('/api/terminal/settings', { action: 'model', revision: terminalSettings.revision, backend: 'codex' }, auth)).status).toBe(409)
+    expect((await post('/api/terminal/settings', { action: 'permissions', mode: 'full', tools: ['*'] }, auth)).status).toBe(400)
+    expect((await post('/api/terminal/settings', { action: 'permissions', mode: 'full' }, auth)).status).toBe(200)
+    expect((await (await post('/api/chat/space', {}, { cookie })).json()).approvalMode).toBe('full')
+    await post('/api/terminal/settings', { action: 'permissions', mode: 'ask' }, auth)
+    const fresh = await (await post('/api/chat/conversations', {}, auth)).json() as any
+    expect((await post('/api/terminal/session', { id: fresh.id }, auth)).status).toBe(200)
+    expect((await (await post('/api/chat/space', {}, { cookie })).json()).conversation.id).toBe(fresh.id)
+    await post('/api/terminal/session', { id: sharedId }, auth)
     const first = await cli(['-p', 'delegate', '--json', '--file', 'notes.txt'], 'piped context')
     expect(first.code, first.stderr + first.stdout).toBe(0)
     const run = JSON.parse(first.stdout)
@@ -214,6 +231,15 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
       tasks: [{ workerId: 'research', state: 'completed' }]
     })
     expect(cwds.every((c) => c === realpathSync(project))).toBe(true)
+    const streamed = await cli(['-r', run.conversationId, '-p', 'streamed', '--output-format', 'stream-json'])
+    expect(streamed.code, streamed.stderr).toBe(0)
+    const events = streamed.stdout.trim().split('\n').map(line => JSON.parse(line))
+    expect(events[0]).toMatchObject({ type: 'system', subtype: 'init', conversationId: run.conversationId })
+    expect(events.at(-1)).toMatchObject({ type: 'result', status: 'completed', text: 'Echo streamed' })
+    expect(events.filter(e => e.type === 'result')).toHaveLength(1)
+    expect(events.some(e => e.type === 'assistant' && e.message.text === 'Echo streamed')).toBe(true)
+    const context = await fetch(host.url + '/api/chat/conversations/' + run.conversationId + '/context', { headers: auth })
+    expect(context.status).toBe(200)
     const next = await cli(['-c', '-p', 'second', '--json'])
     expect(next.code, next.stdout + next.stderr).toBe(0)
     expect(JSON.parse(next.stdout)).toMatchObject({

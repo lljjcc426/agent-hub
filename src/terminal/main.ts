@@ -1,3 +1,6 @@
+import { saveTerminalSetting, loadTerminalSettings, type TerminalSettings, type OutputFormat } from './settings.ts'
+import { controlCommand } from './controls.ts'
+import { PrintEvents } from './output.ts'
 import {messageCharacters} from '../execution-limits.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalEditor } from './editor.ts'
@@ -25,7 +28,11 @@ const help = () =>
   git diff | roppo -p "Review"    Send piped text with an instruction
   roppo login | logout | init     Connect an account or start local setup
 
-  --json                         Return a single JSON result in print mode
+  --output-format FORMAT         text, json or stream-json (print mode)
+  --json                         Alias for --output-format json
+  --settings JSON_OR_FILE        Override terminal preferences for this launch
+  --theme dark|light|mono         Terminal color theme
+  --verbose                      Expand tool activity by default
   --file PATH                    Attach a file (repeatable)
   --trust-project                Register the project on first use
   --timeout SECONDS              Wait limit for print mode (default 600)
@@ -48,7 +55,11 @@ const help = () =>
 
   --lang zh | en               仅切换此次运行的界面语言
   --file 路径                  添加附件，可重复使用
-  --json                       输出 JSON 结果
+  --output-format 格式         text、json 或 stream-json（单次输出）
+  --json                       等同于 --output-format json
+  --settings JSON或文件        覆盖此次运行的终端设置
+  --theme dark|light|mono       终端配色
+  --verbose                    默认展开工具活动
   --trust-project              首次使用时注册项目
   --timeout 秒                 单次运行的等待时限（默认 600 秒）
   --host URL                   选择本机实例
@@ -57,6 +68,10 @@ const help = () =>
   对话中输入 /help 查看命令。`
   )
 interface Options {
+  settings?: string
+  preferences: TerminalSettings
+  settingsSources: string[]
+  outputFormat?: OutputFormat
   print: boolean
   json: boolean
   latest: boolean
@@ -73,6 +88,8 @@ interface Options {
 }
 export function parseArgs(args: string[]): Options {
   const o: Options = {
+      preferences: {},
+      settingsSources: [],
       print: false,
       json: false,
       latest: false,
@@ -97,18 +114,33 @@ export function parseArgs(args: string[]): Options {
     if (a === '--help' || a === '-h') o.action = 'help'
     else if (a === '--version' || a === '-V') o.action = 'version'
     else if (a === '--print' || a === '-p') o.print = true
-    else if (a === '--json') o.json = true
+    else if (a === '--json') { o.json = true; o.outputFormat = 'json' }
+    else if (a === '--output-format') {
+      const format = value()
+      if (!['text', 'json', 'stream-json'].includes(format)) throw new CliError('Choose --output-format text|json|stream-json', 'usage', 2)
+      o.outputFormat = format as OutputFormat
+      o.json = format !== 'text'
+      o.print = true
+    }
+    else if (a === '--settings') o.settings = value()
+    else if (a === '--verbose') o.preferences.verbose = true
+    else if (a === '--theme') {
+      const theme = value()
+      if (!['dark', 'light', 'mono'].includes(theme)) throw new CliError('Choose --theme dark|light|mono', 'usage', 2)
+      o.preferences.theme = theme as TerminalSettings['theme']
+    }
     else if (a === '--continue' || a === '-c') o.latest = true
     else if (a === '--resume' || a === '-r')
       o.resume = args[i + 1] && !args[i + 1]!.startsWith('-') ? args[++i] : ''
     else if (a === '--trust-project') o.trust = true
-    else if (a === '--lang') o.language = parseLanguage(value())
+    else if (a === '--lang') { o.language = parseLanguage(value()); o.preferences.language = o.language }
     else if (a === '--cwd') {
       o.cwd = resolve(value())
       o.explicitProject = true
     } else if (a === '--host') o.host = value()
     else if (a === '--timeout') {
       o.timeout = Number(value())
+      o.preferences.timeout = o.timeout
       if (!Number.isFinite(o.timeout) || o.timeout <= 0 || o.timeout > 86400)
         throw new CliError(
           ui(
@@ -228,32 +260,49 @@ async function printRun(client: TerminalClient, c: Conversation, o: Options) {
     o.files.map((f) => resolve(o.cwd, f)),
     locale()
   )
-  const wait = AbortSignal.timeout(Math.max(1, Math.ceil(o.timeout * 1000)))
+  const cancelled = new AbortController()
+  const wait = AbortSignal.any([cancelled.signal, AbortSignal.timeout(Math.max(1, Math.ceil(o.timeout * 1000)))])
+  let cancellation: Promise<unknown> | undefined
+  const interrupt = () => {
+    cancelled.abort()
+    cancellation ??= client.request('/api/chat/conversations/' + c.id + '/cancel', { runId: sent.runId })
+      .catch(error => process.stderr.write(clean((error as Error).message) + '\n'))
+  }
+  process.once('SIGINT', interrupt)
+  const events = o.outputFormat === 'stream-json' ? new PrintEvents(event => console.log(JSON.stringify(event))) : undefined
+  if (events) console.log(JSON.stringify({ type: 'system', subtype: 'init', conversationId: c.id, runId: sent.runId, url: client.link(c.id) }))
   let view: Snapshot | undefined
   let status = 'timeout'
-  while (!wait.aborted) {
-    try {
-      view = await client.view(c.id, sent.runId, wait)
-      if (view.run && terminalStates.includes(view.run.state)) {
-        status = view.run.state
-        break
-      }
-    } catch (error) {
-      if (
-        !wait.aborted &&
-        !(
-          error instanceof CliError &&
-          ['host_unavailable', 'configuration_restarting'].includes(error.code)
+  try {
+    while (!wait.aborted) {
+      try {
+        view = await client.view(c.id, sent.runId, wait)
+        events?.update(view, sent.runId)
+        if (view.run && terminalStates.includes(view.run.state)) {
+          status = view.run.state
+          break
+        }
+      } catch (error) {
+        if (
+          !wait.aborted &&
+          !(
+            error instanceof CliError &&
+            ['host_unavailable', 'configuration_restarting'].includes(error.code)
+          )
         )
-      )
-        throw error
+          throw error
+      }
+      await delay(600, undefined, { signal: wait }).catch(() => {})
     }
-    await delay(600, undefined, { signal: wait }).catch(() => {})
+  } finally {
+    process.off('SIGINT', interrupt)
+    await cancellation
   }
+  if (cancelled.signal.aborted) status = 'cancelled'
   const result = view
     ? runResult(view, sent.runId, status)
     : { conversationId: c.id, runId: sent.runId, status, text: '', tasks: [], deliveries: [] }
-  if (o.json) console.log(JSON.stringify({ ...result, url: client.link(c.id) }))
+  if (o.json) console.log(JSON.stringify({ ...(events ? { type: 'result' } : {}), ...result, url: client.link(c.id) }))
   else {
     if (result.text) console.log(clean(result.text))
     for (const delivery of result.deliveries)
@@ -291,7 +340,9 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
     : undefined
   const rl = editor ?? basic!
   const lines: AsyncIterable<string> = rl
-  const display = new SessionDisplay(process.stdout, rl, plain)
+  if (editor) editor.expanded = o.preferences.verbose ?? false
+  const display = new SessionDisplay(process.stdout, rl, plain, false, o.preferences.theme)
+  let nextConversation: Conversation | undefined
   const stream = new AbortController()
   let stopped = false,
     buffer = '',
@@ -355,6 +406,7 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
   const send = async (text: string, files: string[] = []) =>
     client.send(c.id, text, [...files, ...mentionedFiles(text, o.cwd)], locale())
   editor?.on('change', requestDraw)
+  editor?.on('redraw', () => display.redraw())
   editor?.on('notice', (message) => say(message, true))
   editor?.on('interrupt', async () => {
     const run = latest?.run
@@ -417,6 +469,24 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
         if (text.startsWith('/') && !text.includes('\n')) {
           if (!text.startsWith('/choose ') && !text.startsWith('/tools --inspect '))
             display.notice((l) => l.message('You', text, true))
+          const control = await controlCommand(client, c, text, o.cwd, o.preferences, o.settingsSources)
+          if (control) {
+            if (control.next) { nextConversation = control.next; break }
+            if (control.preferences) {
+              Object.assign(o.preferences, control.preferences)
+              if (control.preferences.language) configureLanguage(control.preferences.language)
+              if (control.preferences.theme) display.setTheme(control.preferences.theme)
+              if (editor && control.preferences.verbose !== undefined) editor.expanded = control.preferences.verbose
+            }
+            if (control.menu) {
+              if (editor) editor.pick(control.menu.title, control.menu.items)
+              else say(control.menu.title + '\n' + control.menu.items.map(item => item.value + '  ' + item.label).join('\n'))
+            }
+            if (control.text && (!control.menu || !editor || text.startsWith('/model '))) say(control.text)
+            await refresh()
+            basic?.prompt()
+            continue
+          }
           const result = await command(client, c.id, text)
           if (result)
             display.notice((l) => (text.startsWith('/diff ') ? l.diff(result) : l.result(result)))
@@ -442,16 +512,19 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
     process.stdin.pause()
     await watch
   }
-  return 0
+  return nextConversation
 }
 export async function main(args: string[]): Promise<number> {
-  let json = args.includes('--json')
+  let json = args.includes('--json') || ['json', 'stream-json'].includes(args[args.indexOf('--output-format') + 1] ?? '')
+  let streaming = args[args.indexOf('--output-format') + 1] === 'stream-json'
   try {
     configureLanguage()
     const o = parseArgs(args)
     if (o.language) configureLanguage(o.language)
     if (o.action === 'lang') {
-      saveLanguage(parseLanguage(o.prompt))
+      const language = parseLanguage(o.prompt)
+      saveLanguage(language)
+      saveTerminalSetting(o.cwd, 'language', language)
       console.log(ui('Interface language: English', '界面语言已设为中文'))
       return 0
     }
@@ -466,7 +539,26 @@ export async function main(args: string[]): Promise<number> {
       )
       return 0
     }
+    const loaded = loadTerminalSettings(o.cwd, o.settings, o.preferences)
+    o.preferences = loaded.settings
+    o.settingsSources = loaded.sources
+    if (o.preferences.language) configureLanguage(o.preferences.language)
+    o.timeout = o.preferences.timeout ?? 600
+    o.outputFormat ??= o.preferences.outputFormat ?? 'text'
+    const session = async (conversation: Conversation): Promise<number> => {
+      let current: Conversation | undefined = conversation
+      while (current) {
+        current = await interactive(client, current, o)
+        o.prompt = ''
+        o.files = []
+      }
+      return 0
+    }
     const tty = !!(process.stdin.isTTY && process.stdout.isTTY)
+    const print = o.print || o.json || !tty
+    o.json = print && o.outputFormat !== 'text'
+    json = o.json
+    streaming = print && o.outputFormat === 'stream-json'
     const screen = tty && process.env.TERM !== 'dumb' && !o.print && !o.json
     const clearScreen = '\x1b[2J\x1b[H'
     if (screen && o.action !== 'logout') process.stdout.write(clearScreen)
@@ -489,7 +581,6 @@ export async function main(args: string[]): Promise<number> {
       await client.logout()
       return 0
     }
-    const print = o.print || o.json || !tty
     if (print && !process.stdin.isTTY) {
       let bytes = 0
       const chunks: Buffer[] = []
@@ -523,7 +614,7 @@ export async function main(args: string[]): Promise<number> {
         '/api/chat/space',
         {}
       )
-      return await interactive(client, conversation, o)
+      return await session(conversation)
     }
     const project = await client.project(o.cwd, o.trust)
     if (!project.registered) {
@@ -551,12 +642,13 @@ export async function main(args: string[]): Promise<number> {
     if (screen && (needsLogin || !project.registered)) process.stdout.write(clearScreen)
     const c = await selectConversation(client, o, project.cwd, tty && !print)
     if (!c) return 0
-    return print ? await printRun(client, c, o) : await interactive(client, c, o)
+    return print ? await printRun(client, c, o) : await session(c)
   } catch (e) {
     const err = e as Error
     if (json)
       console.log(
         JSON.stringify({
+          ...(streaming ? { type: 'result' } : {}),
           status: 'error',
           code: e instanceof CliError ? e.code : 'cli_error',
           error: err.message

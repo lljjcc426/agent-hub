@@ -431,6 +431,15 @@ export class ChatSessions {
     return {conversation:current,display:saved?.display??'group',detailMode:saved?.detailMode??'detailed',approvalMode:this.permissionSetting(owner).mode,cleanup,
       personalization:chatPersonalization(this.host.store,owner)}
   }
+  selectTerminalSession(owner:string,id:string){
+    const c=this.get(id,owner)
+    if(c.archived)throw new ChatError('conversation_archived','This conversation is archived.',409)
+    if(!c.project){
+      const key='chat-space:'+owner
+      this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),conversationId:id,nativeId:c.nativeId??'chat:'+id})
+    }
+    return this.publicConversation(c)
+  }
   setDetailMode(owner:string,detailMode:ChatDetailMode){
     const key='chat-space:'+owner
     this.host.store.put('settings',key,{...this.host.store.get<object>('settings',key),detailMode})

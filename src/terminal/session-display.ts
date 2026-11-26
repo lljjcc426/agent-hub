@@ -1,5 +1,6 @@
 import type { TerminalEditor } from './editor.ts'
 import { TerminalLayout } from './presentation.ts'
+import type { Theme } from './settings.ts'
 import type { Snapshot } from './client.ts'
 
 type Draw = (layout: TerminalLayout) => string[]
@@ -32,17 +33,18 @@ export class SessionDisplay {
   constructor(
     private out: NodeJS.WriteStream,
     private editor: { line: string; cursor: number } & Partial<
-      Pick<TerminalEditor, 'menu' | 'expanded'>
+      Pick<TerminalEditor, 'menu' | 'expanded' | 'picking'>
     >,
     readonly plain: boolean,
-    private picker = false
+    private picker = false,
+    private theme: Theme = 'dark'
   ) {}
   get layout() {
     const columns = this.out.columns || 80
     if (columns !== this.cachedLayout?.columns) {
       this.cachedLayout = {
         columns,
-        layout: new TerminalLayout(columns, !this.plain && !process.env.NO_COLOR)
+        layout: new TerminalLayout(columns, !this.plain && !process.env.NO_COLOR && this.theme !== 'mono', this.theme)
       }
       for (const entry of this.entries.values()) entry.lines = undefined
       this.rows = undefined
@@ -50,6 +52,12 @@ export class SessionDisplay {
     }
     return this.cachedLayout.layout
   }
+  setTheme(theme: Theme) {
+    this.theme = theme
+    this.cachedLayout = undefined
+    this.paint()
+  }
+  redraw() { this.screen = []; this.paint() }
   private history(layout: TerminalLayout) {
     return (this.rows ??= [...this.entries.values()]
       .sort(
@@ -177,7 +185,7 @@ export class SessionDisplay {
       this.continuation,
       height,
       {
-        picker: this.picker,
+        picker: this.picker || this.editor.picking,
         menu: this.editor.menu,
         expanded: this.editor.expanded,
         history: !!history.length

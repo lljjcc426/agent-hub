@@ -97,7 +97,7 @@ export class TerminalClient {
       binary,
       signal,
       method
-    }: { native?: boolean; binary?: Uint8Array; signal?: AbortSignal; method?: 'DELETE' } = {}
+    }: { native?: boolean; binary?: Uint8Array; signal?: AbortSignal; method?: 'DELETE' | 'PATCH' } = {}
   ): Promise<T> {
     const headers: Record<string, string> = {}
     if (!native) {

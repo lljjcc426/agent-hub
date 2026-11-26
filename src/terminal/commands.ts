@@ -7,6 +7,16 @@ import { TerminalClient, CliError, type Snapshot } from './client.ts'
 
 export const commands = () =>
   [
+    { name: '/config', usage: '', description: ui('Terminal settings', '终端设置') },
+    { name: '/model', usage: '', description: ui('Choose the shared Router model', '选择共享 Router 模型') },
+    { name: '/effort', usage: '', description: ui('Choose reasoning effort', '选择思考强度') },
+    { name: '/permissions', usage: '', description: ui('Shared account permissions', '账号共享权限') },
+    { name: '/theme', usage: '', description: ui('Choose a terminal theme', '选择终端主题') },
+    { name: '/status', usage: '', description: ui('Connection, session and settings', '连接、会话和设置状态') },
+    { name: '/context', usage: '', description: ui('Measured context usage', '实测上下文用量') },
+    { name: '/clear', usage: '', description: ui('Start a new conversation; keep history', '开始新对话，保留历史') },
+    { name: '/resume', usage: '', description: ui('Resume a saved conversation', '继续历史会话') },
+    { name: '/rename', usage: 'TITLE', description: ui('Rename this conversation', '重命名当前会话') },
     { name: '/tasks', usage: '', description: ui('Inspect Worker tasks', '查看 Worker 任务') },
     {
       name: '/diff',
@@ -77,8 +87,8 @@ const commandHelp = () =>
     )
     .join('\n') +
   ui(
-    '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt.',
-    '\n\n/ 查看命令，@ 选择文件。Alt+Enter 换行，PgUp/PgDn 翻阅历史。输入框为空时按 Ctrl+D 退出。'
+    '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt. Ctrl+C/Esc interrupts work. Ctrl+R searches history; Ctrl+S stashes a draft; Ctrl+L redraws. Alt+P opens models; Shift+Tab opens permissions.',
+    '\n\n/ 查看命令，@ 选择文件。Alt+Enter 换行，PgUp/PgDn 翻阅历史。输入框为空时按 Ctrl+D 退出。Ctrl+C/Esc 中断，Ctrl+R 搜索历史，Ctrl+S 暂存草稿，Ctrl+L 重绘。Alt+P 选模型，Shift+Tab 打开权限菜单。'
   )
 
 export function mentionedFiles(text: string, cwd: string) {

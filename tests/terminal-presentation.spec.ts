@@ -74,10 +74,8 @@ describe('interactive terminal layout', () => {
       expect(open.lines.findIndex((line) => line.includes('Commands'))).toBeLessThan(open.row)
       for (const line of [...open.lines, ...layout.header(view)])
         expect(stringWidth(line)).toBeLessThan(columns)
-      const borders = open.lines.filter(
-        (line) => line.includes('╭') || line.includes('╰') || line.includes('│')
-      )
-      expect(borders).toHaveLength(3)
+      const borders = open.lines.filter(line => stripVTControlCharacters(line).trim().startsWith('──'))
+      expect(borders).toHaveLength(2)
       expect(new Set(borders.map((line) => stringWidth(line))).size).toBe(1)
     }
   })

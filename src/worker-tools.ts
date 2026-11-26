@@ -1,3 +1,4 @@
+import {reviewNode} from './goal-supervision.ts'
 import type {ResumedWorker} from './paused-worker-recovery.ts'
 import {resourcePage,maxJobWaitMs,messageCharacters,maxInlineImageBytes,memoryCapacity} from './execution-limits.ts'
 import {observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,type WorkerAttempt} from './async-worker-inbox.ts'
@@ -98,6 +99,7 @@ export class WorkerTools {
   // run after a driver already performed an operation.
   if(attempt&&!currentWorkerAttempt(this.host,attempt))throw new WorkerToolNotDispatched(attempt.id,attempt.basis.dataRevision)
   checkAuthority()
+  if(reviewNode(this.host.goals.forTask(owner.ticketId)?.nodes?.find(n=>n.ticketId===owner.ticketId)))throw Error('Independent review accepts only the host review readers')
   const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
   const definition=workerDefinitions.find(d=>d.name===name);if(!definition)throw Error('Unknown worker tool')

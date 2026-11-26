@@ -821,3 +821,63 @@ it.skipIf(process.platform!=='darwin'&&process.platform!=='linux').each([false,t
   expect(f.host.store.db.prepare("SELECT count(*) AS n FROM audit WHERE json_extract(body,'$.type')='worker.pause_wake_recovered'").get()?.n).toBe(parked?1:0)
  }finally{releaseWriter()}
 },25000)
+
+it.each([false,true])('keeps review read-only and gives required edits to the original producer (repair=%s)',async needsRepair=>{
+ const deliveries:string[]=[],reviews:string[]=[],published:string[]=[]
+ const f=fixture(async r=>{
+  if(r.role!=='worker')return {reply:'Working.'}
+  const input=JSON.parse(r.input)
+  if(input.kind==='independent_review'){
+   expect(r.sandbox).toBe('read-only')
+   expect(r.allowNativeTools).toBe(false)
+   expect(r.workerMcp).toBeUndefined()
+   expect(r.tools?.map(t=>t.name).sort()).toEqual(['goal_evidence','review_file','review_revision'])
+   expect((await r.onTool!('superagent_shell',{command:'write changed result'},'attempt-write')).success).toBe(false)
+   expect((await r.onTool!('review_file',{path:'../outside'},'outside')).success).toBe(false)
+   const item=input.files.find((e:{path:string})=>e.path==='result.json')
+   const page=await tool<{content:string}>(r,'goal_evidence',{id:item.id})
+   const result=JSON.parse(page.content).value
+   reviews.push(result)
+   return {verdict:result==='draft'?'changes_requested':'approved',report:result==='draft'?'Replace the draft value and test it.':'Verified final value.',owners:result==='draft'?['produce']:[],evidenceIds:[item.id]}
+  }
+  if(r.activity?.workerId==='parallel'){
+   published.push('published')
+   return ready('Published verified result')
+  }
+  const result=needsRepair&&!deliveries.length?'draft':'final'
+  deliveries.push(result);writeFileSync(join(r.cwd,'result.json'),JSON.stringify({value:result}));return ready(result)
+ })
+ const g=f.start('Check and publish the audited result',{criteria:[
+  {id:'produce',description:'Retain result',check:{kind:'file_exists',path:'result.json'}},
+  {id:'audit',description:'Review the result',check:{kind:'file_exists',path:'opinion.md'}},
+  {id:'publish',description:'Publish the approved version'}],
+  nodes:[
+   {id:'produce',title:'Create result',instruction:'Produce result.json',workerId:'builder',criterionIds:['produce']},
+   {id:'check',purpose:'review',title:'Audit output',instruction:'If wrong, edit it yourself',workerId:'builder',dependsOn:['produce'],criterionIds:['audit']},
+   {id:'publish',title:'Publish result',instruction:'Publish approved result',workerId:'parallel',dependsOn:['check'],criterionIds:['publish']}]})
+ await f.until(()=>['held','completed'].includes(f.host.goals.get(g.id)?.state??''))
+ const final=f.host.goals.get(g.id)!
+ expect(final.state,JSON.stringify(final.nodes?.map(n=>[n.id,n.state,n.reason]))).toBe('completed')
+ expect(final.nodes?.[1]?.workerId).toBe('reviewer')
+ expect(final.nodes?.[1]?.opinion?.verdict).toBe('approved')
+ expect(reviews).toEqual(needsRepair?['draft','final']:['final'])
+ expect(deliveries).toEqual(reviews)
+ expect(published).toEqual(['published'])
+ expect(final.taskIds).toHaveLength(3)
+})
+
+it('keeps a relinquished assignment open until the Router obtains a checked delivery',async()=>{
+ let turns=0
+ const f=fixture(async r=>{
+  if(r.role!=='worker')return {reply:'Working.'}
+  if(++turns===1)return {...ready('The first approach produced no result.'),state:'dropped'}
+  writeFileSync(join(r.cwd,'done.txt'),'delivered')
+  return ready('Delivered using retained work')
+ })
+ const g=f.start('Finish the retained investigation',{criteria:[{id:'verification',description:'Retain result',check:{kind:'text_contains',path:'done.txt',text:'delivered'}}]})
+ await f.until(()=>['completed','held'].includes(f.host.goals.get(g.id)!.state))
+ const end=f.host.goals.get(g.id)!
+ expect(end.state,JSON.stringify(end.nodes)).toBe('completed')
+ expect(end.taskIds).toHaveLength(1);expect(turns).toBe(2)
+ expect(f.host.store.list('goal-repair')).toHaveLength(1)
+})

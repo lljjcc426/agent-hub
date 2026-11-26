@@ -1,4 +1,5 @@
 import {z} from 'zod'
+import {dependencyBrief} from './goal-supervision.ts'
 import type {Runtime} from './runtime.ts'
 import type {RouterGoal} from './router-goals.ts'
 import type {Mandate,Ticket} from './vendor/dsh-core/index.ts'
@@ -19,7 +20,7 @@ export interface GoalContract {details?:import('./goal-contract.ts').GoalDetails
 export class ReplanningInterrupted extends Error {}
 const id=z.string().min(1).max(200),instruction=z.string().min(1).max(16000)
 const change=z.object({id,instruction,dependsOn:z.array(id).max(100)}).strict()
-const addition=z.object({id,title:z.string().min(1).max(300),instruction,workerId:id,dependsOn:z.array(id).max(100),derivedFrom:id,supports:z.array(id).min(1).max(50),outputs:z.array(evidencePath).min(1).max(20)}).strict()
+const addition=z.object({id,title:z.string().min(1).max(300),instruction,workerId:id,dependsOn:z.array(id).max(100),derivedFrom:id,purpose:z.enum(['work','review']).optional(),reviewReport:evidencePath.optional(),supports:z.array(id).min(1).max(50),outputs:z.array(evidencePath).min(1).max(20)}).strict()
 export const replanProposalSchema=z.object({reason:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200),changes:z.array(change).min(1).max(100),additions:z.array(addition).max(20)}).strict()
 type Proposal=z.infer<typeof replanProposalSchema>
 const reviewSchema=z.object({approved:z.boolean(),explanation:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200)}).strict()
@@ -234,7 +235,7 @@ export class GoalReplanning {
   this.host.scopes.checkTask(task.id,c,true)
   if(task.ended||!this.host.goals.effectsSettled(task.id))throw Error('Replanned task must retain settled open execution')
   const dependencies=n.dependsOn.flatMap(id=>{const dep=g.nodes!.find(d=>d.id===id)!,round=this.host.store.get<any>('goal-verification',dep.roundId!);return round.snapshot.evidence.filter((e:GoalEvidence)=>e.kind!=='execution')})
-  const text=JSON.stringify({kind:'replanned_step',reason:r.proposal!.reason,instruction:n.instruction,originalObjective:g.objective,originalAcceptance:g.criteria,prerequisiteEvidence:dependencies,notice:'This host-authorized note supersedes only the earlier implementation strategy after independent review. Original objective, authorization and acceptance remain binding. Inspect previous effects before acting.'})
+  const text=JSON.stringify({kind:'replanned_step',reason:r.proposal!.reason,instruction:n.instruction,originalObjective:g.objective,originalAcceptance:g.criteria,prerequisiteEvidence:dependencyBrief(this.host,g,n),notice:'This host-authorized note supersedes only the earlier implementation strategy after independent review. Original objective, authorization and acceptance remain binding. Inspect previous effects before acting.'})
   if(Buffer.byteLength(text)>this.host.scopes.scope(g.scopeId).contextBytes)throw Error('Replanned task evidence exceeds context budget')
   this.host.store.atomic(()=>{
    const key=stableDigest([r.id,n.id]);if(this.host.store.get('goal-plan-dispatch',key))return

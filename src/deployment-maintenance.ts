@@ -1,3 +1,4 @@
+import {dependencyCheckpoint} from './goal-supervision.ts'
 import {z} from 'zod'
 import {statSync} from 'node:fs'
 import type {Runtime} from './runtime.ts'
@@ -254,7 +255,9 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
  }
  // Older overall quality holds kept their last active goal timestamp. It cannot
  // dispatch a quality-held node; queued wakes and active rounds were checked above.
- if(goal.nextAt!==undefined&&!finalHold&&(!receipts.length&&!hasProviderCheckpoint||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
+ const previousPlan=goal.replanId&&store.get<ReplanRound>('goal-replan',goal.replanId)
+ const endedPlan=previousPlan&&previousPlan.goalId===goal.id&&previousPlan.state==='errored'&&goal.state==='held'&&goal.reason?.startsWith('Autonomous replanning could not be accepted: ')
+ if(goal.nextAt!==undefined&&!endedPlan&&!finalHold&&(!receipts.length&&!hasProviderCheckpoint||nodes.some(n=>n.state==='held'&&n.failure?.kind!=='uncertain')))return
  if(new Set(goal.taskIds).size!==ids.size||goal.taskIds.some(id=>!ids.has(id)))return
  return {ids:[...ids],jobs,receipts}
 }
@@ -269,7 +272,7 @@ export function inspectDeployment(store:DeploymentStore,activeExecutions=0,state
  const heldGoals:{goalId:string;taskIds:string[]}[]=[],parkedJobs=new Set<string>()
  const unsettled=goals.filter(goal=>{
   const existing=heldAcceptanceTasks(store,goal)??heldAnsweredQuestionTasks(store,goal)
-  const chat=!existing&&stateDir&&!activeExecutions?heldChatTasks(store,goal,stateDir):undefined
+  const chat=!existing&&stateDir&&!activeExecutions?heldChatTasks(store,goal,stateDir)??dependencyCheckpoint(store,goal,stateDir):undefined
   const ids=existing??chat?.ids
   for(const key of chat?.jobs??[])parkedJobs.add(key)
   for(const receipt of chat?.receipts??[]){

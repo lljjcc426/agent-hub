@@ -107,6 +107,8 @@ import {Knowledge,knowledgeSpecs} from './knowledge.ts'
 import {recordedWorkerCalls,refusedWorkerJobReads,settledProviderTurn,unstartedWorkerShell} from './backends/opencode-read-recovery.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {RouterContinuity,journalSpecs,recoveredRouterEvidence} from './router-continuity.ts'
+import {prepareIndependentReview,reviewNode,ReviewFeedbackError} from './goal-supervision.ts'
+import type {IndependentOpinion} from './goal-contract.ts'
 import {RouterGoals,goalSpecs,goalExecutionHold,type GoalResumeOutcome,type RouterGoal} from './router-goals.ts'
 import {Webhooks} from './webhooks.ts'
 import {GoalVerification,type GoalDelivery,type VerificationRound} from './goal-verification.ts'
@@ -2268,7 +2270,8 @@ export class Runtime {
     const configuredSource = this.sources.get(ticket.mandate.actor.source)!.config
     const delegatedTask=this.delegation.forTicket(ticket.id)
     const workspace=this.goals.workspaceForTask(ticket.id)
-    const readOnly=workspace?.mode==='read-only'||delegatedTask&&!delegatedTask.contract.permissions.write
+    const assignmentGoal=this.goals.forTask(ticket.id),review=assignmentGoal?.nodes?.find(n=>n.ticketId===ticket.id&&reviewNode(n))
+    const readOnly=!!review||workspace?.mode==='read-only'||delegatedTask&&!delegatedTask.contract.permissions.write
     const source={...configuredSource,sandbox:readOnly?'read-only' as const:configuredSource.sandbox}
     const saved = this.store.get<Run>('run', ticket.id)
     if(saved?.rebuild){const handoff=this.store.get<any>('context-handoff',saved.rebuild);if(handoff?.previousThread&&handoff.reason!=='context_permissions_changed')this.model.describe?.(handoff.previousThread)}
@@ -2403,7 +2406,7 @@ export class Runtime {
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
       const permissionReceipts:ToolResult[]=[]
       for(const action of this.permissions.forWorker(ticket.id)){
-        if(action.phase==='approved'&&!action.actor.agentId){
+        if(!review&&action.phase==='approved'&&!action.actor.agentId){
           toolInvoked=true
           permissionReceipts.push(await this.workerTools.call(owner,action.tool,action.args,action.id,attempt,controller.signal))
         }
@@ -2477,7 +2480,22 @@ export class Runtime {
         return evidenceWorker?.checkPeers?.()??true
       }
       let result:ModelResult,answerCheck:AnswerCheck|undefined
-      if(!evidenceWorker)result=await this.runModel(standardRequest,modelTrigger)
+      let opinion:IndependentOpinion|undefined,validateReview:(()=>void)|undefined
+      if(review&&assignmentGoal){
+        const reader=prepareIndependentReview(this,assignmentGoal,review,run,()=>currentWorkerAttempt(this,attempt))
+        const request:ModelRequest={...standardRequest,...reader.request,allowNativeTools:false,workerMcp:undefined,threadId:undefined,
+          sandbox:'read-only',attachments:[],options:{...agentOptions,tools:reader.request.tools.map(t=>t.name),toolConnections:[]},
+          workerCheckpointReady:undefined,onHumanRequest:undefined,onActive:undefined,webFetchReplay:undefined}
+        result=await this.runModel(request,modelTrigger)
+        try{opinion=reader.finish(result.text)}catch(error){
+          if(!(error instanceof ReviewFeedbackError)||!(assignmentGoal.maxRepairs??2))throw error
+          reader.current()
+          const correction=JSON.stringify({review:JSON.parse(reader.request.input),correction:error.message,inspected:reader.inspected(),previous:result.text.slice(0,2400)})
+          result=await this.runModel({...request,input:correction},modelTrigger)
+          opinion=reader.finish(result.text)
+        }
+        validateReview=()=>reader.finish(result.text)
+      }else if(!evidenceWorker)result=await this.runModel(standardRequest,modelTrigger)
       else if(evidenceWorker.author){
         const {plan,id,findings}=evidenceWorker,own=workerSections(plan,id)
         const reply=await readEvidenceAnswer(plan,answerPacket(plan,own,findings),()=>answerPacket(plan,own,findings,true),read,canRetryEvidence,evidenceWorker.profiled)
@@ -2520,10 +2538,13 @@ export class Runtime {
         ...(answerCheck?.ok&&answerCheck.rows?{digest:grantsCurrent.plan.digest,rows:answerCheck.rows}:{}),
         ...(answerCheck?.ok&&answerCheck.arithmetic?{arithmetic:answerCheck.arithmetic}:{}),
         ...(answerCheck&&!answerCheck.ok?{repair:{reason:answerCheck.reason}}:{})})
-      const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
+      const rawOutput:unknown=opinion?{state:opinion.verdict==='approved'?'ready':'blocked',summary:opinion.report.slice(0,2000),reply:opinion.report,question:null,askedBy:null,handbacks:[],...(chatDelivery?{files:[]}:{})}:evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined
       const output=chatOutput??report.parse(rawOutput)
       const reportedState=output.state
+      // Keep an explicitly relinquished goal assignment open for Router review.
+      const relinquished=output.state==='dropped'&&!output.question&&assignmentGoal?.managed&&['active','waiting'].includes(assignmentGoal.state)
+      if(relinquished)output.state='blocked'
       const receivedInquiry=hasInquiry||(chatDelivery&&inputs.some(i=>inquiryForInput(this,i)))
       if(context)this.memory.validateWorkerTurn(ticket.id,context.manifest)
       if(delegated?.mode==='client'&&output.handbacks.length)throw Error('Client-delegated Workers must return scope questions to their Router')
@@ -2569,9 +2590,16 @@ export class Runtime {
       const handoff=['blocked','failed','dropped'].includes(output.state)||!extraInputs&&(output.state==='ready'||!!output.question)
       if(handoff)await this.work.handoff(ticket.id,assignmentId)
       if(!currentWorkerAttempt(this,attempt)){observeWorkerEvent(this,attempt,{kind:'result',payload:result.text,nativeTurnId:result.turnId},()=>{});continueChangedInput();return}
+      validateReview?.()
       const background=!handoff&&this.work.active(ticket.id,assignmentId).length>0
       if(background)this.work.turnEnded(ticket.id,assignmentId)
       observeWorkerEvent(this,attempt,{kind:['blocked','failed'].includes(output.state)?'blocked':'result',payload:result.text,nativeTurnId:result.turnId},receipt=>{
+        if((opinion||relinquished)&&assignmentGoal){
+          const fresh=this.goals.get(assignmentGoal.id)!,target=fresh.nodes!.find(n=>n.ticketId===ticket.id)!
+          if(opinion)target.opinion=opinion
+          if(relinquished)target.supervision={id:receipt.id,action:'withdrawal',at:this.clock()}
+          this.store.put('router-goal',fresh.id,fresh)
+        }
         const previousMessages=new Set(this.store.deliveries().map(d=>d.id)),previousGoalDelivery=this.store.get<GoalDelivery>('goal-delivery',ticket.id)?.id??null
         this.engine.inputsDelivered(ticket.id, assignmentId, inputs.map(i => i.id))
         this.engine.inputsRead(ticket.id, inputs.map(i => i.id))

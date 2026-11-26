@@ -1,3 +1,4 @@
+import {readDependency} from './goal-supervision.ts'
 import {resourcePage,maxResourceBytes,maxInlineImageBytes} from './execution-limits.ts'
 import {textPage} from './context-budget.ts'
 import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
@@ -142,6 +143,14 @@ export class Resources {
   }
   const scopeSignature=()=>{if(principal.triggerId){const t=this.reached(principal,principal.triggerId);this.host.scopes.assertTrigger(t);return stableDigest(this.host.scopes.context(t,t.source+':'+t.threads[0]!.id)?.route??t.id)}if(!principal.ticketId||!this.host.scopes.enabled())return;const context=this.host.store.get<{manifest:import('./router-memory.ts').ContextManifest}>('task-context',principal.ticketId);if(!context)throw Error('Scoped reads require a verified task context');this.host.memory.validate(context.manifest);return stableDigest(context.manifest)}
   const signature=scopeSignature()
+  if(resource.startsWith('goal-evidence/')){
+   if(principal.agentId||!principal.ticketId||!principal.assignmentId)throw Error('A current Worker assignment is required')
+   const ticket=this.ticket(principal)
+   if(ticket.assignments.at(-1)?.id!==principal.assignmentId)throw Error('Worker assignment changed')
+   const cursor=stableDigest([signature,principal.assignmentId,resource])
+   if(input.cursor&&input.cursor!==cursor)throw Error('Evidence cursor changed')
+   return this.textPage(readDependency(this.host,ticket.id,resource),offset,limit,cursor,resource)
+  }
   if(resource==='chat-file-handoffs'){
    const {ticketId,assignmentId}=principal
    if(!ticketId||!assignmentId||principal.agentId)throw Error('The assigned Worker is required')

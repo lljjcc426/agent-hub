@@ -1,3 +1,4 @@
+import {originalReviewReport} from './goal-supervision.ts'
 import {evidenceBytes} from './goal-artifacts.ts'
 import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
 
@@ -55,7 +56,7 @@ export class GoalVerification {
   this.host.scopes.checkTask(ticketId,context,true)
   const criteria=this.criteria(g,node),evidence:Evidence[]=[]
   for(const path of new Set(criteria.flatMap(c=>[...c.files,...(c.check?[c.check.path]:[])]))){
-   const data=run?this.host.artifacts.evidence(g,node.id,ticketId,run.cwd,path,criteria):{content:'',missing:true}
+   const data=run?originalReviewReport(g,node,path,run.cwd)??this.host.artifacts.evidence(g,node.id,ticketId,run.cwd,path,criteria):{content:'',missing:true}
    evidence.push({id:'artifact-'+stableDigest([ticketId,path]),kind:'file',ticketId,key:path,criterionIds:criteria.map(c=>c.id),...data,hash:stableDigest(data)})
   }
   for(const id of new Set(criteria.flatMap(c=>c.documents))){
@@ -202,7 +203,7 @@ export class GoalVerification {
   }
   return items
  }
- private providerContent(e:Evidence){
+ providerContent(e:Evidence){
   const p=e.provider!,store=this.host.store
   const record=store.get<{result?:unknown;observation?:{tool:string;args:unknown};fingerprint?:string;ticketId?:string;contextId?:string;activity?:string}>(p.kind,p.id)
   const context=store.get<ContextManifest>('context-manifest',p.contextId)
@@ -306,7 +307,8 @@ export class GoalVerification {
    const files=[...new Set(fileCriteria.flatMap(cr=>[...(cr.files??[]),...(cr.check?[cr.check.path]:[])]))]
    for(const path of files){
     if(!run)throw Error('Task workspace is missing')
-    const data=this.host.artifacts.evidence(g,n.id,n.ticketId,run.cwd,path,fileCriteria,code?.head,options)
+    const opinion=originalReviewReport(g,n,path,run.cwd)
+    const data=opinion===undefined?this.host.artifacts.evidence(g,n.id,n.ticketId,run.cwd,path,fileCriteria,code?.head,options):opinion
     add({kind:'file',ticketId:n.ticketId,key:path,...data,...(!node&&code?.head?{commit:code.head}:{}),criterionIds:citeIds(fileCriteria.filter(cr=>cr.files?.includes(path)||cr.check?.path===path).map(cr=>cr.id))})
    }
    for(const documentId of [...new Set(assigned.flatMap(cr=>cr.documents??[]))]){

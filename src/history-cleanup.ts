@@ -160,7 +160,7 @@ export class HistoryCleanup {
    for(const row of this.store.db.prepare('SELECT seq,body FROM audit').all())if(references(JSON.parse(String(row.body)),ids))this.store.db.prepare('UPDATE audit SET body=? WHERE seq=?').run(JSON.stringify(redactBody(JSON.parse(String(row.body)))),row.seq!)
   })
  }
- async process(model:Model,quiesce:(plan:HistoryPlan)=>Promise<boolean>){
+ async process(model:Model,quiesce:(plan:HistoryPlan)=>Promise<boolean>,quiesceRetryMs=0){
   if(this.busy)return;this.busy=true
   try{for(const id of this.store.historyFence.current().planIds){
    let receipt=this.store.get<CleanupReceipt>('history-cleanup',id)!
@@ -183,7 +183,7 @@ export class HistoryCleanup {
    }
    try{
     save({attempts:receipt.attempts+1,error:undefined,nextAt:undefined,phase:'quiescing'})
-    if(!await quiesce(plan))continue
+    if(!await quiesce(plan)){if(quiesceRetryMs>0)save({nextAt:Date.now()+quiesceRetryMs});continue}
     save({phase:'native_history'})
     if(plan.unresolvedSessions?.length)throw Error('Owned history has no verified execution directory; reconcile its session metadata before cleanup can complete')
     for(const session of plan.sessions)if(!receipt.nativeDone.includes(session.threadId)){

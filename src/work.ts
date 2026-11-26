@@ -85,7 +85,7 @@ export class WorkManager {
   this.recovered=(async()=>{
    const shells=interrupted.filter(w=>w.kind==='shell');if(!shells.length)return
    for(let n=0;n<35;n++){
-    const waiting=shells.filter(w=>{if(existsSync(join(this.directory,w.id+'.result.json')))return false;if(!w.pid)return true;try{process.kill(w.pid,0);return true}catch{return false}})
+    const waiting=shells.filter(w=>this.previousRunnerMayBeAlive(w))
     if(!waiting.length)return
     await new Promise(r=>setTimeout(r,100))
    }
@@ -97,6 +97,33 @@ export class WorkManager {
  private live(){return this.decode(this.liveItems.all())}
  private assigned(ticketId:string,assignmentId:string){return this.decode(this.byAssignment.all(ticketId,assignmentId))}
  list(ticketId?:string){return ticketId?this.decode(this.byTicket.all(ticketId)):this.store.list<WorkItem>('work')}
+ private previousRunnerMayBeAlive(item:WorkItem){
+  if(existsSync(join(this.directory,item.id+'.result.json')))return false
+  if(!item.pid)return true
+  try{process.kill(item.pid,0)}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH'}
+  // A reboot or PID reuse can put an unrelated process under a historical PID.
+  // The managed wrapper receives the unique job specification as its final argument.
+  const spec=join(this.directory,item.id+'.spec.json')
+  try{
+   if(process.platform==='linux'){
+    const args=readFileSync('/proc/'+item.pid+'/cmdline','utf8').split('\0').filter(Boolean)
+    return args.at(-1)===spec&&args.at(-2)?.endsWith('/work-runner.ts')===true
+   }
+   if(process.platform==='darwin'){
+    const command=execFileSync('/bin/ps',['-ww','-p',String(item.pid),'-o','command='],{encoding:'utf8',timeout:1000,stdio:['ignore','pipe','ignore']}).trimEnd()
+    return !command||command.endsWith('/work-runner.ts '+spec)
+   }
+  }catch{/* Without a reliable identity or exit receipt, keep waiting. */}
+  return true
+ }
+ mayStillWriteHistory(item:WorkItem){
+  if(!terminal(item)||this.agents.has(item.id))return true
+  if(item.kind!=='shell')return false
+  const runner=this.runners.get(item.id)
+  if(runner?.pid&&runner.exitCode===null&&runner.signalCode===null)return true
+  if(item.state==='completed'||item.state==='failed'||!item.pid)return false
+  return this.previousRunnerMayBeAlive(item)
+ }
  private put(item:WorkItem){this.store.put('work',item.id,item);return item}
  private assert(owner:WorkOwner){if(this.stopping||!this.hooks.valid(owner))throw Error('This assignment no longer owns work tools')}
  private matching(owner:WorkOwner,item:WorkItem){return item.ticketId===owner.ticketId&&item.assignmentId===owner.assignmentId&&item.agentId===owner.agentId}

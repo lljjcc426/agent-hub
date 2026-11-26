@@ -1178,8 +1178,10 @@ export class Runtime {
         for(const id of plan.tickets){this.controllers.get(id)?.abort(Error('History deletion'));this.toolConnections.cancel(id);this.approvals.cancel(id);const ticket=this.store.tickets.get(id);for(const a of ticket?.assignments??[])await this.work.endAssignment(id,a.id)}
         for(const [kind,id] of plan.records)if(kind==='router-goal')await this.projectCode.stop(id)
         for(const id of plan.triggers){const route=this.store.get<any>('router-route',id),trigger=this.store.triggers.get(id),discussion=route?.discussion??(trigger?.threads[0]?trigger.source+':'+trigger.threads[0].id:undefined);if(discussion)this.controllers.get('router:'+discussion)?.abort(Error('History deletion'))}
-        return !this.activity.list().some(c=>c.state==='running'&&(!!c.ticketId&&plan.tickets.includes(c.ticketId)||!!c.triggerId&&plan.triggers.includes(c.triggerId)))&&!this.work.list().some(w=>{if(!plan.tickets.includes(w.ticketId))return false;if(['starting','running'].includes(w.state))return true;if(w.kind==='shell'&&w.pid){try{process.kill(w.pid,0);return true}catch{}}return false})
-      })
+        const tickets=new Set(plan.tickets),triggers=new Set(plan.triggers)
+        return !this.activity.list().some(c=>c.state==='running'&&(!!c.ticketId&&tickets.has(c.ticketId)||!!c.triggerId&&triggers.has(c.triggerId)))&&
+          !this.work.list().some(w=>tickets.has(w.ticketId)&&this.work.mayStillWriteHistory(w))
+      },1000)
       await this.work.tick()
       if(!this.paused)void this.merger.tick().catch(error=>this.store.audit({type:'merge.error',message:String(error)}))
       this.pollSources()

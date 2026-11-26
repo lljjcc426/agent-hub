@@ -1,3 +1,4 @@
+import {phaseJobs} from './worker-phase.ts'
 import {resourcePage,maxResourceBytes,maxInlineImageBytes} from './execution-limits.ts'
 import {textPage} from './context-budget.ts'
 import {goalHandoffEvidence} from './goal-handoff-evidence.ts'
@@ -180,6 +181,7 @@ export class Resources {
    const run=principal.ticketId?this.host.store.get<Run>('run',this.ticket(principal).id):undefined
    const threadId=principal.agentId?this.host.store.get<{threadId?:string}>('work',principal.agentId)?.threadId:run?.threadId
    const resources=resourceCatalog.filter(path=>!path.startsWith('github/')||this.githubSources(principal,path).length===1)
+   if(principal.ticketId&&principal.assignmentId)resources.push('job-index')
    if(principal.ticketId&&principal.assignmentId&&!principal.agentId)resources.push('chat-file-handoffs')
    return {resources,worker:!!principal.ticketId,backend:this.host.model.describe?.(threadId,principal.agentId?'subagent':'worker'),commandSandbox:{driver:this.host.config.work.sandboxDriver,enabled:this.host.config.work.sandboxDriver!=='disabled'}}
   }
@@ -270,6 +272,7 @@ export class Resources {
   if(head==='models'){
    this.admin(p);return this.host.model.catalog?this.host.model.catalog(id):{provider:id??'codex',model:this.host.config.model,roles:this.host.config.models,effort:this.host.config.effort}
   }
+  if(resource==='job-index'&&p.ticketId&&p.assignmentId)return phaseJobs(this.host.work.list(p.ticketId).filter(j=>!continuation?.priorJobs.includes(j.id)),{ticketId:p.ticketId,assignmentId:p.assignmentId,agentId:p.agentId})
   if(resource==='jobs')return this.host.work.list(p.ticketId).filter(w=>!continuation?.priorJobs.includes(w.id)).filter(w=>!p.agentId||w.agentId===p.agentId).reverse().map(w=>({...w,resource:'job/'+w.id}))
   if(head==='asset'){
    const asset=store.get<any>('asset',id!)

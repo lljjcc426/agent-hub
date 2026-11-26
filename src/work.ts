@@ -4,7 +4,7 @@ import {textPage} from './context-budget.ts'
 import {resourcePage,maxJobWaitMs} from './execution-limits.ts'
 import {execFileSync, type ChildProcess} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
-import {openSync,readSync,closeSync,mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync} from 'node:fs'
+import {openSync,readSync,closeSync,fstatSync,mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync} from 'node:fs'
 import {dirname,join} from 'node:path'
 import {startSandboxRunner} from './sandbox.ts'
 import type {Store} from './store.ts'
@@ -191,6 +191,22 @@ export class WorkManager {
   return {...item,output,outputOffset:offset,nextOffset:next<characters?next:null,outputCharacters:characters,resource:'job/'+item.id}
  }
  read(owner:WorkOwner,id:string,offset=0,limit=resourcePage.defaultCharacters){return this.view(this.own(owner,id),offset,limit)}
+ // Terminal shell receipts already know their character length. Read a bounded UTF-8 suffix
+ // instead of scanning a large completed log from the start a second time.
+ outputTail(owner:WorkOwner,id:string,characters:number){
+  this.own(owner,id)
+  const fd=openSync(join(this.directory,id+'.output'),'r')
+  try{
+   const size=fstatSync(fd).size,buffer=Buffer.alloc(Math.min(size,characters*4+4)),start=size-buffer.length
+   let read=0
+   while(read<buffer.length){
+    const count=readSync(fd,buffer,read,buffer.length-read,start+read)
+    if(!count)break
+    read+=count
+   }
+   return buffer.toString('utf8',0,read).slice(-characters)
+  }finally{closeSync(fd)}
+ }
  active(ticketId:string,assignmentId:string){return this.decode(this.autoByAssignment.all(ticketId,assignmentId))}
  ownsRunningShell(item:WorkItem){
   const child=this.runners.get(item.id)

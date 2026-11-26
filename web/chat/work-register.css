@@ -1,0 +1,24 @@
+.work-register { color:var(--rp-ink); min-width:0; }
+.work-register h3,.work-detail h3 { font-size:1rem; margin:1.25rem 0 .5rem; }
+.work-caption,.work-register small,.work-facts dt,.work-detail time { color:var(--rp-muted); }
+.work-list { list-style:none; margin:0; padding:0; }
+.work-list>li { display:flex; align-items:center; gap:1rem; justify-content:space-between; padding:.9rem 0; border-bottom:1px solid var(--rp-line); }
+.work-list>li>div { min-width:0; }
+.work-list strong,.work-list small { display:block; overflow-wrap:anywhere; }
+.work-list small { margin-top:.35rem; }
+.work-actions { display:flex; align-items:center; flex-wrap:wrap; gap:.55rem; margin:.65rem 0; }
+.work-field { display:grid; gap:.45rem; margin:.8rem 0; }
+.work-field select,.work-field input,.work-field textarea { width:100%; max-width:100%; }
+.work-facts,.work-register .trace-facts { margin:0; }
+.work-facts>div,.work-register .trace-facts>div { display:flex; justify-content:space-between; align-items:baseline; gap:.9rem; padding:.7rem 0; border-bottom:1px solid var(--rp-line); }
+.work-facts dd,.work-register .trace-facts dd { margin:0; text-align:end; overflow-wrap:anywhere; }
+.work-detail,.work-register p,.work-detail p { overflow-wrap:anywhere; }
+.work-detail pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+.work-register .rp-select-field { max-width:100%; }
+.work-detail .rp-disclosure,.work-register .rp-disclosure { margin:.6rem 0; }
+@media(max-width:600px){.work-list>li { flex-wrap:wrap; gap:.55rem; }.work-list>li>div:first-child { flex:1 1 11rem; }.work-facts>div { flex-wrap:wrap; }}
+.connection-access .work-facts dd { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:.6rem; }
+.connection-access .connector-card form { display:grid; gap:.7rem; }
+.connection-access .connector-card label { display:grid; gap:.4rem; }
+.connection-access .connector-card form>.rp-button { justify-self:start; }
+.work-section-title { display:flex; flex-wrap:wrap; justify-content:space-between; gap:.6rem; align-items:center; }

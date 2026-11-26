@@ -2,6 +2,10 @@ import { InputControl } from '../ui/controls.tsx'
 import { useState } from 'react';
 import {
   Activity,
+  Inbox,
+  ListChecks,
+  BookOpen,
+  UserRoundCog,
   ArrowLeft,
   Boxes,
   Brain,
@@ -57,6 +61,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
       name: L('Team', '团队'),
       rows: [
         row('team', L('Agent team', 'Agent 团队'), Users, h => h === 'team' || h.startsWith('team/') || h.startsWith('execution/configuration')),
+        row('worker-templates', L('Worker templates','Worker 模板'), UserRoundCog),
         row('models', L('Model connections', '模型连接'), Boxes),
         row('prompts', L('Behavior rules', '行为规则'), FileSliders),
         row('advanced/configuration', L('Run settings', '运行配置'), Gauge, undefined,
@@ -66,7 +71,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     {
       name: L('Connections', '连接'),
       rows: [
-        row('connectors', L('Connectors', '连接器'), Link2),
+        row('connectors', L('Connectors', '连接器'), Link2, h=>h==='connectors'||h==='connectors/access'),
         row('integrations/library', L('Tools & MCP', '工具与 MCP'), Plug, (h) => h.startsWith('integrations')),
         row('connections', L('Conversation entries', '会话入口'), Cable),
       ],
@@ -74,12 +79,15 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     {
       name: L('Workspace', '工作区'),
       rows: [
+        row('attention', L('Work inbox','工作收件箱'), Inbox),
+        row('execution-trace', L('Task progress','任务进展'), ListChecks, h=>h==='execution-trace'||h.startsWith('execution-trace/')),
+        row('methods', L('Plans and methods','计划与方法'), BookOpen),
         row('automations', L('Automations', '自动化'), Workflow),
         row(
           'tasks/history',
           L('Activity', '运行记录'),
           Activity,
-          (h) => h === 'attention' || h === 'execution' || (h.startsWith('tasks') && h !== 'tasks/statistics'),
+          (h) => h === 'execution' || (h.startsWith('tasks') && h !== 'tasks/statistics'),
         ),
         row('tasks/statistics', L('Usage statistics', '使用统计'), ChartColumn, undefined,
           L('Tokens usage charts model calls', 'Token 用量 趋势 模型调用')),

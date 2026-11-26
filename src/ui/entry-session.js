@@ -88,7 +88,7 @@ function entrySafeDetail(value) {
   return text.slice(0, 1200)
 }
 const workspacePages = {
-  tasks: 'home', 'tasks/active': 'active-tasks', 'tasks/history': 'activity', attention: 'attention', connections: 'catalog',
+  tasks: 'home', 'tasks/active': 'active-tasks', 'tasks/history': 'activity', 'tasks/attention': 'attention', attention: 'attention', connections: 'catalog',
   'connections/new': 'catalogue', models: 'models', 'models/new': 'model-new',
   deployments: 'deployments', integrations: 'integrations', execution: 'execution', prompts: 'prompts', usage: 'usage'
 }
@@ -108,7 +108,13 @@ function workspaceHash() {
 }
 function updateWorkspaceLocation(replace = false) {
   const url = new URL(location.href)
-  if(typeof configurationHost !== 'undefined' && configurationHost){url.pathname='/configure';url.search=''}
+  if(typeof configurationHost !== 'undefined' && configurationHost){
+    // Keep explicit selectors, including invalid ones, so navigation cannot silently select the default.
+    const hasWorkspace=url.searchParams.has('workspace'),selectors=url.searchParams.getAll('workspace')
+    url.pathname='/configure';url.search=''
+    if(hasWorkspace)for(const value of selectors)url.searchParams.append('workspace',value)
+    else if(workspaceContext.managed&&workspaceContext.discovered&&workspaceContext.items.some(item=>item.id===workspaceContext.activeId))url.searchParams.set('workspace',workspaceContext.activeId)
+  }
   url.hash = workspaceHash()
   if (url.href !== location.href) {
     history[replace ? 'replaceState' : 'pushState'](null, '', url)
@@ -403,6 +409,7 @@ async function acceptEntryInvite() {
 async function startEntrySession() {
   if (entryState.loading) return
   entryState.loading = true
+  workspaceTransportPending()
   entryState.sessionChecked = false
   entryState.error = null
   if (!entryState.sharedGuide && !entryState.invite && entryState.role === 'user') {
@@ -423,6 +430,7 @@ async function startEntrySession() {
     entryState.sessionChecked = true
     entryState.operator = session.operator === true
     entryState.account = session.account || null
+    workspaceSessionCommit()
     if (session.account?.authenticated && !entryState.invite && location.pathname !== "/usage") entryState.role = "operator"
     render()
     if (entryState.operator && entryState.role !== 'user') {
@@ -436,6 +444,7 @@ async function startEntrySession() {
     entryError(error)
   } finally {
     entryState.loading = false
+    if (workspaceContext.transportPhase==='pending') workspaceTransportBlock(entryState.operator?'workspace_initialization_failed':'workspace_session_required')
     render()
   }
 }

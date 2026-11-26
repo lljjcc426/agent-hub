@@ -19,6 +19,7 @@ const active = () => {
   const { pathname, hash } = location;
   if (!["/configure", "/configure/", "/"].includes(pathname)) return false;
   if (["", "#general", "#appearance", "#workspace", "#automations", "#prompts/memory", "#tasks/statistics"].includes(hash)) return false;
+  if (['#attention','#methods','#worker-templates','#execution-trace','#connectors','#connectors/access'].includes(hash) || hash.startsWith('#execution-trace/')) return false;
   if (hash.startsWith("#plugin/")) return false;
   return !/^#integrations(?:\/|$)/.test(hash) || hash === "#integrations/tools";
 };
@@ -44,6 +45,10 @@ async function prepare() {
         throw error;
       });
   await pending;
+}
+export async function getConfigurationTransport() {
+  await prepare();
+  return controller!.transport;
 }
 export function Configuration({
   visible,

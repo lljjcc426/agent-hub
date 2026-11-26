@@ -1,3 +1,4 @@
+import {acceptedMethodSource} from '../examples/fixtures/accepted-method-source.ts'
 import {afterEach,expect,it,vi} from 'vitest'
 import {mkdtempSync,rmSync,readFileSync,writeFileSync,mkdirSync,symlinkSync,existsSync,realpathSync} from 'node:fs'
 import {Readable} from 'node:stream'
@@ -1840,9 +1841,7 @@ it('resets all personal learning and methods, rotates context, and replays over 
  h.chat.send(other.id,'other',{clientMessageId:randomUUID(),text:'Keep another account intact'})
  const evidence=h.memory.ingest(c),fact=h.memory.command(c,{action:'remember',operationId:'personal-old',expectedRevision:0,subject:'Old preference',content:'OLD_PERSONAL_LEARNING',kind:'preference',sourceIds:[evidence.id],candidate:false,visibility:'private'},true) as any
  h.memory.command(c,{action:'remember',operationId:'personal-candidate',expectedRevision:0,subject:'Old lesson',content:'OLD_PERSONAL_LEARNING',origin:'experience',sourceIds:[evidence.id],candidate:true,visibility:'private'},true)
- const goal=h.goals.command({action:'start',operationId:'personal-method',expectedRevision:0,title:'Old method',objective:t.text,authorizationQuote:t.text,criteria:[{id:'file',description:'report exists'}],nodes:[{id:'write',title:'Write',instruction:'OLD_PERSONAL_LEARNING',workerId:'research',criterionIds:['file']}]},c)
- h.store.put('goal-verification','personal-accepted',{id:'personal-accepted',goalId:goal.id,state:'passed'})
- h.store.put('router-goal',goal.id,{...goal,state:'completed',finalRoundId:'personal-accepted'})
+ const accepted=await acceptedMethodSource(h,c),goal=h.goals.get(accepted.goalId)!
  const draft=h.skills.command({action:'draft',goalId:goal.id},c),skill=h.skills.command({action:'save',goalId:goal.id,expectedVersion:0,template:draft.template},c)
  h.skills.command({action:'retire',skill:{id:skill.id,version:skill.version},scopeId:c.route.scopeId,entryId:c.route.entryId,expectedRevision:0},c)
  h.agentMemory.manage(c,{action:'configure',expectedRevision:0,policy:{writeMode:'adaptive',maxCallsPerDay:7}})

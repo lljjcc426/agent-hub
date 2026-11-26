@@ -230,3 +230,24 @@ it.each([['browser-session',{active:true}],['browser-receipt',{state:'running'}]
  expect(plan.items.find(i=>i.kind===kind&&i.id==='in-flight')?.status).toBe('held')
  await expect(applyScopeMigration(f.config,f.spec,plan.fingerprint)).rejects.toThrow('reconcile')
 })
+
+it('preserves workflow receipts and explicit webhook protocol from a legacy scope migration',async()=>{
+ const f=fixture(),s=new DatabaseSync(f.path)
+ const records=[['workflow-action','review',{state:'observed'}],['webhook-protocol','current',{version:1}]] as const
+ for(const [kind,id,value] of records)s.prepare('INSERT INTO records VALUES(?,?,?)').run(kind,id,JSON.stringify(value))
+ s.close()
+ const preview=previewScopeMigration(f.config,f.spec)
+ expect(preview.canApply).toBe(true)
+ await applyScopeMigration(f.config,f.spec,preview.fingerprint)
+ const saved=new Store(f.path)
+ try{for(const [kind,id,value] of records)expect(saved.get(kind,id)).toEqual(value)}finally{saved.close()}
+})
+
+it.each(['applying','uncertain'])('keeps an unsettled %s workflow from crossing the scope migration',async state=>{
+ const f=fixture(),db=new DatabaseSync(f.path)
+ db.prepare('INSERT INTO records VALUES(?,?,?)').run('workflow-action','live-write',JSON.stringify({state}))
+ db.close()
+ const preview=previewScopeMigration(f.config,f.spec)
+ expect(preview.items.find(row=>row.id==='live-write')).toMatchObject({status:'held',reason:'Reconcile in-flight external effects'})
+ await expect(applyScopeMigration(f.config,f.spec,preview.fingerprint)).rejects.toThrow('reconcile effects')
+})

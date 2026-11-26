@@ -18,7 +18,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
 import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
-import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,evidencePlan,namedEvidenceGroup,participantGroup,pendingParticipants,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
+import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,currentEvidence,evidenceHistory,evidencePlan,needsEvidenceContext,namedEvidenceGroup,policyEvidenceGroup,suppliedDelegationPlan,participantGroup,pendingParticipants,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -1556,7 +1556,8 @@ export class Runtime {
         code:'worker_required',message,
       })}]})
       let hostRouted=false
-      let issueEvidence:EvidencePlan|undefined
+      let issueEvidence:EvidencePlan|undefined,issuingBrief=false
+      let suppliedSource:((workerId:string)=>string|undefined)|undefined
       const callRouterTool=async(name:string,args:unknown):Promise<ToolResult>=>{
           try{
             controller.signal.throwIfAborted();candidates?.check()
@@ -1640,7 +1641,7 @@ export class Runtime {
               }
             }
             if(action==='inspect'||action==='result')args={...args as object,waitMs:0}
-            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,
+            const result=this.delegation.workerResult(trigger,args,await this.manager.call(args,{discussion,trigger,scoped,singleChatInput,manifest:packet?.manifest,suppliedSource,scopedBrief:issuingBrief,
               onDispatch:(kind,id)=>{
                 const assignment=this.store.get<{workerId:string}>('worker-assignment',id)
                 if(assignment&&chatRun&&kind==='assign'){
@@ -1791,37 +1792,58 @@ export class Runtime {
       if(recoveredUpdates.length)activation=updatedRequest(request,recoveredUpdates)
       let result:ModelResult
       let suppliedResult:ModelResult|undefined,internalEvidence=false,reviewedAnswer:string|undefined
+      const pp=this.config.prompts
+      const policyRevision=this.settings.current().revision
+      const evidenceContext={discussion,trigger,scoped}
+      const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
+      const eligibleInput=this.config.execution.suppliedEvidence&&privateEvidence&&singleChatInput&&!chatRun.interjection&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&
+        !recovery?.holds.length&&!recoveredUpdates.length&&!this.goals.forInput(triggerId)&&!this.chat.isReactionInput(triggerId)&&currentEvidence(this,chatRun,trigger.text)
+      const previousDialogue=chatRun&&(eligibleInput||review&&participantGroup(chatRun)?.historyDigest)?evidenceHistory(this,chatRun):undefined
+      const historyDigest=previousDialogue?.length?stableDigest(previousDialogue):undefined
+      const validateSuppliedRouter=()=>{
+        validateReplyContext()
+        if(this.settings.current().revision!==policyRevision||!chatRun||!currentEvidence(this,chatRun,trigger.text)||historyDigest&&stableDigest(evidenceHistory(this,chatRun)??null)!==historyDigest)throw Error('Supplied Chat input or configuration changed')
+      }
       const readSuppliedText=async(instructions:string,input:string,schema:Record<string,unknown>={})=>{
         const reply=await this.runModel({role:'router',activity:{triggerId,sourceId:source.id},backendId:request.backendId,model:request.model,useConnectionDefault:request.useConnectionDefault,
           options:{...request.options,tools:[],toolConnections:[]},contextId:request.contextId,cwd:request.cwd,signal:controller.signal,managed:true,
-          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema,suppliedText:true,validateSuppliedRead:validateReplyContext,instructions,input},triggerId)
-        validateReplyContext()
+          ephemeral:true,sandbox:'read-only',allowNativeTools:false,tools:[],schema,suppliedText:true,validateSuppliedRead:validateSuppliedRouter,
+          instructions:[pp.router,instructions].filter(Boolean).join('\n\n'),
+          input:(pp.router||previousDialogue?.length||replyPreferences)?JSON.stringify({replyLocale:locale,replyPreferences,previousDialogue:previousDialogue?.length?previousDialogue:undefined,request:input}):input},triggerId)
+        validateSuppliedRouter()
         return reply
       }
-      const evidenceContext={discussion,trigger,scoped}
-      const privateEvidence=chatRun&&scoped&&this.chat.personalManagement(evidenceContext)&&permissionActor()&&mandate?.strength==='explicit'&&!this.delegation.authority(triggerId)
-      const pp=this.config.prompts
-      const customPolicy=packet?.manifest.facts.length||packet?.manifest.knowledge?.length||this.config.execution.router?.prompt||this.config.execution.router?.persona||this.config.rules.length||pp.shared||pp.worker||pp.router||pp.personality||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||request.options?.prompt||request.options?.persona
-      if(this.config.execution.suppliedEvidence&&!customPolicy&&privateEvidence&&singleChatInput&&!permissionId&&!fileReviewId&&!teamResultId&&!selectedSkill&&!hostCommand&&!recovery?.holds.length&&!recoveredUpdates.length&&
-         (!retainedDispatch.length||participantGroup(chatRun))&&!this.goals.forInput(triggerId)&&freshEvidence(this,chatRun,trigger.text)&&
-         routerBackend&&isApiBackend(routerBackend)&&!this.chat.isReactionInput(triggerId)){
-        const roster=this.manager.list(evidenceContext).workers.filter(w=>!w.state||w.state==='enabled')
+      const broaderPolicy=packet?.manifest.facts.length||packet?.manifest.knowledge?.length||this.config.rules.length||pp.shared||pp.worker||pp.personality||pp.delivery||Object.values(pp.team).some(Boolean)||Object.keys(pp.overrides).length||Object.keys(pp.skills).length
+      if(eligibleInput&&!broaderPolicy&&(!retainedDispatch.length||participantGroup(chatRun))&&previousDialogue&&
+         routerBackend&&isApiBackend(routerBackend)){
+        const roster=this.manager.list(evidenceContext).workers.filter(w=>w.canAssign)
         const mayAssign=allowedTools.has('worker_manage')&&(!toolFilter||toolFilter.includes('worker_manage'))
-        const {plan,group}=mayAssign?await namedEvidenceGroup(trigger.text,roster,this.config.execution.suppliedEvidence==='fold',readSuppliedText,participantGroup(chatRun)):{plan:evidencePlan(trigger.text,roster),group:undefined}
+        const prior=participantGroup(chatRun)
+        const hasPolicy=previousDialogue.length||pp.router||request.options?.prompt||request.options?.persona||this.config.execution.router?.prompt||this.config.execution.router?.persona
+        const named=suppliedDelegationPlan(trigger.text,roster)?.workers
+        const profiled=prior?prior.policyRevision!==undefined:!!(hasPolicy||named&&roster.some(w=>(!named.length||named.includes(w.id))&&(w.prompt||w.persona)))
+        const fold=this.config.execution.suppliedEvidence==='fold'
+        const admission=profiled
+          ?mayAssign?await policyEvidenceGroup(trigger.text,roster,fold,readSuppliedText,policyRevision,prior):{}
+          :mayAssign?await namedEvidenceGroup(trigger.text,roster,fold,readSuppliedText,prior):{plan:evidencePlan(trigger.text,roster),group:undefined}
+        const {plan}=admission
+        const group=admission.group&&historyDigest?{...admission.group,historyDigest}:admission.group
         validateReplyContext()
-        if(freshEvidence(this,chatRun,trigger.text)){
+        const stillCurrent=()=>this.settings.current().revision===policyRevision&&(profiled?currentEvidence(this,chatRun,trigger.text):freshEvidence(this,chatRun,trigger.text))
+        if(stillCurrent()&&(!prior||prior.historyDigest===historyDigest)){
           if(group){
             // Persist the user's participation requirement before the first effect, independently of the route.
             const latest=this.store.get<ChatRun>('chat-run',triggerId)!
-            const compact=plan&&group.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&!w?.prompt&&!w?.persona})
+            const compact=plan&&group.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&(profiled||!w?.prompt&&!w?.persona)})
             const assignmentText=(id:string)=>plan?plan.question+'\n'+evidenceText(workerSections(plan,id)):group.briefs?.[id]
             const bound=plan&&!compact?{...group,ordinary:true as const,briefs:Object.fromEntries(group.workers.map(id=>[id,assignmentText(id)!]))}:group
             // Ordinary briefs never create a shared-source grant, including for an older host after rollback.
             this.store.put('chat-run',triggerId,{...latest,[bound.ordinary?'namedParticipants':'suppliedEvidence']:bound})
+            issuingBrief=true
             issueEvidence=compact?plan:undefined
             try{
               for(const id of group.workers){
-                if(!freshEvidence(this,chatRun,trigger.text))break
+                if(!stillCurrent())break
                 const current=participantGroup(this.store.get<ChatRun>('chat-run',triggerId))
                 if(!current||Object.hasOwn(current.tickets,id))continue
                 const text=assignmentText(id)
@@ -1830,11 +1852,26 @@ export class Runtime {
                 const receipt=await checkedRouterTool('worker_manage',{action:'assign',id,revision:this.settings.current().revision,requestId:'evidence-'+stableDigest([triggerId,group.digest,id]),text})
                 if(!receipt.success)break
               }
-            }finally{issueEvidence=undefined}
+            }finally{issueEvidence=undefined;issuingBrief=false}
           }else if(plan&&!plan.workers.length){
             const reply=await readEvidenceAnswer(plan,answerPacket(plan,plan.sections),()=>answerPacket(plan,plan.sections,[],true),readSuppliedText,()=>freshEvidence(this,chatRun,trigger.text))
             if(reply.check.ok&&freshEvidence(this,chatRun,trigger.text))suppliedResult={...reply.result,text:JSON.stringify({reply:reply.check.text})}
           }
+        }
+      }
+      // The ordinary Router keeps its authorized conversation history, policy and tools.
+      // When it chooses to delegate, the host can attach the current source by reference.
+      if(eligibleInput&&!retainedDispatch.length&&allowedTools.has('worker_manage')&&(!toolFilter||toolFilter.includes('worker_manage'))&&!participantGroup(this.store.get<ChatRun>('chat-run',triggerId))){
+        const roster=this.manager.list(evidenceContext).workers.filter(w=>w.canAssign)
+        const plan=suppliedDelegationPlan(trigger.text,roster)
+        if(plan){
+          suppliedSource=id=>{
+            if(!roster.some(w=>w.id===id)||plan.workers.length&&!plan.workers.includes(id)||!currentEvidence(this,chatRun,trigger.text)||this.settings.current().revision!==policyRevision)return
+            const sections=workerSections(plan,id)
+            if(sections.length)return plan.question+'\n\n'+sections.map(s=>[s.heading,...s.rows].join('\n')).join('\n\n')
+          }
+          activation={...activation,instructions:activation.instructions+'\nFor this message, if your policy and the conversation authorize fresh work on the supplied records, use worker_manage assign with includeSuppliedSource=true for each authorized recipient. The host attaches the original records in that recipient’s scope; omit the copied source from text. Retain the usual assignment if other context or separate permission is needed.',
+            tools:activation.tools?.map(t=>t.name==='worker_manage'?{...t,inputSchema:{...t.inputSchema,properties:{...(t.inputSchema.properties as object),includeSuppliedSource:{type:'boolean',enum:[true],description:'Attach the current authorized source to this assignment.'}}}}:t)}
         }
       }
       if(privateEvidence&&review&&currentReview(this,review)&&!review.question){
@@ -1850,7 +1887,18 @@ export class Runtime {
           const author=stored.plan.workers.length===1||stored.group.fold&&self===stored.plan.workers.at(-1)
           const verifyPassage=stored.plan.sharedPassage&&author&&deps.state==='ready'&&
             !(marker?.author&&marker.digest===stored.plan.digest&&marker.summaryDigest===stableDigest(review.summary)&&marker.rows?.length===stored.plan.sections[0]!.rows.length)
-          if(marker&&review.reportedState==='ready'&&deps.state!=='ordinary'&&!verifyPassage){
+          if(stored.group.policyRevision!==undefined&&author&&marker&&deps.state==='ready'&&(review.reportedState==='ready'||marker.repair)){
+            // The configured Router owns the user-facing reply. Feed it actual receipts,
+            // its own authorized source and the Worker's proposal, without the tool inventory.
+            const plan=stored.plan,p=answerPacket(plan,plan.sections,[],true)
+            const question=p.input+'\n\n'+JSON.stringify({workerReports:[...deps.findings,review.summary]})
+            const result=await readSuppliedText(p.instructions+' As Router, verify the real Worker reports against the original material and honor the current user and Router instructions. If this needs another action or ordinary context return NEED_CONTEXT.',question,p.schema)
+            if(currentSources()){
+              const checked=checkAnswer(plan.question,result.text,p)
+              this.store.audit({type:'evidence.review',ticketId:review.ticketId,assignmentId:review.assignmentId,turnId:result.turnId,reason:'router_policy',accepted:checked.ok})
+              if(checked.ok){reviewedAnswer=checked.text;suppliedResult={...result,text:JSON.stringify({reply:checked.text,decision:'answer'})}}
+            }
+          }else if(marker&&review.reportedState==='ready'&&deps.state!=='ordinary'&&!verifyPassage){
             if(deps.state==='pending'||stored.plan.workers.length===1||marker.author){
               internalEvidence=deps.state==='pending'
               suppliedResult={threadId:'',turnId:'evidence:'+job.id,text:JSON.stringify({reply:review.summary})}
@@ -2389,7 +2437,7 @@ export class Runtime {
         onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;turnStarted=true;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
       }
       const evidenceAssignment=this.store.get<{parentTrigger?:string;workerId:string;suppliedEvidence?:true}>('worker-assignment',ticket.id)
-      let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;findings:string[];checkPeers?:()=>boolean}|undefined
+      let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;profiled:boolean;findings:string[];checkPeers?:()=>boolean}|undefined
       if(evidenceAssignment?.suppliedEvidence&&!saved?.threadId&&!permissionReceipts.length&&!hasInquiry){
         const link=evidenceAssignment.parentTrigger&&storedEvidence(this,evidenceAssignment.parentTrigger)
         const id=evidenceAssignment.workerId
@@ -2399,12 +2447,12 @@ export class Runtime {
           const scope=origin&&authority&&this.scopes.contextForTask(origin,authority.discussion,ticket.id)
           const dependencies=tail&&scope?()=>evidenceDependencies(this,origin!.id,link.group,link.plan.workers.slice(0,-1),scope):undefined
           const deps=dependencies?.()
-          evidenceWorker={plan:link.plan,id,author:single||deps?.state==='ready',findings:deps?.findings??[],
+          if(deps?.state!=='ordinary')evidenceWorker={plan:link.plan,id,profiled:link.group.policyRevision!==undefined,author:single||deps?.state==='ready',findings:deps?.findings??[],
             ...(deps?.state==='ready'&&dependencies?{checkPeers:()=>{const current=dependencies();return current.state==='ready'&&stableDigest(current.findings)===stableDigest(deps.findings)}}:{})}
         }
       }
       const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
-      const read=(instructions:string,input:string,schema:Record<string,unknown>={})=>this.runModel({...standardRequest,instructions,input,suppliedText:true,schema,allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+      const read=(instructions:string,input:string,schema:Record<string,unknown>={})=>this.runModel({...standardRequest,instructions:agentOptions?.prompt||agentOptions?.persona?instructions+' Honor your configured role. If it requires additional context or actions, return NEED_CONTEXT.':instructions,input,suppliedText:true,schema,allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
         validateSuppliedRead:()=>{if(!canRetryEvidence())throw Error('Supplied source grant changed')},
         attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'},modelTrigger)
       const canRetryEvidence=()=>{
@@ -2416,12 +2464,18 @@ export class Runtime {
       if(!evidenceWorker)result=await this.runModel(standardRequest,modelTrigger)
       else if(evidenceWorker.author){
         const {plan,id,findings}=evidenceWorker,own=workerSections(plan,id)
-        const reply=await readEvidenceAnswer(plan,answerPacket(plan,own,findings),()=>answerPacket(plan,own,findings,true),read,canRetryEvidence)
+        const reply=await readEvidenceAnswer(plan,answerPacket(plan,own,findings),()=>answerPacket(plan,own,findings,true),read,canRetryEvidence,evidenceWorker.profiled)
         result=reply.result;answerCheck=reply.check
       }else{
         const {plan,id}=evidenceWorker,packet=readerPacket(plan,id)
         result=await read(packet.instructions,packet.input,packet.schema)
-        if(!citedEvidence(plan,id,result.text)&&canRetryEvidence())result=await read(packet.instructions+(packet.schema?' Use only valid row numbers.':' Use comma-separated integer IDs or *.'),packet.input,packet.schema)
+        if(!citedEvidence(plan,id,result.text)&&!(evidenceWorker.profiled&&needsEvidenceContext(result.text))&&canRetryEvidence())result=await read(packet.instructions+(packet.schema?' Use only valid row numbers.':' Use comma-separated integer IDs or *.'),packet.input,packet.schema)
+      }
+      if(evidenceWorker?.profiled&&needsEvidenceContext(result.text)&&canRetryEvidence()){
+        // A tool-free read had no external effects. Continue on the same real ticket
+        // with its original Worker policy, scoped brief and ordinary capabilities.
+        evidenceWorker=undefined;answerCheck=undefined
+        result=await this.runModel(standardRequest,modelTrigger)
       }
       delete run.webFetchReplay
       live.accepting=false

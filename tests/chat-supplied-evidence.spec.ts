@@ -3,7 +3,7 @@ import {mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {randomUUID} from 'node:crypto'
-import {answerPacket,citedEvidence,evidencePlan,freshEvidence,namedEvidenceGroup,readerPacket,storedEvidence} from '../src/chat-supplied-evidence.ts'
+import {answerPacket,citedEvidence,evidencePlan,freshEvidence,namedEvidenceGroup,policyEvidenceGroup,readerPacket,storedEvidence} from '../src/chat-supplied-evidence.ts'
 import {checkedCalculation} from '../src/supplied-calculation.ts'
 import {checkAnswer,repairPacket} from '../src/supplied-answer.ts'
 import {Runtime} from '../src/runtime.ts'
@@ -327,4 +327,119 @@ it('reconciles a partial ordinary dispatch on the original Chat without creating
    expect(host.store.tickets.list()).toHaveLength(2)
    expect(host.store.get<ChatRun>('chat-run',accepted.runId!)?.cancelled).toBe(true)
  }finally{await host.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+it('keeps the configured Router in control of an ongoing Chat and gives each profiled reader its own original records',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'roppo-policy-source-')),calls:ModelRequest[]=[]
+  const routerPolicy='Follow the original user agreement.',routerIdentity='Router role marker.'
+  const people=[{id:'east',label:'程序员1',prompt:'East role marker.'},{id:'west',label:'程序员2',prompt:'West role marker.'}]
+  let allow=true
+  const host=await Runtime.create(configSchema.parse({
+    stateDir:join(dir,'state'),port:0,watchdog:{enabled:false},prompts:{router:routerPolicy},work:{sandboxDriver:'seatbelt',network:false,autoRecover:false},
+    backends:{test:{kind:'openai-responses',model:'fixture',baseUrl:'http://127.0.0.1:1/v1'}},
+    execution:{backend:'test',router:{backend:'test',mode:'host',prompt:routerIdentity},suppliedEvidence:'fold',management:{enabled:true},workers:people.map(w=>({...w,backend:'test'}))},
+    sources:[{id:'local',kind:'local',cwd:dir,allowedActors:['operator']}]
+  }),{model:{async run(r){
+    calls.push(r)
+    const threadId=randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
+    let text=JSON.stringify({reply:'Understood.',decision:'answer'})
+    if(r.instructions.includes('Decide as the configured Router'))text=JSON.stringify({route:allow?'READ':'OTHER',worker:''})
+    else if(r.suppliedText)text=r.instructions.includes('Read your source')?'Mara holds permit A.':'RESULT name=Mara'
+    return {text,turnId,threadId}
+  }}})
+  try{
+    host.scopes.command({action:'scope.put',operationId:'test',expectedRevision:0,scope:{id:'team',tenantId:'lab',name:'Team',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['east','west'],backendIds:['test']}})
+    const until=async(ready:()=>boolean)=>{for(let n=0;n<230&&!ready();n++){await host.tick();await new Promise<void>(done=>setTimeout(done,8))}expect(ready()).toBe(true)}
+    const chat=host.chat.create('owner')
+    const seed='When I give a new register, keep the answer concise.'
+    const input='Ask @程序员1 and @程序员2 to check the registers.\n'+question+'\n\n@程序员1 / register for 程序员2\nMara holds permit A.\n\n@程序员2 / signatures\nPermit A is valid.'
+    host.chat.send(chat.id,'owner',{text:seed,clientMessageId:'seed'})
+    await until(()=>host.chat.view(chat.id,'owner').messages.some(m=>m.text==='Understood.'))
+    host.chat.send(chat.id,'owner',{text:input,clientMessageId:'read',locale:'zh-CN'})
+    await until(()=>host.chat.view(chat.id,'owner').messages.some(m=>m.text==='RESULT name=Mara'))
+    const slim=calls.filter(c=>c.suppliedText)
+    expect(slim.map(c=>c.role)).toEqual(['router','worker','worker','router'])
+    expect(slim.every(c=>!c.tools?.length&&!c.onTool&&c.allowNativeTools===false)).toBe(true)
+    for(const read of slim.filter(c=>c.role==='router')){
+      expect(read.instructions.split(routerPolicy)).toHaveLength(2)
+      expect(read.instructions.split(routerIdentity)).toHaveLength(2)
+      expect(read.input).toContain(seed);expect(read.input).toContain('zh-CN')
+    }
+    expect(slim.at(-1)!.input).toContain('workerReports')
+    expect(slim[1]!.instructions).toContain(people[0]!.prompt)
+    expect(slim[1]!.input).toContain('Mara holds permit A.');expect(slim[1]!.input).not.toContain('Permit A is valid.')
+    expect(slim[2]!.instructions).toContain(people[1]!.prompt)
+    expect(slim[2]!.input).toContain('Permit A is valid.')
+    for(const read of slim.filter(c=>c.role==='worker'))expect(read.input).not.toContain(seed)
+    const assignments=host.store.list<{ticketId:string;workerId:string}>('worker-assignment')
+    expect(assignments).toHaveLength(2)
+    for(const a of assignments){
+      const ticket=host.store.tickets.get(a.ticketId)!
+      expect(ticket.ended?.outcome).toBe('completed')
+      const original=host.store.triggers.get(ticket.origin.triggerId)!.text
+      expect(original).not.toContain(a.workerId==='east'?'Permit A is valid.':'Mara holds permit A.')
+    }
+    allow=false
+    const other=host.chat.create('owner')
+    host.chat.send(other.id,'owner',{text:input,clientMessageId:'decline'})
+    await until(()=>host.chat.view(other.id,'owner').messages.some(m=>m.text==='Understood.'))
+    expect(host.store.tickets.list()).toHaveLength(2)
+    expect(calls.at(-1)!.suppliedText).toBeFalsy()
+  }finally{await host.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+it('lets the ordinary Router attach only its chosen reader’s source, retaining the original policy and dispatch identity',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'roppo-ordinary-source-')),workers:ModelRequest[]=[]
+  const input=prompt('Ask @east and @west to check the registers.')
+  let dispatched=false,valid=false,replay=false,workerSource=''
+  const host=await Runtime.create(configSchema.parse({
+    stateDir:join(dir,'state'),port:0,watchdog:{enabled:false},prompts:{shared:'Keep the established team rules.'},work:{sandboxDriver:'seatbelt',network:false,autoRecover:false},
+    backends:{test:{kind:'openai-responses',model:'fixture',baseUrl:'http://127.0.0.1:1/v1'}},
+    execution:{backend:'test',router:{backend:'test',mode:'host'},suppliedEvidence:'fold',management:{enabled:true},workers:roster.map(w=>({...w,backend:'test'}))},
+    sources:[{id:'local',kind:'local',cwd:dir,allowedActors:['operator']}]
+  }),{model:{async run(r){
+    const threadId=randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
+    let text=JSON.stringify({reply:'The register was checked.',decision:'answer'})
+    if(r.role==='worker'){
+      workers.push(r);workerSource=r.input
+      text=JSON.stringify({state:'ready',summary:'Mara',reply:'Mara',question:null,askedBy:null,files:[],handbacks:[]})
+    }else if(!dispatched&&r.instructions.includes('includeSuppliedSource')){
+      dispatched=true
+      expect(r.instructions).toContain('Keep the established team rules.')
+      expect(r.tools?.find(t=>t.name==='worker_manage')?.inputSchema.properties).toHaveProperty('includeSuppliedSource')
+      const args={action:'assign',id:'east',revision:0,requestId:'read-the-register',text:'Check the current permit.',includeSuppliedSource:true}
+      valid=(await r.onTool!('worker_manage',args,'first')).success
+      replay=(await r.onTool!('worker_manage',args,'retry')).success
+    }
+    return {text,turnId,threadId}
+  }}})
+  try{
+    host.scopes.command({action:'scope.put',operationId:'test',expectedRevision:0,scope:{id:'team',tenantId:'lab',name:'Team',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:['east','west'],backendIds:['test']}})
+    const chat=host.chat.create('owner');host.chat.send(chat.id,'owner',{text:input,clientMessageId:'ordinary'})
+    for(let n=0;n<180&&!workers.length;n++){await host.tick();await new Promise<void>(done=>setTimeout(done,8))}
+    expect([dispatched,valid,replay]).toEqual([true,true,true])
+    expect(host.store.tickets.list()).toHaveLength(1)
+    expect(host.store.list('worker-assignment')[0]).toMatchObject({sourceFromChat:true,workerId:'east'})
+    expect(workers[0]?.suppliedText).toBeFalsy()
+    expect(workerSource).toContain('Mara holds permit A.')
+    expect(workerSource).not.toContain('Permit A is valid.')
+    const withoutContext=host.manager.call({action:'assign',id:'east',revision:0,requestId:'unbound',includeSuppliedSource:true,text:'Check'})
+    await expect(withoutContext).rejects.toThrow(/current authorized private Chat/)
+  }finally{await host.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+
+it('resolves daily Chinese mentions and requires a real permitted choice for an unnamed reader',async()=>{
+  const people=[{id:'east',label:'程序员1'},{id:'west',label:'程序员2'}]
+  const source='请核对下面的记录。归档号 C31 换成 R47。R47 存在西楼，R49 存在东楼。请只给 C31 所在的楼名。'
+  const vote=(id:string)=>async()=>({threadId:'r',turnId:'v',text:JSON.stringify({route:'READ',worker:id})})
+  const {plan,group}=await policyEvidenceGroup(source,people,true,vote('east'),5)
+  expect(plan?.workers).toEqual(['east']);expect(group?.selectedWorker).toBe('east')
+  expect(plan?.sections[0]?.rows).toHaveLength(2)
+  expect(await policyEvidenceGroup(source,people,true,vote('unknown'),5)).toEqual({})
+  expect(await policyEvidenceGroup(source,people,true,vote('east'),6,group)).toEqual({})
+  const addressed=source.replace('请核对','请@程序员1和@程序员2核对')
+  expect((await policyEvidenceGroup(addressed,people,true,vote(''),5)).plan?.workers).toEqual(['east','west'])
+  expect((await policyEvidenceGroup(addressed.replace('程序员2','程序员20'),people,true,vote(''),5)).group).toBeUndefined()
+  expect((await policyEvidenceGroup(source.replace('请核对','请直接回答并核对'),people,true,vote('east'),5)).group).toBeUndefined()
 })

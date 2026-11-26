@@ -17,12 +17,14 @@ import type {Trigger} from './vendor/dsh-core/index.ts'
 import {bodyDigest} from './sources.ts'
 import type {ToolSpec} from './model.ts'
 const actions=['list','inspect','create','clone','configure','set_prompt','assign','send','pause','resume','cancel','retire','destroy','result','migrate','rebuild'] as const
-export const workerCommandSchema=z.object({action:z.enum(actions),requestId:z.string().min(1).max(200).optional(),revision:z.number().int().min(0).optional(),id:z.string().optional(),from:z.string().optional(),profile:workerProfileSchema.optional().describe('Full Worker profile for create; backend is a connection ID returned by list.'),patch:workerProfileSchema.partial().optional().describe('Fields to change for configure, or overrides for clone. Omitted fields are retained.'),unset:z.array(z.string()).optional().describe('Optional profile fields to remove so connection defaults apply. Cannot remove id or backend.'),prompt:z.string().max(messageCharacters).optional(),text:z.string().min(1).max(messageCharacters).optional(),discussion:z.string().min(1).max(300).optional(),ticketId:z.string().optional(),expectReply:z.boolean().optional().describe('On send, ask this Worker to answer the current Chat message.'),questionId:z.string().min(1).max(1000).optional(),decisionVersion:z.string().regex(/^[a-f0-9]{64}$/).optional(),acceptance:z.string().max(64_000).optional(),cancelRunning:z.boolean().optional(),workspaceReviewed:z.boolean().optional(),waitMs:z.number().int().min(0).max(30_000).optional()}).strict()
-export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',description:'Manage Workers for the authorized task autonomously. Use the Worker management revision supplied in the current task index, or read list for the current revision, allowed connections, options, tools and per-Worker permissions. Create or configure Workers directly within this task and its policy. Prefer one Worker owning the task end to end. Mutations require the latest revision and a stable requestId. create uses profile. clone uses from, a new id and optional patch; Personal Chat owners may manage shared Workers; external scope managers must clone shared Workers before changing them. Deleting a Worker removes its current contact, while retaining historical messages. configure uses id and patch. When the user asks you to contact an existing Worker and bring back its answer, use send with expectReply=true. For a one-way instruction omit expectReply. When send answers a pending business question, pass its current attention.id as questionId. Include the decisionVersion returned by inspect for a versioned question. This binds the human follow-up once to that question, not an execution permission. assign delegates a task; inspect/result return actual state, including held goal revisions and available inputs. A blocked send cannot resume its goal. Use router_goal resume for one requested goal or resume_many for several. pause stops future scheduling; retire drains existing work; destroy requires cancelRunning for active tasks. Backend/model changes apply to new tasks; migrate hands an idle task to the new backend. rebuild prepares a budget or permission-held task. Permission rebuild requires a scope manager, fresh text and workspaceReviewed=true after reviewing retained artifacts. It quarantines old text and starts a new session on the same task/backend/workspace; it runs only after a new authorized follow-up.',inputSchema:z.toJSONSchema(workerCommandSchema,{target:'draft-7',io:'input'})}]
+const ordinaryWorkerCommand=z.object({action:z.enum(actions),requestId:z.string().min(1).max(200).optional(),revision:z.number().int().min(0).optional(),id:z.string().optional(),from:z.string().optional(),profile:workerProfileSchema.optional().describe('Full Worker profile for create; backend is a connection ID returned by list.'),patch:workerProfileSchema.partial().optional().describe('Fields to change for configure, or overrides for clone. Omitted fields are retained.'),unset:z.array(z.string()).optional().describe('Optional profile fields to remove so connection defaults apply. Cannot remove id or backend.'),prompt:z.string().max(messageCharacters).optional(),text:z.string().min(1).max(messageCharacters).optional(),discussion:z.string().min(1).max(300).optional(),ticketId:z.string().optional(),expectReply:z.boolean().optional().describe('On send, ask this Worker to answer the current Chat message.'),questionId:z.string().min(1).max(1000).optional(),decisionVersion:z.string().regex(/^[a-f0-9]{64}$/).optional(),acceptance:z.string().max(64_000).optional(),cancelRunning:z.boolean().optional(),workspaceReviewed:z.boolean().optional(),waitMs:z.number().int().min(0).max(30_000).optional()}).strict()
+export const workerCommandSchema=ordinaryWorkerCommand.extend({includeSuppliedSource:z.literal(true).optional()})
+export const managementSpecs:ToolSpec[]=[{type:'function',name:'worker_manage',description:'Manage Workers for the authorized task autonomously. Use the Worker management revision supplied in the current task index, or read list for the current revision, allowed connections, options, tools and per-Worker permissions. Create or configure Workers directly within this task and its policy. Prefer one Worker owning the task end to end. Mutations require the latest revision and a stable requestId. create uses profile. clone uses from, a new id and optional patch; Personal Chat owners may manage shared Workers; external scope managers must clone shared Workers before changing them. Deleting a Worker removes its current contact, while retaining historical messages. configure uses id and patch. When the user asks you to contact an existing Worker and bring back its answer, use send with expectReply=true. For a one-way instruction omit expectReply. When send answers a pending business question, pass its current attention.id as questionId. Include the decisionVersion returned by inspect for a versioned question. This binds the human follow-up once to that question, not an execution permission. assign delegates a task; inspect/result return actual state, including held goal revisions and available inputs. A blocked send cannot resume its goal. Use router_goal resume for one requested goal or resume_many for several. pause stops future scheduling; retire drains existing work; destroy requires cancelRunning for active tasks. Backend/model changes apply to new tasks; migrate hands an idle task to the new backend. rebuild prepares a budget or permission-held task. Permission rebuild requires a scope manager, fresh text and workspaceReviewed=true after reviewing retained artifacts. It quarantines old text and starts a new session on the same task/backend/workspace; it runs only after a new authorized follow-up.',inputSchema:z.toJSONSchema(ordinaryWorkerCommand,{target:'draft-7',io:'input'})}]
 
 export interface RouterContext {discussion:string;singleChatInput?:boolean;trigger?:Trigger;scoped?:ScopeContext;manifest?:ContextManifest;
+ suppliedSource?:(workerId:string)=>string|undefined; scopedBrief?:boolean
  onDispatch?:(kind:'assign'|'send'|'running',ticketId:string)=>void}
-interface Delegation {ticketId:string;workerId:string;discussion:string;source:string;actor:string;parentTrigger?:string;mode:'client'|'host';reviewResult?:true}
+interface Delegation {ticketId:string;workerId:string;discussion:string;source:string;actor:string;parentTrigger?:string;mode:'client'|'host';reviewResult?:true;sourceFromChat?:true;scopedBrief?:true}
 export class WorkerManager {
  private inFlight=new Set<string>()
  constructor(private host:Runtime){}
@@ -31,7 +33,7 @@ export class WorkerManager {
  restoreSubscriptions(){
   for(const original of this.host.store.list<Delegation>('worker-assignment')){
    const owner=this.host.taskAuthority(original.ticketId),ticket=this.host.store.tickets.get(original.ticketId)
-   if(owner?.mode!=='host'||!owner.parentTrigger||!ticket||ticket.ended)continue
+   if(original.sourceFromChat||original.scopedBrief||owner?.mode!=='host'||!owner.parentTrigger||!ticket||ticket.ended)continue
    try{
     this.host.routerIngress.authority(owner.parentTrigger,owner.discussion)
     const trigger=this.host.store.triggers.get(owner.parentTrigger)!,source=this.host.sources.get(owner.source)
@@ -90,6 +92,7 @@ export class WorkerManager {
  }
  private callNow(value:unknown,context?:RouterContext):any{
   const input=workerCommandSchema.parse(value),host=this.host
+  if(input.includeSuppliedSource&&(input.action!=='assign'||!context?.singleChatInput||!context.suppliedSource||!host.chat.personalManagement(context)))throw Error('Source transfer requires a current authorized private Chat assignment')
   if(input.expectReply&&(input.action!=='send'||input.questionId||!context?.trigger?.human||!host.chat.personalManagement(context)||!host.store.get('chat-run',context.trigger.id)))
    throw Error('An inquiry needs a human Chat follow-up to an existing task')
   if(input.decisionVersion&&!input.questionId)throw Error('decisionVersion requires questionId')
@@ -195,24 +198,27 @@ export class WorkerManager {
    if(!worker||worker.state&&worker.state!=='enabled')throw Error('Select an enabled Worker')
    verifyBackend(worker.backend)
    checkWorkerAdmission(host.config,worker.backend,worker)
-   if(!input.text)throw Error('Task text required')
+   const supplied=input.includeSuppliedSource?context!.suppliedSource!(worker.id):undefined
+   if(input.includeSuppliedSource&&!supplied)throw Error('This Worker has no current source grant')
+   const text=[input.text,supplied].filter(Boolean).join('\n\n')
+   if(!text||text.length>messageCharacters)throw Error('Task text is missing or too long')
    const discussion=context?.discussion??input.discussion;if(!discussion)throw Error('Router discussion required')
    const source=context?.trigger?host.sources.get(context.trigger.source)?.config:host.config.sources.find(s=>s.kind==='local'&&s.enabled)
    if(!source)throw Error('Local operator source required')
    const actor=context?.trigger?.actor.id??source.allowedActors[0]!
    const id='delegation:'+key,thread='delegation:'+key
-   const origin=context?.trigger??host.sources.get(source.id)!.trigger({id,thread,text:input.text,addressed:true},actor)
-   const trigger:Trigger={...origin,id,threads:[{source:source.id,id:thread}],at:new Date().toISOString(),text:origin.text,meta:{...origin.meta,delegatedBy:'router',parentTrigger:context?.trigger?.id??null},channel:{source:source.id,thread,address:{routerInbox:discussion}}}
+   const origin=context?.trigger??host.sources.get(source.id)!.trigger({id,thread,text,addressed:true},actor)
+   const trigger:Trigger={...origin,id,threads:[{source:source.id,id:thread}],at:new Date().toISOString(),text:(supplied||context?.scopedBrief)?text:origin.text,meta:{...origin.meta,delegatedBy:'router',parentTrigger:context?.trigger?.id??null},channel:{source:source.id,thread,address:{routerInbox:discussion}}}
    if(context?.trigger)host.store.put('router-delegation',id,{parentTrigger:context.trigger.id,discussion})
    host.engine.receive(trigger)
-   const decision=host.engine.decide(id,{kind:'accept',title:input.text.slice(0,100),scope:input.text+(input.acceptance?'\nAcceptance: '+input.acceptance:''),reason:'Router delegation within admitted scope',rules:mandate?.basis.rules??[]})
+   const decision=host.engine.decide(id,{kind:'accept',title:text.slice(0,100),scope:text+(input.acceptance?'\nAcceptance: '+input.acceptance:''),reason:'Router delegation within admitted scope',rules:mandate?.basis.rules??[]})
    if(!decision.ticketId)throw Error('Delegation was not accepted')
-   const assignment:Delegation={ticketId:decision.ticketId,workerId:worker.id,discussion,source:source.id,actor,parentTrigger:context?.trigger?.id,mode:context?.trigger?'host':'client',...(context?.singleChatInput?{reviewResult:true}:{})}
+   const assignment:Delegation={ticketId:decision.ticketId,workerId:worker.id,discussion,source:source.id,actor,...(supplied?{sourceFromChat:true as const}:{}),...(context?.scopedBrief?{scopedBrief:true as const}:{}),parentTrigger:context?.trigger?.id,mode:context?.trigger?'host':'client',...(context?.singleChatInput?{reviewResult:true}:{})}
    if(assignment.reviewResult)host.store.requireChatResultReviewSchema()
    host.store.put('worker-assignment',decision.ticketId,assignment)
-   if(context?.trigger)for(const ref of origin.threads)if(ref.source===source.id)host.engine.followForContext(decision.ticketId,ref)
+   if(context?.trigger&&!assignment.sourceFromChat&&!assignment.scopedBrief)for(const ref of origin.threads)if(ref.source===source.id)host.engine.followForContext(decision.ticketId,ref)
    if(context?.scoped){const owner=host.scopes.own(decision.ticketId,context.scoped,worker.backend);if(context.manifest)host.store.put('task-context',decision.ticketId,{manifest:{...context.manifest,taskOwners:[...context.manifest.taskOwners,{id:decision.ticketId,epoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1}]}})}
-   if(context?.trigger)host.chat.delegated(key,context.trigger.id,decision.ticketId,worker.id,input.text+(input.acceptance?'\n'+input.acceptance:''),true)
+   if(context?.trigger)host.chat.delegated(key,context.trigger.id,decision.ticketId,worker.id,(input.text??text)+(input.acceptance?'\n'+input.acceptance:''),true)
    return complete({...assignment,status:'queued',revision:host.settings.current().revision})
   })
   if(input.action==='send')return host.store.atomic(()=>{

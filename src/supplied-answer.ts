@@ -19,7 +19,7 @@ const missing:AnswerCheck={ok:false,reason:'missing',detail:'Check whether the s
 const bad=(reason:'format'|'sources'|'values',detail:string):AnswerCheck=>({ok:false,reason,detail})
 const yes=(text:string):AnswerCheck=>({ok:true,text})
 const escaped=(s:string)=>s.replace(/[.*+?^$()|[\]\\{}]/g,'\\$&')
-export const sourceTitle=(heading:string)=>heading.replace(/^@[\w-]+\s*\/\s*/u,'')
+export const sourceTitle=(heading:string)=>heading.replace(/^@[\p{L}\p{M}\d_-]+\s*\/\s*/u,'')
 function unquote(text:string){return text.trim().replace(/^"(.*)"$/u,'$1')}
 function unFence(text:string){return /^\x60{3}(?:json|text)?\s*([\s\S]*?)\s*\x60{3}$/iu.exec(text.trim())?.[1]?.trim()??text.trim()}
 function titleKey(s:string){

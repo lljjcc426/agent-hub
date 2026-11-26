@@ -1,3 +1,4 @@
+import {beginWorkerPhase} from './worker-phase.ts'
 import {z} from 'zod'
 import {execFileSync} from 'node:child_process'
 import {readdirSync,realpathSync} from 'node:fs'
@@ -312,13 +313,16 @@ export function superviseDependencies(h:Runtime,g:RouterGoal){
    const id=n.ticketId!,run=h.store.get<Run>('run',id)!,task=h.store.tickets.get(id)!,inputs=task.inputs.map(i=>i.id)
    const key=stableDigest([g.id,n.id,run.assignmentId,g.planRevision,n.dependsOn.map(dep=>nodes.find(p=>p.id===dep)!.roundId)])
    if(h.store.get('context-handoff',key))throw Error('This dependency checkpoint was already delivered')
-   h.store.put('context-handoff',key,{ticketId:id,previousThread:run.threadId,previousTurn:run.turnId,backendId:run.backendId,model:run.model,reason:'approved_outputs_reverified',at:Date.now()})
-   const {threadId,turnId,toolsDigest,toolsVersion,error,failure,result,...retained}=run
-   h.store.put('run',id,{...retained,phase:'idle',rebuild:key} satisfies Run)
    h.scopes.noteInput(id,c);h.memory.moveTaskContext(id,c)
    h.engine.report(id,{state:'waiting',summary:'上一步的补丁已重新核验，正在接续原工单。',question:null})
-   h.engine.note(id,JSON.stringify({instruction:'Finish this approved correction on the same branch. Inspect the retained files and jobs before doing anything else. Preserve completed changes and report exactly what the authorized environment could verify.',outputs:n.outputs,prerequisites:dependencyBrief(h,g,n)}))
+   const noted=h.engine.note(id,JSON.stringify({instruction:'Finish this approved correction on the same branch. Inspect the retained files and jobs before doing anything else. Preserve completed changes and report exactly what the authorized environment could verify.',outputs:n.outputs,prerequisites:dependencyBrief(h,g,n)}))
    allowNewTaskInputs(h.store,id,inputs)
+   const phase=beginWorkerPhase(h,g,n,task,key,noted.inputs.at(-1)?.id)
+   h.store.put('context-handoff',key,{ticketId:id,previousThread:run.threadId,previousTurn:run.turnId,backendId:run.backendId,model:run.model,reason:'approved_outputs_reverified',at:Date.now()})
+   if(!phase){
+    const {threadId,turnId,toolsDigest,toolsVersion,error,failure,result,...retained}=run
+    h.store.put('run',id,{...retained,phase:'idle',rebuild:key} satisfies Run)
+   }
    const updated=h.store.tickets.get(id)!
    h.store.enqueue('execute:'+run.assignmentId+':'+stableDigest(updated.undelivered),'execute',{ticketId:id,assignmentId:run.assignmentId})
    n.recoveries++;h.store.audit({type:'goal.amendment_resumed',goalId:g.id,nodeId:n.id,ticketId:id,assignmentId:run.assignmentId,key})

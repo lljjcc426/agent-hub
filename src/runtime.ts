@@ -1,3 +1,4 @@
+import {workerPhaseInput,phaseInputs} from './worker-phase.ts'
 import {inquiryInventory,inquiryInventoryBytes,statusQuestion} from './router-inquiry-context.ts'
 import {begin as beginWorkerAttempt,observe as observeWorkerEvent,isCurrent as currentWorkerAttempt,isDeliverable as deliverableWorkerEvent,type WorkerAttempt,type WorkerEventReceipt} from './async-worker-inbox.ts'
 import {answerCheckpointInquiries,authorizedQuestion,readInquiryReport,finishInquiry,inquiryForInput,unansweredInquiries,queueInquiryReplies,type WorkerInquiry} from './worker-inquiry.ts'
@@ -2321,7 +2322,7 @@ export class Runtime {
     const readOnly=!!review||workspace?.mode==='read-only'||delegatedTask&&!delegatedTask.contract.permissions.write
     const source={...configuredSource,sandbox:readOnly?'read-only' as const:configuredSource.sandbox}
     const saved = this.store.get<Run>('run', ticket.id)
-    if(saved?.rebuild){const handoff=this.store.get<any>('context-handoff',saved.rebuild);if(handoff?.previousThread&&handoff.reason!=='context_permissions_changed')this.model.describe?.(handoff.previousThread)}
+    if(saved?.rebuild){const handoff=this.store.get<any>('context-handoff',saved.rebuild);if(handoff?.previousThread&&!['context_permissions_changed','worker_phase'].includes(handoff.reason))this.model.describe?.(handoff.previousThread)}
     const context=this.store.get<{manifest:ContextManifest}>('task-context',ticket.id)
     if(context)this.memory.validate(context.manifest)
     if (saved?.phase === 'human' || saved?.phase === 'uncertain') {
@@ -2475,6 +2476,7 @@ export class Runtime {
         return []
       })
       const chatFiles=builtInChat?[...this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])),...handoffFiles,...readableFiles]:[]
+      const phaseInput=saved&&workerPhaseInput(this,ticket,saved,projectGoal)
       let inputAccepted=false
       const standardRequest:ModelRequest={
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
@@ -2482,6 +2484,7 @@ export class Runtime {
           if(inputAccepted||!inputs.length||!currentWorkerAttempt(this,attempt))return
           // Record provider acceptance independently of delivery so an interrupted turn can resume.
           this.engine.inputsRead(ticket.id,inputs.map(input=>input.id))
+          if(phaseInput&&run.threadId){delete run.rebuild;persist()}
           inputAccepted=true
         },
         role:'worker',allowNativeTools:!delegatedTask,options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
@@ -2498,7 +2501,7 @@ export class Runtime {
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
+        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(phaseInput?{phaseHandoff:phaseInput}:saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(phaseInputs(inputs,ticket.id,phaseInput?.inputId),fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))
@@ -2515,13 +2518,13 @@ export class Runtime {
           observeWorkerEvent(this,attempt,{kind:'progress',payload:event},()=>{
           if(event==='thread/waitingForWriter'){run.waitingForWriter=true;persist()}
         })},
-        onThread: id => { delete run.error;run.toolsVersion=5;run.toolsDigest=toolsDigest; run.waitingForWriter=false; run.threadId = id; persist() },
+        onThread: id => { if(phaseInput&&inputAccepted)delete run.rebuild;delete run.error;run.toolsVersion=5;run.toolsDigest=toolsDigest; run.waitingForWriter=false; run.threadId = id; persist() },
         onModel:model=>{run.model=model;persist()},
         onTurn: id => { if(!currentWorkerAttempt(this,attempt))return;turnStarted=true;run.turnId = id; run.phase = 'running'; this.store.put('prompt-use',id,{ticketId:ticket.id,threadId:run.threadId,revision:promptRevision,digest:digest(instructions),at:Date.now()});persist() },
       }
       const evidenceAssignment=this.store.get<{parentTrigger?:string;workerId:string;suppliedEvidence?:true}>('worker-assignment',ticket.id)
       let evidenceWorker:{plan:EvidencePlan;id:string;author:boolean;profiled:boolean;findings:string[];checkPeers?:()=>boolean}|undefined
-      if(evidenceAssignment?.suppliedEvidence&&!saved?.threadId&&!permissionReceipts.length&&!hasInquiry){
+      if(evidenceAssignment?.suppliedEvidence&&!phaseInput&&!saved?.threadId&&!permissionReceipts.length&&!hasInquiry){
         const link=evidenceAssignment.parentTrigger&&storedEvidence(this,evidenceAssignment.parentTrigger)
         const id=evidenceAssignment.workerId
         if(link&&link.group.tickets[id]===ticket.id){
@@ -2581,6 +2584,7 @@ export class Runtime {
         evidenceWorker=undefined;answerCheck=undefined
         result=await this.runModel(standardRequest,modelTrigger)
       }
+      if(phaseInput)delete run.rebuild
       delete run.webFetchReplay
       live.accepting=false
       await live.delivery

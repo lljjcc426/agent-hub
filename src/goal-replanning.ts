@@ -1,3 +1,4 @@
+import {beginWorkerPhase} from './worker-phase.ts'
 import {z} from 'zod'
 import {dependencyBrief,reviewNode} from './goal-supervision.ts'
 import type {Runtime} from './runtime.ts'
@@ -341,7 +342,9 @@ export class GoalReplanning {
    // The core intentionally holds automated notes after a blocked report. Only this
    // independently approved, scoped recovery may release that implementation hold.
    this.host.engine.report(task.id,{state:'waiting',summary:'Independent replanning approved; continue with the revised implementation',question:null})
-   this.host.engine.note(task.id,text);allowNewTaskInputs(this.host.store,task.id,previous)
+   const noted=this.host.engine.note(task.id,text)
+   allowNewTaskInputs(this.host.store,task.id,previous)
+   if(!reviewNode(n))beginWorkerPhase(this.host,g,n,task,key,noted.inputs.at(-1)?.id)
    n.state='running';n.reason=undefined;n.refreshFrom=undefined;this.host.store.put('router-goal',g.id,g)
    this.host.store.put('goal-plan-dispatch',key,{id:key,goalId:g.id,scopeId:g.scopeId,entryId:g.entryId,triggerId:g.triggerId,ticketId:task.id,replanId:r.id,at:this.now()})
   })

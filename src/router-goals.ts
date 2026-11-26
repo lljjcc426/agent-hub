@@ -1,3 +1,4 @@
+import {beginWorkerPhase} from './worker-phase.ts'
 import {amendingWorker,reviewNode,selectReviewer,reviewPolicy,dependencyBrief,dependencyChanged,superviseDependencies} from './goal-supervision.ts'
 import {hasPausedTurnReader,parkedCheckpoint,readPausedTurn,relatedPause,type ResumedWorker} from './paused-worker-recovery.ts'
 import {unsettledTaskEffects} from './artifact-read-recovery.ts'
@@ -986,7 +987,9 @@ export class RouterGoals {
    this.host.scopes.noteInput(task.id,c);this.host.memory.moveTaskContext(task.id,c)
    if(task.assignments.at(-1)?.report?.state==='blocked'&&!hasOutstandingQuestion(this.host,task))
     this.host.engine.report(task.id,{state:'waiting',summary:'依赖产物已通过验收，正在继续。',question:null})
-   this.host.engine.note(task.id,instruction);allowNewTaskInputs(this.host.store,task.id,prior)
+   const noted=this.host.engine.note(task.id,instruction)
+   allowNewTaskInputs(this.host.store,task.id,prior)
+   if(!reviewNode(n))beginWorkerPhase(this.host,g,n,task,repairKey,noted.inputs.at(-1)?.id)
    this.host.store.db.prepare("DELETE FROM records WHERE kind='goal-delivery' AND id=?").run(task.id)
    this.host.store.put('goal-repair',repairKey,{id:repairKey,roundId:round.id,goalId:g.id,triggerId:g.triggerId,ticketId:task.id,failed,at:this.now()})
    n.repairs++;n.opinion=undefined;n.state='running';n.roundId=undefined;n.refreshFrom=undefined;g.finalRoundId=undefined

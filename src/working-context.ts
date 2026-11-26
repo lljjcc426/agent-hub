@@ -29,7 +29,7 @@ export function projectWorkingInput(input:Record<string,unknown>,resource:string
   if(protocolBytes(projection)<=budget)break
   size=Math.floor(size/2)
  }while(size>0)
- for(const key of ['hostCommand','schedule','selectedSkill','mandate','sourceContext','handoff','quotedMessage','messages','inputs','tasks','goals','chatFiles']){
+ for(const key of ['hostCommand','schedule','selectedSkill','mandate','phaseHandoff','sourceContext','handoff','quotedMessage','messages','inputs','tasks','goals','chatFiles']){
   if(input[key]!==undefined&&protocolBytes({...projection,[key]:input[key]})<=budget)projection[key]=input[key]
  }
  return projection

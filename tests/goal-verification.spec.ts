@@ -1129,3 +1129,42 @@ it('reuses an accepted dependent result when repair leaves its declared input un
  await until(f,()=>f.goal().state==='completed')
  expect(f.goal().nodes!.map(n=>f.attempts.get(n.ticketId!))).toEqual([2,1])
 })
+
+it.each(['default','summary','full','no-reader'])('returns scoped test output with the requested presentation (%s)',async mode=>{
+ const id='12345678-1234-1234-1234-123456789abc',command=mode==='summary'?'python3 check_results.py':'python3 -m unittest -v'
+ const output='supplementary test output\n'.repeat(1600)+'\x1b[31mFAIL: test_sum (Suite)\x1b[0m\nRan 35 tests in 0.123s\n\nFAILED (failures=1, skipped=2)\n'
+ const f=fixture(async r=>{
+  writeFileSync(join(r.cwd,'result.json'),'{"total":42}')
+  const ticketId=r.activity!.ticketId!,assignmentId=f.h.store.tickets.get(ticketId)!.assignments.at(-1)!.id
+  const item={id,ticketId,assignmentId,cwd:r.cwd,sandbox:'read-only' as const,depth:0,kind:'shell' as const,command,state:'failed' as const,exitCode:1,notify:'collected' as const,createdAt:1,endedAt:2}
+  f.h.store.put('work',id,item)
+  writeFileSync(join(f.h.work.directory,id+'.output'),output)
+  f.h.work.shell=async()=>f.h.work.view(item)
+  if(mode==='no-reader'){
+   const run=f.h.store.get<Run>('run',ticketId)!
+   f.h.store.put('run',ticketId,{...run,agentOptions:{...run.agentOptions,tools:['superagent_shell']}})
+  }
+  const tool=await r.onTool!('superagent_shell',{command,requestId:'tests',...(['summary','full'].includes(mode)?{outputMode:mode}:{})},'tests')
+  expect(tool.success).toBe(false)
+  const preview=JSON.parse(tool.contentItems[0]!.text!)
+  if(mode==='no-reader'||mode==='full'){
+   expect(preview).toMatchObject({output:output.slice(0,32000),nextOffset:32000})
+   expect(preview).not.toHaveProperty('outputTail')
+   return ready()
+  }
+  expect(preview).toMatchObject({id,exitCode:1,nextOffset:2048,outputCharacters:output.length,reportedTests:{total:35,failures:1,skipped:2}})
+  expect(preview.reportedFailures).toEqual(['FAIL: test_sum (Suite)'])
+  expect(preview.output).toBe(output.slice(0,2048))
+  expect(preview.outputTail).toEqual({offset:output.length-2048,text:output.slice(-2048)})
+  const page=await r.onTool!('superagent_job',{id,action:'read',offset:2048,limit:65},'read-raw-page')
+  expect(JSON.parse(page.contentItems[0]!.text!)).toMatchObject({output:output.slice(2048,2113),nextOffset:2113})
+  const index=await r.onTool!('superagent_read',{resource:'job-index'},'read-job-index')
+  expect(JSON.parse(index.contentItems[0]!.text!).items).toContainEqual(expect.objectContaining({id,exitCode:1}))
+  const read=await r.onTool!('superagent_job',{id,action:'read',limit:100000},'read-full-test-output')
+  expect(JSON.parse(read.contentItems[0]!.text!)).toMatchObject({command,output,nextOffset:null})
+  return ready()
+ })
+ f.start()
+ await until(f,()=>['held','completed'].includes(f.goal().state))
+ expect(f.goal().state,f.goal().reason).toBe('completed')
+})

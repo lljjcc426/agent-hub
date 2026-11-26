@@ -3,6 +3,8 @@ import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {ApiOutputLimitError} from '../src/backends/api-errors.ts'
+import {beginWorkerPhase,workerPhaseInput} from '../src/worker-phase.ts'
+import type {Run} from '../src/store.ts'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
@@ -66,8 +68,10 @@ it('changes strategy, splits work and rewires dependencies while retaining the o
  expect(f.goal().contract).toEqual(original.contract);expect(f.goal().criteria).toEqual(original.criteria);expect(f.goal().objective).toBe(original.objective)
  expect(f.goal().replans).toBe(1);expect(f.plans()[0]?.state).toBe('applied');expect(f.goal().nodes?.find(n=>n.id==='build')?.dependsOn).toEqual(['extract','normalize'])
  expect(f.goal().taskIds).toHaveLength(4);expect([...f.attempts.values()].sort()).toEqual([1,1,1,2]);expect(f.h.store.list('goal-plan-dispatch')).toHaveLength(1)
- const task=f.goal().nodes!.find(n=>n.id==='build')!.ticketId!,threads=f.calls.filter(r=>r.activity?.ticketId===task).map(r=>r.threadId).filter(Boolean);expect(new Set(threads).size).toBe(1)
+ const task=f.goal().nodes!.find(n=>n.id==='build')!.ticketId!
  const executions=f.calls.filter(r=>r.role==='worker'&&r.activity?.ticketId===task),scope=JSON.parse(JSON.parse(executions.at(-1)!.input).mandate.scope)
+ expect(executions.at(-1)!.threadId).toBeUndefined()
+ expect(JSON.parse(executions.at(-1)!.input).phaseHandoff).toMatchObject({step:'build',jobs:{index:'job-index'}})
  expect(scope).toMatchObject({kind:'reviewed_goal_step',node:{instruction:f.goal().nodes!.find(n=>n.id==='build')!.instruction},authorizationScope:original.contract!.mandate.scope,originalAcceptance:original.criteria})
  expect(executions.at(-1)!.instructions).toContain(scope.node.instruction)
  expect(JSON.parse(f.h.store.tickets.get(task)!.mandate.scope).node.instruction).toBe('INITIAL direct approach')
@@ -303,4 +307,32 @@ it('requires an independently accepted, cited deferral and leaves publication an
   expect(f.goal().replans).toBe(0);expect(f.goal().taskIds).toHaveLength(1)
   expect(f.h.store.list('goal-plan-dispatch')).toHaveLength(0);expect(f.h.store.list('goal-release')).toHaveLength(0)
  }
+})
+
+it('rotates only a settled authorized assignment and suppresses late handoffs after cancellation',async()=>{
+ const f=fixture();f.start()
+ await until(f,()=>f.h.store.list<{state:string}>('goal-verification').some(row=>row.state==='failed'))
+ const g=f.goal(),node=g.nodes!.find(n=>n.id==='build')!,t=f.h.store.tickets.get(node.ticketId!)!,run=f.h.store.get<Run>('run',t.id)!
+ expect(run.phase).toBe('idle')
+ const jobs=f.h.work.list(t.id),messages=f.h.store.deliveries(),records=f.h.store.list('context-handoff')
+ for(const state of ['paused','held','cancelled','completed'] as const)
+  expect(beginWorkerPhase(f.h,{...g,state},node,t,'late')).toBeUndefined()
+ f.h.store.put('pr-delivery',t.id+':pending',{phase:'uncertain'})
+ expect(beginWorkerPhase(f.h,g,node,t,'uncertain')).toBeUndefined()
+ f.h.store.db.prepare("DELETE FROM records WHERE kind='pr-delivery' AND id=?").run(t.id+':pending')
+ f.h.store.put('run',t.id,{...run,agentOptions:{...run.agentOptions,tools:['superagent_shell']}})
+ expect(beginWorkerPhase(f.h,g,node,t,'no-paging-tool')).toBeUndefined()
+ f.h.store.put('run',t.id,run)
+ expect(f.h.store.list('context-handoff')).toEqual(records)
+ expect(beginWorkerPhase(f.h,g,node,t,'approved')).toBeTruthy()
+ const next=f.h.store.get<Run>('run',t.id)!
+ expect(next.threadId).toBeUndefined()
+ expect(next.assignmentId).toBe(run.assignmentId)
+ expect(next.cwd).toBe(run.cwd)
+ expect(workerPhaseInput(f.h,t,next,g)?.step).toBe(node.id)
+ // A backend may have opened its fresh thread before confirming receipt of the input.
+ expect(workerPhaseInput(f.h,t,{...next,threadId:'new-unconfirmed-thread'},g)?.step).toBe(node.id)
+ expect(()=>workerPhaseInput(f.h,t,next,{...g,state:'cancelled',cancelledByUser:true})).toThrow()
+ expect(f.h.work.list(t.id)).toEqual(jobs)
+ expect(f.h.store.deliveries()).toEqual(messages)
 })

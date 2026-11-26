@@ -1,3 +1,4 @@
+import type {Run} from './store.ts'
 import {reviewNode} from './goal-supervision.ts'
 import type {ResumedWorker} from './paused-worker-recovery.ts'
 import {resourcePage,maxJobWaitMs,messageCharacters,maxInlineImageBytes,memoryCapacity} from './execution-limits.ts'
@@ -30,6 +31,7 @@ import {ArtifactReadError} from './goal-artifacts.ts'
 import {chatArtifactDeliver,chatArtifactFind,chatArtifactOpen,chatArtifactSpecs,deliverChatArtifactInput,findChatArtifactInput} from './chat-retained-artifacts.ts'
 import type {Runtime} from './runtime.ts'
 import {jobInput,WorkItemUnavailable,type WorkOwner} from './work.ts'
+import {commandReceipt,commandOutputMode,type CommandOutputMode} from './command-receipt.ts'
 import type {ToolSpec} from './model.ts'
 import {knowledgeCommandSchema,knowledgeSpecs} from './knowledge.ts'
 import {browserReceiptId} from './browser-manager.ts'
@@ -60,8 +62,8 @@ export const workerDefinitions=[
  {name:'superagent_tools',description:'List granted connections and tool names. Supply connection and tool to read one exact input schema before calling superagent_tool. Connections do not enable message listening or replies.',validator:z.object({connection:z.string().optional(),tool:z.string().optional()}).strict().refine(x=>!x.tool||!!x.connection,'Select a connection to inspect a tool'),schema:json({connection:text,tool:text},[])},
  {name:'superagent_tool',description:'Call a granted MCP tool using its exact schema. Reuse requestId only for the same operation. Uncertain results require reconciliation; never issue a new requestId just to repeat an uncertain write.',validator:z.object({connection:z.string(),tool:z.string(),arguments:z.record(z.string(),z.unknown()),requestId:z.string().min(1).max(200)}).strict(),schema:json({connection:text,tool:text,arguments:{type:'object',additionalProperties:true},requestId:text},['connection','tool','arguments','requestId'])},
  {name:'superagent_read',description:'Read a paginated task-scoped resource. Start with catalog. model-tool-receipts lists the retained results of this assignment; jobs and tool-calls expose operation status. Retain returned cursor and nextOffset for text pages. Images return actual image content.',validator:readSchema,schema:json({resource:text,offset:integer,limit:{type:'integer',minimum:1,maximum:resourcePage.maxCharacters},pageSize:{type:'integer',minimum:1,maximum:resourcePage.maxItems},cursor:text},['resource'])},
- {name:'superagent_shell',description:'Run a command in the task sandbox. The host owns the process, output and lifecycle. The call waits 5 seconds by default. Set yieldMs to wait up to 120 seconds. Unfinished work continues in the background. Reuse requestId for the same command. For personal Chat, workspace commands run offline by default. Use access=network for network access, access=write for a shared source directory, and writePaths for specific existing external work directories.',validator:z.object({access:z.enum(['workspace','write','network']).optional(),writePaths:z.array(z.string().min(1)).min(1).max(12).optional(),command:z.string().min(1).max(100000),requestId:z.string().min(1).max(200),yieldMs:z.number().int().min(0).max(maxJobWaitMs).default(5000)}).strict(),schema:json({command:{type:'string',minLength:1,maxLength:100000},requestId:{type:'string',minLength:1,maxLength:200},yieldMs:{type:'integer',minimum:0,maximum:maxJobWaitMs},access:{type:'string',enum:['workspace','write','network']},writePaths:{type:'array',minItems:1,maxItems:12,items:text}},['command','requestId'])},
- {name:'superagent_job',description:'Read, wait for or cancel an owned job. Wait returns after 5 seconds by default, or at a requested yieldMs up to 120 seconds. Completion wakes the same worker automatically while it owns a slot.',validator:jobInput,schema:json({id:text,action:{type:'string',enum:['read','wait','stop']},yieldMs:{type:'integer',minimum:0,maximum:maxJobWaitMs},offset:integer,limit:{type:'integer',minimum:1,maximum:resourcePage.maxCharacters}},['id','action'])},
+ {name:'superagent_shell',description:'Run a command in the task sandbox. The host retains the complete output. Long test logs return a preview. Request outputMode=summary for custom commands or full for the normal first page. The call waits 5 seconds by default. Set yieldMs to wait up to 120 seconds. Unfinished work continues in the background. Reuse requestId for the same command. For personal Chat, workspace commands run offline by default. Use access=network for network access, access=write for a shared source directory, and writePaths for specific existing external work directories.',validator:z.object({outputMode:commandOutputMode.optional(),access:z.enum(['workspace','write','network']).optional(),writePaths:z.array(z.string().min(1)).min(1).max(12).optional(),command:z.string().min(1).max(100000),requestId:z.string().min(1).max(200),yieldMs:z.number().int().min(0).max(maxJobWaitMs).default(5000)}).strict(),schema:json({outputMode:{type:'string',enum:commandOutputMode.options},command:{type:'string',minLength:1,maxLength:100000},requestId:{type:'string',minLength:1,maxLength:200},yieldMs:{type:'integer',minimum:0,maximum:maxJobWaitMs},access:{type:'string',enum:['workspace','write','network']},writePaths:{type:'array',minItems:1,maxItems:12,items:text}},['command','requestId'])},
+ {name:'superagent_job',description:'Read, wait for or cancel an owned job. Pages requested with offset or limit always contain the original output. Wait returns after 5 seconds by default, or at a requested yieldMs up to 120 seconds. Completion wakes the same worker automatically while it owns a slot.',validator:jobInput.extend({outputMode:commandOutputMode.optional()}),schema:json({outputMode:{type:'string',enum:commandOutputMode.options},id:text,action:{type:'string',enum:['read','wait','stop']},yieldMs:{type:'integer',minimum:0,maximum:maxJobWaitMs},offset:integer,limit:{type:'integer',minimum:1,maximum:resourcePage.maxCharacters}},['id','action'])},
  {name:'superagent_spawn',description:'Delegate a bounded independent task when parallelism, expertise or an independent check adds concrete value. Keep dependent implementation and repair steps with the same owner. Include the objective, context, write scope, verification and required result; integrate the result yourself. The managed subagent inherits this task sandbox and mandate. It cannot publish, change configuration or access other tasks. Nested subagents retain these limits. Return the job ID immediately.',validator:z.object({prompt:z.string().min(1).max(messageCharacters),requestId:z.string().min(1).max(200)}).strict(),schema:json({prompt:{type:'string',minLength:1,maxLength:messageCharacters},requestId:text},['prompt','requestId'])},
  {name:'superagent_ack',description:'Acknowledge a reached human message once. Delegated Workers report through their Router. For an internal assignment, start work or use superagent_progress.',validator:z.object({triggerId:z.string(),text:z.string().min(1).max(500)}).strict(),schema:json({triggerId:text,text},['triggerId','text'])},
  {name:'superagent_progress',description:'Record an internal progress update without ending this turn or contacting people.',validator:z.object({summary:z.string().min(1).max(32_000)}).strict(),schema:json({summary:{type:'string',minLength:1,maxLength:32_000}},['summary'])},
@@ -101,13 +103,17 @@ export class WorkerTools {
   if(attempt&&!currentWorkerAttempt(this.host,attempt))throw new WorkerToolNotDispatched(attempt.id,attempt.basis.dataRevision)
   checkAuthority()
   if(reviewNode(this.host.goals.forTask(owner.ticketId)?.nodes?.find(n=>n.ticketId===owner.ticketId)))throw Error('Independent review accepts only the host review readers')
-  const allowed=this.host.store.get<any>('run',owner.ticketId)?.agentOptions?.tools
+  const currentRun=this.host.store.get<Run>('run',owner.ticketId)
+  const allowed=currentRun?.agentOptions?.tools
   if(allowed&&!allowed.includes(name))throw Error('Tool is disabled for this Worker')
   const definition=workerDefinitions.find(d=>d.name===name);if(!definition)throw Error('Unknown worker tool')
   const input=splitPendingNotice(name,value)
   const parsed=definition.validator.safeParse(input.args)
   if(!parsed.success)return {success:false,contentItems:[{type:'inputText',text:'Invalid arguments for '+name+': '+z.prettifyError(parsed.error)}]}
   const args=parsed.data as any
+  const jobReceipt=name==='superagent_shell'||name==='superagent_job'&&['read','wait'].includes(args.action)&&!Object.hasOwn(input.args as object,'offset')&&!Object.hasOwn(input.args as object,'limit')
+  const outputMode:CommandOutputMode|undefined=jobReceipt?args.outputMode:undefined
+  if(name==='superagent_shell'||name==='superagent_job')delete args.outputMode // Presentation does not identify or authorize an effect.
   // Goal artifact hashes and Chat file IDs are disjoint. Route an exact Chat ID through its own authority checks.
   if(name==='superagent_artifact_read'&&deliverChatArtifactInput.safeParse(args).success&&(!allowed||allowed.includes(chatArtifactOpen)))name=chatArtifactOpen
   if(!plan){
@@ -245,7 +251,9 @@ export class WorkerTools {
     workflowRevision=String(view.revision)
     risk={target:String(view.issue),account:String(view.account),change:args.stateId,version:workflowRevision}
   }
-  const execute=(receiptId?:string)=>this.execute({checkAuthority,plan,attempt,signal},owner,name,name==='superagent_shell'&&receiptId?{...args,requestId:receiptId}:args,continuation,writePaths,publication,workflowRevision)
+  const backend=currentRun?.backendId??this.host.config.execution.roles.worker??this.host.config.execution.backend
+  const receiptTools=allowed??this.host.config.backends[backend]?.defaults?.tools
+  const execute=(receiptId?:string)=>this.execute({checkAuthority,plan,attempt,signal,jobReceipt:jobReceipt&&(!receiptTools||receiptTools.includes('superagent_job')),outputMode},owner,name,name==='superagent_shell'&&receiptId?{...args,requestId:receiptId}:args,continuation,writePaths,publication,workflowRevision)
   if(expectedId&&(!actor||!risk))throw Error('The approved Worker action is no longer available')
   if(!actor&&this.host.chat.hasContext({ticketId:owner.ticketId,triggerId:trigger})&&(workerRisk(name,args)||['superagent_shell','superagent_tool'].includes(name)))throw Error('The task no longer owns its Chat permissions')
   if(actor&&risk){
@@ -259,7 +267,7 @@ export class WorkerTools {
   submitting?.()
   return execute()
  }
- private async execute(fence:{checkAuthority:()=>void;plan:boolean;attempt?:WorkerAttempt;signal?:AbortSignal},owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{
+ private async execute(fence:{jobReceipt:boolean;outputMode?:CommandOutputMode;checkAuthority:()=>void;plan:boolean;attempt?:WorkerAttempt;signal?:AbortSignal},owner:WorkOwner,name:string,args:any,continuation?:TaskContinuation,writePaths?:string[],publication?:{sha:string;branch:string},workflowRevision?:string):Promise<ToolResult>{
   const {checkAuthority,plan,attempt}=fence
   checkAuthority()
   let result:any
@@ -370,6 +378,7 @@ export class WorkerTools {
    return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)},{type:'inputImage',imageUrl:'data:'+image.mimeType+';base64,'+image.data}]}
   }
   if(result?.kind==='image')return {success:true,contentItems:[{type:'inputImage',imageUrl:'data:'+result.mimeType+';base64,'+result.data}]}
+  if(fence.jobReceipt&&result?.kind==='shell')result=commandReceipt(result,fence.outputMode,limit=>this.host.work.outputTail(owner,result.id,limit))
   const failedCommand=name==='superagent_shell' && ['failed','interrupted','cancelled'].includes(result?.state)
   return {success:!failedCommand,contentItems:[{type:'inputText',text:JSON.stringify(result)}]}
  }

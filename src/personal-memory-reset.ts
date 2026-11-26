@@ -5,6 +5,12 @@ import {stableDigest} from './sources.ts'
 import {defaultMemoryWriteMode,memoryPolicySchema,type MemoryPolicy} from './memory-policy.ts'
 
 export interface PersonalReset {defaultWriteMode?:MemoryPolicy['writeMode'];settingsKey:string;scopeId:string;entries:string[];spaces:string[];factIds:string[]}
+export function hasForeignHistoryOwner(store:Store,plan:HistoryPlan){
+ if(!plan.personalReset)return false
+ const owner=(kind:string,id:string)=>store.get<{scopeId?:string}>(kind,id)?.scopeId
+ return plan.tickets.some(id=>{const scope=owner('task-ownership',id);return scope&&scope!==plan.scopeId})||
+  plan.triggers.some(id=>{const scope=owner('router-route',id);return scope&&scope!==plan.scopeId})
+}
 const bySpace=new Set(['memory-personal','memory-last-extract','memory-maintenance','memory-consolidation','memory-sequence','memory-reflection','memory-reflection-run','memory-reflection-revision'])
 const learning=new Set(['memory-observation','memory-extraction-session','memory-document-use','memory-use','memory-topic','memory-vector','memory-reflection-history'])
 export function addPersonalReset(store:Store,plan:HistoryPlan,owner:string,conversationIds:string[]):HistoryPlan{

@@ -1,7 +1,7 @@
 import {existsSync,lstatSync,rmSync} from 'node:fs'
 import {join,resolve,relative,sep,dirname} from 'node:path'
 import {setImmediate as yieldToIO} from 'node:timers/promises'
-import type {PersonalReset} from './personal-memory-reset.ts'
+import {hasForeignHistoryOwner,type PersonalReset} from './personal-memory-reset.ts'
 import type {Store} from './store.ts'
 import {isHistoryId,needsHistoryScopeReview} from './history-fence.ts'
 import {stableDigest} from './sources.ts'
@@ -128,10 +128,10 @@ export class HistoryCleanup {
    if(rows(store).some(r=>matches(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body))))this.apply(plan)
   }
  }
- private holdScope(plan:HistoryPlan){
+ private holdScope(plan:HistoryPlan,reason='Deletion scope contains an empty identity; reconcile ownership before physical cleanup'){
   const r=this.store.get<CleanupReceipt>('history-cleanup',plan.id)
   if(!r)throw Error('History deletion has no receipt; offline scope reconciliation required')
-  if(r.status!=='completed'&&r.phase!=='scope_review')this.store.put('history-cleanup',plan.id,{...r,phase:'scope_review',error:'Deletion scope contains an empty identity; reconcile ownership before physical cleanup',nextAt:undefined,at:Date.now()})
+  if(r.status!=='completed'&&r.phase!=='scope_review')this.store.put('history-cleanup',plan.id,{...r,phase:'scope_review',error:reason,nextAt:undefined,at:Date.now()})
  }
  plans(){return this.store.list<HistoryPlan>('history-plan')}
  receipts(){return this.store.list<CleanupReceipt>('history-cleanup')}
@@ -157,14 +157,17 @@ export class HistoryCleanup {
   }
   return kind==='backend-thread'?protocolTombstone(id,value):redactBody(value)
  }
- apply(plan:HistoryPlan){
+ apply(plan:HistoryPlan,resumeVerified=false){
   if(needsHistoryScopeReview(plan))throw Error('History deletion has an invalid identity; offline scope reconciliation required')
+  if(hasForeignHistoryOwner(this.store,plan))throw Error('History deletion includes another workspace owner')
   // Replayed after restore even if the old snapshot claimed cleanup was complete.
   this.store.put('history-plan',plan.id,plan)
   for(const session of plan.sessions)this.store.put('backend-delete-pending',session.threadId,{threadId:session.threadId,cleanupId:plan.id})
   const previous=this.store.get<CleanupReceipt>('history-cleanup',plan.id)
-  this.store.put('history-cleanup',plan.id,{id:plan.id,scopeId:plan.scopeId,status:'processing',phase:'quiescing',attempts:previous?.attempts??0,nativeDone:[],external:'not_managed',backups:'restore_fenced',at:Date.now()} satisfies CleanupReceipt)
-  this.sweep(plan)
+  const completed=new Set(resumeVerified&&previous?.phase==='scope_review'?previous.nativeDone:[])
+  const nativeDone=plan.sessions.map(s=>s.threadId).filter(id=>completed.has(id)&&this.store.get('backend-deleted',id))
+  this.store.put('history-cleanup',plan.id,{id:plan.id,scopeId:plan.scopeId,status:'processing',phase:'quiescing',attempts:previous?.attempts??0,nativeDone,external:'not_managed',backups:'restore_fenced',at:Date.now()} satisfies CleanupReceipt)
+  this.sweep(plan,resumeVerified)
  }
  private sweep(plan:HistoryPlan,onlyChanged=false){
   const ids=new Set(plan.roots),matches=planMatcher(plan)
@@ -188,6 +191,7 @@ export class HistoryCleanup {
    const old=this.store.get<HistoryPlan>('history-plan',id)!
    if(needsHistoryScopeReview(old)){this.holdScope(old);continue}
    const plan=expandPlan(this.store,this.stateDir,old)
+   if(hasForeignHistoryOwner(this.store,plan)){this.holdScope(old,'Another workspace owns a task or route in the expanded deletion scope');continue}
    this.store.atomic(()=>{
     if(JSON.stringify(plan)!==JSON.stringify(old)){
      this.onExpand?.(plan)

@@ -1,7 +1,9 @@
 import {resourcePage,memoryCapacity} from './execution-limits.ts'
 import {protocolBytes} from './context-budget.ts'
 import {z} from 'zod'
-import {addPersonalReset,applyPersonalReset} from './personal-memory-reset.ts'
+import {addPersonalReset,applyPersonalReset,hasForeignHistoryOwner} from './personal-memory-reset.ts'
+import {rebuildPersonalResetScope} from './personal-reset-scope.ts'
+import {needsHistoryScopeReview} from './history-fence.ts'
 import {randomUUID} from 'node:crypto'
 import {appendFileSync,existsSync,readFileSync,openSync,fsyncSync,closeSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -11,7 +13,7 @@ import type {RouterScopes,ScopeContext} from './router-scope.ts'
 import {stableDigest,bodyDigest,sourceChangeSchema,type SourceChange} from './sources.ts'
 import type {ToolSpec} from './model.ts'
 import {assertNoMemorySecret,memoryLearningSchema,type MemoryLearning} from './memory-policy.ts'
-import {HistoryCleanup,planHistory,planChatHistory,type HistoryPlan} from './history-cleanup.ts'
+import {HistoryCleanup,planHistory,planChatHistory,type CleanupReceipt,type HistoryPlan} from './history-cleanup.ts'
 import {detectExplicitMemory,renderMemory,type MemoryKind} from './vendor/weknora/primitives.ts'
 
 const id=z.string().min(1).max(300)
@@ -41,7 +43,7 @@ export const memoryToolSpecs:ToolSpec[]=[{type:'function',name:'router_memory',d
 interface MemorySuppression {id:string;factId:string;scopeId:string;owner:string;subjectHash:string;contentHash:string;evidenceHashes:string[];evidenceIds:string[];dependencyIds:string[];topicHashes?:string[];revision:number;active:boolean;at:number}
 const suppressionHash=(s:string)=>stableDigest(s.normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu,''))
 /** Append-only, content-free deletion fence survives restoring an older SQLite snapshot. */
-export interface Revocation {seq:number;previous:string;tenantId:string;scopeId:string;action:'forget'|'clear'|'source.delete'|'unshare'|'history.delete'|'history.extend'|'source.change'|'suppression.remove';id?:string;targetEntry?:string;generation:number;at:number;hash:string;cleanup?:HistoryPlan;sourceChange?:SourceChange&{sourceId:string};suppression?:MemorySuppression}
+export interface Revocation {seq:number;previous:string;tenantId:string;scopeId:string;action:'forget'|'clear'|'source.delete'|'unshare'|'history.delete'|'history.extend'|'source.change'|'suppression.remove';id?:string;targetEntry?:string;generation:number;at:number;hash:string;cleanup?:HistoryPlan;scopeRepairOf?:string;sourceChange?:SourceChange&{sourceId:string};suppression?:MemorySuppression}
 export function readRevocations(stateDir:string):Revocation[]{
  const file=join(stateDir,'memory-revocations.jsonl');if(!existsSync(file))return []
  const rows=readFileSync(file,'utf8').split('\n').filter(Boolean).map(l=>JSON.parse(l) as Revocation);let previous='',seq=0
@@ -62,6 +64,21 @@ export class RouterMemory {
   const ledger=this.ledger(),previous=ledger.at(-1),body={seq:(previous?.seq??0)+1,previous:previous?.hash??'',tenantId:ledger.find(r=>r.cleanup?.id===plan.id)!.tenantId,scopeId:plan.scopeId,action:'history.extend' as const,generation:this.generation(plan.scopeId),at:Date.now(),cleanup:plan},r={...body,hash:stableDigest(body)}
   this.appendRevocation(r);this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash})
  };this.reconcile()}
+ /** Host maintenance for an already registered reset. It accepts no caller-supplied file, account or session list. */
+ repairChatResetScope(id:string){
+  this.reconcile()
+  const ledger=this.ledger(),events=ledger.filter(r=>r.cleanup?.id===id),origin=events[0],source=events.at(-1)
+  if(events.some(r=>r.scopeRepairOf))return
+  const held=this.store.get<HistoryPlan>('history-plan',id),receipt=this.store.get<CleanupReceipt>('history-cleanup',id)
+  if(!origin?.cleanup||!source?.cleanup||!held||!receipt||stableDigest(held)!==stableDigest(source.cleanup))throw Error('The original reset journal and database must agree')
+  if(origin.tenantId!==held.scopeId||source.tenantId!==held.scopeId)throw Error('The personal reset journal changed tenant')
+  const plan=rebuildPersonalResetScope(this.store,this.stateDir,origin.cleanup,held,receipt),previous=ledger.at(-1)!
+  const body={seq:previous.seq+1,previous:previous.hash,tenantId:origin.tenantId,scopeId:origin.scopeId,action:'history.extend' as const,generation:this.generation(origin.scopeId),at:Date.now(),cleanup:plan,scopeRepairOf:source.hash}
+  const r={...body,hash:stableDigest(body)}
+  this.store.requireHistoryScopeRepairSchema()
+  this.appendRevocation(r)
+  this.store.atomic(()=>this.applyRevocation(r))
+ }
  generation(scopeId:string){return this.store.get<number>('memory-generation',scopeId)??0}
  revocationStamp(){
   const file=statSync(join(this.stateDir,'memory-revocations.jsonl'),{bigint:true,throwIfNoEntry:false})
@@ -82,6 +99,7 @@ export class RouterMemory {
   if(ledger.some(r=>r.cleanup?.id===id))return {cleanupId:id}
   const at=Math.max(Date.now(),(this.store.get<number>('memory-clock','last')??0)+1)
   const cleanup=addPersonalReset(this.store,planChatHistory(this.store,this.stateDir,scopeId,id,at,conversationIds),owner,conversationIds)
+  if(hasForeignHistoryOwner(this.store,cleanup))throw Error('History deletion includes another workspace owner')
   if(cleanup.tickets.some(id=>this.store.get<{phase:string}>('run',id)?.phase==='merging'))throw Error('A Chat task merge is in progress. Reconcile its outcome before clearing history.')
   const conversations=conversationIds.map(id=>this.store.get<{id:string;sourceId:string;nativeId?:string}>('chat-conversation',id)!)
   const entries=new Set(this.scopes.bindings().filter(b=>conversations.some(c=>b.sourceId===c.sourceId&&b.nativeId===(c.nativeId??'chat:'+c.id))).map(b=>b.id))
@@ -396,13 +414,25 @@ export class RouterMemory {
   if(this.readOnlyDepth){this.assertReconciled();return}
   const rows=this.ledger(),head=this.store.get<{seq:number;hash:string}>('memory-revocation-head','current')
   if(head&&!rows.some(r=>r.seq===head.seq&&r.hash===head.hash))throw Error('Latest memory revocation ledger is required before restoring service')
-  this.store.atomic(()=>{for(const r of rows)if(r.seq>(head?.seq??0))this.applyRevocation(r)})
+  const pending=rows.slice(head?.seq??0)
+  if(!pending.length)return
+  const repaired=new Map<string,number>()
+  for(const r of pending)if(r.scopeRepairOf){
+   const prior=rows.find(row=>row.hash===r.scopeRepairOf)
+   if(!prior?.cleanup||!r.cleanup||prior.seq>=r.seq||prior.cleanup.id!==r.cleanup.id||prior.scopeId!==r.scopeId||prior.tenantId!==r.tenantId||
+      !needsHistoryScopeReview(prior.cleanup)||needsHistoryScopeReview(r.cleanup))throw Error('Invalid history scope amendment')
+   repaired.set(r.cleanup.id,prior.seq)
+  }
+  this.store.atomic(()=>{for(const r of pending){
+   if(r.cleanup&&r.seq<=(repaired.get(r.cleanup.id)??0)&&needsHistoryScopeReview(r.cleanup))continue
+   this.applyRevocation(r)
+  }})
  }
  private applyRevocation(r:Revocation){
   if(r.suppression)this.store.put('memory-suppression',r.suppression.id,r.suppression)
   if(r.action==='suppression.remove'){const old=this.store.get<MemorySuppression>('memory-suppression',r.id!);if(old)this.store.put('memory-suppression',r.id!,{...old,active:false,revision:(old.revision??1)+1});this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash});return}
   if(r.action==='source.change'){this.applySourceChange(r);this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash});return}
-  if(r.action==='history.extend'){if(r.cleanup){applyPersonalReset(this.store,r.cleanup);this.cleanup.apply(r.cleanup);}this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash});return}
+  if(r.action==='history.extend'){if(r.cleanup){if(r.scopeRepairOf)this.store.requireHistoryScopeRepairSchema();applyPersonalReset(this.store,r.cleanup);this.cleanup.apply(r.cleanup,!!r.scopeRepairOf);}this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash});return}
   if(r.action==='clear'||r.action==='history.delete'){
    this.store.put('memory-clock','last',r.at)
    this.store.put('memory-generation',r.scopeId,Math.max(r.generation,this.generation(r.scopeId)));this.store.put('memory-watermark',r.scopeId,r.at)

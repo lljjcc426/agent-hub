@@ -6,8 +6,9 @@ import {configSchema} from '../src/config.ts'
 import {Runtime} from '../src/runtime.ts'
 import {Store} from '../src/store.ts'
 import {RouterScopes} from '../src/router-scope.ts'
-import {RouterMemory,type MemoryFact} from '../src/router-memory.ts'
-import {MessageSource} from '../src/sources.ts'
+import {RouterMemory,readRevocations,type MemoryFact} from '../src/router-memory.ts'
+import {planChatHistory} from '../src/history-cleanup.ts'
+import {MessageSource,stableDigest} from '../src/sources.ts'
 import {backupState,restoreState} from '../src/backup.ts'
 import type {ModelRequest,Model} from '../src/model.ts'
 const roots:string[]=[],stores:Store[]=[],hosts:Runtime[]=[]
@@ -26,6 +27,35 @@ function fixture(){
  const remember=(content='Budget 73',group='g1',extra:Record<string,unknown>={})=>{const c=context(group),e=memory.ingest(c);return memory.command(c,{action:'remember',operationId:'write-'+(++seq),expectedRevision:0,subject:'budget',content,sourceIds:[e.id],candidate:false,...extra},true) as MemoryFact}
  return {root,config,store,scopes,memory,source,context,remember}
 }
+it('narrows a legacy reset to its original owner, resumes verified sessions and replays the amendment over an older snapshot',()=>{
+ const f=fixture(),{store,config}=f,scopeId='@chat:'+stableDigest('alice'),id='chat-reset:fixture',at=100
+ store.put('chat-conversation','chat',{id:'chat',owner:'alice',createdAt:1,sourceId:'local',actor:'alice'})
+ store.put('chat-run','request',{conversationId:'chat',triggerId:'request'})
+ for(const native of ['done','pending'])store.put('work',native+'-job',{triggerId:'request',threadId:native,cwd:f.root})
+ store.put('work','foreign-job',{threadId:'foreign',cwd:f.root,text:'preserve'})
+ const valid=planChatHistory(store,config.stateDir,scopeId,id,at,['chat'])
+ const plan={...valid,personalReset:{settingsKey:'chat-space:alice',scopeId,entries:[],spaces:[],factIds:[]},roots:[...valid.roots,'','foreign'],
+  records:[...valid.records,['work','foreign-job'] as [string,string]],sessions:[...valid.sessions,{threadId:'',cwd:f.root},{threadId:'foreign',cwd:f.root}]}
+ const snapshot=join(f.root,'before.sqlite');store.db.prepare('VACUUM INTO ?').run(snapshot)
+ const body={seq:1,previous:'',at,tenantId:scopeId,scopeId,action:'history.extend',generation:0,cleanup:plan},hash=stableDigest(body)
+ writeFileSync(join(config.stateDir,'memory-revocations.jsonl'),JSON.stringify({...body,hash})+'\n')
+ store.put('work','foreign-job',{threadId:'foreign',cwd:f.root,text:''})
+ store.put('history-plan',id,plan);store.put('memory-revocation-head','current',{seq:1,hash})
+ store.put('backend-deleted','done',{threadId:'done'});store.put('backend-deleted','foreign',{threadId:'foreign'})
+ store.put('history-cleanup',id,{id,scopeId,attempts:1,status:'processing',phase:'scope_review',nativeDone:['done']})
+ expect(()=>f.memory.repairChatResetScope(id)).toThrow('ownership')
+ expect(readRevocations(config.stateDir)).toHaveLength(1)
+ store.put('history-cleanup',id,{id,scopeId,attempts:1,status:'processing',phase:'scope_review',nativeDone:['done','foreign']})
+ f.memory.repairChatResetScope(id);f.memory.repairChatResetScope(id)
+ expect(readRevocations(config.stateDir)).toHaveLength(2)
+ expect(store.get<any>('history-cleanup',id).nativeDone).toEqual(['done'])
+ expect(store.get<any>('work','foreign-job').text).toBe('')
+ const reopened=new Store(snapshot);stores.push(reopened)
+ const replay=new RouterMemory(reopened,new RouterScopes(reopened,config),config.stateDir)
+ expect(reopened.get<any>('work','foreign-job').text).toBe('preserve')
+ expect(replay.cleanup.plans()[0]!.sessions.map(s=>s.threadId).sort()).toEqual(['done','pending'])
+ expect(reopened.get<any>('memory-revocation-head','current').seq).toBe(2)
+})
 it('captures configured Feishu command-prefixed explicit memory without changing source evidence',()=>{
  const f=fixture(),source=f.config.sources[0]!
  source.kind='feishu';source.feishu={command:'/router',chats:['g1']} as typeof source.feishu

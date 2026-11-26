@@ -18,7 +18,8 @@ export const ASYNC_WORKER_DB_SCHEMA=18
 export const WORKER_INQUIRY_DB_SCHEMA=19
 export const CHAT_RESULT_REVIEW_DB_SCHEMA=20
 export const CHAT_INTERJECTION_DB_SCHEMA=21
-export const MAX_DB_SCHEMA=CHAT_INTERJECTION_DB_SCHEMA
+export const HISTORY_SCOPE_REPAIR_SCHEMA=22
+export const MAX_DB_SCHEMA=HISTORY_SCOPE_REPAIR_SCHEMA
 
 export interface Job { id: string; kind: string; payload: unknown; state: string; attempts: number; nextAt: number }
 export interface Delivery extends OutboundMessage { inquiryId?:string; inquiryReadback?:boolean; taskResult?:number; status: string; attempts: number; nextAt: number; error?: string }
@@ -132,6 +133,7 @@ export class Store implements Repositories {
   }
   /** Older hosts cannot reconcile an input already claimed by the active Chat task. */
   requireChatInterjectionSchema(){this.db.exec('PRAGMA user_version='+Math.max(CHAT_INTERJECTION_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
+  requireHistoryScopeRepairSchema(){this.db.exec('PRAGMA user_version='+Math.max(HISTORY_SCOPE_REPAIR_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   /** Older hosts cannot enforce pending result decisions or assignment-scoped Chat file reads. */
   requireChatResultReviewSchema(){this.db.exec('PRAGMA user_version='+Math.max(CHAT_RESULT_REVIEW_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   requireAsyncWorkerSchema(){this.db.exec('PRAGMA user_version='+Math.max(ASYNC_WORKER_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}

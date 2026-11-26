@@ -34,7 +34,7 @@ export function beginWorkerPhase(host:Runtime,g:RouterGoal,n:GoalNode,task:Ticke
  const tools=run.agentOptions?.tools??host.config.backends[run.backendId??host.config.execution.roles.worker??host.config.execution.backend]?.defaults?.tools
  if(tools&&!tools.includes('superagent_read'))return
  const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
- if(thread&&(thread.state!=='completed'||thread.effectIds.some(id=>store.get<{state:string}>('backend-plugin-tool',id)?.state!=='complete')))return
+ if(thread&&(thread.state!=='completed'||!Array.isArray(thread.effectIds)||thread.effectIds.some(id=>store.get<{state:string}>('backend-plugin-tool',id)?.state!=='complete')))return
  const key=stableDigest([g.id,n.id,task.id,a.id,cause,run.threadId])
  if(store.get('context-handoff',key))return
  const delivery=store.get<GoalDelivery>('goal-delivery',task.id)

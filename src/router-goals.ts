@@ -1088,7 +1088,7 @@ export class RouterGoals {
     return resumed&&resumed.goalId===saved.id&&!resumed.inputId
    })
    if(this.automaticReadRecoveryAllowed(saved)&&saved.state==='held'){
-    try{if(superviseDependencies(this.host,saved))continue}catch{/* Revalidate authority on the next eligible tick. */}
+    try{if(this.host.replanning.recoverTruncated(saved)||superviseDependencies(this.host,saved))continue}catch{/* Revalidate authority on the next eligible tick. */}
    }
    const runnable=['active','waiting'].includes(saved.state)||refreshReview
     if((!runnable&&!checkHeldRead&&!confirmed?.length&&!evidenceHolds.length&&!pendingCheckpointWake)||!saved.objective||!saved.nodes?.length)continue

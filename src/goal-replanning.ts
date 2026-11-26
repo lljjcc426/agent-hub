@@ -14,6 +14,8 @@ import type {ContextManifest} from './router-memory.ts'
 import {BackendRegistry} from './backends/registry.ts'
 import {agentOptionsSchema} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
+import {ModelOutputLimitError} from './model.ts'
+import {ApiFailure} from './backends/api-failure.ts'
 import {businessDecision} from './business-decisions.ts'
 
 export interface GoalContract {details?:import('./goal-contract.ts').GoalDetails;skill?:{id:string;version:number};objective:string;criteria:GoalCriterion[];triggerId:string;triggerHash:string;mandate:Mandate;workerIds:string[];backendIds:string[];teamTargets?:{id:string;policyHash:string}[]}
@@ -21,17 +23,37 @@ export class ReplanningInterrupted extends Error {}
 const id=z.string().min(1).max(200),instruction=z.string().min(1).max(16000)
 const change=z.object({id,instruction,dependsOn:z.array(id).max(100)}).strict()
 const addition=z.object({id,title:z.string().min(1).max(300),instruction,workerId:id,dependsOn:z.array(id).max(100),derivedFrom:id,purpose:z.enum(['work','review']).optional(),reviewReport:evidencePath.optional(),supports:z.array(id).min(1).max(50),outputs:z.array(evidencePath).min(1).max(20)}).strict()
-export const replanProposalSchema=z.object({reason:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200),changes:z.array(change).min(1).max(100),additions:z.array(addition).max(20)}).strict()
+export const replanProposalSchema=z.object({disposition:z.enum(['revise','defer']).optional(),reason:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200),changes:z.array(change).max(100),additions:z.array(addition).max(20)}).strict().refine(p=>p.disposition==='defer'?p.changes.length===0&&p.additions.length===0:p.changes.length>0,'A revision requires changes; a deferral cannot dispatch work')
 type Proposal=z.infer<typeof replanProposalSchema>
 const reviewSchema=z.object({approved:z.boolean(),explanation:z.string().min(1).max(4000),evidenceIds:z.array(id).min(1).max(200)}).strict()
 interface WorkerCapability {id:string;backend:string;tools:string[];sandboxDriver:string;network:boolean;sourceSandbox:string}
 interface ReplanSnapshot {contract:GoalContract;goalRevision:number;planRevision:number;nodes:GoalNode[];failureNodeIds:string[];repairOwnerIds?:string[];overallGap?:{roundId:string;checks:import('./goal-verification.ts').VerificationCheck[]};evidence:GoalEvidence[];workerCapabilities?:WorkerCapability[]}
-export interface ReplanRound {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;state:'pending'|'planning'|'reviewing'|'approved'|'applied'|'rejected'|'errored'|'stale';snapshot:ReplanSnapshot;snapshotHash:string;proposal?:Proposal;review?:z.infer<typeof reviewSchema>;error?:string;plannerThread?:string;reviewerThread?:string;contextIds?:string[];at:number;appliedAt?:number}
+export interface ReplanRound {id:string;goalId:string;scopeId:string;entryId:string;triggerId:string;state:'pending'|'planning'|'reviewing'|'approved'|'applied'|'rejected'|'deferred'|'errored'|'stale';outputRetry?:'plan'|'review';snapshot:ReplanSnapshot;snapshotHash:string;proposal?:Proposal;review?:z.infer<typeof reviewSchema>;error?:string;plannerThread?:string;reviewerThread?:string;contextIds?:string[];at:number;appliedAt?:number}
 const activeStates=new Set(['pending','planning','reviewing','approved'])
 const strings={type:'array',items:{type:'string'}}
-const proposalOutput={type:'object',properties:{reason:{type:'string'},evidenceIds:strings,changes:{type:'array',items:{type:'object',properties:{id:{type:'string'},instruction:{type:'string'},dependsOn:strings},required:['id','instruction','dependsOn'],additionalProperties:false}},additions:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},dependsOn:strings,derivedFrom:{type:'string'},supports:strings,outputs:strings},required:['id','title','instruction','workerId','dependsOn','derivedFrom','supports','outputs'],additionalProperties:false}}},required:['reason','evidenceIds','changes','additions'],additionalProperties:false}
+const proposalOutput={type:'object',properties:{disposition:{type:'string',enum:['revise','defer']},reason:{type:'string'},evidenceIds:strings,changes:{type:'array',items:{type:'object',properties:{id:{type:'string'},instruction:{type:'string'},dependsOn:strings},required:['id','instruction','dependsOn'],additionalProperties:false}},additions:{type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'},instruction:{type:'string'},workerId:{type:'string'},dependsOn:strings,derivedFrom:{type:'string'},supports:strings,outputs:strings},required:['id','title','instruction','workerId','dependsOn','derivedFrom','supports','outputs'],additionalProperties:false}}},required:['disposition','reason','evidenceIds','changes','additions'],additionalProperties:false}
 const reviewOutput={type:'object',properties:{approved:{type:'boolean'},explanation:{type:'string'},evidenceIds:strings},required:['approved','explanation','evidenceIds'],additionalProperties:false}
 
+function reviewOwners(node:GoalNode,nodes:GoalNode[]){
+ const opinion=node.opinion
+ if(!reviewNode(node)||opinion?.verdict!=='changes_requested'||opinion.workerId!==node.workerId||!opinion.owners.length)return
+ const parents=node.dependsOn.map(id=>nodes.find(n=>n.id===id))
+ if(parents.every(p=>p?.state==='passed'&&p.roundId)&&opinion.version===stableDigest(parents.map(p=>p!.roundId))&&
+   opinion.owners.every(id=>parents.some(p=>p!.id===id)))return opinion.owners
+}
+
+/** The current independent opinion can route its own findings. Full original
+ * evidence remains available and the separate acceptance snapshot is unchanged. */
+function routingReports(snapshot:ReplanSnapshot):Set<string>|undefined {
+ if(!snapshot.repairOwnerIds?.length||!snapshot.failureNodeIds.length)return
+ for(const id of snapshot.failureNodeIds){
+  const node=snapshot.nodes.find(n=>n.id===id),owners=node&&reviewOwners(node,snapshot.nodes)
+  if(!node?.ticketId||!owners||!owners.every(owner=>snapshot.repairOwnerIds!.includes(owner))||
+    !snapshot.evidence.some(e=>e.kind==='report'&&e.key===id&&e.ticketId===node.ticketId))return
+ }
+ return new Set(snapshot.evidence.filter(e=>e.kind==='report').map(e=>e.id))
+}
+const truncatedReply=String(new ModelOutputLimitError())
 /** Plans may change implementation, never the retained authorization or acceptance contract. */
 export class GoalReplanning {
  constructor(private host:Runtime,private now:()=>number=Date.now){}
@@ -89,13 +111,7 @@ export class GoalReplanning {
    return {id:w.id,backend:w.backend,tools:localTools.filter(t=>!options.tools||options.tools.includes(t.name)).map(t=>t.name).sort(),sandboxDriver:this.host.config.work.sandboxDriver,network:this.host.config.work.network,sourceSandbox:source.sandbox}
   }).sort((a,b)=>a.id.localeCompare(b.id)):undefined
   const failed=g.nodes.filter(n=>n.state==='held'),failureNodeIds=failed.map(n=>n.id)
-  const owners=failed.flatMap(n=>{
-   const opinion=n.opinion,parents=n.dependsOn.map(id=>g.nodes!.find(p=>p.id===id))
-   if(!includeReviewOwners||!reviewNode(n)||opinion?.verdict!=='changes_requested'||opinion.workerId!==n.workerId||
-     !parents.every(p=>p?.state==='passed'&&p.roundId)||opinion.version!==stableDigest(parents.map(p=>p!.roundId))||
-     !opinion.owners.length||!opinion.owners.every(id=>parents.some(p=>p!.id===id)))return [n.id]
-   return opinion.owners
-  })
+  const owners=failed.flatMap(n=>(includeReviewOwners&&reviewOwners(n,g.nodes!))||[n.id])
   const repairOwnerIds=[...new Set(owners)]
   const overallGap=this.overallGap(g)
   return {contract,...(overallGap?{overallGap}:{}),goalRevision:g.revision,planRevision:g.planRevision??0,nodes:g.nodes,failureNodeIds,...(stableDigest(repairOwnerIds)!==stableDigest(failureNodeIds)?{repairOwnerIds}:{}),evidence:this.host.verification.failureEvidence(g),...(workerCapabilities?{workerCapabilities}:{})}
@@ -107,8 +123,7 @@ export class GoalReplanning {
    return !!task?.attention&&businessDecision(this.host,task.attention.id)?.status==='pending'
   })
  }
- private current(r:ReplanRound){
-  const g=this.host.goals.get(r.goalId)
+ private current(r:ReplanRound,g=this.host.goals.get(r.goalId)){
   if(!g||g.replanId!==r.id)throw Error('Replanning input, goal state, Worker capabilities or authority changed')
   if(this.waitingForAnswer(g))throw Error('The goal is waiting for a user answer')
   const snapshot=this.snapshot(g,r.snapshot.workerCapabilities!==undefined,r.snapshot.repairOwnerIds!==undefined)
@@ -117,6 +132,24 @@ export class GoalReplanning {
   if(stableDigest(snapshot)!==r.snapshotHash)throw Error('Replanning input, goal state, Worker capabilities or authority changed')
   if((g.replans??0)>=(g.maxReplans??(g.project?.policy.budget?Infinity:0)))throw Error('Replanning allowance changed')
   return g
+ }
+ /** Only a host-recorded, read-only planning truncation may reclaim its original job. */
+ recoverTruncated(g:RouterGoal){
+  if(g.state!=='held'||!g.replanId||g.reason!=='Autonomous replanning could not be accepted: '+truncatedReply)return false
+  const store=this.host.store,r=store.get<ReplanRound>('goal-replan',g.replanId)
+  if(!r||r.goalId!==g.id||r.state!=='errored'||r.error!==truncatedReply||r.outputRetry||r.review)return false
+  const jobId='goal-replan:'+r.id
+  const job=store.db.prepare("SELECT state FROM jobs WHERE id=? AND kind='goal-replan' AND json_extract(payload,'$.roundId')=? AND json_extract(payload,'$.goalId')=?").get(jobId,r.id,g.id)
+  if(!job||!['done','failed'].includes(String(job.state)))return false
+  const next={...g,state:'active' as const,reason:undefined,revision:g.revision+1}
+  this.current(r,next)
+  if(this.host.goals.budget(g)?.reason)return false
+  store.atomic(()=>{
+   store.put('router-goal',g.id,next)
+   store.put('goal-replan',r.id,{...r,state:r.proposal?'reviewing':'planning',error:undefined,outputRetry:r.proposal?'review':'plan'})
+   store.jobState(jobId,'pending')
+  })
+  return true
  }
  consider(g:RouterGoal):boolean {
   // Remote contracts are immutable and have no safe amendment/resume protocol yet.
@@ -172,20 +205,36 @@ export class GoalReplanning {
   for(const id of r.snapshot.repairOwnerIds??r.snapshot.failureNodeIds)if(!p.changes.some(n=>n.id===id))throw Error('Every failed node needs an explicit revised strategy')
   return {nodes,affected}
  }
- private requireEvidence(ids:string[],read:Set<string>,r:ReplanRound){
-  if(ids.some(id=>!read.has(id))||r.snapshot.evidence.some(e=>!read.has(e.id)||!ids.includes(e.id)))throw Error('Replanning must inspect and cite all retained failure evidence')
+ private requireEvidence(ids:string[],read:Set<string>,required:ReadonlySet<string>){
+  if(ids.some(id=>!read.has(id))||[...required].some(id=>!read.has(id)||!ids.includes(id)))throw Error('Replanning must inspect and cite all retained failure evidence')
  }
  async perform(id:string){
   let r=this.host.store.get<ReplanRound>('goal-replan',id);if(!r||!activeStates.has(r.state))return
-  const save=(patch:Partial<ReplanRound>)=>{r={...r!,...patch};this.host.store.put('goal-replan',id,r)}
+  const save=(patch:Partial<ReplanRound>)=>{r={...this.host.store.get<ReplanRound>('goal-replan',id)!,...patch};this.host.store.put('goal-replan',id,r)}
   try{
    let g=this.current(r)
+   const routing=routingReports(r.snapshot)
+   const required=routing??new Set(r.snapshot.evidence.map(e=>e.id))
    const run=async(mode:'plan'|'review')=>{
     // Old persisted rounds did not carry this field. Preserve their original
     // snapshot hash while checking a fresh capability view around each call.
     const capabilities=r!.snapshot.workerCapabilities??this.snapshot(g).workerCapabilities!
-    const modelInput={kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},workerCapabilities:capabilities,nodes:r!.snapshot.nodes,failedNodeIds:r!.snapshot.repairOwnerIds??r!.snapshot.failureNodeIds,...(r!.snapshot.repairOwnerIds?{reviewReportedBy:r!.snapshot.failureNodeIds,instruction:'Change the listed producer strategies on their existing assignments. Keep independent review read-only.'}:{}),...(r!.snapshot.overallGap?{unassignedGap:r!.snapshot.overallGap}:{}),evidence:r!.snapshot.evidence.map(({content,...meta})=>meta),requiredEvidenceIds:r!.snapshot.evidence.map(e=>e.id),...(mode==='review'?{proposal:r!.proposal}:{})}
-    const access=evidenceAccess(r!.snapshot.evidence,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{this.current(r!)},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)))
+    const modelInput={
+     kind:mode==='plan'?'goal_replanning':'goal_plan_review',contract:r!.snapshot.contract,
+     originalRequest:this.host.store.triggers.get(r!.snapshot.contract.triggerId)!.text,planRevision:r!.snapshot.planRevision,
+     replanningPolicy:{samePlanRepairsPerNode:g.maxRepairs??2,successfulReplansUsed:g.replans??0,maxSuccessfulReplans:g.maxReplans??(g.project?.policy.budget?'within project budget':0),stoppedTasksAllowed:false},
+     workerCapabilities:capabilities,
+     nodes:routing?r!.snapshot.nodes.map(({id,title,instruction,workerId,dependsOn,criterionIds,purpose,state,outputs,supports,derivedFrom})=>({id,title,instruction,workerId,dependsOn,criterionIds,purpose,state,outputs,supports,derivedFrom})):r!.snapshot.nodes,
+     failedNodeIds:r!.snapshot.repairOwnerIds??r!.snapshot.failureNodeIds,
+     ...(r!.snapshot.repairOwnerIds?{reviewReportedBy:r!.snapshot.failureNodeIds,instruction:'Change the listed producer strategies on their existing assignments. Keep independent review read-only.'}:{}),
+     ...(r!.snapshot.overallGap?{unassignedGap:r!.snapshot.overallGap}:{}),
+     evidence:routing?r!.snapshot.evidence.map(({id,kind,key,criterionIds,ticketId})=>({id,kind,key,criterionIds,ticketId})):r!.snapshot.evidence.map(({content,...meta})=>meta),
+     requiredEvidenceIds:[...required],
+     ...(routing?{routingEvidence:'The independent review and retained owner reports cover this routing decision. Read other indexed originals only to resolve a specific uncertainty. This decision cannot approve code or publication.'}:{}),
+     ...(r!.outputRetry?{previousReplyTruncated:true}:{}),
+     ...(mode==='review'?{proposal:r!.proposal}:{})
+    }
+    const access=evidenceAccess(r!.snapshot.evidence,scopeBudget(this.host.scopes.scope(g.scopeId).contextBytes).toolReserveBytes,()=>{this.current(r!)},inlineEvidenceBudget(modelInput,this.host.goalEvidenceBudget(g)),undefined,routing)
     const result=await this.host.runGoalPlanner(g,r!,mode,{input:access.input(modelInput),schema:mode==='plan'?proposalOutput:reviewOutput,tools:access.tools,onTool:access.onTool})
     this.current(r!)
     access.confirmInline()
@@ -193,10 +242,29 @@ export class GoalReplanning {
     save({contextIds:[...new Set([...(r!.contextIds??[]),result.contextId])]})
     return {result,read:access.read}
    }
-   if(!r.proposal){save({state:'planning'});const {result,read}=await run('plan'),proposal=replanProposalSchema.parse(JSON.parse(result.text));this.requireEvidence(proposal.evidenceIds,read,r);this.candidate(g,r,proposal);save({state:'reviewing',proposal,plannerThread:result.threadId})}
-   if(!r.review){const {result,read}=await run('review'),review=reviewSchema.parse(JSON.parse(result.text));this.requireEvidence(review.evidenceIds,read,r);save({review,reviewerThread:result.threadId,state:review.approved?'approved':'rejected'})}
+   if(!r.proposal){
+    save({state:'planning'})
+    const {result,read}=await run('plan'),proposal=replanProposalSchema.parse(JSON.parse(result.text))
+    this.requireEvidence(proposal.evidenceIds,read,required)
+    if(proposal.disposition!=='defer')this.candidate(g,r,proposal)
+    save({state:'reviewing',proposal,plannerThread:result.threadId})
+   }
+   if(!r.review){
+    const {result,read}=await run('review'),review=reviewSchema.parse(JSON.parse(result.text))
+    this.requireEvidence(review.evidenceIds,read,required)
+    save({review,reviewerThread:result.threadId,state:review.approved?'approved':'rejected'})
+   }
    if(!r.review!.approved){this.hold(g,'Independent plan review rejected the proposed strategy: '+r.review!.explanation);return}
    g=this.current(r)
+   if(r.proposal!.disposition==='defer'){
+    const reason=r.proposal!.reason
+    this.host.store.atomic(()=>{
+     this.current(r!)
+     save({state:'deferred'})
+     this.hold(g,reason,reason)
+    })
+    return
+   }
    const {nodes,affected}=this.candidate(g,r,r.proposal!)
    this.host.store.atomic(()=>{
     this.current(r!)
@@ -220,12 +288,26 @@ export class GoalReplanning {
     return
    }
    if(error instanceof ReplanningInterrupted)return false // Read-only reasoning can safely resume after host restart.
+   if((error instanceof ModelOutputLimitError||error instanceof ApiFailure&&error.code==='model_output_truncated')&&!r.outputRetry&&g?.replanId===r.id&&['active','waiting'].includes(g.state)&&!this.host.goals.budget(g)?.reason){
+    try{
+     this.current(r)
+     save({outputRetry:r.proposal?'review':'plan'})
+     return false
+    }catch(changed){error=changed}
+   }
    const reason=String(error).slice(0,1500)
    save({state:/changed|unavailable|current state|revoked|cannot be revived/.test(reason)?'stale':'errored',error:reason})
    if(g?.replanId===r.id&&['active','waiting'].includes(g.state))this.hold(g,'Autonomous replanning could not be accepted: '+reason)
   }
  }
- private hold(g:RouterGoal,reason:string){const latest=this.host.goals.get(g.id);if(!latest||!['active','waiting'].includes(latest.state))return;const next={...latest,state:'held' as const,reason};this.host.store.put('router-goal',g.id,next);this.host.goals.notice(next,'Autonomous replanning is unresolved; inspect the goal and currently available evidence for details.')}
+ private hold(g:RouterGoal,reason:string,decision?:string){
+  const latest=this.host.goals.get(g.id)
+  if(!latest||!['active','waiting'].includes(latest.state))return
+  const next={...latest,state:'held' as const,reason,...(decision?{nextAction:decision,nextAt:undefined,revision:latest.revision+1}:{})}
+  this.host.store.put('router-goal',g.id,next)
+  if(decision&&this.host.chat.hasContext({triggerId:g.triggerId}))this.host.goals.notice(next,decision,true)
+  else this.host.goals.notice(next,'Autonomous replanning is unresolved; inspect the goal and currently available evidence for details.')
+ }
  /** Dispatch a changed existing node only after all newly required prerequisites pass. */
  resumeNode(g:RouterGoal,n:GoalNode){
   let r=n.refreshFrom?this.host.store.get<ReplanRound>('goal-replan',n.refreshFrom):undefined

@@ -1,12 +1,10 @@
 import {ApiFailure,ApiNetworkFailure} from './api-failure.ts'
-import {TransientModelError} from '../model.ts'
+import {ModelOutputLimitError,TransientModelError} from '../model.ts'
 
 export class ApiConnectionError extends TransientModelError {
  constructor(readonly code:'connection_timeout'|'connection_unreachable') { super(code) }
 }
-export class ApiOutputLimitError extends Error {
- constructor(){super('The model exhausted its output token budget before completing the reply')}
-}
+export class ApiOutputLimitError extends ModelOutputLimitError {}
 export class ApiResponseError extends Error {
  constructor(readonly status:number,readonly code?:string,readonly parameter?:string){
   super(['HTTP '+status,code,parameter].filter(Boolean).join(' · '))

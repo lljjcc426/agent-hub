@@ -18,11 +18,11 @@ export function evidenceMetadata({content,provider,...e}:GoalEvidence){
 export function inlineEvidenceBudget(input:unknown,maxBytes:number){return Math.max(0,Math.min(2*1024*1024,Math.floor(maxBytes/4)-protocolBytes(input)))}
 
 /** A citation becomes usable only after gap-free delivery of the complete snapshot. */
-export function evidenceAccess(evidence:GoalEvidence[],pageBytes:number,current:()=>void,inlineBytes=0,providerContent?:(e:GoalEvidence)=>string){
+export function evidenceAccess(evidence:GoalEvidence[],pageBytes:number,current:()=>void,inlineBytes=0,providerContent?:(e:GoalEvidence)=>string,inlineIds?:ReadonlySet<string>){
  const read=new Set<string>(),offsets=new Map<string,number>()
  const inlineEvidence:({id:string;content:string}|{id:string;execution:InlineExecution})[]=[]
  // Whole original snapshots only. Never substitute a summary, hash or partial file.
- for(const e of evidence){if(e.provider)continue;const execution=e.kind==='execution'?inlineExecution(e.content):undefined,original={id:e.id,content:e.content},item=execution&&protocolBytes({id:e.id,execution})<protocolBytes(original)?{id:e.id,execution}:original;if(protocolBytes([...inlineEvidence,item])<=inlineBytes)inlineEvidence.push(item)}
+ for(const e of evidence){if(e.provider||inlineIds&&!inlineIds.has(e.id))continue;const execution=e.kind==='execution'?inlineExecution(e.content):undefined,original={id:e.id,content:e.content},item=execution&&protocolBytes({id:e.id,execution})<protocolBytes(original)?{id:e.id,execution}:original;if(protocolBytes([...inlineEvidence,item])<=inlineBytes)inlineEvidence.push(item)}
  const input=(value:Record<string,unknown>)=>JSON.stringify({...value,...(inlineEvidence.length?{inlineEvidence}: {})})
  // Called only after the backend returned from the exact input and authority is revalidated.
  const confirmInline=()=>{current();for(const item of inlineEvidence){read.add(item.id);offsets.set(item.id,Array.from(evidence.find(e=>e.id===item.id)!.content).length)}}

@@ -8,6 +8,10 @@ export interface NativeControl {
 }
 /** A temporary provider/transport failure, distinct from cancellation or invalid output. */
 export class TransientModelError extends Error {}
+/** An adapter received a bounded completion without a complete model reply. */
+export class ModelOutputLimitError extends Error {
+ constructor(){super('The model exhausted its output token budget before completing the reply')}
+}
 export interface NativeRequest { id:string; method:string; params:any }
 export interface ToolSpec {type:'function';name:string;description:string;inputSchema:Record<string,unknown>}
 export interface ToolContent {type:'inputText'|'inputImage';text?:string;imageUrl?:string}

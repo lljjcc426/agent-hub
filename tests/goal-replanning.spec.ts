@@ -2,6 +2,7 @@ import {it,expect,afterEach} from 'vitest'
 import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
+import {ApiOutputLimitError} from '../src/backends/api-errors.ts'
 import {Runtime} from '../src/runtime.ts'
 import {configSchema} from '../src/config.ts'
 import type {Model,ModelRequest} from '../src/model.ts'
@@ -267,4 +268,39 @@ it('resumes a queued legacy plan whose snapshot predates Worker capability recor
  await f.restart();await until(f,()=>f.goal().state==='completed')
  expect(f.plans()[0]?.state).toBe('applied');expect(f.goal().taskIds).toHaveLength(4)
  expect(f.calls.filter(r=>['goal_replanning','goal_plan_review'].includes(JSON.parse(r.input).kind)).every(r=>JSON.parse(r.input).workerCapabilities.length===2)).toBe(true)
+})
+
+
+it('retries a truncated read-only decision once on its original job, without duplicating Worker effects',async()=>{
+ let plans=0
+ const f=fixture({onPlan:async(_r,input)=>{if(input.kind==='goal_replanning'&&++plans===1)throw new ApiOutputLimitError()}})
+ f.start();await until(f,()=>f.goal().state==='completed')
+ expect(plans).toBe(2);expect(f.plans()).toHaveLength(1)
+ expect(f.plans()[0]).toMatchObject({outputRetry:'plan',state:'applied'})
+ expect([...f.attempts.values()].sort()).toEqual([1,1,1,2])
+})
+
+it('limits repeated output exhaustion and never reschedules a manually held or modified plan',async()=>{
+ const f=fixture({onPlan:async()=>{throw new ApiOutputLimitError()}})
+ f.start();await until(f,()=>f.goal().state==='held')
+ const g=f.goal(),round=f.plans()[0]!,job='goal-replan:'+round.id
+ expect(round.outputRetry).toBe('plan')
+ expect(f.h.replanning.recoverTruncated(g)).toBe(false)
+ f.h.store.put('goal-replan',round.id,{...round,outputRetry:undefined})
+ expect(f.h.replanning.recoverTruncated({...g,reason:'Paused by operator'})).toBe(false)
+ expect(()=>f.h.replanning.recoverTruncated({...g,objective:'different'})).toThrow()
+ expect(f.h.replanning.recoverTruncated(g)).toBe(true)
+ expect(f.h.store.db.prepare('select state from jobs where id=?').get(job)?.state).toBe('pending')
+ expect(f.h.replanning.recoverTruncated(f.goal())).toBe(false)
+ expect(f.goal().taskIds).toEqual(g.taskIds)
+})
+
+it('requires an independently accepted, cited deferral and leaves publication and code untouched',async()=>{
+ const proposal=(p:any)=>({...p,disposition:'defer',reason:'The authorized runners cannot validate the requested version. The patch is retained.',changes:[],additions:[]})
+ for(const approved of [true,false]){
+  const f=fixture({proposal,review:approved});f.start();await until(f,()=>f.goal().state==='held')
+  expect(f.plans()[0]?.state).toBe(approved?'deferred':'rejected')
+  expect(f.goal().replans).toBe(0);expect(f.goal().taskIds).toHaveLength(1)
+  expect(f.h.store.list('goal-plan-dispatch')).toHaveLength(0);expect(f.h.store.list('goal-release')).toHaveLength(0)
+ }
 })

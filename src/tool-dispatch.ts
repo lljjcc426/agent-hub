@@ -15,7 +15,7 @@ export function failedRead(tool:string,error:unknown):ToolResult {
 // exclusive path, including externally advertised MCP tools and browser input.
 const independentReads = new Set([
   'router_read', 'router_skill', 'superagent_read', 'superagent_tools', 'superagent_knowledge',
-  'goal_evidence', 'review_file', 'review_revision', 'orchestrator_eval_read', 'orchestrator_followup_read', 'backend_recall', 'github_read', 'chat_artifact_find',
+  'goal_evidence', 'review_file', 'review_directory', 'review_revision', 'orchestrator_eval_read', 'orchestrator_followup_read', 'backend_recall', 'github_read', 'chat_artifact_find',
 ])
 
 export function isParallelRead(name: string): boolean {

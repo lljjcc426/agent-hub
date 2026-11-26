@@ -501,8 +501,9 @@ export class Runtime {
         const node=goal?.nodes?.find(n=>n.ticketId===ticketId)
         // The scheduler independently checks captured work on the next tick. A true
         // hold is announced from the goal with its cause after that check.
+        const scheduledFeedback=!value.answers&&(node?.opinion?.verdict==='changes_requested'||node?.supervision?.action==='withdrawal')
         const awaitingReview=goal&&['active','waiting'].includes(goal.state)&&node?.state==='running'&&!ticket.attention&&
-          this.artifacts.canCapture(goal)&&capturedOutputs(this.store,goal,node)
+          (scheduledFeedback||this.artifacts.canCapture(goal)&&capturedOutputs(this.store,goal,node))
         if(!awaitingReview&&value.answers)this.engine.reply({purpose:'answer',ticketId,triggerId:value.answers,text:reply})
         else if(!awaitingReview){
           const channel=this.store.triggers.get(ticket.origin.triggerId)?.channel??ticket.channels[0]

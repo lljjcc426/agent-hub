@@ -1,7 +1,7 @@
 import {z} from 'zod'
 import {execFileSync} from 'node:child_process'
-import {realpathSync} from 'node:fs'
-import {resolve} from 'node:path'
+import {readdirSync,realpathSync} from 'node:fs'
+import {dirname,isAbsolute,resolve} from 'node:path'
 import type {Runtime} from './runtime.ts'
 import type {GoalNode,IndependentOpinion} from './goal-contract.ts'
 import type {RouterGoal} from './router-goals.ts'
@@ -71,6 +71,16 @@ function reportPath(g:RouterGoal,n:GoalNode){
  if(paths.length===1)return paths[0]
 }
 const directorySchema=z.object({directory:z.string().max(256).regex(/^(?:\.|[\w.-]+(?:\/[\w.-]+)*)$/)}).strict()
+// Paginate one directory without following links or exposing Git internals.
+function directoryEntries(root:string,path:string,offset:number){
+ if(isAbsolute(path)||path.split(/[\\/]/).some(p=>!p||p==='..'||p==='.git'))throw Error('Read a directory inside the workspace')
+ const cwd=resolve(realpathSync(root),path)
+ if(realpathSync(cwd)!==cwd)throw Error('Workspace symlinks are not allowed')
+ const entries=readdirSync(cwd,{withFileTypes:true}).filter(entry=>entry.name!=='.git'&&(entry.isFile()||entry.isDirectory()))
+  .map(entry=>entry.name+(entry.isDirectory()?'/':'')).sort()
+ const end=Math.min(entries.length,offset+64)
+ return {directory:path,entries:entries.slice(offset,end),nextOffset:end<entries.length?end:null}
+}
 function reviewRevision(root:string,directory:string){
  if(directory.split('/').includes('..'))throw Error('Read a repository inside the workspace')
  const base=realpathSync(root),cwd=resolve(base,directory)
@@ -117,6 +127,10 @@ export function prepareIndependentReview(h:Runtime,g:RouterGoal,n:GoalNode,run:R
  const onTool:NonNullable<ModelRequest['onTool']>=async(name,args,id)=>{
   current()
   if(name==='goal_evidence')return access.onTool(name,args,id)
+  if(name==='review_directory'){
+   const x=fileSchema.parse(args)
+   return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(directoryEntries(run.cwd,x.path,x.offset))}]}
+  }
   if(name==='review_revision'){
    const {directory}=directorySchema.parse(args),sha=reviewRevision(run.cwd,directory),ref='git:'+directory+'@'+sha
    if(revisions[directory]&&sha!==revisions[directory])throw Error('Reviewed commit changed')
@@ -127,7 +141,11 @@ export function prepareIndependentReview(h:Runtime,g:RouterGoal,n:GoalNode,run:R
   const x=fileSchema.parse(args)
   if(x.path.split(/[\\/]/).some(p=>p==='.git'||p==='..'||p===''))throw Error('Read a regular workspace file')
   const bytes=evidenceBytes(run.cwd,x.path,4*1024*1024)
-  if(!bytes||bytes.includes(0))throw Error('A text file is required')
+  if(!bytes){
+   const parent=dirname(x.path)
+   return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({error:'File unavailable',...directoryEntries(run.cwd,parent,0)})}]}
+  }
+  if(bytes.includes(0))throw Error('A text file is required')
   const hash=stableDigest(bytes.toString('utf8'))
   if(files[x.path]&&files[x.path]!==hash)throw Error('Reviewed file changed')
   files[x.path]=hash
@@ -141,8 +159,8 @@ export function prepareIndependentReview(h:Runtime,g:RouterGoal,n:GoalNode,run:R
  const input={kind:'independent_review',objective:g.objective,criteria:h.verification.criteria(g,n),scope:n.title,
   reviewedNodes:n.dependsOn,version,files:available,requiredDiffs:diffs.map(e=>e.id),
   receipts:evidence.filter(e=>e.kind==='execution').map(e=>({id:e.id,key:e.key})),priorJobs:h.work.list(run.ticketId).slice(0,8).map(j=>({id:j.id,command:j.command?.slice(0,280),state:j.state,exitCode:j.exitCode})),workspace:'.'}
- const request={input:JSON.stringify(input),schema:z.toJSONSchema(reviewSchema,{target:'draft-7'}),instructions:reviewPolicy+' The assignment instructions describe the scope; route any requested edits to the producer. For code, use review_revision to identify the current commit and inspect the actual diff and test results. Use the earlier report as historical evidence when its version differs. For other materials inspect their current contents. Use goal_evidence for immutable deliveries, review_file for scoped source or test logs, and cite the returned evidence or file IDs. For changes_requested identify the responsible reviewedNodes in owners. Before approval read and cite every requiredDiffs entry in full using goal_evidence. Use empty owners for approval. Distinguish an existing baseline limitation from a regression. Describe actual evidence and remaining risks in the report.',
-  isReadOnlyTool:(name:string)=>name==='review_file'||name==='goal_evidence',tools:[...access.tools,{type:'function' as const,name:'review_revision',description:'Read the exact local Git commit for a repository directory inside the assigned workspace.',inputSchema:z.toJSONSchema(directorySchema,{target:'draft-7'})},{type:'function' as const,name:'review_file',description:'Read a bounded page of a regular text file in the assigned workspace.',inputSchema:z.toJSONSchema(fileSchema,{target:'draft-7',io:'input'})}],onTool:async(name:string,args:unknown,id:string)=>{
+ const request={input:JSON.stringify(input),schema:z.toJSONSchema(reviewSchema,{target:'draft-7'}),instructions:reviewPolicy+' The assignment instructions describe the scope; route any requested edits to the producer. For code, use review_revision to identify the current commit and inspect the actual diff and test results. Use review_directory to discover actual source or test log names before opening them. Reuse evidence already read. Use the earlier report as historical evidence when its version differs. For other materials inspect their current contents. Use goal_evidence for immutable deliveries, review_file for scoped source or test logs, and cite the returned evidence or file IDs. For changes_requested identify the responsible reviewedNodes in owners. Before approval read and cite every requiredDiffs entry in full using goal_evidence. Use empty owners for approval. Distinguish an existing baseline limitation from a regression. Describe actual evidence and remaining risks in the report.',
+  tools:[...access.tools,{type:'function' as const,name:'review_directory',description:'List one workspace directory, using path and optional offset, to locate files and saved test results.',inputSchema:z.toJSONSchema(fileSchema.pick({path:true,offset:true}),{target:'draft-7',io:'input'})},{type:'function' as const,name:'review_revision',description:'Read the exact local Git commit for a repository directory inside the assigned workspace.',inputSchema:z.toJSONSchema(directorySchema,{target:'draft-7'})},{type:'function' as const,name:'review_file',description:'Read a bounded page of a regular text file in the assigned workspace.',inputSchema:z.toJSONSchema(fileSchema,{target:'draft-7',io:'input'})}],onTool:async(name:string,args:unknown,id:string)=>{
    try{return await onTool(name,args,id)}catch(error){current();return {success:false,contentItems:[{type:'inputText' as const,text:String(error).slice(0,350)}]}}
   }}
  const finish=(raw:string):IndependentOpinion=>{

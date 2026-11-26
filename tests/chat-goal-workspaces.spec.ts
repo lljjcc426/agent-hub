@@ -831,9 +831,11 @@ it.each([false,true])('keeps review read-only and gives required edits to the or
    expect(r.sandbox).toBe('read-only')
    expect(r.allowNativeTools).toBe(false)
    expect(r.workerMcp).toBeUndefined()
-   expect(r.tools?.map(t=>t.name).sort()).toEqual(['goal_evidence','review_file','review_revision'])
+   expect(r.tools?.map(t=>t.name).sort()).toEqual(['goal_evidence','review_directory','review_file','review_revision'])
    expect((await r.onTool!('superagent_shell',{command:'write changed result'},'attempt-write')).success).toBe(false)
    expect((await r.onTool!('review_file',{path:'../outside'},'outside')).success).toBe(false)
+   const files=await tool<{entries:string[]}>(r,'review_directory',{path:'.'})
+   expect(files.entries).toContain('result.json');expect(files.entries).not.toContain('.git')
    const item=input.files.find((e:{path:string})=>e.path==='result.json')
    const page=await tool<{content:string}>(r,'goal_evidence',{id:item.id})
    const result=JSON.parse(page.content).value
@@ -860,6 +862,8 @@ it.each([false,true])('keeps review read-only and gives required edits to the or
  expect(final.state,JSON.stringify(final.nodes?.map(n=>[n.id,n.state,n.reason]))).toBe('completed')
  expect(final.nodes?.[1]?.workerId).toBe('reviewer')
  expect(final.nodes?.[1]?.opinion?.verdict).toBe('approved')
+ const reviewer=final.nodes?.[1]?.ticketId
+ expect(f.host.store.deliveries().filter(d=>d.ticketId===reviewer&&d.id.startsWith('failure:'))).toHaveLength(0)
  expect(reviews).toEqual(needsRepair?['draft','final']:['final'])
  expect(deliveries).toEqual(reviews)
  expect(published).toEqual(['published'])

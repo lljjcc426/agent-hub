@@ -77,6 +77,23 @@ export function readPausedTurn(store:RecoveryStore,stateDir:string,goal:RouterGo
 }
 
 export interface ResumedWorker {
- id:string;goalId:string;ticketId:string;assignmentId:string;triggerId:string;pauseRevision:number;
+ id:string;goalId:string;ticketId:string;assignmentId:string;triggerId:string;pauseRevision:number;inputId?:string;
  jobs:{id:string;commandDigest:string}[];
+}
+
+/** Earlier releases could save a checkpoint while the old blocked report kept the resume note out of the queue. */
+export function parkedCheckpoint(store:RecoveryStore,stateDir:string,goal:RouterGoal,run:Run){
+ const resumed=store.get<ResumedWorker>('goal-worker-continuation',run.ticketId)
+ if(!resumed||resumed.inputId||resumed.goalId!==goal.id||resumed.triggerId!==goal.triggerId||
+   resumed.assignmentId!==run.assignmentId||run.rebuild!==resumed.id||run.threadId||run.phase!=='idle')return
+ const handoff=store.get<{ticketId:string;previousThread:string;previousTurn:string;reason:string;at:number}>('context-handoff',resumed.id)
+ if(!handoff||handoff.ticketId!==run.ticketId||handoff.reason!=='user_resumed_from_checkpoint'||
+   store.db.prepare(`SELECT 1 FROM records WHERE kind='async-worker-attempt' AND json_extract(body,'$.ticketId')=?
+    AND json_extract(body,'$.startedAt')>=? LIMIT 1`).get(run.ticketId,handoff.at))return
+ const pause=relatedPause(store,goal,run.ticketId)
+ if(!pause)return
+ const proof=readPausedTurn(store,stateDir,goal,{...run,threadId:handoff.previousThread,turnId:handoff.previousTurn},pause)
+ if(!proof||proof.continuationId!==resumed.id||
+   !proof.jobs.every(job=>resumed.jobs.some(saved=>saved.id===job.id&&saved.commandDigest===job.commandDigest)))return
+ return {resume:resumed,handoff,proof}
 }

@@ -12,7 +12,7 @@ import {stableDigest} from '../src/sources.ts'
 import {Runtime} from '../src/runtime.ts'
 import {bundledEngineId} from '../src/backends/bundled-opencode.ts'
 import {BackendPluginError} from '../src/backends/plugin-contract.ts'
-import {readPausedTurn,relatedPause} from '../src/paused-worker-recovery.ts'
+import {readPausedTurn,relatedPause,type ResumedWorker} from '../src/paused-worker-recovery.ts'
 import type {Run} from '../src/store.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import {deploymentMaintenance,deploymentBlockers} from '../src/deployment-maintenance.ts'
@@ -708,7 +708,8 @@ it.each(['live','restart','question','changed','rejected','pending_effect'] as c
  expect(f.host.chat.view(f.chat.id,owner).pendingCards).toEqual([])
 })
 
-it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('uses the original repository ticket after 好了 without replaying either completed command',async()=>{
+it.skipIf(process.platform!=='darwin'&&process.platform!=='linux').each([false,true])(
+ 'uses the original repository ticket after 好了 without replaying either completed command (parked checkpoint=%s)',async parked=>{
  const initial='仔细了解 agent-hub 仓库',pause='停止先，我还没配置 GitHub 连接器',resume='好了'
  const commands=['printf x >> command-one.count','printf y >> command-two.count']
  let releaseWriter!:()=>void,readyToPause=false,attempts=0,nextRead=false
@@ -794,6 +795,15 @@ it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('uses the ori
 
   await f.restart()
   expect(f.host.goals.get(goal.id)?.state).toBe('paused')
+  f.host.engine.report(ticket,{state:'blocked',summary:'The old executor stopped before finishing the turn.',question:null})
+  if(parked){
+   const scheduler=f.host.goals as unknown as {queuePausedContinuation(id:string,continuation:ResumedWorker):void}
+   vi.spyOn(scheduler,'queuePausedContinuation').mockImplementationOnce((id,continuation)=>{
+    f.host.store.put('goal-worker-continuation',id,continuation)
+    f.host.engine.note(id,'The earlier host retained this note without queueing it.')
+    expect(f.host.store.tickets.get(id)!.undelivered).toEqual([])
+   })
+  }
   const request={text:resume,clientMessageId:randomUUID(),locale:'zh-CN'}
   const resumed=f.host.chat.send(f.chat.id,owner,request).runId
   expect(f.host.chat.send(f.chat.id,owner,request).runId).toBe(resumed)
@@ -807,5 +817,7 @@ it.skipIf(process.platform!=='darwin'&&process.platform!=='linux')('uses the ori
   expect(readFileSync(nativeSource,'utf8')).toBe(oldJournal)
   expect(nextRead&&attempts===2).toBe(true)
   expect(f.host.store.get('goal-delivery',ticket)).toBeDefined()
+  expect(f.host.store.get<ResumedWorker>('goal-worker-continuation',ticket)?.inputId).toBeDefined()
+  expect(f.host.store.db.prepare("SELECT count(*) AS n FROM audit WHERE json_extract(body,'$.type')='worker.pause_wake_recovered'").get()?.n).toBe(parked?1:0)
  }finally{releaseWriter()}
 },25000)

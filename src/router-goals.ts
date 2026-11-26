@@ -1,4 +1,4 @@
-import {hasPausedTurnReader,readPausedTurn,relatedPause,type ResumedWorker} from './paused-worker-recovery.ts'
+import {hasPausedTurnReader,parkedCheckpoint,readPausedTurn,relatedPause,type ResumedWorker} from './paused-worker-recovery.ts'
 import {unsettledTaskEffects} from './artifact-read-recovery.ts'
 import {recoverGoalEvidence} from './goal-evidence-recovery.ts'
 import {businessDecision,captureReportedQuestion,decisionActorMatches,decisionAsker,hasOutstandingQuestion} from './business-decisions.ts'
@@ -556,6 +556,47 @@ export class RouterGoals {
   const pause=relatedPause(store,g,id)
   if(pause&&!(previous?.goalId===g.id&&previous.assignmentId===run.assignmentId&&previous.pauseRevision===pause.revision))return pause
  }
+ private queuePausedContinuation(id:string,continuation:ResumedWorker){
+  const {store,engine}=this.host
+  const before=store.tickets.get(id)!
+  const prior=before.inputs.map(input=>input.id)
+  const note=JSON.stringify({
+   instruction:'Continue the same assignment and its original deliverable in the retained workspace. The user has explicitly resumed the task. Inspect the completed job receipts and existing files, then do the next unfinished work with current tools. Never rerun a completed command or clone/download work already present. Earlier reads may be reused as evidence when their source is still authorized.',
+   completedJobs:continuation.jobs.map(job=>({id:job.id,resource:'job/'+job.id})),
+   recordedToolResults:'Use superagent_read to inspect model-tool-receipts for this assignment.',
+  })
+  if(Buffer.byteLength(note)>this.host.scopes.scope(this.get(continuation.goalId)!.scopeId).contextBytes)throw Error('Checkpoint exceeds the task context budget')
+  // Core tickets retain automated notes without delivering them while blocked.
+  // Old reports remain in the activity evidence. Only the verified continuation can wake the assignment.
+  engine.report(id,{state:'waiting',summary:'已保留上次进度，正在接续任务。',question:null})
+  const queued=engine.note(id,note)
+  const input=queued.inputs.find(item=>!prior.includes(item.id))
+  if(!input||!queued.undelivered.includes(input.id))throw Error('Checkpoint continuation was not queued')
+  allowNewTaskInputs(store,id,prior)
+  store.put('goal-worker-continuation',id,{...continuation,inputId:input.id})
+ }
+ private repairCheckpointWake(g:RouterGoal,n:GoalNode,c:ScopeContext){
+  const id=n.ticketId,host=this.host,{store}=host
+  if(!id||!['held','running'].includes(n.state))return false
+  if(c.trigger.id!==g.triggerId||!c.trigger.human||host.executionActive(id))return false
+  const run=store.get<Run>('run',id),task=store.tickets.get(id)
+  if(!run||!task||task.undelivered.length||!this.workerCanContinue(g,n,run,task)||
+    task.assignments.at(-1)?.report?.state!=='blocked'||!this.effectsSettled(id)||unsettledTaskEffects(store,id,0))return false
+  const checkpoint=parkedCheckpoint(store,host.config.stateDir,g,run)
+  if(!checkpoint)return false
+  const {resume,handoff}=checkpoint
+  const manifest=store.get<{manifest:ContextManifest}>('task-context',id)?.manifest
+  if(!manifest)return false
+  host.scopes.checkTask(id,c,true);host.memory.validate(manifest)
+  host.model.describe?.(handoff.previousThread)
+  return store.atomic(()=>{
+   n.state='running';n.reason=undefined;n.failure=undefined;g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
+   this.queuePausedContinuation(id,resume)
+   store.audit({type:'worker.pause_wake_recovered',goalId:g.id,ticketId:id,assignmentId:run.assignmentId,
+    triggerId:c.trigger.id,continuationId:resume.id})
+   return true
+  })
+ }
  private recoverPausedWorker(g:RouterGoal,n:GoalNode,c:ScopeContext){
   const id=n.ticketId,host=this.host,{store}=host
   if(!id||n.state==='passed'||n.state==='verifying'||n.state==='waiting_dependency')return
@@ -584,25 +625,17 @@ export class RouterGoals {
   host.model.describe?.(run.threadId)
   const previous=store.get<ResumedWorker>('goal-worker-continuation',id)
   const savedJobs=[...new Map([...(previous?.assignmentId===run.assignmentId?previous.jobs:[]),...proof.jobs].map(job=>[job.id,job])).values()]
-  const note=JSON.stringify({
-   instruction:'Continue the same assignment and its original deliverable in the retained workspace. The user has explicitly resumed the task. Inspect the completed job receipts and existing files, then do the next unfinished work with current tools. Never rerun a completed command or clone/download work already present. Earlier reads may be reused as evidence when their source is still authorized.',
-   completedJobs:savedJobs.map(job=>({id:job.id,resource:'job/'+job.id})),
-   recordedToolResults:'Use superagent_read to inspect model-tool-receipts for this assignment.',
-  })
-  if(Buffer.byteLength(note)>host.scopes.scope(g.scopeId).contextBytes)return 'unverified'
   return store.atomic(()=>{
    if(store.get<ResumedWorker>('goal-worker-continuation',id)?.id===proof.continuationId)return 'recovered'
    const {threadId,turnId,result,error,failure,toolsDigest,toolsVersion,waitingForWriter,webFetchReplay,...retained}=run
    store.put('context-handoff',proof.continuationId,{ticketId:id,previousThread:threadId,previousTurn:turnId,
     backendId:run.backendId,model:run.model,reason:'user_resumed_from_checkpoint',calls:proof.calls,at:this.now()})
-   store.put('goal-worker-continuation',id,{id:proof.continuationId,goalId:g.id,ticketId:id,assignmentId:run.assignmentId,
-    triggerId:c.trigger.id,pauseRevision:pause.revision,jobs:savedJobs} satisfies ResumedWorker)
-   // Settle the parked wake only after the new input is durably queued. The old adapter journal remains a receipt.
+   // Replace the old session pointer and enqueue its wake in the same transaction.
    store.put('run',id,{...retained,phase:'idle',rebuild:proof.continuationId} satisfies Run)
    n.state='running';n.reason=undefined;n.failure=undefined;n.retryAt=undefined;n.providerWait=undefined
    g.state='active';g.reason=undefined;g.nextAt=undefined;g.revision++;this.save(g)
-   const prior=task.inputs.map(input=>input.id)
-   host.engine.note(id,note);allowNewTaskInputs(store,id,prior)
+   this.queuePausedContinuation(id,{id:proof.continuationId,goalId:g.id,ticketId:id,assignmentId:run.assignmentId,
+    triggerId:c.trigger.id,pauseRevision:pause.revision,jobs:savedJobs})
    store.audit({type:'worker.pause_recovered',goalId:g.id,ticketId:id,assignmentId:run.assignmentId,triggerId:c.trigger.id,
     continuationId:proof.continuationId,previousThread:threadId,previousTurn:turnId,completedJobs:savedJobs.map(job=>job.id)})
    return 'recovered'
@@ -1029,8 +1062,12 @@ export class RouterGoals {
     const confirmed=saved.state==='held'&&saved.reason===heldReason(saved.nodes??[])
      ? saved.nodes?.filter(n=>n.state==='held'&&n.failure?.kind==='unconfirmed_effect'&&n.ticketId&&this.effectsSettled(n.ticketId))
      : undefined
+   const pendingCheckpointWake=['held','active'].includes(saved.state)&&saved.nodes?.some(node=>{
+    const resumed=node.ticketId&&this.host.store.get<ResumedWorker>('goal-worker-continuation',node.ticketId)
+    return resumed&&resumed.goalId===saved.id&&!resumed.inputId
+   })
    const runnable=['active','waiting'].includes(saved.state)||refreshReview
-    if((!runnable&&!checkHeldRead&&!confirmed?.length&&!evidenceHolds.length)||!saved.objective||!saved.nodes?.length)continue
+    if((!runnable&&!checkHeldRead&&!confirmed?.length&&!evidenceHolds.length&&!pendingCheckpointWake)||!saved.objective||!saved.nodes?.length)continue
    if(saved.project&&this.holdBudget(saved))continue
    if(this.host.replanning.active(saved))continue
    let g=saved
@@ -1039,6 +1076,7 @@ export class RouterGoals {
     // Back off repeated evidence checks while a hold has no safe recovery.
     if(checkHeldRead){g.nextAt=this.now()+60_000;this.host.store.put('router-goal',g.id,g)}
     const c=this.context(g)
+    if(pendingCheckpointWake&&g.nodes!.some(node=>this.repairCheckpointWake(g,node,c)))continue
     if(evidenceHolds.length){
      this.nextEvidenceCheck.set(g.id,this.now()+60_000)
      for(const node of evidenceHolds)recoverGoalEvidence(this.host,g,node,c)

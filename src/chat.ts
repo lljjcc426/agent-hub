@@ -769,8 +769,8 @@ export class ChatSessions {
       (!backend||call.backend===backend) && (!model||call.model===model) &&
       !cleanup.blocked('chat-call',call.id,call) ? call : undefined
     if(selected&&!current)throw new ChatError('context_missing','Context record not found.',404)
-    const hasMeasurement=(value:{inputTokens:number|null;composition:unknown;budget:unknown})=>
-      value.inputTokens!==null||value.composition!==null||value.budget!==null
+    const hasMeasurement=(value:{inputTokens:number|null;capacity:number|null;composition:unknown;budget:unknown})=>
+      value.inputTokens!==null||value.capacity!==null||value.composition!==null||value.budget!==null
     const read=(source:ChatCall|undefined,previous=false)=>{
       const activity=source?.id
       const recorded=activity?this.host.store.get<{attempt:number;size:ChatInputSize}>('chat-context-input',activity):undefined
@@ -780,7 +780,7 @@ export class ChatSessions {
       const budgetAttempt=receipt?(receipt.attempt??0):undefined
       const latest=attempts.at(-1)??recorded?.attempt
       const sample=(attempt:number|undefined)=>{
-        const {inputTokens,capacity}=contextReading(usage,attempt)
+        const {inputTokens,capacity}=contextReading(this.host.store,usage,source?.backend,attempt)
         const budget=receipt&&(attempt===undefined||budgetAttempt===attempt)?{bytes:receipt.bytes,reservedBytes:receipt.reservedBytes,maxBytes:receipt.maxBytes}:null
         return {activity:activity??null,at:source?.startedAt??null,model:usage?.model??source?.model??model??null,
           composition:recorded?.attempt===attempt?recorded?.size??null:null,inputTokens,capacity,budget,previous}

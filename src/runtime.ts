@@ -62,7 +62,7 @@ import {GithubConnector} from './github-connector.ts'
 import {githubPublicReadSpec,githubReadSpec,githubReadSchema} from './github-read.ts'
 import type {Model,ModelRequest,ModelResult} from './model.ts'
 import {BackendRegistry} from './backends/registry.ts'
-import {isApiBackend,validateBackendSelection} from './backend-config.ts'
+import {configuredContextWindow,isApiBackend,validateBackendSelection} from './backend-config.ts'
 import {ProjectCode} from './project-code.ts'
 import { prepareGoalWorkspace, prepareWorkspace, retainedWorkspace } from './workspace.ts'
 import { assessment, assessmentSchema,proactiveAssessmentSchema,implementationAllowed, report, reportSchema,chatReport,chatReportSchema,inquiryChatReportSchema,validateRuleAssessment } from './schemas.ts'
@@ -702,7 +702,7 @@ export class Runtime {
     }
     if(role==='worker'&&context.ticketId&&!request.ephemeral){const run=this.store.get<Run>('run',context.ticketId);if(run)this.store.put('run',context.ticketId,{...run,agentOptions:request.options})}
     const onConfiguration=request.onConfiguration,configurationRevision=this.settings.current().revision
-    request.onConfiguration=value=>{usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools);this.store.put('agent-configuration',activity,{...value,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()});onConfiguration?.(value)}
+    const contextWindows:Record<number,number|null>={}
     const activity=this.activity.begin(role,role,context)
     const onBackendIssue=request.onBackendIssue
     request.onBackendIssue=issue=>{this.activity.issue(activity,issue);onBackendIssue?.(issue)}
@@ -806,6 +806,12 @@ export class Runtime {
           input:request.suppliedText?request.input:this.modelInput(request.input,role,turnTriggerId,context.sourceId),
           model:threadId?undefined:request.model??(role==='router'&&!request.useConnectionDefault?this.config.execution.router?.model??this.config.models.router:undefined),
           threadId,
+          onConfiguration:value=>{
+            usingOpenCode=value.sent.harness==='opencode'||Array.isArray(value.sent.nativeTools)
+            contextWindows[attempt]=configuredContextWindow(value.sent,backend)
+            this.store.put('agent-configuration',activity,{...value,contextWindows,revision:configurationRevision,role,workerId:context.workerId,at:Date.now()})
+            onConfiguration?.(value)
+          },
           onBudget:receipt=>{
             if(receipt.phase==='before-native-request'&&receipt.status==='within_budget')nativeRequests++
             this.store.put('context-budget',activity,{activity,...context,scopeId,...receipt,attempt,at:Date.now()});originalBudget?.(receipt)

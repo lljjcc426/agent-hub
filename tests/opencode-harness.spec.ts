@@ -34,6 +34,11 @@ it.skipIf(!bundledCLI)('delivers a successful plain-text OpenCode reply to Chat 
  const reply='在。\n\n- **任务**还在原来的位置。'
  let replyText=reply,requests=0
  const upstream=createServer(async(req,res)=>{
+  if(req.method==='GET'&&req.url==='/v1/models'){
+   res.writeHead(200,{'content-type':'application/json'})
+   res.end(JSON.stringify({data:[{id:'sample',limit:{context:65536,output:4096}}]}))
+   return
+  }
   for await(const _chunk of req){}
   requests++
   const item={type:'message',id:'msg_'+requests,role:'assistant',status:'completed',
@@ -55,7 +60,7 @@ it.skipIf(!bundledCLI)('delivers a successful plain-text OpenCode reply to Chat 
  try{
   host=await Runtime.create(configSchema.parse({
    stateDir:join(root,'state'),work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
-   backends:{api:{kind:'openai-responses',model:'sample',baseUrl,outputFormat:'prompt'}},
+   backends:{api:{kind:'openai-responses',model:'sample',baseUrl,outputFormat:'prompt',compaction:{discover:true}}},
    execution:{backend:'api',router:{mode:'host',backend:'api',model:'sample'},management:{enabled:true}},
    sources:[{id:'local',kind:'local',cwd:root,allowedActors:['owner']}],
   }))
@@ -74,6 +79,7 @@ it.skipIf(!bundledCLI)('delivers a successful plain-text OpenCode reply to Chat 
   const first=await send('说话呢')
   expect(view().messages.filter(m=>m.runId===first.runId&&m.role==='assistant')).toMatchObject([{text:reply,status:'complete'}])
   expect(runtime.store.get('router-error',first.jobId)).toBeUndefined()
+  expect(runtime.chat.contextUsage(conversation.id,'owner')).toMatchObject({inputTokens:10,capacity:65536})
   expect(requests).toBe(1)
   replyText=JSON.stringify({reply:'收到。'})
   const second=await send('再确认一下')

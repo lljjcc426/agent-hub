@@ -1,13 +1,35 @@
+import { configuredContextWindow } from './backend-config.ts'
+import type { SettingsVersion } from './settings.ts'
 import type { Store } from './store.ts'
 import type { UsageRecord } from './usage-ledger.ts'
 
-export function contextReading(usage?: UsageRecord, attempt?: number) {
+interface ConfigurationReceipt {
+  sent?: Record<string,unknown>
+  revision?: number
+  contextWindows?: Record<number,number|null>
+}
+
+function sessionCapacity(store: Store, usage: UsageRecord, attempt: number, backendId?: string) {
+  const receipt = store.get<ConfigurationReceipt>('agent-configuration', usage.id)
+  if (receipt?.contextWindows) return receipt.contextWindows[attempt] ?? null
+  if (!receipt?.sent || receipt.revision == null || !backendId) return null
+  // Older calls stored the sent model and settings revision, before limits were saved per attempt.
+  if (Object.keys(usage.attempts ?? {}).some(key => Number(key) > attempt)) return null
+  const settings = store.get<SettingsVersion>('settings-history', String(receipt.revision)) ?? store.get<SettingsVersion>('settings','current')
+  if (settings?.revision !== receipt.revision) return null
+  const backend = settings.config.backends?.[backendId] ?? (backendId === 'codex' ? {kind:'codex' as const} : undefined)
+  return configuredContextWindow(receipt.sent, backend)
+}
+
+export function contextReading(store: Store, usage: UsageRecord | undefined, callBackend?: string, attempt?: number) {
   const attempts = Object.keys(usage?.attempts ?? {}).map(Number)
   const selected = attempt ?? (attempts.length ? Math.max(...attempts) : undefined)
   const last = Object.entries(usage?.steps ?? {}).findLast(([key]) => selected === undefined || key.startsWith(selected + ':'))
+  const readingAttempt = selected ?? (last ? parseInt(last[0],10) : undefined)
   return {
     inputTokens: last?.[1].inputTokens ?? null,
-    capacity: last?.[1].contextWindowTokens ?? null,
+    capacity: last?.[1].contextWindowTokens ?? (usage && readingAttempt !== undefined
+      ? sessionCapacity(store, usage, readingAttempt, usage.backend ?? callBackend) : null),
     reportedAt: last && usage?.latestReading?.key === last[0] ? usage.latestReading.at : null,
   }
 }
@@ -36,7 +58,7 @@ export function teamContext(store: Store, conversationId: string) {
       session: row.sessionKey ? String(row.sessionKey) : null,
       model: usage?.model ?? (row.model ? String(row.model) : null),
       backend: usage?.backend ?? (row.backend ? String(row.backend) : null),
-      startedAt: Number(row.startedAt), state: String(row.state), ...contextReading(usage),
+      startedAt: Number(row.startedAt), state: String(row.state), ...contextReading(store, usage, row.backend ? String(row.backend) : undefined),
     }
   })
 }

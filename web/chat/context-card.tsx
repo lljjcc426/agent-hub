@@ -11,7 +11,7 @@ type LoadUsage = (id: string, signal: AbortSignal) => Promise<Usage>
 const readings = 'roppo.chat.context-usage'
 
 function measured(data?: Usage): data is Usage {
-  return !!data && (data.inputTokens != null || !!data.composition || !!data.budget)
+  return !!data && (data.inputTokens != null || data.capacity != null || !!data.composition || !!data.budget)
 }
 
 function previous(data?: Usage): Usage | undefined {
@@ -85,8 +85,8 @@ export function ContextCard({ current, L, focusOnReveal, onClose }: {
   if (current.failed) status = usage
     ? L('Couldn’t refresh usage', '暂时无法刷新用量')
     : L('Usage unavailable', '暂时无法读取用量')
-  else if (current.empty || (usage && count == null && !budget && !composition)) status = L('No usage reported yet', '暂无用量记录')
-  else if (composition && count == null) status = L('Model token count not reported yet', '模型尚未上报 token 数')
+  else if (count == null && (composition || usage?.capacity != null)) status = L('Model token count not reported yet', '模型尚未上报 token 数')
+  else if (current.empty || (usage && count == null && !budget)) status = L('No usage reported yet', '暂无用量记录')
   else if (!usage) status = L('Loading…', '读取中…')
 
   return (
@@ -96,11 +96,12 @@ export function ContextCard({ current, L, focusOnReveal, onClose }: {
     }>
       {usage?.previous && <p className="usage-note">{L('Showing the last recorded usage', '显示上次用量记录')}</p>}
       {status && <p className="usage-note" role="status">{status}</p>}
-      {usage && count != null && (
+      {usage && (count != null || usage.capacity != null) && (
         <section className="usage-section" aria-label={modelWindow}>
           <h4>{modelWindow}</h4>
-          <ContextWindow label={modelWindow} capacity={usage.capacity} L={L} legend={!composition}
+          {count != null ? <ContextWindow label={modelWindow} capacity={usage.capacity} L={L} legend={!composition}
             parts={[{ id: 'input', label: L('Reported model input', '模型上报的输入'), tokens: count }]} />
+            : <div className="rp-capacity">— / {usage.capacity?.toLocaleString(L('en','zh-CN'))} tokens</div>}
           {usage.capacity == null && <p className="usage-note">{L('Window capacity not reported', '模型未提供窗口容量')}</p>}
           {usage.model && <dl className="usage-model"><dt>{L('Model', '模型')}</dt><dd>{usage.model}</dd></dl>}
         </section>

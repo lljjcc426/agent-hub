@@ -1340,6 +1340,49 @@ it('projects real Router-to-Worker dialogue with distinct speakers and no extra 
   expect(view.messages.map(m=>m.id).length).toBe(new Set(view.messages.map(m=>m.id)).size)
   expect(h.store.deliveries().filter(d=>!d.channel.address.routerInbox).map(d=>d.text)).not.toContain('Worker result')
 })
+it('uses the Router configuration for an unreported window and prefers a reported window on the next step',async()=>{
+  const {h}=fixture(async request=>{
+    request.onConfiguration?.({requested:{},sent:{model:'router-one',contextWindowTokens:32768}})
+    request.onUsage?.({id:'first',inputTokens:4096})
+    return {reply:'Done'}
+  }),chat=h.chat.create('owner')
+  send(h,chat.id)
+  await settle(h,()=>h.chat.view(chat.id,'owner').run?.state==='completed')
+  const reading=h.chat.contextUsage(chat.id,'owner')
+  expect(reading).toMatchObject({inputTokens:4096,capacity:32768})
+  expect(h.chat.teamContext(chat.id,'owner')[0]).toMatchObject({activity:reading.activity,capacity:32768})
+  h.usage.record(reading.activity!,0,{id:'second',inputTokens:0,contextWindowTokens:16384})
+  expect(h.chat.contextUsage(chat.id,'owner')).toMatchObject({inputTokens:0,capacity:16384})
+  h.usage.attempt(reading.activity!,1,'running')
+  expect(h.chat.contextUsage(chat.id,'owner',reading.activity!)).toMatchObject({inputTokens:null,capacity:null})
+})
+
+it('looks up historical windows by the sent model, bound connection and settings revision',()=>{
+  const {h}=fixture(),chat=h.chat.create('owner')
+  const connection=(context:number)=>({kind:'openai-responses',baseUrl:'https://fixture.test/v1',model:'default',
+    compaction:{models:{selected:{context,output:512},default:{context:8192,output:512}}}})
+  h.settings.save(0,{backends:{first:connection(32768),second:connection(65536)}})
+  function record(id:string,backend:string,sent:Record<string,unknown>,revision=1){
+    h.store.put('chat-call',id,{id,kind:'worker',conversationId:chat.id,backend,startedAt:1,state:'completed'})
+    h.usage.begin(id,'worker')
+    h.usage.update(id,{backend,model:'provider-alias'})
+    h.usage.record(id,0,{id:'step',inputTokens:32})
+    h.store.put('agent-configuration',id,{revision,sent})
+  }
+  record('one','first',{model:'selected'})
+  record('two','second',{model:'selected'})
+  record('native','codex',{model:'native',parameters:{config:{model_context_window:131072}}})
+  record('unconfigured','second',{model:'unlisted',maxOutputTokens:1024})
+  record('unknown-revision','first',{model:'selected'},99)
+  record('pending','first',{model:'selected'})
+  h.usage.attempt('pending',1,'running')
+  h.store.put('agent-configuration','pending',{contextWindows:{0:8192,1:16384}})
+  h.settings.save(1,{backends:{first:connection(262144)}})
+  const windows=Object.fromEntries(h.chat.teamContext(chat.id,'owner').map(row=>[row.activity,row.capacity]))
+  expect(windows).toEqual({one:32768,two:65536,native:131072,unconfigured:null,'unknown-revision':null,pending:16384})
+  expect(h.chat.teamContext(chat.id,'owner').find(row=>row.activity==='pending')).toMatchObject({capacity:16384,inputTokens:null})
+})
+
 it('isolates task, model session and retry context without estimating missing provider readings',()=>{
   const {h}=fixture(),chat=h.chat.create('owner'),other=h.chat.create('other')
   function call(id:string,conversationId:string,workerId:string,ticketId:string,sessionKey:string,startedAt:number){

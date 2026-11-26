@@ -92,3 +92,15 @@ export function validateBackendSelection(c:{execution:z.infer<typeof executionSc
 
 export type PluginBackendDefinition=Extract<BackendDefinition,{kind:'plugin'}>
 export function isApiBackend(d:BackendDefinition):d is ApiDefinition{return d.kind!=='codex'&&d.kind!=='plugin'}
+
+/** Window for the model actually selected by the executor, including a resolved catalog limit. */
+export function configuredContextWindow(sent:Record<string,unknown>,backend?:BackendDefinition):number|null{
+ let limit=sent.contextWindowTokens
+ if(limit==null && backend?.kind==='codex'){
+  const parameters=sent.parameters as {config?:{model_context_window?:unknown}}|undefined
+  limit=parameters?.config?.model_context_window
+ }else if(limit==null && backend && isApiBackend(backend) && backend.compaction && typeof sent.model==='string'){
+  limit=backend.compaction.models?.[sent.model]?.context
+ }
+ return typeof limit==='number'&&Number.isSafeInteger(limit)&&limit>0?limit:null
+}

@@ -220,7 +220,7 @@ export class BackendRegistry implements Model {
     r={...r,role,model,harnessProviderUrl:harnessProvider.url,harnessWorkspace:workspace,harnessCheckpointed:harnessProvider.checkpointed,
      ...(window?{harnessModelWindow:{context:window.context,output:d.maxOutputTokens}}:{}),
      harnessPrivateFiles:[resolve(this.config.stateDir),...hostPrivateFiles()].map(p=>existsSync(p)?realpathSync.native(p):p),
-     onConfiguration:value=>configuration?.({...value,requested:options,sent:{...value.sent,parameters:d.parameters,
+     onConfiguration:value=>configuration?.({...value,requested:options,sent:{...value.sent,parameters:d.parameters,...(window?{contextWindowTokens:window.context}:{}),
       maxOutputTokens:d.maxOutputTokens,maxToolCalls:d.maxToolCalls,maxSteps:d.maxSteps}})}
     runOptions={...options,parameters:{},effort:undefined,maxOutputTokens:undefined,maxSteps:d.maxSteps,maxToolCalls:d.maxToolCalls}
     executor=engine.model

@@ -111,6 +111,6 @@ export async function probeSandbox(driver:SandboxDriver,codex:string){
  }catch(error:any){
   const stderr=String(error.stderr??'')
   if(driver==='bubblewrap'&&/namespace|mount proc|Operation not permitted/.test(stderr))throw Error('Bubblewrap startup denied by namespace/proc policy. Check the Linux host or outer container policy; see docs/LINUX.md. No unrestricted fallback was used.')
-  throw Error('Sandbox process probe failed ('+driver+'): '+String(error.code??error.message).slice(0,160))
+  throw Error('Sandbox process probe failed ('+driver+'): '+String(stderr.trim()||error.code||error.message).slice(0,500))
  }finally{rmSync(root,{recursive:true,force:true})}
 }

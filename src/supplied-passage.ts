@@ -26,7 +26,7 @@ type Status=typeof statuses[number]
 const statusSet=new Set<unknown>(statuses)
 const statusCodes:Record<string,Status>={U:'use',S:'old',P:'draft',C:'conflict',X:'other'}
 const answerSchema=objectSchema({rows:{type:'string'},value:{type:'string'}})
-export interface PassageBasis {rows:string[];complete:boolean;winningRow?:number}
+export interface PassageBasis {rows:string[];complete:boolean;winningRow?:number;labels?:string[];arithmetic?:string}
 
 // In a short comparison, show exact subtraction only for an explicitly withheld or returned
 // quantity. Do not project through percentages, conversions, unknown adjustments or ties.
@@ -37,7 +37,7 @@ function netComparison(question:string,rows:string[]){
   if(reserve===net||most===least)return
   const adjustment=reserve?/\breserv(?:ed|ation)\b|预留/iu:/\breturn(?:ed|s)?\b|退回/iu
   const none=reserve?/\b(?:none|nothing|no items?) (?:are |were |was )?reserved\b|未预留|没有预留/iu:/\b(?:no returns|none returned|nothing (?:was )?returned)\b|没有退回|未退回/iu
-  const amounts:number[]=[],notes:string[]=[],units=new Set<string>()
+  const amounts:number[]=[],notes:string[]=[],labels:string[]=[],units=new Set<string>()
   for(const row of rows){
     if(/[.%％/\-]\d|\d[.%％/]\d|[%％]|\b(?:per|rate|ratio|about|estimate|not all|dollars?|euros?|hours?|kg)\b|每|大约|汇率|单价|公斤|小时/iu.test(row))return
     const nums=[...row.matchAll(/\d+/gu)]
@@ -50,19 +50,27 @@ function netComparison(question:string,rows:string[]){
     }
     if(units.size>1)return
     const base=Number(nums[0]![0])
+    const prefix=row.slice(0,nums[0]!.index).trim()
+    const label=/^([\p{L}][\p{L}\d -]{0,45}?)\s+(?:has|holds|received|shipped|issued|took)$/iu.exec(prefix)?.[1]??
+      /^([\p{Script=Han}A-Za-z\d_-]{1,24}?)(?:领走|领取|持有|拥有|发出|收到|有)$/u.exec(prefix)?.[1]
+    if(!label)return
+    labels.push(label)
     if(nums.length===1){
       if(adjustment.test(row)&&!none.test(row))return
       amounts.push(base);notes.push(String(base));continue
     }
     const parts=row.split(/[,;，；]|\b(?:but|though|of which)\b|其中|随后/iu).filter(s=>s.trim())
-    if(parts.length!==2||!adjustment.test(parts[1]!)||adjustment.test(parts[0]!)||none.test(parts[1]!)||!/\d/u.test(parts[1]!)||/\b(?:net|unreserved|excluding)\b|净|已扣除|可用/iu.test(parts[0]!))return
+    if(parts.length!==2||!adjustment.test(parts[1]!)||adjustment.test(parts[0]!)||/\b(?:net|available|free|left|remaining|unreserved|excluding)\b|净|已扣除|可用/iu.test(parts[0]!))return
+    const deductionText=parts[1]!.trim().replace(/[.。]$/u,'')
+    if(!/^(?:\d+\s*(?:(?:items?|crates?|boxes|box|units?|cartons?|packets?|pieces?)\s+)?(?:(?:are|is|were|was)\s+)?(?:reserved|returned)|(?:returned|reserved)\s+\d+(?:\s+(?:items?|crates?|boxes|box|units?|cartons?|packets?|pieces?))?|(?:预留|退回)\s*\d+\s*[件箱个包台枚]?|\d+\s*[件箱个包台枚]?\s*(?:已|被)?(?:预留|退回))$/iu.test(deductionText))return
     const deduction=Number(nums[1]![0]);if(deduction>base)return
     amounts.push(base-deduction);notes.push(base+' - '+deduction+' = '+(base-deduction))
   }
   if(!notes.some(n=>n.includes(' = ')))return
   const extreme=(most?Math.max:Math.min)(...amounts),winner=amounts.indexOf(extreme)
-  if(amounts.lastIndexOf(extreme)!==winner)return
-  return {winner,note:'Net counts in row order: '+notes.join('; ')+'.'}
+  if(amounts.lastIndexOf(extreme)!==winner||new Set(labels).size!==rows.length)return
+  return {winner,labels,
+    note:'Net counts in row order: '+notes.join('; ')+'. The requested '+(most?'maximum':'minimum')+' is row '+(winner+1)+'.'}
 }
 
 /** Every status in the model reply addresses an original row visible to this recipient. */
@@ -76,7 +84,7 @@ export function passagePacket(question:string,rows:string[],complete:boolean):An
   const statusFields=ids.length?'Use this flat JSON shape: '+JSON.stringify(template)+'.':'In "rows", write one letter per numbered row ('+rows.length+' letters).'
   const numericComparison=rows.some(row=>/\d/u.test(row))&&/\b(?:more|most|fewer|fewest|higher|lower|greater|largest|smallest)\b|最[多少高低大]|[更较][多少高低]/iu.test(question)
   const net=complete?netComparison(question,rows):undefined
-  return {evidence,input:[evidence,net?.note,question].filter(Boolean).join('\n'),schema:shape,passage:{rows,complete,winningRow:net?.winner},
+  return {evidence,input:[evidence,net?.note,question].filter(Boolean).join('\n'),schema:shape,passage:{rows,complete,winningRow:net?.winner,labels:net?.labels,arithmetic:net?.note},
     instructions:statusFields+' U=used fact or link (even if the row also has unrelated facts), S=superseded, P=proposal, C=unresolved conflict, X=other. Apply effective changes even within one row. Order alone gives no precedence.'+(numericComparison?' Calculate each net quantity from its own figures before comparing.':'')+' In "value" return only the requested answer, including specified uncertainty. Outside work: NEED_CONTEXT. Return one JSON object.'}
 }
 const codes=(line:string)=>new Set((line.match(/(?<![A-Za-z\d_-])(?=[A-Za-z\d_-]*\d)[A-Za-z][A-Za-z\d_-]*\d[A-Za-z\d_-]*(?![A-Za-z\d_-])/gu)??[]).map(k=>k.toLowerCase()))
@@ -125,6 +133,12 @@ export function checkPassage(question:string,raw:string,basis:PassageBasis):Answ
   const literal=/\b(?:just|only) (?:with )?(?:the |a )?(?:[\w-]+ )?(?:name|code|letter|identifier)\b|只(?:给|回|写|答|返回).{0,32}(?:名|编号|代码)/iu.test(question)||
     /^[A-Za-z]+\d+[A-Za-z\d-]*$/u.test(value)&&/只(?:给|回|写|答)|\b(?:just|only)\b/iu.test(question)
   if(literal&&!uncertain){
+    if(basis.labels&&basis.winningRow!==undefined&&marks.every(mark=>mark==='use')){
+      // Use the computed winner only when the proposal identifies one of the original subjects
+      // and the user explicitly requested its name. Keep the native proposal in the transcript.
+      const candidates=basis.labels.filter(label=>label===value||/^[\p{Script=Han}]+$/u.test(value)&&label.startsWith(value))
+      if(candidates.length===1)return {ok:true,text:basis.labels[basis.winningRow]!,rows:marks,arithmetic:basis.arithmetic}
+    }
     if(basis.winningRow!==undefined&&!includesValue(basis.rows[basis.winningRow]!,value))return {ok:false,reason:'values',detail:'Return the full label in the row with the requested net count.'}
     const ids=[...codes(question)]
     if(ids.length===1&&basis.rows.some(row=>codes(row).has(ids[0]!))&&basis.rows.some(row=>!codes(row).has(ids[0]!)&&includesValue(row,value))){

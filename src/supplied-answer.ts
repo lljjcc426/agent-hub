@@ -1,7 +1,7 @@
 import {checkedCalculation,type CheckedCalculation,type SuppliedRows} from './supplied-calculation.ts'
 import {checkPassage,type PassageBasis} from './supplied-passage.ts'
 
-export type AnswerCheck={ok:true;text:string;rows?:string[]}|{ok:false;reason:'format'|'sources'|'values'|'missing';detail:string}
+export type AnswerCheck={ok:true;text:string;rows?:string[];arithmetic?:string}|{ok:false;reason:'format'|'sources'|'values'|'missing';detail:string}
 export interface AnswerPacket {
   instructions:string
   input:string

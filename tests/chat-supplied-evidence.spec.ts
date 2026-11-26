@@ -179,10 +179,15 @@ it('checks explicit net counts across alternatives and leaves mixed-unit compari
   const message='Could @east and @west review these records? Cedar has 9 units, of which 5 are reserved. Maple has 7 units. '+q
   const plan=evidencePlan(message,roster,true)!,packet=answerPacket(plan,plan.sections)
   expect(packet.passage?.winningRow).toBe(1)
-  expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Cedar"}',packet).ok).toBe(false)
+  expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Cedar"}',packet)).toMatchObject({ok:true,text:'Maple',arithmetic:expect.stringContaining('9 - 5 = 4')})
+  expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Unlisted"}',packet).ok).toBe(false)
   expect(checkAnswer(q,'{"r1":"U","r2":"U","value":"Maple"}',packet).ok).toBe(true)
   const mixed=evidencePlan(message.replace('7 units','7 boxes'),roster,true)!
   expect(answerPacket(mixed,mixed.sections).passage?.winningRow).toBeUndefined()
+  for(const altered of [message.replace('are reserved','are not reserved'),message.replace('9 units,','9 units available,')]){
+    const variant=evidencePlan(altered,roster,true)!
+    expect(answerPacket(variant,variant.sections).passage?.winningRow).toBeUndefined()
+  }
 })
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]

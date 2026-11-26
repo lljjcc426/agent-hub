@@ -2444,7 +2444,7 @@ export class Runtime {
       const usableEvidence=!!evidenceAnswer
       if(grantsCurrent&&(usableEvidence||answerCheck&&!answerCheck.ok))this.store.put('evidence-report',ticket.id,{author:grantsCurrent.author,assignmentId,attemptId:attempt.id,turnId:result.turnId,
         ...(evidenceAnswer?{summaryDigest:stableDigest(evidenceAnswer)}:{}),
-        ...(answerCheck?.ok&&answerCheck.rows?{digest:grantsCurrent.plan.digest,rows:answerCheck.rows}:{}),
+        ...(answerCheck?.ok&&answerCheck.rows?{digest:grantsCurrent.plan.digest,rows:answerCheck.rows,arithmetic:answerCheck.arithmetic}:{}),
         ...(answerCheck&&!answerCheck.ok?{repair:{reason:answerCheck.reason}}:{})})
       const rawOutput:unknown=evidenceWorker?{state:usableEvidence?'ready':'blocked',summary:usableEvidence?evidenceAnswer:'This source needs further review.',reply:usableEvidence?evidenceAnswer:'This source needs further review.',question:null,askedBy:null,handbacks:[],files:[]}:JSON.parse(result.text)
       const chatOutput=chatDelivery?chatReport.parse(rawOutput):undefined

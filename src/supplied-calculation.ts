@@ -63,7 +63,7 @@ function threshold(question:string){
 export function checkedCalculation(question:string,sources:SuppliedRows[]):CheckedCalculation|undefined{
   if(sources.length<1||sources.length>12)return
   const intent=question.split(/\bRESULT\s+[A-Za-z_][\w-]*=</u)[0]!
-  if(/\b(?:except|missing|unknown|cancelled|adjusted|active|eligible|excluding|only if|per person|percentage|discount|average|weighted|withdrawn|signed|ignore case|case.insensitive)\b|缺失|缺测|加权|排除|折扣|忽略大小写/iu.test(intent))return
+  if(/\b(?:except|missing|unknown|cancelled|adjusted|active|eligible|excluding|only if|per person|percentage|discount|average|weighted|withdrawn|signed|ignore case|case.insensitive|occur(?:s)? (?:exactly |only )?once|appear(?:s)? (?:exactly |only )?once)\b|缺失|缺测|加权|排除|折扣|忽略大小写/iu.test(intent))return
   if(/\b(?:distinct|unique)\b|去重|不重复/iu.test(intent)&&/\b(?:how many|count|number of)\b|数目|数量|多少/iu.test(intent)){
     const lists=sources.map(idList)
     if(!lists.every((s):s is string[]=>!!s))return
@@ -77,6 +77,7 @@ export function checkedCalculation(question:string,sources:SuppliedRows[]):Check
   const tables=sources.map(observations)
   if(!tables.every((t):t is NonNullable<typeof t>=>!!t))return
   const first=tables[0]!,keys=[...first.values.keys()]
+  if(keys.length>24)return
   if(!tables.every(t=>t.unit===first.unit&&t.values.size===keys.length&&keys.every(k=>t.values.has(k))))return
   const totals=keys.map(key=>({key,total:tables.reduce((n,t)=>n+t.values.get(key)!,0)}))
   const bound=threshold(intent)

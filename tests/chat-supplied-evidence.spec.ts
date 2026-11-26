@@ -73,7 +73,10 @@ it('repairs discrepancies using only the original sources visible in this activa
   expect(checkAnswer(q,'City | 1',withClip).ok).toBe(false)
   const withReceipt=answerPacket(plan,own,[citedEvidence(plan,'east','*')!])
   const expected={ok:true,text:JSON.stringify({answer:'City',titles:['A&amp;B','Partner']})}
-  expect(checkAnswer(q,'City | 1,2',withReceipt)).toEqual(expected)
+  expect(checkAnswer(q,'City | 1,2',withReceipt).ok).toBe(false)
+  const fixed=repairPacket(withReceipt,{ok:false,reason:'sources',detail:'Choose supporting sources.'},'City')
+  expect(checkAnswer(q,'City | 1,2',fixed)).toEqual(expected)
+  expect(checkAnswer(q,'{"answer":"City","titles":["1","2"]}',fixed)).toEqual(expected)
   expect(checkAnswer(q,'{"answer":"City","titles":["A&#38;B","Partner"]}',withReceipt)).toEqual(expected)
   const ambiguous={...packet,references:[{id:1,title:'A&amp;B'},{id:2,title:'A&#38;B'}]}
   expect(checkAnswer(q,'{"answer":"City","titles":["A&B"]}',ambiguous).ok).toBe(false)
@@ -85,6 +88,32 @@ it('repairs discrepancies using only the original sources visible in this activa
   expect(wrong.ok).toBe(false)
   if(!wrong.ok){expect(wrong.reason).toBe('values');expect(repairPacket(complete,wrong,'RESULT name=Lan total=16').input).toContain('Previous proposal')}
   expect(checkAnswer(numeric.question,'RESULT name=Yu total=18',complete).ok).toBe(true)
+})
+it('keeps exact excerpts and restores or expands only sources visible to the reader',()=>{
+  const articles=['Red Alder','Blue Fir','Black Gum','Eastern Beech','Grey Oak','Tall Pine']
+  const docs=articles.map((v,i)=>'@'+(i%2?'west':'east')+' / '+v+'\n'+[v+' is a tree in this register.','A habitat record lists rivers and slopes. '.repeat(49),'A green tag identifies this wood on inspection.','The documented shade is amber for '+v+'.','Winter observations appear in the final edition.'].join('\n'))
+  const p=evidencePlan(['Ask @east and @west to check.\nWhich named shade appears in the Red Alder record? Return only JSON with answer (short answer) and titles (articles).',...docs].join('\n\n'),roster)!
+  const selection=citedEvidence(p,'east','I consulted the Red Alder record. An unrelated Eastern Beech title appeared in the question.')!
+  expect(selection).toContain('@east / Red Alder')
+  expect(selection).not.toContain('@west / Eastern Beech')
+  const fallback=citedEvidence(p,'east','My selection cannot be decoded.')!
+  expect(fallback).toContain('@east /')
+  expect(fallback).not.toContain('@west /')
+  const narrowed=answerPacket(p,[],[selection]),full=answerPacket(p,[],[selection],true)
+  expect(narrowed.input).toContain('The documented shade is amber')
+  expect(narrowed.input.length).toBeLessThan(full.input.length)
+  expect(checkAnswer(p.question,'{"answer":"amber","titles":["Red Alder"]}',narrowed).ok).toBe(true)
+  expect(checkAnswer(p.question,'{"answer":"amber","titles":["Eastern Beech"]}',narrowed).ok).toBe(false)
+})
+it('honors short quantities and retains compound or explicitly requested units',()=>{
+  const make=(q:string)=>evidencePlan('Answer directly.\n'+q+'\n\nTimeline\nIt took 3 years.',[])!
+  const q='How many years did the change take? Give only the short answer from the passage.'
+  const p=make(q),pack=answerPacket(p,p.sections)
+  expect(checkAnswer(q,'3 years',pack)).toEqual({ok:true,text:'3'})
+  expect(checkAnswer(q,'3 years and 2 months',pack)).toEqual({ok:true,text:'3 years and 2 months'})
+  expect(checkAnswer(q,'3; 1373 to 1376',pack).ok).toBe(false)
+  const extra=make(q+' Include units.')
+  expect(checkAnswer(extra.question,'3 years',answerPacket(extra,extra.sections))).toEqual({ok:true,text:'3 years'})
 })
 it('runs two real tickets in order, publishes one result, and invalidates the compiled group on new user input',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'roppo-evidence-test-')),calls:ModelRequest[]=[]

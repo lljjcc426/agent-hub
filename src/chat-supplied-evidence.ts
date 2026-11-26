@@ -4,7 +4,7 @@ import type {WorkerProfile} from './backend-config.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {currentReview,type ChatResultReview} from './chat-result-review.ts'
 import type {ScopeContext} from './router-scope.ts'
-import {buildAnswerPacket,checkAnswer,repairPacket,type AnswerPacket} from './supplied-answer.ts'
+import {buildAnswerPacket,checkAnswer,repairPacket,sourceTitle,type AnswerPacket} from './supplied-answer.ts'
 import type {ModelResult} from './model.ts'
 import {stableDigest} from './sources.ts'
 
@@ -95,8 +95,8 @@ function selected(plan:EvidencePlan,sections:Section[]){
     return {...s,rows:parsed.filter(r=>r.key===key).map(r=>r.row)}
   })
 }
-const questionOnly=(s:string)=>s.split(/(?:\b(?:return only|give one concise|answer result|report result|answer only)\b|写 RESULT)/iu)[0]!.trim()||s
-function title(s:Section){return s.heading.replace(/^@[\w-]+\s*\/\s*/u,'')}
+const questionOnly=(s:string)=>s.split(/(?:\b(?:return only|give (?:only (?:the |a )?short answer|one concise)|answer result|report result|answer only)\b|写 RESULT)/iu)[0]!.trim()||s
+const title=(s:Section)=>sourceTitle(s.heading)
 function lex(s:string){return new Set(s.toLowerCase().normalize('NFKC').match(/[a-z\d]+|[\p{Script=Han}]/gu)??[])}
 function catalogue(plan:EvidencePlan){return plan.sections.length>=5&&plan.sections.reduce((n,s)=>n+s.rows.join(' ').length,0)>1800}
 /** Rank only this reader's supplied sources. Include title links from other documents as a bridge signal. */
@@ -116,9 +116,20 @@ function rank(plan:EvidencePlan,sections:Section[],hints:string[]=[]){
     return {s:doc.s,score:base[i]!+Math.max(0,...links)+(name.length>=4&&hint.includes(name)?14:0)}
   }).filter(x=>sections.includes(x.s)).sort((a,b)=>b.score-a.score).map(x=>x.s)
 }
+// Send verbatim sentences. The full accepted records remain available on the scoped second read.
+function excerpts(rows:string[],question:string,limit:number){
+  if(rows.length<=limit)return rows
+  const terms=lex(question),tokens=rows.map(row=>lex(row))
+  const weights=[...terms].map(term=>[term,Math.log(1+rows.length/(1+tokens.filter(t=>t.has(term)).length))] as const)
+  const scored=tokens.map((words,i)=>({i,score:weights.reduce((n,[term,w])=>n+(words.has(term)?w:0),0)}))
+  // The introductory sentence often supplies the subject to which the later fact belongs.
+  const ids=new Set([0,...scored.slice(1).sort((a,b)=>b.score-a.score).slice(0,limit-1).map(s=>s.i)])
+  return rows.filter((_,i)=>ids.has(i))
+}
 export function answerPacket(plan:EvidencePlan,sections:Section[],findings:string[]=[],expanded=false){
   const docs=expanded?sections:catalogue(plan)?rank(plan,sections,findings).slice(0,3):selected(plan,sections)
-  return buildAnswerPacket(plan.question,plan.sections,sections,docs,findings,evidenceText)
+  const view=!expanded&&catalogue(plan)?(s:Section)=>s.rows.join('\n').length>1800?excerpts(s.rows,questionOnly(plan.question),4):s.rows:undefined
+  return buildAnswerPacket(plan.question,plan.sections,sections,docs,findings,evidenceText,view)
 }
 export async function readEvidenceAnswer(plan:EvidencePlan,start:AnswerPacket,expand:()=>AnswerPacket,
   read:(instructions:string,input:string)=>Promise<ModelResult>,canRetry:()=>boolean){
@@ -135,9 +146,9 @@ export function readerPacket(plan:EvidencePlan,id:string){
   if(!catalogue(plan)&&!exactKey(plan)&&evidenceText(sections).length<=950){
     return {instructions:'Read your source. Reply only with the relevant row numbers, or * for all.',input:focus+'\n'+evidenceText(sections,true)}
   }
-  const prompt='Select supporting source IDs, including indirect links. Output IDs, * (all), or 0 (none).'
+  const prompt='Select supporting articles, including indirect links. Reply with IDs (example: 2,4), * for all or 0 for none.'
   if(catalogue(plan)){
-    const brief=sections.map((s,i)=>String(i+1)+'. '+title(s)+': '+(s.rows[0]??'').slice(0,230)).join('\n')
+    const brief=sections.map((s,i)=>String(i+1)+'. '+title(s)+': '+(s.rows[0]??'').slice(0,175)).join('\n')
     return {instructions:prompt,input:brief+'\nQuestion: '+focus}
   }
   return {instructions:'Read the numbered records. Return only supporting row IDs separated by commas, * for all or 0 for none.',input:evidenceText(sections,true)+'\nSelect rows for: '+focus}
@@ -158,10 +169,14 @@ export function citedEvidence(plan:EvidencePlan,id:string,text:string){
     return text.trim()?evidenceText(sections):undefined
   }
   if(catalogue(plan)){
-    const refs=indices(text,sections.length);if(!refs)return
-    // Keep explicit choices and add the best independently ranked source from the original supplied packet.
-    const top=rank(plan,workerSections(plan,id))[0],docs=sections.filter((s,i)=>refs.includes(i)||s.heading===top?.heading)
-    return evidenceText(docs)||'No matching source.'
+    if(!text.trim())return
+    const refs=indices(text,sections.length),ranked=rank(plan,workerSections(plan,id))
+    // A nonconforming annotation cannot grant or invent evidence. Recover literal article mentions
+    // or forward the top original records from this same ticket if no selection can be resolved.
+    const mentions=refs===undefined?sections.filter(s=>title(s).length>=3&&text.toLowerCase().includes(title(s).toLowerCase())):undefined
+    const selected=refs===undefined?(mentions?.length?mentions:ranked.slice(0,2)):sections.filter((_,i)=>refs.includes(i))
+    const retained=new Set([...selected,...ranked.slice(0,1)])
+    return evidenceText(sections.filter(s=>retained.has(s)))||'No matching source.'
   }
   const all=originals(sections),refs=indices(text,all.length);if(!refs)return
   // Transmission cost is low on small sources. Keeping the complete record set preserves negatives and denominators.

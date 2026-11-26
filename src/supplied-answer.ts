@@ -6,6 +6,8 @@ export interface AnswerPacket {
   input:string
   /** Addresses refer only to sources presented in this activation. */
   references?:{id:number;title:string}[]
+  addressesShown?:true
+  shortUnit?:string
   fields?:{key:string;spec:string}[]
   calculation?:CheckedCalculation
   evidence:string
@@ -45,41 +47,52 @@ function returnedSections(text:string,all:SuppliedRows[],blocks:string[]){
   }
   return matched
 }
-export function buildAnswerPacket(question:string,all:SuppliedRows[],own:SuppliedRows[],displayed:SuppliedRows[],findings:string[],render:(s:SuppliedRows[])=>string):AnswerPacket{
+// For an expressly short numeric reply, a unit already fixed by the question can be omitted.
+function requestedUnit(q:string){
+  if(!/\b(?:only (?:the |a )?short answer|short answer only|number only)\b/iu.test(q)||/\b(?:include|with) (?:the )?units?\b/iu.test(q))return
+  if(/\b(?:respectively|each of|include both|list both|separately)\b/iu.test(q))return
+  const match=/\bhow many (years?|days?|months?|weeks?|hours?|minutes?|seconds?|points?|yards?|miles?|kilometers?|kilometres?|percent(?:age points?)?)\b/iu.exec(q)
+  return match?.[1]?.toLowerCase().replace(/s$/u,'')
+}
+export function buildAnswerPacket(question:string,all:SuppliedRows[],own:SuppliedRows[],displayed:SuppliedRows[],findings:string[],render:(s:SuppliedRows[])=>string,view?:(s:SuppliedRows)=>string[]):AnswerPacket{
   const original=[...findings,render(displayed)].filter(Boolean).join('\n\n')
   const titles=titleRequest.exec(question),blocks=all.map(s=>render([s]))
   const returned=findings.map(text=>returnedSections(text,all,blocks))
   if(titles){
     const refs=new Map<number,{id:number;title:string}>()
-    const numberSource=(s:SuppliedRows)=>{
+    const citeSource=(s:SuppliedRows)=>{
       const i=all.indexOf(s);if(i<0)return render([s])
       const ref={id:i+1,title:sourceTitle(s.heading)};refs.set(ref.id,ref)
-      return '['+ref.id+'] '+ref.title+'\n'+s.rows.join('\n')
+      return render([{heading:s.heading,rows:view?view(s):s.rows}])
     }
-    const numbered=[...findings.map((text,i)=>returned[i]?.map(numberSource).join('\n')??text),...displayed.map(numberSource)].filter(Boolean).join('\n\n')
+    const quoted=[...findings.map((text,i)=>returned[i]?.map(citeSource).join('\n')??text),...displayed.map(citeSource)].filter(Boolean).join('\n\n')
     const wantsShort=/\b(?:short(?:est)?|concise|span)\b|简短|最短/iu.test(question)
     if(refs.size)return {references:[...refs.values()],evidence:original,
-      instructions:wantsShort?'Shortest exact answer | all supporting source IDs. Omit extra qualifiers unless needed. Use ? if missing.':'Give the requested answer | all supporting source IDs. Use ? if missing.',
-      input:numbered+'\n\n'+question.slice(0,titles.index).trim()}
+      instructions:wantsShort?'Use the sources. Reply as bare JSON. Give the shortest exact answer and original titles supporting every step. If evidence is missing return NEED_CONTEXT.':'Use the sources. Reply as bare JSON, in the requested detail, with the original supporting article titles. If evidence is missing return NEED_CONTEXT.',
+      input:quoted+'\n\n'+question}
   }
   const fields=requestedFields(question),allReturned=new Set(returned.flatMap(s=>s??[]))
   const full=all.every(s=>own.includes(s)||allReturned.has(s))?all:undefined
   const calculation=full?checkedCalculation(question,full):undefined
   const evidence=original+(calculation?'\n'+calculation.note:'')
-  const instructions=fields?'Return one requested record. Copy identifiers exactly. Use checked arithmetic when provided. No explanation.':'Use the supplied records. Give the requested answer concisely. If the answer is absent say NEED_CONTEXT.'
-  return {input:question+'\n\n'+evidence,instructions,evidence,fields,calculation}
+  const short=/\b(?:short answer|exact span|number only)\b|只给(?:出)?答案/iu.test(question)
+  const unit=requestedUnit(question)
+  const instructions=unit?'Give one number answering the question, without units or intermediate figures. Use ? if the evidence is insufficient.':fields?'Return one requested record. Copy identifiers exactly. Use checked arithmetic when provided. No explanation.':short?'Answer the question at the end using the evidence. Return only the value or span, with no explanation. Omit units already specified in the question. Use ? for missing evidence.':'Use the supplied records. Give the requested answer concisely. If the answer is absent say NEED_CONTEXT.'
+  return {input:short&&!fields?evidence+'\n\n'+question:question+'\n\n'+evidence,instructions,evidence,fields,calculation,shortUnit:unit}
 }
 function resolveId(ref:string|number,references:NonNullable<AnswerPacket['references']>,numeric:boolean){
   const value=String(ref).trim()
-  if(numeric&&/^(?:\d+|\[\d+\])$/u.test(value)){
-    const n=Number(value.replace(/[\[\]]/gu,''));return references.find(r=>r.id===n)
-  }
   const exact=references.filter(r=>r.title===value)
+  if(numeric&&/^(?:\d+|\[\d+\])$/u.test(value)){
+    const n=Number(value.replace(/[\[\]]/gu,'')),byId=references.find(r=>r.id===n)
+    if(exact.length)return exact.length===1&&(!byId||byId===exact[0])?exact[0]:undefined
+    return byId
+  }
   if(exact.length===1)return exact[0]
   const matches=references.filter(r=>titleKey(r.title)===titleKey(value));return matches.length===1?matches[0]:undefined
 }
 function checkedCitations(text:string,packet:AnswerPacket):AnswerCheck{
-  let answer:unknown,refs:unknown,numeric=false
+  let answer:unknown,refs:unknown
   if(text.startsWith('{')){
     try{const record=JSON.parse(text);answer=record.answer;refs=record.titles}catch{return bad('format','Return one answer and source IDs, separated by |.')}
   }else{
@@ -87,7 +100,6 @@ function checkedCitations(text:string,packet:AnswerPacket):AnswerCheck{
     if(pos<0)return bad('format','Return the short answer followed by | and its supporting source IDs.')
     answer=text.slice(0,pos).trim()
     refs=text.slice(pos+1).trim().replace(/^\[([\d,\s]+)\]$/u,'$1').split(/\s*,\s*/u)
-    numeric=true
   }
   if(typeof answer==='number'&&Number.isFinite(answer))answer=String(answer)
   if(typeof answer!=='string'||!answer.trim()||answer.trim()==='?')return missing
@@ -95,7 +107,7 @@ function checkedCitations(text:string,packet:AnswerPacket):AnswerCheck{
   const titles:string[]=[]
   for(const r of refs){
     if(typeof r!=='string'&&typeof r!=='number')return bad('sources','Use visible source IDs.')
-    const resolved=resolveId(r,packet.references!,numeric||typeof r==='number')
+    const resolved=resolveId(r,packet.references!,!!packet.addressesShown)
     if(!resolved)return bad('sources','A cited source is missing or ambiguous. Use only the bracketed IDs you can see.')
     if(!titles.includes(resolved.title))titles.push(resolved.title)
   }
@@ -120,6 +132,12 @@ export function checkAnswer(question:string,raw:string,packet:AnswerPacket):Answ
   if(packet.references)return checkedCitations(text,packet)
   const fields=packet.fields
   if(!fields){
+    if(packet.shortUnit){
+      const units=packet.shortUnit==='percent'?'(?:percent|%)':escaped(packet.shortUnit)+'s?'
+      const m=new RegExp('^(-?\\d+(?:\\.\\d+)?)\\s*'+units+'[.]?$','iu').exec(text)
+      if(m)return yes(m[1]!)
+      if(/[;；=]|\n\s*\d/u.test(text))return bad('format','Give the requested quantity only. Preserve ranges or qualifying units when needed.')
+    }
     if(/\bJSON\b/iu.test(question)){try{JSON.parse(text)}catch{return bad('format','Return the requested JSON object without additional text.')}}
     return yes(text)
   }
@@ -135,10 +153,12 @@ export function checkAnswer(question:string,raw:string,packet:AnswerPacket):Answ
   if(calc?.count!==undefined&&fields.length===1&&nums[0]&&Number(values[0])!==calc.count)return bad('values',calc.note)
   if(calc?.winner&&fields.length===2&&nums.filter(Boolean).length===1){
     const n=nums.indexOf(true),key=values[1-n]!
-    if(key!==calc.winner.key||Number(values[n])!==calc.winner.total)return bad('values',calc.note+'. Return only the qualifying record.')
+    const totalField=/^(?:total|sum)$/iu.test(fields[n]!.key)||/\b(?:sum|total)\b|总数|总和|总分/iu.test(fields[n]!.spec)
+    if(key!==calc.winner.key||totalField&&Number(values[n])!==calc.winner.total)return bad('values',calc.note+'. Return only the qualifying record.')
   }
   return yes('RESULT '+fields.map((f,i)=>f.key+'='+values[i]).join(' '))
 }
 export function repairPacket(packet:AnswerPacket,issue:Extract<AnswerCheck,{ok:false}>,previous:string){
-  return {...packet,instructions:packet.instructions+' '+issue.detail,input:packet.input+'\nPrevious proposal to check: '+previous.trim().slice(0,400)}
+  const index=packet.references?.map(r=>'['+r.id+'] '+r.title).join('\n')
+  return {...packet,...(index?{addressesShown:true as const}:{}),instructions:packet.instructions+' '+issue.detail,input:packet.input+(index?'\nSource IDs for correction:\n'+index:'')+'\nPrevious proposal to check: '+previous.trim().slice(0,400)}
 }

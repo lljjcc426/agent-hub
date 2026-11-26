@@ -25,7 +25,8 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { Brand, ChoiceGroup, IconButton, NavLink, Popover, SelectField, SelectionIndicator, SwitchView } from '../ui';
+import { Brand, CheckField, ChoiceGroup, IconButton, NavLink, Popover, SelectField, SelectionIndicator, SwitchView } from '../ui';
+import {setWorkerDiffPreference,useWorkerDiffPreference} from './worker-diff-preference.ts';
 import { AgentAvatar } from './agent-avatar.tsx';
 import { SidebarSeparator } from './sidebar-separator.tsx';
 import { workspaceGroups } from './workspace-settings.tsx';
@@ -47,7 +48,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
   return [
     { name: L('Preferences', '偏好'), rows: [
       row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat',
-        L('Send message keyboard shortcut Enter Chat display Detailed Simple Task progress reporting', '发送消息 快捷键 回车 Enter 对话显示 详细 简洁 任务进度汇报')),
+        L('Send message keyboard shortcut Enter Chat display Detailed Simple Task progress reporting Worker file changes diff', '发送消息 快捷键 回车 Enter 对话显示 详细 简洁 任务进度汇报 Worker 文件改动 差异 diff')),
       row('appearance', L('Appearance', '外观'), Sun, undefined, L('Theme colors fonts motion', '主题 颜色 字体 动效')),
       row('advanced/memory', L('Memory', '记忆'), Brain),
       ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
@@ -292,6 +293,8 @@ export function General({
       setSaving(false);
     }
   }
+  const workerDiff=useWorkerDiffPreference();
+  const diffLabel=L('Worker file changes','Worker 文件改动');
   async function changeDetailMode(value: ChatSpace['detailMode']) {
     if (saving || detailMode === value) return;
     setSaving(true);
@@ -359,6 +362,11 @@ export function General({
             { value: 'completion', label: L('On completion', '完成后汇报'), disabled: saving },
             { value: 'autonomous', label: L('Router decides', 'Router 自主汇报'), disabled: saving },
           ]} />
+        </section>
+        <section className="language-row">
+          <h2>{diffLabel}</h2>
+          <CheckField label={diffLabel} appearance="switch" hideLabel checked={workerDiff}
+            onChange={event=>setWorkerDiffPreference(event.currentTarget.checked)}/>
         </section>
         <section>
           <h2>{L('Chat layout', '对话布局')}</h2>

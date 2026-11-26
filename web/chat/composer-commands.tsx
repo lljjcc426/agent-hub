@@ -1,4 +1,5 @@
-import { ArrowUpRight, Box, Check, ChevronRight, CircleGauge, GitCommitHorizontal, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, Box, Check, ChevronRight, CircleGauge, Eye, EyeOff, GitCommitHorizontal, GitCompareArrows, Hand, Paperclip, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import {setWorkerDiffPreference,useWorkerDiffPreference} from './worker-diff-preference.ts'
 import { useId, useState } from 'react'
 import type { ChatSpace } from './chat-settings.tsx'
 import type { CurrentContext } from './context-card.tsx'
@@ -11,6 +12,7 @@ export const commands = [
   { id: 'permissions', title: (L: Localize) => L('Approval policy', '审批策略'), Icon: ShieldCheck },
   { id: 'context', title: (L: Localize) => L('Context usage', '上下文用量'), Icon: CircleGauge },
   { id: 'commits', title: (L: Localize) => L('Commit trail', '提交轨迹'), Icon: GitCommitHorizontal },
+  { id: 'diff', title: (L: Localize) => L('Worker file changes', 'Worker 文件改动'), Icon: GitCompareArrows },
 ] as const
 export type ChatCommand = (typeof commands)[number]['id']
 export type Mode = ChatSpace['approvalMode']
@@ -71,6 +73,21 @@ export function CommandList({ items, skills, empty, active, slash, listId, uploa
       })}
     </div>}
     {empty && <div className="palette-empty" role="status">{empty}</div>}
+  </div>
+}
+
+export function WorkerDiffOptions({L,onClose}:{L:Localize;onClose:()=>void}) {
+  const enabled=useWorkerDiffPreference()
+  return <div role="menu" aria-label={L('Worker file changes','Worker 文件改动')}>
+    {[true,false].map(next=>{
+      const Icon=next?Eye:EyeOff
+      const label=next?L('On','开启'):L('Off','关闭')
+      return <button key={String(next)} type="button" className="palette-row policy-option"
+        role="menuitemradio" aria-label={label} aria-checked={next===enabled}
+        onClick={()=>{setWorkerDiffPreference(next);onClose()}}>
+        <Icon size={17}/><span><strong>{label}</strong></span>{next===enabled&&<Check size={15}/>}
+      </button>
+    })}
   </div>
 }
 

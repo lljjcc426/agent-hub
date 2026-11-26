@@ -3,6 +3,7 @@ import {readFileSync,writeFileSync,renameSync,openSync,writeSync,closeSync,mkdte
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {sandboxCommand,sandboxEnvironment} from './sandbox.ts'
+import {beginWorkPatch} from './work-patch-capture.ts'
 const spec=JSON.parse(readFileSync(process.argv[2]!,'utf8'))
 const output=openSync(join(spec.directory,spec.id+'.output'),'a',0o600)
 let bytes=0,droppedBytes=0,stopping=false,killTimer:ReturnType<typeof setTimeout>|undefined
@@ -10,6 +11,7 @@ const scratch=mkdtempSync(join(tmpdir(),'agenthub-job-'))
 let launch:ReturnType<typeof sandboxCommand>
 try{launch=sandboxCommand({...spec,scratch})}catch(error){closeSync(output);rmSync(scratch,{recursive:true,force:true});throw error}
 const env=sandboxEnvironment(scratch,launch.developerBin,spec.network)
+const captures=(spec.patchRoots??[]).map(({root,index}:{root:string;index:number})=>({index,capture:beginWorkPatch({...spec,cwd:root})}))
 const child=spawn(launch.command,launch.args,{cwd:spec.cwd,env,stdio:['ignore','pipe','pipe'],shell:false})
 
 const append=(chunk:Buffer)=>{const count=Math.min(chunk.length,Math.max(0,spec.maxOutputBytes-bytes));if(count)writeSync(output,chunk.subarray(0,count));bytes+=count;droppedBytes+=chunk.length-count}
@@ -25,6 +27,10 @@ let failure:string|undefined
 child.once('error',error=>{failure=String(error)})
 child.once('close',(exitCode,signal)=>{
  clearInterval(monitor);if(killTimer)clearTimeout(killTimer);closeSync(output);rmSync(scratch,{recursive:true,force:true})
+ for(const {index,capture} of captures){
+  if(stopping){capture?.discard();continue}
+  capture?.finish(join(spec.directory,spec.id+'.'+index+'.patch'))
+ }
  const destination=join(spec.directory,spec.id+'.result.json'),temporary=destination+'.new'
  writeFileSync(temporary,JSON.stringify({id:spec.id,exitCode,signal,endedAt:Date.now(),bytes,droppedBytes,...(failure?{error:failure}:{})}),{mode:0o600});renameSync(temporary,destination)
 })

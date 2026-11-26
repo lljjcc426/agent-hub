@@ -45,7 +45,9 @@ import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentRea
 import {taskActivities,type ChatTask} from './chat-task-activity.ts'
 import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
 import {retainedGoalDelivery} from './goal-acceptance.ts'
-import {basename} from 'node:path'
+import {basename,join} from 'node:path'
+import {splitWorkerPatch,type WorkerFilePatch} from './worker-patch.ts'
+export type {WorkerFilePatch} from './worker-patch.ts'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
 import type {ChatSkillRef,SelectedChatSkill} from './chat-skills.ts'
 import {chatPersonalization} from './chat-personalization.ts'
@@ -62,7 +64,34 @@ interface Conversation {
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
-interface Message {commentary?:true;handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;skill?:ChatSkillRef;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {
+  commentary?:true
+  id:string
+  conversationId:string
+  runId:string
+  sequence:number
+  role:'user'|'assistant'
+  text:string
+  createdAt:number
+  status?:'streaming'|'complete'|'interrupted'|'failed'
+  clientMessageId?:string
+  speaker?:Speaker
+  recipient?:Speaker
+  handoff?:'assignment'|'result'|'files'
+  workerPatchReceipt?:true
+  opening?:'received'|'introduced'
+  decision?:ChatDecision
+  fileReview?:FileReview
+  attachments?:ChatAttachment[]
+  deliveries?:ChatDelivery[]
+  fileChanges?:WorkerFilePatch[]
+  fileChangeSources?:string[]
+  ticketId?:string
+  quote?:ChatQuote
+  skill?:ChatSkillRef
+  reactions?:string[]
+  agentReactions?:AgentReaction[]
+}
 export type {Conversation as ChatConversation, Message as ChatMessage, ChatRun}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
@@ -972,6 +1001,33 @@ export class ChatSessions {
     return {messageId:id,name:message.text,state:message.fileReview.state}
   }
 
+  recordWorkerPatch(ticketId:string,receipt:string,raw:string,root?:string){
+    const dest=this.workerDestination(ticketId,{includeDelegated:true})
+    if(!dest)return
+    const messageId='worker-diff:'+stableDigest([ticketId,receipt])
+    if(this.host.store.get('chat-message',messageId))return
+    const patches=splitWorkerPatch(raw)
+    if(!patches.length)return
+    this.host.store.atomic(()=>{
+      const files=patches.map(({file,raw:text})=>{
+        const id=randomUUID(),path=root?join(root,file.path):file.path
+        this.host.store.put('chat-worker-patch',id,{id,conversationId:dest.c.id,ticketId,messageId,path,text})
+        return {...file,path,id}
+      })
+      this.message(dest.c,{id:messageId,workerPatchReceipt:true,runId:dest.run.id,role:'assistant',text:'',status:'complete',
+        speaker:dest.worker,recipient:this.router(dest.run.triggerId),ticketId,fileChanges:files})
+    })
+    this.changed(dest.c.id)
+  }
+  workerPatch(conversationId:string,owner:string,id:string){
+    const conversation=this.get(conversationId,owner)
+    const patch=this.host.store.get<{conversationId:string;messageId:string;path:string;text:string}>('chat-worker-patch',id)
+    if(!patch||patch.conversationId!==conversationId||this.host.memory.cleanup.blocked('chat-worker-patch',id,patch))
+      throw new ChatError('patch_missing','File diff unavailable.',404)
+    const message=this.sourceMessage(conversation,patch.messageId)
+    if(!message.fileChanges?.some(file=>file.id===id))throw new ChatError('patch_missing','File diff unavailable.',404)
+    return patch
+  }
   canDeliverWorkerFiles(ticketId:string){return !!this.workerDestination(ticketId,{includeDelegated:true})}
   captureFiles(ticketId:string,cwd:string,paths:string[]){
     const dest=this.workerDestination(ticketId,{includeDelegated:true})

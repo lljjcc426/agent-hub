@@ -87,6 +87,7 @@ export interface ModelRequest {
   onCapabilities?:(value:{mcpServers:string[];disabledPlugins:string[];managed:boolean;backend?:BackendDescription})=>void
   onActive?: (control:NativeControl)=>void
   onHumanRequest?: (request:NativeRequest)=>Promise<unknown>
+  onWorkerPatch?: (turn:string,patch:string)=>void
   onProgress?: (event:string)=>void
   onBackendIssue?: (issue:import('./backends/plugin-contract.ts').BackendIssue)=>void
   onNativeToolBatch?: (batch:import('./backends/native-tool-batch.ts').NativeToolBatch)=>void

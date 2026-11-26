@@ -112,7 +112,10 @@ function expandPlan(store:Store,stateDir:string,plan:HistoryPlan):HistoryPlan {
    for(const ticket of r.body.taskIds)files.add(join(stateDir,'work',stableDigest(['code-project',ticket])))
   }
   if(r.kind==='asset'&&r.body.path)files.add(dirname(r.body.path))
-  if(r.kind==='work')for(const suffix of ['.spec.json','.output','.result.json'])files.add(join(stateDir,'jobs',r.id+suffix))
+  if(r.kind==='work'){
+   for(const suffix of ['.spec.json','.output','.result.json'])files.add(join(stateDir,'jobs',r.id+suffix))
+   if(Array.isArray(r.body.patchRoots))for(const index of r.body.patchRoots.keys())files.add(join(stateDir,'jobs',r.id+'.'+index+'.patch'))
+  }
  }
  return {...plan,records:[...selected.values()],roots:[...ids],sessions:[...sessions.values()],unresolvedSessions:[...unresolved].filter(id=>!sessions.has(id)),files:[...files],tickets:[...tickets],triggers:[...triggers]}
 }

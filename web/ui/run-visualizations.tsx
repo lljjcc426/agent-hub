@@ -272,8 +272,7 @@ export function ThinkingState({
       <button type="button" className="rv-thinking-head" aria-expanded={expanded} aria-controls={id}
         onClick={() => { toggled.current = true; setExpanded((open) => !open) }}>
         <span className="rv-thinking-mark" aria-hidden="true">
-          <AgentAvatar size={17} />
-          {state === 'running' && <span className="rv-thinking-sparks"><i /><i /><i /></span>}
+          <span className="rv-thought-pulse"><i /><i /><i /></span>
         </span>
         <span className="rv-thinking-label" key={state}>
           <span className={state === 'running' ? 'rv-thinking-sheen' : undefined}>{label}</span>

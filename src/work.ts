@@ -4,8 +4,8 @@ import {textPage} from './context-budget.ts'
 import {resourcePage,maxJobWaitMs} from './execution-limits.ts'
 import {execFileSync, type ChildProcess} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
-import {openSync,readSync,closeSync,mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync} from 'node:fs'
-import {dirname,join} from 'node:path'
+import {openSync,readSync,closeSync,mkdirSync,readFileSync,writeFileSync,existsSync,lstatSync,realpathSync,rmSync} from 'node:fs'
+import {dirname,join,resolve,sep} from 'node:path'
 import {startSandboxRunner} from './sandbox.ts'
 import type {Store} from './store.ts'
 import type {Config} from './config.ts'
@@ -21,12 +21,15 @@ export class WorkItemUnavailable extends Error {constructor(){super('Work item i
 export interface WorkOwner {ticketId:string;assignmentId:string;cwd:string;sandbox:'read-only'|'workspace-write';agentId?:string;depth:number;network?:boolean}
 export interface WorkItem extends WorkOwner {
  id:string;kind:'shell'|'agent';state:'starting'|'running'|'completed'|'failed'|'cancelled'|'interrupted';
+ patchRoots?:string[];contendedRoots?:string[];
  createdAt:number;endedAt?:number;pid?:number;command?:string;prompt?:string;threadId?:string;
  notify:'auto'|'held'|'sent'|'collected'|'dropped';deadline?:number;result?:unknown;exitCode?:number|null;error?:string
 }
 export interface WorkHooks {
  valid(owner:WorkOwner):boolean
  canReadInput?(input:import('./chat-retained-artifacts.ts').OpenedChatArtifact,owner:WorkOwner):boolean
+ capturePatches?(owner:WorkOwner):boolean
+ recordPatch?(item:WorkItem,root:string,raw:string):void
  wake(item:WorkItem):void
  expired?(owner:WorkOwner,killed:string[],remaining:string[]):void
  agent(item:WorkItem,signal:AbortSignal):Promise<{threadId:string;result:unknown}>
@@ -144,17 +147,36 @@ export class WorkManager {
   if(this.config.work.sandboxDriver==='bubblewrap'&&process.platform!=='linux')throw Error('Bubblewrap sandbox requires Linux')
   const {item,fresh}=this.create(owner,'shell',requestId,{command})
   if(fresh){
+   const allRoots=[...new Set([...(owner.sandbox==='workspace-write'?[owner.cwd]:[]),...(writablePaths??[])].map(p=>resolve(p)))]
+   const roots=allRoots.filter(p=>!allRoots.some(parent=>parent!==p&&p.startsWith(parent+sep)))
+   item.patchRoots=roots
+   // Concurrent host jobs may share a goal workspace. Never assign a shared snapshot to either writer.
+   const canonical=(path:string)=>{try{return realpathSync(path)}catch{return resolve(path)}}
+   const overlaps=(left:string,right:string)=>{
+    const a=canonical(left),b=canonical(right)
+    return a===b||a.startsWith(b+sep)||b.startsWith(a+sep)
+   }
+   for(const other of this.live().filter(job=>job.kind==='shell'&&job.id!==item.id)){
+    if(existsSync(join(this.directory,other.id+'.result.json')))continue
+    const theirs=other.patchRoots??(other.sandbox==='workspace-write'?[other.cwd]:[])
+    const conflict=roots.filter(root=>theirs.some(path=>overlaps(root,path)))
+    if(!conflict.length)continue
+    item.contendedRoots=[...new Set([...(item.contendedRoots??[]),...conflict])]
+    this.put({...other,contendedRoots:[...new Set([...(other.contendedRoots??[]),...theirs.filter(path=>conflict.some(root=>overlaps(root,path)))])]})
+   }
+   this.put(item)
+   const patchRoots=this.hooks.capturePatches?.(owner)?roots.filter(root=>!item.contendedRoots?.includes(root)):[]
    const spec=join(this.directory,item.id+'.spec.json')
    const gitDirectory=owner.cwd===projectWorkspace(this.config.stateDir,owner.ticketId)?undefined:linkedGitDirectory(owner.cwd)
    const attachments=this.store.list<any>('asset').filter(a=>a.ticketId===owner.ticketId&&(a.kind!=='chat-artifact-input'||this.hooks.canReadInput?.(a,owner))).map(a=>a.path)
-   writeFileSync(spec,JSON.stringify({id:item.id,command,cwd:owner.cwd,sandbox:owner.sandbox,codex:this.config.codex,sandboxDriver:this.config.work.sandboxDriver,network:this.config.work.network&&(owner.network??true),privateState:this.config.stateDir,privatePaths:hostPrivateFiles(),gitDirectory,attachments,writablePaths,hostPid:process.pid,hostLock:join(this.config.stateDir,'host.lock'),directory:this.directory,maxOutputBytes:this.config.work.maxOutputBytes}),{mode:0o600,flag:'wx'})
+   writeFileSync(spec,JSON.stringify({id:item.id,patchRoots:patchRoots.map(root=>({root,index:roots.indexOf(root)})),command,cwd:owner.cwd,sandbox:owner.sandbox,codex:this.config.codex,sandboxDriver:this.config.work.sandboxDriver,network:this.config.work.network&&(owner.network??true),privateState:this.config.stateDir,privatePaths:hostPrivateFiles(),gitDirectory,attachments,writablePaths,hostPid:process.pid,hostLock:join(this.config.stateDir,'host.lock'),directory:this.directory,maxOutputBytes:this.config.work.maxOutputBytes}),{mode:0o600,flag:'wx'})
    try{
     const child=startSandboxRunner(spec)
     this.runners.set(item.id,child)
     child.once('error',()=>{this.put({...this.store.get<WorkItem>('work',item.id)!,state:'failed',endedAt:Date.now(),error:'Unable to start managed command'})})
     child.once('exit',()=>{this.runners.delete(item.id);const current=this.store.get<WorkItem>('work',item.id);if(current&&['starting','running'].includes(current.state)&&!existsSync(join(this.directory,item.id+'.result.json')))this.put({...current,state:'interrupted',endedAt:Date.now(),error:'Managed runner exited without a durable receipt; inspect retained output before retrying'})})
     await new Promise<void>((resolve,reject)=>{child.once('spawn',()=>resolve());child.once('error',reject)})
-    this.put({...item,state:'running',pid:child.pid})
+    this.put({...this.store.get<WorkItem>('work',item.id)!,state:'running',pid:child.pid})
    }catch(error){this.put({...item,state:'failed',endedAt:Date.now(),error:String(error)})}
   }
   return this.wait(owner,item.id,yieldMs)
@@ -215,7 +237,8 @@ export class WorkManager {
    }finally{closeSync(fd)}
   }
   const output=textPage(window,0,limit).text,next=offset+output.length
-  return {...item,output,outputOffset:offset,nextOffset:next<characters?next:null,outputCharacters:characters,resource:'job/'+item.id}
+  const {patchRoots,contendedRoots,...publicItem}=item
+  return {...publicItem,output,outputOffset:offset,nextOffset:next<characters?next:null,outputCharacters:characters,resource:'job/'+item.id}
  }
  read(owner:WorkOwner,id:string,offset=0,limit=resourcePage.defaultCharacters){return this.view(this.own(owner,id),offset,limit)}
  active(ticketId:string,assignmentId:string){return this.decode(this.autoByAssignment.all(ticketId,assignmentId))}
@@ -223,6 +246,17 @@ export class WorkManager {
   const child=this.runners.get(item.id)
   return item.kind==='shell'&&item.state==='running'&&this.store.get<WorkItem>('work',item.id)?.state==='running'&&!!child?.pid&&child.pid===item.pid&&
    child.exitCode===null&&child.signalCode===null&&!child.killed
+ }
+ private collectPatches(item:WorkItem){
+  for(const [index,root] of (item.patchRoots??[]).entries()){
+   const path=join(this.directory,item.id+'.'+index+'.patch')
+   if(!existsSync(path))continue
+   try{
+    if(!item.contendedRoots?.includes(root)&&this.hooks.valid(item))this.hooks.recordPatch?.(item,root,readFileSync(path,'utf8'))
+   }catch{
+    this.store.audit({type:'worker_diff_unavailable',ticketId:item.ticketId,jobId:item.id})
+   }finally{rmSync(path,{force:true})}
+  }
  }
  async tick(){
   if(this.hooks.expired){
@@ -242,7 +276,7 @@ export class WorkManager {
    if(item.kind==='shell'&&!terminal(item)){
     const path=join(this.directory,item.id+'.result.json')
     if(existsSync(path)){
-     try{const result=JSON.parse(readFileSync(path,'utf8'));if(result.id!==item.id)throw Error('Runner identity mismatch');item=this.put({...item,state:result.error?'failed':result.exitCode===0?'completed':'failed',endedAt:result.endedAt,exitCode:result.exitCode,result,error:result.error})}
+     try{const result=JSON.parse(readFileSync(path,'utf8'));if(result.id!==item.id)throw Error('Runner identity mismatch');this.collectPatches(item);item=this.put({...item,state:result.error?'failed':result.exitCode===0?'completed':'failed',endedAt:result.endedAt,exitCode:result.exitCode,result,error:result.error})}
      catch{item=this.put({...item,state:'failed',endedAt:Date.now(),error:'Invalid managed-command result'})}
     }
    }

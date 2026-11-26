@@ -69,7 +69,7 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
-import {revealRetainedDelivery,sendRetainedDelivery} from './chat-file-http.ts'
+import {openWorkerPatch,sendWorkerPatch,revealRetainedDelivery,sendRetainedDelivery} from './chat-file-http.ts'
 import {heartbeatChange} from './heartbeat.ts'
 import {changeChatPersonalization,chatPersonalizationChange} from './chat-personalization.ts'
 import {chatUploadLimits} from './chat-attachments.ts'
@@ -722,6 +722,21 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/chat/conversations'){
         if(req.method==='GET'){send(res,200,{conversations:runtime.chat.list(owner,query.get('archived')==='true')});return}
         if(req.method==='POST'){send(res,201,runtime.chat.create(owner));return}
+      }
+      const patch=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/patches\/([a-f0-9-]{36})(\/open)?$/)
+      if(patch){
+        if(patch[3]){
+          if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
+          if(!local||process.platform!=='darwin'||req.headers.origin!==requestOrigin||req.headers.forwarded||req.headers['x-forwarded-for']||req.headers['x-real-ip']){
+            send(res,403,{code:'local_host_required'});return
+          }
+          z.object({}).strict().parse(await operatorBody(req))
+          await openWorkerPatch(runtime.chat.workerPatch(patch[1]!,owner,patch[2]!).text)
+          send(res,200,{opened:true});return
+        }
+        if(!['GET','HEAD'].includes(req.method??'')){send(res,405,{code:'method_not_allowed'});return}
+        sendWorkerPatch(req,res,runtime.chat.workerPatch(patch[1]!,owner,patch[2]!),query.get('download')==='1')
+        return
       }
       const delivery=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/deliveries\/([a-f0-9-]{36})(\/reveal)?$/)
       if(delivery?.[3]){

@@ -137,9 +137,11 @@ export class CodexModel implements Model {
       }finally{if(pending)context.toolReturned(pending)}
     }:undefined
     const search=request.nativeTool==='cached-web-search'?'cached':'disabled'
+    let workerPatch:string|undefined
     let possibleNativeEffect=false
     const client = new AppServer(this.config.codex, [...this.extraArgs,...(request.managed?[...managedStartup,'-c','web_search='+JSON.stringify(search)]:[])], request.cwd,request.onHumanRequest,request.onProgress,guardedTool,this.environment,request.onOutput,(method,params)=>{
       if(params?.threadId===client.threadId&&params?.turnId===client.turnId){
+        if(method==='turn/diff/updated'&&request.onWorkerPatch&&typeof params.diff==='string')workerPatch=params.diff
         if(method==='item/started'&&!['userMessage','agentMessage','reasoning','plan'].includes(params.item?.type))possibleNativeEffect=true
         if(method==='error'&&typeof params.willRetry==='boolean'){
           const issue=codexIssue(params.error,params.willRetry)
@@ -252,6 +254,7 @@ export class CodexModel implements Model {
       }})
       if (request.signal?.aborted) await client.interrupt()
       const terminal = await completed
+      if(workerPatch)request.onWorkerPatch?.(threadId+':'+client.turnId,workerPatch)
       if(budgetError)throw budgetError
       check('complete')
       if (client.humanRequest) throw new Error('Human input required: ' + client.humanRequest)
@@ -413,7 +416,7 @@ export class AppServer {
       }
       return
     }
-    if(!this.turnId&&/^(?:error|item\/(?:started|completed|agentMessage\/delta)|turn\/(?:started|completed)|thread\/tokenUsage\/updated|rawResponseItem\/completed)$/.test(message.method)){
+    if(!this.turnId&&/^(?:error|item\/(?:started|completed|agentMessage\/delta)|turn\/(?:started|completed|diff\/updated)|thread\/tokenUsage\/updated|rawResponseItem\/completed)$/.test(message.method)){
       if(this.earlyOutput.length>=1000)throw Error('Native output arrived without a confirmed turn')
       this.earlyOutput.push(message);return
     }

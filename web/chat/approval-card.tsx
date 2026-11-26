@@ -19,7 +19,7 @@ export function ApprovalFrame({kind, title, id, notice, status, result, children
   const label = useId()
   const [Icon, category] = kind === 'permission' ? [ShieldCheck, L('Operation approval', '操作审批')] :
     kind === 'file' ? [FileText, L('File approval', '文件审批')] : [CircleHelp, L('Your decision', '请求确认')]
-  return <section className="roppo-ui chat-approval-card" data-workflow-id={id} aria-labelledby={label}>
+  return <section className="roppo-ui chat-approval-card transcript-card" data-workflow-id={id} aria-labelledby={label}>
     <header className="chat-approval-head">
       <span><Icon size={15} aria-hidden="true"/>{category}</span>
       <ApprovalStatus label={status} state={result}/>

@@ -76,23 +76,25 @@
   width: 20px;
   aspect-ratio: 1;
 }
-.rv-thinking-sparks {
-  position: absolute;
-  inset: 1px 1px 0 0;
-  pointer-events: none;
+.rv-thought-pulse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 16px;
+  color: var(--rp-muted);
 }
-.rv-thinking-sparks i {
-  position: absolute;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--rv-green-light);
-  box-shadow: 0 0 5px var(--rv-green-light);
-  animation: rv-reasoning-spark 1.2s ease-in-out infinite;
+.rv-thought-pulse i { width: 3px; height: 6px; border-radius: 3px; background: currentColor; }
+.rv-thought-pulse i:nth-child(2) { height: 11px; }
+.rv-thinking[data-state=running] .rv-thought-pulse { color: var(--rv-green, var(--rp-ink)); }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-appearance-motion=off]) .rv-thinking[data-state=running] .rv-thought-pulse i {
+    animation: rv-thought-wave 1.15s ease-in-out var(--wave-delay,0s) infinite;
+  }
+  .rv-thinking .rv-thought-pulse i:nth-child(2) { --wave-delay: -860ms; }
+  .rv-thinking .rv-thought-pulse i:nth-child(3) { --wave-delay: -650ms; }
 }
-.rv-thinking-sparks i:nth-child(1) { inset: auto auto 3px 1px; }
-.rv-thinking-sparks i:nth-child(2) { inset: 7px 0 auto auto; animation-delay: 120ms; }
-.rv-thinking-sparks i:nth-child(3) { inset: 1px 3px auto auto; animation-delay: 240ms; }
+@keyframes rv-thought-wave { 0%, 80%, 100% { transform: scaleY(.65); opacity: .64; } 40% { transform: scaleY(1.25); opacity: 1; } }
 .rv-clock { color: var(--rp-muted); white-space: nowrap; font-size: 12px; }
 .rv-thinking .rv-thinking-steps { padding: 3px 0 1px; }
 .rv-thinking-window {
@@ -750,5 +752,5 @@ button.rv-commit-row:hover { background: color-mix(in srgb, var(--rp-ink) 5%, tr
   .rv-pending-arc, .rv-commit-writing, .rv-thinking-sheen, .rv-step-mark > i { animation: none !important; }
   .rv-commit-writing { color: var(--rv-rail); }
   .rv-thinking-sheen { color: var(--rp-muted); }
-  .rv-thinking-sparks, .rv-commit-beam, .rv-arrow-flight, .rv-arrow-ring, .rv-activation::after { display: none; }
+  .rv-commit-beam, .rv-arrow-flight, .rv-arrow-ring, .rv-activation::after { display: none; }
 }

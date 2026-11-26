@@ -7,13 +7,14 @@ import {Store} from '../src/store.ts'
 import {WorkManager,type WorkOwner} from '../src/work.ts'
 const roots:string[]=[],managers:WorkManager[]=[],stores:Store[]=[]
 afterEach(async()=>{for(const m of managers.splice(0))await m.close();for(const s of stores.splice(0))s.close();for(const r of roots.splice(0))rmSync(r,{recursive:true,force:true})})
-function fixture(timeout=2000){
+function fixture(timeout=2000,capture=false){
  const root=mkdtempSync(join(tmpdir(),'managed-work-'));roots.push(root);const cwd=join(root,'project');mkdirSync(cwd)
  const config=configSchema.parse({stateDir:join(root,'state'),codex:process.env.CODEX_BINARY??'codex',work:{backgroundTimeoutMs:timeout,sandboxDriver:process.env.CODEX_BINARY?'codex':process.platform==='darwin'?'seatbelt':'bubblewrap'},sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd}]})
  const store=new Store(join(config.stateDir,'state.sqlite'));stores.push(store);writeFileSync(join(config.stateDir,'host.lock'),String(process.pid))
  const wakes:any[]=[],owner:WorkOwner={ticketId:'task',assignmentId:'a',cwd,sandbox:'workspace-write',depth:0}
- const manager=new WorkManager(store,config,{valid:()=>true,wake:w=>wakes.push(w),agent:async(item,signal)=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true}))});managers.push(manager)
- return {manager,store,owner,wakes,cwd,root}
+ const patches:{job:string;raw:string}[]=[]
+ const manager=new WorkManager(store,config,{valid:()=>true,capturePatches:()=>capture,recordPatch:(item,_root,raw)=>patches.push({job:item.id,raw}),wake:w=>wakes.push(w),agent:async(item,signal)=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true}))});managers.push(manager)
+ return {manager,store,owner,wakes,cwd,root,patches}
 }
 async function settle(f:ReturnType<typeof fixture>,id:string){for(let i=0;i<200;i++){await f.manager.tick();const item=f.store.get<any>('work',id);if(!['running','starting'].includes(item.state))return item;await new Promise(r=>setTimeout(r,25))}throw Error('Managed process did not finish')}
 it('pages a large UTF-8 log through a code point split across disk blocks',()=>{
@@ -134,4 +135,29 @@ it('collects foreground command completion without queuing a redundant worker wa
  const f=fixture(),result=await f.manager.shell(f.owner,'printf foreground','foreground',5000)
  expect(result.state).toBe('completed');expect(result.notify).toBe('collected')
  await f.manager.tick();expect(f.wakes).toEqual([])
+})
+
+it('captures the actual before and after trees exactly once for a retried background command',async()=>{
+ const f=fixture(5000,true)
+ writeFileSync(join(f.cwd,'dirty.txt'),'existing dirty text\n')
+ writeFileSync(join(f.cwd,'remove.txt'),'old\n')
+ const command="printf 'replacement\\n' > dirty.txt && rm remove.txt && printf '你好\\n' > '新增 文件.md'"
+ const first=await f.manager.shell(f.owner,command,'edit',0)
+ await settle(f,first.id)
+ await f.manager.shell(f.owner,command,'edit',0)
+ expect(f.patches).toHaveLength(1)
+ expect(f.patches[0]!.raw).toContain('-existing dirty text\n+replacement')
+ expect(f.patches[0]!.raw).toContain('+++ b/新增 文件.md')
+ expect(f.patches[0]!.raw).toContain('+++ /dev/null')
+ expect(f.store.get<any>('work',first.id).result).not.toHaveProperty('patch')
+ expect(existsSync(join(f.manager.directory,first.id+'.0.patch'))).toBe(false)
+})
+it('does not attribute overlapping workspace snapshots to different workers',async()=>{
+ const f=fixture(5000,true)
+ const one=await f.manager.shell(f.owner,'sleep .3 && echo A > a.txt','one',0)
+ const two=await f.manager.shell({...f.owner,ticketId:'another'},'echo B > b.txt','two',0)
+ await Promise.all([settle(f,one.id),settle(f,two.id)])
+ expect(f.patches).toEqual([])
+ expect(readFileSync(join(f.cwd,'a.txt'),'utf8')).toBe('A\n')
+ expect(readFileSync(join(f.cwd,'b.txt'),'utf8')).toBe('B\n')
 })

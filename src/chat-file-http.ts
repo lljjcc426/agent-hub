@@ -1,8 +1,9 @@
-import {execFile} from 'node:child_process'
+import {execFile,spawn} from 'node:child_process'
 import {promisify} from 'node:util'
 import {pipeline} from 'node:stream/promises'
 import type {IncomingMessage,ServerResponse} from 'node:http'
 import type {ChatSessions} from './chat.ts'
+import {basename} from 'node:path'
 import {ChatError} from './chat-errors.ts'
 
 type RetainedDelivery=NonNullable<Awaited<ReturnType<ChatSessions['retainedDelivery']>>>
@@ -61,4 +62,23 @@ export async function revealRetainedDelivery(entry:RetainedDelivery|undefined){
   try{await run('/usr/bin/open',['-R',file.path],{timeout:5000})}
   catch{throw new ChatError('file_reveal_failed','Finder could not show this file.',500)}
  } finally {await file.handle.close().catch(()=>{})}
+}
+
+export function sendWorkerPatch(req:IncomingMessage,res:ServerResponse,patch:{path:string;text:string},download:boolean){
+ const name=encodeURIComponent(basename(patch.path)+'.patch').replace(/'/g,'%27')
+ res.writeHead(200,{'content-type':'text/plain; charset=utf-8','content-length':Buffer.byteLength(patch.text),
+  'content-disposition':(download?'attachment':'inline')+"; filename*=UTF-8''"+name,'cache-control':'private, no-store',
+  'x-content-type-options':'nosniff','content-security-policy':"default-src 'none'; sandbox"})
+ res.end(req.method==='HEAD'?undefined:patch.text)
+}
+
+export async function openWorkerPatch(text:string){
+ await new Promise<void>((resolve,reject)=>{
+  const child=spawn('/usr/bin/open',['-f','-a','TextEdit'],{stdio:['pipe','ignore','ignore'],timeout:8000})
+  const failed=()=>reject(new ChatError('patch_open_failed','TextEdit could not open the diff.',500))
+  child.once('error',failed)
+  child.stdin.once('error',failed)
+  child.once('close',code=>code===0?resolve():failed())
+  child.stdin.end(text)
+ })
 }

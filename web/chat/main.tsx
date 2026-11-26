@@ -47,6 +47,8 @@ import {
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
 import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
+import {useWorkerDiffPreference} from './worker-diff-preference.ts';
+import {WorkerFileDiff,reportsForTranscript,type WorkerReports} from './worker-file-diff.tsx';
 import {deliveryFile} from "./delivery-links.ts";
 import {TeamOverview} from './team-view.tsx';
 import {BrowserPanel,type BrowserOpenRequest} from './browser.tsx';
@@ -116,6 +118,7 @@ import "./sidebar-resize.css";
 import "./studio.css";
 import "./settings-design.css";
 import "./floating-chat.css";
+import "./transcript-cards.css";
 import { WorkspaceSettings, workspaceGroups } from "./workspace-settings.tsx";
 
 type Snapshot = ReturnType<ChatSessions["view"]>;
@@ -330,6 +333,7 @@ function Markdown(){
 function AssistantMessage() {
   const { L, run, runMessageId, waitingLabel, routerLabel, openFile,openAgent, showTranscriptDetails } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
+    workerReports=useAuiState(s=>s.message.metadata.custom?.workerReports) as WorkerReports|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
     id = useAuiState((s) => s.message.id),
@@ -346,6 +350,10 @@ function AssistantMessage() {
     streaming = status?.type === "running",
     footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
+  const hasCard=!!(deliveries?.length||fileReview||decision);
+  const patchReceipt=useAuiState(s=>s.message.metadata.custom?.workerPatchReceipt===true);
+  if(patchReceipt && workerReports?.length)return <><div className="workflow-block worker-diff-standalone" data-message-id={id}>
+    <WorkerFileDiff reports={workerReports} openAgent={openAgent} L={L}/></div><WorkflowCards anchor={id}/></>;
   if ((streaming || commentary) && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
@@ -378,8 +386,8 @@ function AssistantMessage() {
         ) : null}
       </div>}
       <div className="assistant-body">
-        <div className="message-line" tabIndex={-1}>
-          <div className={deliveries?.length||fileReview||decision?"message-surface":"message-surface assistant-bubble"}>
+        <div className={hasCard?"message-line message-card-line":"message-line"} tabIndex={-1}>
+          <div className={hasCard?"message-surface":"message-surface assistant-bubble"}>
             {recipient ? <div className="addressed-message">
               <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
             </div> : body}
@@ -387,6 +395,7 @@ function AssistantMessage() {
           </div>
           <MessageActions id={id}/>
         </div>
+        {!!workerReports?.length && <WorkerFileDiff reports={workerReports} openAgent={openAgent} L={L}/>}
         <Reactions id={id}/>
         {run && footerStatus && !(run.state==='waiting' && waitingLabel) ? <span className={'message-status ' + run.state} role="status"><StatusIcon state={run.state} />{footerStatus}</span> : status?.type === 'incomplete' ? <span className="message-status">{status.reason === 'cancelled' ? L('Output stopped','输出已停止') : L('Progress saved','进度已保留')}</span> : null}
       </div>
@@ -1023,8 +1032,10 @@ function Chat(p: ChatProps) {
   const historicalWorker=snapshot?.tasks.find(t=>t.workerId===selectedAgent);
   const selected=participants.find(a=>a.id===selectedAgent)??(historicalWorker?{id:selectedAgent,label:selectedAgent,kind:'worker' as const,latestMessage:null}:currentRouter);
   const readonly = selected.kind === "worker";
+  const showWorkerDiff=useWorkerDiffPreference();
   const participantFilter = readonly ? selected.id : undefined;
   const visibleMessages = (snapshot?.messages ?? []).filter(message => {
+    if (message.workerPatchReceipt) return showWorkerDiff && (!readonly || message.speaker?.id===selected.id);
     if (!showTranscriptDetails && !simpleChatMessage(message)) return false;
     if (readonly) return message.speaker?.id === selected.id || message.recipient?.id === selected.id;
     if (display === "group") return true;
@@ -1240,6 +1251,7 @@ function Chat(p: ChatProps) {
     };
   }, [id, refresh, resetSends]);
   const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter,showTranscriptDetails);
+  const workerReports=reportsForTranscript(snapshot?.messages??[],visibleMessages);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];
     return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient && !before.commentary;
@@ -1273,6 +1285,7 @@ function Chat(p: ChatProps) {
       role: m.role,
       createdAt: new Date(m.createdAt),
       metadata: { custom: {
+        workerPatchReceipt:m.workerPatchReceipt,workerReports:workerReports.get(m.id),
         readReceipt: m.role==='user' && !readonly && !around && awaitingReply.has(m.runId),
         commentary: m.commentary,
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>

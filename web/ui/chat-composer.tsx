@@ -3,12 +3,13 @@ import { smartPunctuation } from '../chat/smart-punctuation.ts'
 import { modifierEnterLabel, sendModifier, type SendShortcut } from '../chat/send-shortcut.ts'
 import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowUp, Box, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
-import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
+import { ApprovalOptions, WorkerDiffOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
   type ChatCommand, type Localize, type Mode } from '../chat/composer-commands.tsx'
 import { RouterModelOptions, type ModelConnectionStore } from '../chat/router-model.tsx'
 import type { CurrentContext } from '../chat/context-card.tsx'
 import type { ChatSkill, ChatSkillCatalog, ChatSkillRef } from '../../src/chat-skills.ts'
 import { finishLayerExit } from './overlays.tsx'
+import {setWorkerDiffPreference} from '../chat/worker-diff-preference.ts'
 import '../chat/composer-controls.css'
 
 type Subpage = Exclude<ChatCommand, 'attach' | 'commits'>
@@ -135,6 +136,14 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     setText('')
     close()
   }
+  function chooseDirectDiff() {
+    const match=/^\/diff\s+(on|off|开启|关闭)$/i.exec(input.current?.value.trim()??'')
+    if (!match) return false
+    setWorkerDiffPreference(['on','开启'].includes(match[1]!.toLowerCase()))
+    setText('')
+    if(menu) close()
+    return true
+  }
   function chooseActive() {
     if (slash && (waitingForSkills || active < 0 && highlight !== null)) return true
     if (!slash || active < 0) return false
@@ -151,7 +160,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
       return
     }
     const target = event.target as Element
-    if (page !== 'commands' && page !== 'permissions' && !(page === 'model' && target.closest('[role=menu]'))) return
+    if (page !== 'commands' && page !== 'permissions' && page !== 'diff' && !(page === 'model' && target.closest('[role=menu]'))) return
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role^=menuitem]:not(:disabled)'))
     if (!options.length) return
@@ -301,7 +310,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
             return
           }
           if (event.key !== 'Enter' || event.shiftKey) return
-          if (chooseActive()) { event.preventDefault(); return }
+          if (chooseDirectDiff() || chooseActive()) { event.preventDefault(); return }
           if (sendShortcut === 'modifier-enter' && (!event[sendModifier.eventKey] || event.altKey)) return
           event.preventDefault()
           if (slash) close()
@@ -329,7 +338,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
           aria-haspopup="dialog" aria-expanded={!closing && source === 'context'} aria-controls={source === 'context' ? paletteId : undefined}
           onClick={e => shortcut('context', e.currentTarget)}><UsageRing fraction={readout.fraction}/></button>}
         <SendMessage canSend={canSend && !modelWrites} sending={sending} shortcut={sendShortcut} L={L} onClick={() => {
-          if (chooseActive()) return
+          if (chooseDirectDiff() || chooseActive()) return
           if (slash) close()
           onSend()
         }}/>
@@ -342,13 +351,14 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
         role={page === 'model' || page === 'context' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Chat model','对话模型') : title} onKeyDown={moveInMenu}>
         <div ref={paletteBody} className="palette-body"><div key={page} className="palette-page" data-page={page}>
-          {(page === 'permissions' || page === 'context') && <div className="palette-heading">
+          {(page === 'permissions' || page === 'context' || page === 'diff') && <div className="palette-heading">
             {nested && <button type="button" aria-label={L('Back to chat actions','返回对话操作')} onClick={back}><ArrowLeft size={16}/></button>}
             <strong>{page === 'permissions' ? L('How should Roppo ask for approval?', 'Roppo 应如何请求批准？') : title}</strong>
           </div>}
           {page === 'commands' && <CommandList items={items} skills={skillItems} empty={empty} slash={slashList} listId={listId} active={active}
             uploadDisabled={uploadDisabled} mode={mode} L={L} onHighlight={highlightAt} onChoose={choose} onSkill={selectSkill}/>}
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
+          {page === 'diff' && <WorkerDiffOptions L={L} onClose={finish}/>}
           {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} backend={modelBackend} onSaved={onModelSaved}
             onSaving={active => setModelWrites(count => count + (active ? 1 : -1))} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && onContext && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}

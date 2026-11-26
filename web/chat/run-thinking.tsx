@@ -34,7 +34,7 @@ export function ThinkingActivity({calls,runState,live,L,locale,actor,arrival}: {
         ?<ToolCallDetail call={call} label={label} active={ticking&&state==='working'} locale={locale} L={L} actor={actor}/>
         :undefined})
   }
-  return <div className="chat-thinking-activity" data-arrival={arrival}>
+  return <div className="chat-thinking-activity transcript-card" data-arrival={arrival}>
     <ThinkingState steps={steps} state={running?'running':stopped?'recorded':'done'}
       elapsedMs={end-start} liveSince={ticking?start:undefined} defaultExpanded={ticking} scrollable L={L}/>
   </div>

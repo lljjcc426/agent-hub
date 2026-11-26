@@ -1,4 +1,4 @@
-import {ArrowLeft, ChevronDown, ChevronRight, CircleHelp, FileText, History, Search, ShieldCheck} from 'lucide-react'
+import {ArrowLeft, ChevronDown, ChevronRight, CircleHelp, FileText, History, ListChecks, Search, ShieldCheck} from 'lucide-react'
 import {pendingHref} from './pending-links.ts'
 import { DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -341,8 +341,8 @@ export function WorkflowCards({ anchor }: { anchor: string }) {
     }
     else {
       const p=item.plan
-      rows.push(<div className="workflow-plan" key={p.id}>
-        <AgentPlan L={L} title={p.title} live={p.live} steps={p.steps.map(s=>({...s,tool:[s.workerId,s.state&&states[s.state]].filter(Boolean).join(' · ')}))}/>
+      rows.push(<div className="workflow-plan transcript-card" key={p.id}>
+        <AgentPlan L={L} title={<><ListChecks size={16} aria-hidden="true"/>{p.title}</>} live={p.live} steps={p.steps.map(s=>({...s,tool:[s.workerId,s.state&&states[s.state]].filter(Boolean).join(' · ')}))}/>
       </div>)
     }
   }

@@ -342,7 +342,10 @@ export class Runtime {
     this.heartbeat=new Heartbeat(this,this.clock)
     this.browser=new BrowserManager(this,options.browserDriver)
     this.desktop=new CuaDesktop(this)
-    this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),canReadInput:(file,owner)=>this.chat.retained.canReadInput(file,owner),wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
+    this.work=new WorkManager(this.store,config,{valid:owner=>this.validWork(owner),canReadInput:(file,owner)=>this.chat.retained.canReadInput(file,owner),
+      capturePatches:owner=>this.chat.canDeliverWorkerFiles(owner.ticketId),
+      recordPatch:(job,root,raw)=>this.chat.recordWorkerPatch(job.ticketId,'shell:'+job.id+':'+root,raw,root===job.cwd?undefined:root),
+      wake:item=>this.workCompleted(item),expired:(owner,killed,remaining)=>{const run=this.store.get<Run>('run',owner.ticketId);if(run?.phase==='background'&&this.validWork(owner)){this.store.put('run',owner.ticketId,{...run,phase:'idle'});this.engine.report(owner.ticketId,{state:'waiting',summary:(run.result??'')+' Background deadline reached. Killed jobs: '+killed.join(', ')+'; remaining subagents: '+remaining.join(', ')})}},agent:(item,signal)=>this.runAgent(item,signal)})
     this.routerIngress.delegatedAuthority=id=>this.delegation.authority(id)
     this.routerIngress.delegatedRevalidate=m=>this.delegation.validates(m)
     this.merger=new Merger(this)
@@ -2458,6 +2461,9 @@ export class Runtime {
           inputAccepted=true
         },
         role:'worker',allowNativeTools:!delegatedTask,options:agentOptions,backendId:saved?.rebuild?saved.backendId:dispatch?.profile.backend,onBackend:id=>{run.backendId=id;run.backendKind=this.model instanceof BackendRegistry?this.model.definition(id).kind:'custom';persist()},
+        onWorkerPatch:builtInChat?(turn,raw)=>{
+          if(this.validWork(owner))this.chat.recordWorkerPatch(ticket.id,'native:'+turn,raw)
+        }:undefined,
         workerInputState:()=>({attemptId:attempt.id,dataRevision:attempt.basis.dataRevision,current:currentWorkerAttempt(this,attempt)}),
         workerCheckpointReady:builtInChat&&localNode?()=>currentWorkerAttempt(this,attempt)&&this.goals.canCheckpointWorker(run):undefined,
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),

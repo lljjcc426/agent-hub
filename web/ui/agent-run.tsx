@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Check,
   ChevronDown,
@@ -41,7 +41,7 @@ export function AgentPlan({
   onRun,
   createStep,
 }: {
-  title: string
+  title: ReactNode
   steps: PlanStep[]
   current?: number
   phase?: RunPhase

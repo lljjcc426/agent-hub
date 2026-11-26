@@ -1,0 +1,128 @@
+/* Both standalone activities and cards inside a reply follow the message text. */
+.transcript-inner {
+  --chat-reply-inset: 32px;
+  --chat-card-measure: 648px;
+  --chat-card-inset: 14px;
+  --chat-card-heading: 40px;
+  --chat-card-gap: 8px;
+  --chat-card-radius: 12px;
+  --chat-card-heading-bg: color-mix(in srgb, var(--c-soft) 55%, var(--c-bg));
+}
+:root[data-appearance-full-width="true"] .transcript-inner { --chat-card-measure: 100%; }
+.conversation-body .transcript .assistant-body { padding-inline-start: var(--chat-reply-inset); }
+.transcript .workflow-block {
+  width: min(calc(100% - var(--chat-reply-inset)), var(--chat-card-measure));
+  margin: 0 0 12px;
+  margin-inline-start: var(--chat-reply-inset);
+  gap: var(--chat-card-gap);
+}
+.transcript :is(.worker-diff-reveal, .message-card-line) {
+  width: min(100%, var(--chat-card-measure));
+  max-width: 100%;
+}
+.transcript .message-card-line { position: relative; }
+.transcript .message-card-line > .message-surface {
+  width: 100%;
+  max-width: 100%;
+  display: grid;
+  gap: var(--chat-card-gap);
+}
+.transcript .message-card-line > .message-actions {
+  position: absolute;
+  inset: 0 auto auto 100%;
+  translate: none;
+}
+:root[data-appearance-full-width="true"] .transcript .message-card-line > .message-actions {
+  inset: auto 0 calc(100% + 2px) auto;
+}
+.transcript .message-surface :is(.team-file, .delivery-local-file) { width: 100%; }
+.transcript .message-surface :is(.team-file, .delivery-local-file) + :is(.team-file, .delivery-local-file) { margin: 0; }
+.transcript .review-question { width: 100%; }
+
+.transcript .transcript-card {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  border: 1px solid var(--c-line);
+  border-radius: var(--chat-card-radius);
+  background: var(--c-bg);
+  color: var(--c-text);
+  overflow-wrap: anywhere;
+}
+.transcript .transcript-card :is(.rp-card-kicker, .rv-thinking-head, .chat-approval-head),
+.transcript .worker-file-diff > header {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-height: var(--chat-card-heading);
+  margin: 0;
+  padding: 6px var(--chat-card-inset);
+  align-items: center;
+  gap: 8px;
+  border-radius: calc(var(--chat-card-radius) - 1px) calc(var(--chat-card-radius) - 1px) 0 0;
+  background: var(--chat-card-heading-bg);
+  color: var(--c-text);
+  font-size: calc(var(--roppo-font-meta, 12px) + 1px);
+  font-weight: 600;
+  line-height: 1.45;
+}
+.transcript .transcript-card :is(.rp-card-kicker > span:first-child, .chat-approval-head > span:first-child) {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.transcript .transcript-card :is(.rp-card-kicker svg, .chat-approval-head > span:first-child svg, header > svg) {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--c-muted);
+}
+.transcript .rp-card-kicker > span:last-child,
+.transcript .worker-file-diff header > span:last-child,
+.transcript .rv-thinking-head .rv-clock {
+  margin-inline-start: auto;
+  flex: none;
+  color: var(--c-muted);
+  font-size: var(--roppo-font-meta, 12px);
+  font-weight: 450;
+  font-variant-numeric: tabular-nums;
+}
+.transcript .rp-card-kicker, .transcript .chat-approval-head { box-shadow: inset 0 -1px var(--c-line); }
+.transcript .workflow-plan ol { padding: 4px var(--chat-card-inset) 8px; gap: 0; }
+.transcript .workflow-plan li { min-height: 38px; padding: 4px 0; gap: 8px; }
+.transcript .workflow-plan .rp-step-name { line-height: 1.4; }
+.transcript .chat-thinking-activity .rv-thinking { padding: 0; }
+.transcript .rv-thinking-head[aria-expanded="false"] { border-radius: calc(var(--chat-card-radius) - 1px); }
+.transcript .rv-thinking-head[aria-expanded="true"] { box-shadow: inset 0 -1px var(--c-line); }
+.transcript .chat-thinking-activity .rv-thinking-head:hover { background: var(--c-hover); }
+.transcript .rv-thinking-head .rv-thinking-mark { width: 16px; }
+.transcript .chat-thinking-activity .rv-thinking-steps { padding: 6px var(--chat-card-inset) 8px; }
+.transcript .worker-file-diff { margin-block-start: var(--chat-card-gap); }
+.transcript .worker-diff-author { min-width: 0; font-weight: 450; overflow-wrap: anywhere; }
+.transcript .patch-inline-head { min-height: 38px; padding-inline: var(--chat-card-inset); }
+.transcript .chat-approval-card {
+  gap: var(--chat-card-gap);
+  padding-bottom: 12px;
+}
+.transcript .chat-approval-card > :not(header) { margin: 0 var(--chat-card-inset); }
+.transcript .chat-approval-card > h3 { font-size: var(--roppo-font-control); line-height: 1.5; }
+.transcript .chat-approval-status { margin-inline-start: auto; }
+.transcript .chat-approval-head > :first-child { font-weight: 600; }
+
+/* With the inspector open, the card can already fill the reading column.
+   Keep message actions reachable on the speaker row without narrowing the card. */
+@container chat-thread (max-width: 860px) {
+  .transcript .message-card-line > .message-actions {
+    display: flex;
+    inset: auto 0 calc(100% + 2px) auto;
+    background: var(--team-paper);
+    border-radius: 7px;
+  }
+}
+@container chat-thread (max-width: 520px) {
+  .transcript-inner { --chat-reply-inset: 0px; --chat-card-inset: 12px; --chat-card-heading: 44px; }
+  .transcript .patch-inline-head { min-height: 44px; }
+}

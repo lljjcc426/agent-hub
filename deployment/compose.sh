@@ -10,6 +10,11 @@ compose(){
   fi
 }
 control(){ compose exec -T roppo node --import tsx src/container-cli.ts "$@"; }
+start_existing(){
+  [ -n "$(compose ps --all -q roppo)" ] || { echo 'No existing instance. Run deployment/compose.sh up first.' >&2; return 1; }
+  # Older Compose supports --wait on up, but not on start. Keep the original container.
+  compose up -d --no-build --no-recreate --pull never --wait --wait-timeout 120 roppo
+}
 build_or_pull(){
   roppo_target_image=$(compose config --images)
   if [ "${ROPPO_BUILD:-auto}" = local ]; then docker image inspect "$roppo_target_image" >/dev/null; return; fi
@@ -20,7 +25,7 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$roppo_action" in
   up)
     if [ -n "$(compose ps --all -q roppo)" ]; then
-      compose start --wait --wait-timeout 120 roppo
+      start_existing
     else
       build_or_pull
       compose run --rm --no-deps --entrypoint node roppo --import tsx src/container-cli.ts inspect
@@ -29,7 +34,7 @@ case "$roppo_action" in
     fi
     control open
     ;;
-  start) compose start --wait --wait-timeout 120 roppo ;;
+  start) start_existing ;;
   stop) compose stop roppo ;;
   down) compose down ;;
   status) compose ps ;;
@@ -51,7 +56,7 @@ case "$roppo_action" in
       trap - EXIT INT TERM
       if [ "$roppo_ok" = false ] && [ "$roppo_prepared" = true ]; then
         if [ "$roppo_target_started" = false ]; then
-          compose start --wait --wait-timeout 120 roppo && control abort-upgrade || true
+          start_existing && control abort-upgrade || true
         else
           echo 'Upgrade did not finish. Data and the maintenance pause are retained. Inspect logs; no database or code rollback was attempted.' >&2
         fi
@@ -78,7 +83,7 @@ case "$roppo_action" in
       roppo_target_started=true
       compose up -d --no-build --wait --wait-timeout 120 roppo
     else
-      compose start --wait --wait-timeout 120 roppo
+      start_existing
     fi
     control finish-upgrade
     roppo_ok=true

@@ -8,6 +8,7 @@
 - Docker 启动：新增失败日志后，定位到 `bwrap: Failed to make / slave: Permission denied`。Compose 为 Roppo 服务设置 `apparmor=unconfined`，允许内部 Bubblewrap 建立挂载空间。该容器的外层 AppArmor 限制被移除；非 root、只读根目录、无 capabilities、seccomp 和内部命令沙箱继续生效，宿主和其他容器的 AppArmor 配置不变。
 - 诊断：验收失败时，在清理隔离容器前保存并输出容器日志与健康状态；沙箱探针报告截断后的具体错误。配置链接中的临时配对令牌继续脱敏。
 - 启动修复后继续验收，发现旧模型夹具仍返回普通 JSON 和旧工具名，当前 OpenCode 接入需要 SSE 流及 `roppo_` 工具前缀。更新 `examples/container-provider-fixture.mjs` 并在 `tests/container-provider-fixture.spec.ts` 增加真实 API 解析器回归；独立本机宿主已完成 Router → Worker → 实际沙箱命令 → Router 结果投递。
+- 备份后的恢复暴露了旧 Compose 不支持 `start --wait` 的兼容问题。`deployment/compose.sh` 改用已有容器的 `up --no-recreate --no-build --pull never --wait`；仍等待健康状态，保持容器 ID，禁止隐式构建、拉取或升级。容器验收增加备份前后 ID 不变的检查。
 - 本机相关检查：插件包、容器部署和容器协议夹具共 57 项通过。远程完整结果以 [PR 检查](https://github.com/lljjcc426/agent-hub/pull/1/checks) 为准；下面保留修复前的失败证据。
 
 本次修改文件：`tests/plugin-packages.spec.ts`（仅该压力用例的等待上限）、`compose.yaml`（容器 AppArmor 设置）、`src/sandbox.ts`（探针错误信息）、`examples/container-acceptance.py`（失败诊断）、`deployment/SECCOMP.md` 和 `docs/DOCKER.md`（策略说明），以及本记录。没有删除项目文件。

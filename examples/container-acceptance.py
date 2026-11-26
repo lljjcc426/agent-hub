@@ -127,6 +127,7 @@ try:
     ticket_ids = sorted(t['id'] for t in state['tickets'])
     run(['./deployment/compose.sh', 'backup'], name='backup')
     assert api('/health', authorized=False)[1]['ok']
+    assert compose('ps', '-q', 'roppo').stdout.strip() == cid
     assert sorted(t['id'] for t in api('/status')[1]['tickets']) == ticket_ids
     assert before == node("import fs from 'node:fs';import {createHash} from 'node:crypto';console.log(createHash('sha256').update(fs.readFileSync('/data/state/personal-account.json')).digest('hex'))")
     checks['offlineBackupAndAccountPreservation'] = True
@@ -167,7 +168,7 @@ try:
     # Reproduce a persisted intermediate receipt, then restart the real host.
     node("import fs from 'node:fs';import {DatabaseSync} from 'node:sqlite';const id=" + repr(interrupted_id) + ";const d=new DatabaseSync('/data/state/state.sqlite');d.prepare(\"UPDATE records SET body=json_remove(json_set(body,'$.state','preparing'),'$.pauseSeq') WHERE kind='deployment-maintenance' AND id=?\").run(id);d.close();fs.writeFileSync('/data/state/container-maintenance.json',JSON.stringify({operationId:id}),{mode:0o600})")
     compose('restart', 'roppo', name='interrupted-prepare-restart')
-    compose('start', '--wait', '--wait-timeout', '120', 'roppo', name='interrupted-prepare-health')
+    run(['./deployment/compose.sh', 'start'], name='interrupted-prepare-health')
     run(['./deployment/compose.sh', 'abort'], name='interrupted-prepare-abort')
     assert not api('/status')[1]['paused']
     assert node("import fs from 'node:fs';console.log(fs.existsSync('/data/state/container-maintenance.json'))") == 'false'

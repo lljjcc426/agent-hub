@@ -88,7 +88,7 @@ function entrySafeDetail(value) {
   return text.slice(0, 1200)
 }
 const workspacePages = {
-  tasks: 'home', 'tasks/active': 'active-tasks', 'tasks/history': 'activity', 'tasks/attention': 'attention', attention: 'attention', connections: 'catalog',
+  tasks: 'home', 'tasks/active': 'active-tasks', 'tasks/history': 'activity', attention: 'attention', 'tasks/attention': 'attention', connections: 'catalog',
   'connections/new': 'catalogue', models: 'models', 'models/new': 'model-new',
   deployments: 'deployments', integrations: 'integrations', execution: 'execution', prompts: 'prompts', usage: 'usage'
 }
@@ -97,6 +97,7 @@ function workspaceHash() {
   const { page, selected, source, creating, advancedPage, promptView } = entryState
   if (page === 'integrations') return 'integrations/tools'
   if (page === 'advanced') return 'advanced/' + advancedPage
+  if (page === 'attention' && typeof configurationHost !== 'undefined' && configurationHost) return 'tasks/attention'
   if (page === 'execution' && executionView.mode === 'configuration')
     return typeof configurationHost !== 'undefined' && configurationHost ? 'team' : 'execution/configuration'
   if (page === 'prompts' && promptView === 'templates') return 'prompts/templates'

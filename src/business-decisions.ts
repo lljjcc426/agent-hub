@@ -1,7 +1,7 @@
 import {z} from 'zod'
 import {bodyDigest} from './sources.ts'
 import {ChatError} from './chat-errors.ts'
-import {approvedFilePaths,fileHandoffOutcome,rememberFileHandoff,type FileHandoffOutcome} from './chat-file-handoff.ts'
+import {fileHandoffOutcome,type FileHandoffOutcome} from './chat-file-handoff.ts'
 import type {Runtime} from './runtime.ts'
 import type {Run,Store} from './store.ts'
 import {allowNewTaskInputs} from './task-context.ts'
@@ -190,10 +190,12 @@ export function legacyAnsweredGoalReply(store:DecisionStore,run:Run){
  if(!answer)return
  const {questionId,answerDigest,at}=JSON.parse(String(answer.body)) as {questionId:string;answerDigest:string;at:number}
  const saved=readDecision({store},questionId),chat=store.get<{conversationId:string;decisionTicketId?:string}>('chat-run',trigger.id)
+ const handoff=store.get<{ticketId:string;conversationId:string;triggerId:string;paths?:string[]}>('chat-file-handoff',questionId)
  if(!saved?.answer||saved.ticketId!==ticket.id||saved.actor.id!==trigger.actor.id||saved.actor.source!==trigger.actor.source||
     answerDigest!==bodyDigest(saved.answer.text)||!Number.isSafeInteger(at)||at<saved.answer.at||
-    chat?.decisionTicketId!==ticket.id||!approvedFilePaths(saved.question,saved.answer.text).length)return
- return {ticket,trigger,saved,chat,at,text:saved.answer.text}
+    chat?.decisionTicketId!==ticket.id||handoff?.ticketId!==ticket.id||handoff.triggerId!==trigger.id||
+    handoff.conversationId!==chat.conversationId||!handoff.paths?.length)return
+ return {ticket,trigger,saved,at}
 }
 
 export function recoverAnsweredGoalQuestions(host:Runtime):void {
@@ -201,13 +203,12 @@ export function recoverAnsweredGoalQuestions(host:Runtime):void {
  for(const run of store.list<Run>('run')){
   const reply=legacyAnsweredGoalReply(store,run)
   if(!reply)continue
-  const {ticket,trigger,saved,chat,text}=reply
+  const {ticket,trigger,saved}=reply
   try{
    store.atomic(()=>{
     const authority=host.taskAuthority(ticket.id)
     const context=authority&&host.scopes.context(trigger,authority.discussion)
     if(!context||!host.goals.resumeAnsweredQuestion(ticket.id,saved.summary,context,true))return
-    rememberFileHandoff(host,saved.id,{ticketId:ticket.id,conversationId:chat.conversationId,triggerId:trigger.id,question:saved.question},text)
     store.put('run',ticket.id,{...run,phase:'idle',error:undefined,failure:undefined})
     host.engine.report(ticket.id,{state:'waiting',summary:saved.summary,question:null})
     const prior=ticket.inputs.map(item=>item.id)

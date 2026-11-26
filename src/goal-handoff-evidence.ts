@@ -4,7 +4,7 @@ import type {ScopeContext} from './router-scope.ts'
 import type {ChatConversation,ChatMessage,ChatRun} from './chat.ts'
 import type {ActorRef,Trigger} from './vendor/dsh-core/index.ts'
 import {bodyDigest,stableDigest} from './sources.ts'
-import {requestedFilePaths,retainedFileHandoffSchema,type HandoffMaterial} from './chat-file-handoff.ts'
+import {retainedFileHandoffSchema,type HandoffMaterial} from './chat-file-handoff.ts'
 
 interface Handoff {
  ticketId:string;conversationId:string;triggerId:string;outcome?:{state:string;missing:string[]}
@@ -79,29 +79,17 @@ export function goalHandoffEvidence(h:Runtime,goal:RouterGoal,ticketId:string,co
   if(!owner)return []
   try{h.goals.checkWorkspaceSource({ticketId:sourceTicketId,ownerEpoch:owner.ownerEpoch,dataRevision:owner.dataRevision??1},context)}
   catch{return []}
-  // A restored receipt is content-addressed. A normal Chat handoff is keyed by the answered decision.
-  let decisions:string[]
+  // An operator restore is content-addressed. Legacy Chat receipts were keyed by the answered decision.
+  let exchanges:NonNullable<ReturnType<typeof answeredExchange>>[]=[]
   if(r.files){
    const parsed=retainedFileHandoffSchema.safeParse({ticketId,sourceTicketId:r.sourceTicketId,files:r.files})
    if(!parsed.success||r.sourceTicketId!==sourceTicketId||id!==stableDigest(['retained-files',chat.id,parsed.data])||
       files.length!==r.files.length||!r.files.every(f=>files.some(m=>m.relativePath===f.path&&m.sha256===f.sha256&&m.bytes===f.bytes)))return []
-   const rows=h.store.db.prepare(`SELECT id, json_extract(body,'$.question') AS question FROM records WHERE kind='business-decision'
-    AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.status')='answered' ORDER BY id`).all(ticketId)
-   decisions=rows.filter(d=>{
-    // Unlike the automatic handoff, an operator restore has no decision ID.
-    // Match the named original task as well as every explicitly requested path.
-    const question=String(d.question),paths=requestedFilePaths(question)
-    return question.includes('`'+sourceTicketId+'`')&&paths.length>0&&paths.every(path=>files.some(f=>f.relativePath===path))
-   }).map(d=>String(d.id))
   }else{
    if(!r.paths?.length||!r.paths.every(path=>files.some(m=>m.relativePath===path)))return []
-   decisions=[id]
+   const exchange=answeredExchange(h,chat,ticketId,id)
+   if(exchange&&r.question===exchange.question.text&&r.triggerId===exchange.answer.runId)exchanges=[exchange]
   }
-  const exchanges=decisions.flatMap(d=>{
-   const exchange=answeredExchange(h,chat,ticketId,d)
-   if(!exchange||!r.files&&(r.question!==exchange.question.text||r.triggerId!==exchange.answer.runId))return []
-   return [exchange]
-  })
   return [{receiptId:id,triggerId:r.triggerId,conversationId:chat.id,ticketId,sourceTicketId,state:'ready',
    files:files.map(({id,relativePath,path,bytes,sha256})=>({resource:'asset/'+id,relativePath,path,bytes,sha256})),exchanges}]
  })

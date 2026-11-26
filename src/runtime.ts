@@ -7,7 +7,8 @@ import {splitPendingNotice,withPendingNotice,withoutPendingNotice} from './chat-
 import {existingFileRequest} from './chat-file-pickup.ts'
 import {currentReview,decideChatResult,priorWorkerChecks,proposeChatResult,reviewSchema,type ChatResultReview} from './chat-result-review.ts'
 import {observationRequest} from './goal-observation.ts'
-import {chatArtifactOpen,chatArtifactSpecs} from './chat-retained-artifacts.ts'
+import {chatArtifactOpen,chatArtifactSpecs,type ChatWorkerInput,type OpenedChatArtifact} from './chat-retained-artifacts.ts'
+import {ChatError} from './chat-errors.ts'
 import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
@@ -81,7 +82,7 @@ import {Heartbeat} from './heartbeat.ts'
 import type {WorkerProfile} from './backend-config.ts'
 import {mergeOptions} from './agent-options.ts'
 import {agentOptionsSchema} from './backend-config.ts'
-import {WorkerManager,managementSpecs} from './worker-manager.ts'
+import {WorkerManager,managementSpecs,type Delegation} from './worker-manager.ts'
 import {Delegations} from './delegation/manager.ts'
 import {teamSpecs} from './delegation/contract.ts'
 import {SubscriptionAccounts} from './backends/subscription.ts'
@@ -2352,7 +2353,7 @@ export class Runtime {
       const contextSource=this.sources.get(ticket.mandate.actor.source)!
       const origin=this.store.triggers.get(ticket.origin.triggerId)
       const sourceContext=origin?{triggerId:origin.id,triggerResource:'trigger/'+origin.id,source:origin.source,resources:'catalog',thread:origin.threads[0]&&'thread/'+origin.source+':'+origin.threads[0].id}:undefined
-      const delegated=this.store.get<{mode:string}>('worker-assignment',ticket.id)
+      const delegated=this.store.get<Delegation>('worker-assignment',ticket.id)
       const promptRevision=this.settings.current().revision
       const profile=dispatch?.profile
       const identityChanged=!!saved?.threadId&&(profile?.backend!==saved.backendId||!!profile?.model&&profile.model!==saved.model)
@@ -2401,7 +2402,17 @@ export class Runtime {
       const handoffInput=handoffDigest?{resource:'chat-file-handoffs',
         notice:'Original host handoff receipts and any authenticated prior questions and answers. Use them to resolve claims of missing evidence. Read the full resource with superagent_read when needed.',
         ...(Buffer.byteLength(JSON.stringify(handoffs))<=Math.min(8192,this.scopes.scope(projectGoal!.scopeId).contextBytes/16)?{handoffs}:{})}:undefined
-      const chatFiles=builtInChat?[...this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])),...handoffFiles]:[]
+      const assignedFiles=[],missingChatFiles:ChatWorkerInput[]=[]
+      for(const input of delegated?.inputFiles??[]){
+        try{
+          const file=await this.chat.retained.openForWorker(owner,input,()=>controller.signal.throwIfAborted(),controller.signal)
+          assignedFiles.push({input,file})
+        }catch(error){
+          controller.signal.throwIfAborted()
+          if(!this.validWork(owner)||!(error instanceof ChatError)||error.code!=='artifact_unavailable')throw error
+          missingChatFiles.push(input)
+        }
+      }
       this.work.turnStarted(ticket.id,assignmentId)
       const attempt=eventAttempt=beginWorkerAttempt(this,ticket.id,assignmentId,causeJobId)
       const permissionReceipts:ToolResult[]=[]
@@ -2411,6 +2422,13 @@ export class Runtime {
           permissionReceipts.push(await this.workerTools.call(owner,action.tool,action.args,action.id,attempt,controller.signal))
         }
       }
+      const readableFiles=assignedFiles.flatMap(({input,file})=>{
+        const asset=this.store.get<OpenedChatArtifact>('asset',file.resource.slice('asset/'.length))
+        if(asset&&this.chat.retained.canReadInput(asset,owner))return [file]
+        missingChatFiles.push(input)
+        return []
+      })
+      const chatFiles=builtInChat?[...this.chat.uploads.taskInputFiles(ticket.id,inputs.flatMap(i=>i.kind==='trigger'?[i.triggerId]:[])),...handoffFiles,...readableFiles]:[]
       let inputAccepted=false
       const standardRequest:ModelRequest={
         activity:{ticketId:ticket.id,workerId:run.workerId,sourceId:source.id,triggerId:ticket.origin.triggerId},
@@ -2426,12 +2444,12 @@ export class Runtime {
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
         webFetchReplay:saved?.webFetchReplay,
-        instructions:builtInChat?instructions+(fullAccess?'':'\n'+permissionInstructions+' '+nativePermissionInstructions)+'\nNative questions return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Use chatFiles for uploaded originals and any confirmed read-only handoff. Each handed-off file has its original relative path and a host-provided read-only copy. Use superagent_shell for binary inputs. When requesting read-only handoff from a previous task, list exact relative file paths in backticks. A saved answer settles that question. Report concrete missing filenames or paths when input is unavailable. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
-        managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path)],tools:specs,onTool:(name,args)=>{
+        instructions:builtInChat?instructions+(fullAccess?'':'\n'+permissionInstructions+' '+nativePermissionInstructions)+'\nNative questions return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Use chatFiles for uploaded originals and read-only files assigned by the Router. Check missingChatFiles for any selected inputs the host could not open. If an input is missing, give the Router its exact file ID or source task and relative path. Use available evidence to continue when possible. Use superagent_shell for binary inputs. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
+        managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path),...readableFiles.map(file=>file.path)],tools:specs,onTool:(name,args)=>{
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
+        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(inputs,fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))

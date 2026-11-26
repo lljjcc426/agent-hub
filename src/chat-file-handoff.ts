@@ -34,24 +34,6 @@ export const retainedFileHandoffSchema=z.object({
 }).strict()
 type RetainedFileHandoff=z.infer<typeof retainedFileHandoffSchema>
 const quotedPaths=(text:string)=>[...text.matchAll(/`([^`\r\n]+)`/g)].map(match=>match[1]!).filter(path=>/\.[a-z\d]+$/i.test(path))
-const accepted=(text:string)=>/^(可以|同意|允许|确认|yes|ok(?:ay)?|approved?|go ahead)[。！.!]?$/i.test(text.trim())
-
-export function requestedFilePaths(question:string){
-  question=question.trim()
-  const asksForTransfer=/^(?:能否|是否可以)(?:将|把).+只读交接/s.test(question)||
-    /^(?:may|can) I (?:hand off|transfer) .+read[- ]only/is.test(question)
-  return asksForTransfer?[...new Set(quotedPaths(question))]:[]
-}
-
-export function approvedFilePaths(question:string,answer:string){
-  return accepted(answer)?requestedFilePaths(question):[]
-}
-
-/** An affirmative answer applies to the read-only files described in this question. */
-export function rememberFileHandoff(host:Runtime,id:string,request:Omit<Request,'paths'|'outcome'>,answer:string){
-  const paths=approvedFilePaths(request.question,answer)
-  if(paths.length&&!host.store.get('chat-file-handoff',id))host.store.put('chat-file-handoff',id,{...request,paths} satisfies Request)
-}
 
 export function fileHandoffOutcome(host:Runtime,id:string){
   const record=host.store.get<Request>('chat-file-handoff',id)
@@ -203,6 +185,7 @@ export async function restoreRetainedFiles(host:Runtime,input:RetainedFileHandof
   }finally{if(!committed)await rm(directory,{force:true,recursive:true})}
 }
 
+/** Finish handoffs already recorded by older releases. New assignments carry explicit file references. */
 export async function prepareFileHandoff(host:Runtime,ticketId:string,signal:AbortSignal){
   const {store}=host
   const row=store.db.prepare(`SELECT id,body FROM records WHERE kind='chat-file-handoff'

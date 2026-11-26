@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto'
-import {mkdirSync,mkdtempSync,readFileSync,rmSync,truncateSync,writeFileSync} from 'node:fs'
+import {mkdirSync,mkdtempSync,readFileSync,rmSync,statSync,truncateSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {dirname,join} from 'node:path'
 import {afterEach,expect,it} from 'vitest'
@@ -11,6 +11,7 @@ import {legacyExecutionQuestion} from '../src/business-decisions.ts'
 import {managedWorkspacePath} from '../src/workspace.ts'
 import {stableDigest} from '../src/sources.ts'
 import type {ModelRequest} from '../src/model.ts'
+import type {ChatWorkerInput} from '../src/chat-retained-artifacts.ts'
 
 const roots:string[]=[],hosts:Runtime[]=[],listeners:Awaited<ReturnType<typeof serve>>[]=[]
 afterEach(async()=>{
@@ -165,6 +166,102 @@ it('opens just the selected original for the assigned Worker and revokes further
  const entryId=f.context(turn.runId).route.entryId,grant=f.h.store.get<{revision:number}>('task-channel',stableDigest([source.ticketId,entryId]))!
  f.h.scopes.command({action:'task.channel',operationId:'withdraw-source',expectedRevision:grant.revision,ticketId:source.ticketId,entryId,context:true,request:true,result:false})
  expect(f.h.chat.retained.canReadInput(asset,current)).toBe(false)
+})
+
+it.each(['assignment','goal'])('attaches exact retained inputs during Router %s dispatch',async mode=>{
+ const text='用刚才的实现做本地演示',relative='deliverables/change.patch'
+ let sourceTicketId:string,fileId:string,received:ModelRequest|undefined
+ const f=fixture(async request=>{
+  if(request.role==='router'&&JSON.parse(request.input).trigger?.text===text){
+   const source=await request.onTool!('worker_manage',{action:'inspect',ticketId:sourceTicketId},'source')
+   expect(source.success).toBe(true)
+   const {workspaceInputs}=JSON.parse(source.contentItems[0]!.text!)
+   expect(workspaceInputs).toEqual([{sourceTicketId,path:relative}])
+   const inputFiles:ChatWorkerInput[]=mode==='assignment'?[{id:fileId},...workspaceInputs]:workspaceInputs
+   const result=mode==='assignment'?
+    await request.onTool!('worker_manage',{action:'assign',id:'review',revision:f.h.settings.current().revision,
+     requestId:'read-source',text,inputFiles},'assign'):
+    await request.onTool!('router_goal',{action:'start',operationId:'read-source',expectedRevision:0,
+     title:text,objective:text,authorizationQuote:text,criteria:[{id:'demo',description:'Use the supplied file'}],
+     nodes:[{id:'demo',title:'Demo',instruction:text,workerId:'review',criterionIds:['demo'],inputFiles}]},'start')
+   expect(result.success).toBe(true)
+  }
+  if(request.role==='worker'){
+   received=request
+   return {state:'waiting',summary:'Received',reply:'',question:null,handbacks:[]}
+  }
+  return {reply:''}
+ })
+ const {h,chat}=f,previous=f.send('Prepare source for review'),source=await f.assign(previous.runId,'build','Build')
+ sourceTicketId=source.ticketId
+ const cwd=managedWorkspacePath(h.config.stateDir,source.ticketId),path=join(cwd,relative)
+ mkdirSync(dirname(path),{recursive:true})
+ writeFileSync(path,'captured patch')
+ const deliveries=new ChatDeliveries(h),[file]=deliveries.capture(chat.id,previous.runId,source.ticketId,'build',cwd,[relative])
+ fileId=file!.id
+ if(mode==='assignment')expect(h.chat.publishFiles(source.ticketId,[file!.id])).toBe(true)
+ writeFileSync(path,'latest workspace patch')
+ const first=h.store.tickets.get(source.ticketId)!.assignments.at(-1)!
+ h.engine.assignmentStarted(source.ticketId,first.id)
+ h.store.put('run',source.ticketId,{ticketId:source.ticketId,assignmentId:first.id,cwd,phase:'idle',workerId:'build',prepared:true})
+ h.engine.report(source.ticketId,{state:'waiting',summary:'Independent review is pending',question:null})
+ h.store.jobState('router:'+previous.runId,'done')
+ h.store.db.prepare("UPDATE jobs SET state='done' WHERE kind='execute' AND json_extract(payload,'$.ticketId')=?").run(source.ticketId)
+ const original=h.store.tickets.get(source.ticketId)!
+ expect(original.ended).toBeUndefined()
+ f.send(text)
+ await settle(h,()=>!!received)
+ const {chatFiles,missingChatFiles}=JSON.parse(received!.input)
+ expect(missingChatFiles).toBeUndefined()
+ expect(chatFiles.map((file:{path:string})=>readFileSync(file.path,'utf8'))).toEqual(mode==='assignment'?['captured patch','latest workspace patch']:['latest workspace patch'])
+ expect(chatFiles.at(-1)).toMatchObject({sourceTicketId:source.ticketId,relativePath:relative,
+  sha256:createHash('sha256').update('latest workspace patch').digest('hex')})
+ expect(received!.attachments).toEqual(chatFiles.map((file:{path:string})=>file.path))
+ expect(received!.attachments).toHaveLength(mode==='assignment'?2:1)
+ expect(received!.attachments!.every(path=>(statSync(path).mode&0o777)===0o400)).toBe(true)
+ expect(h.store.tickets.get(source.ticketId)).toMatchObject({assignments:original.assignments,inputs:original.inputs})
+ expect(h.store.tickets.get(source.ticketId)?.ended).toBeUndefined()
+ expect(readFileSync(path,'utf8')).toBe('latest workspace patch')
+ expect(h.chat.businessDecisions(chat.id,f.owner)).toEqual([])
+})
+
+it('rejects undeclared or out-of-Chat paths and reports a missing declared path without stopping the Worker',async()=>{
+ let received:ModelRequest|undefined
+ const f=fixture(async request=>{
+  if(request.role==='worker'){
+   received=request
+   return {state:'waiting',summary:'Received',reply:'',question:null,handbacks:[]}
+  }
+  return {reply:''}
+ })
+ const {h,chat,owner}=f,old=f.send('Prepare patch'),source=await f.assign(old.runId,'build','Build')
+ const cwd=managedWorkspacePath(h.config.stateDir,source.ticketId),relative='change.patch'
+ mkdirSync(cwd,{recursive:true})
+ writeFileSync(join(cwd,relative),'captured patch')
+ writeFileSync(join(cwd,'private.txt'),'undeclared file')
+ const [file]=new ChatDeliveries(h).capture(chat.id,old.runId,source.ticketId,'build',cwd,[relative])
+ expect(h.chat.publishFiles(source.ticketId,[file!.id])).toBe(true)
+ const previous=h.store.tickets.get(source.ticketId)!.assignments.at(-1)!
+ h.store.put('run',source.ticketId,{ticketId:source.ticketId,assignmentId:previous.id,cwd,phase:'idle',workerId:'build',prepared:true})
+ h.engine.stopTicket(source.ticketId,'Retain prior output')
+ h.store.jobState('router:'+old.runId,'done')
+ const run=f.send('Inspect patch'),context=f.context(run.runId),other=h.chat.create(owner)
+ const otherRun=h.chat.send(other.id,owner,{text:'Inspect files',clientMessageId:randomUUID()})
+ const otherDiscussion='local:chat:'+other.id
+ const otherContext=h.scopes.context(h.store.triggers.get(otherRun.runId)!,otherDiscussion)!
+ const input={sourceTicketId:source.ticketId,path:relative}
+ const assign=(c:typeof context,inputFiles:ChatWorkerInput[])=>h.manager.call({
+  action:'assign',id:'review',revision:h.settings.current().revision,requestId:randomUUID(),text:'Inspect patch',inputFiles,
+ },{discussion:c.route.discussion,trigger:c.trigger,scoped:c})
+ await expect(assign(context,[{...input,path:'private.txt'}])).rejects.toMatchObject({code:'artifact_unavailable'})
+ await expect(assign(otherContext,[input])).rejects.toMatchObject({code:'artifact_unavailable'})
+ expect(h.store.list('worker-assignment')).toHaveLength(1)
+ await assign(context,[input,{id:file!.id}])
+ rmSync(join(cwd,relative))
+ await settle(h,()=>!!received)
+ const {chatFiles,missingChatFiles}=JSON.parse(received!.input)
+ expect(missingChatFiles).toEqual([input])
+ expect(chatFiles.map((f:{path:string})=>readFileSync(f.path,'utf8'))).toEqual(['captured patch'])
 })
 
 it('settles a prerequisite rejection as an individual tool result without a confirmation',async()=>{

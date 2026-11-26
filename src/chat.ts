@@ -8,7 +8,6 @@ import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
 import {z} from 'zod'
 import {businessDecision,assertBusinessDecision,decisionActorMatches,hasOutstandingQuestion,isRuntimeRecoveryQuestion,runtimeRecoveryQuestions,type BusinessDecisionView} from './business-decisions.ts'
-import {rememberFileHandoff} from './chat-file-handoff.ts'
 import {permissionCard,type ApprovalMode,type PermissionActor,type PermissionAction} from './chat-permissions.ts'
 import {allowNewTaskInputs} from './task-context.ts'
 import {isApiBackend} from './backend-config.ts'
@@ -1235,7 +1234,6 @@ export class ChatSessions {
       const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now(),
         locale:client?.locale??(/\p{Script=Han}/u.test(text)?'zh-CN':undefined),timeZone:client?.clientTimeZone}
       h.store.put('chat-run',run.id,run)
-      rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
       if(context.scoped)h.goals.resumeAnsweredQuestion(d.ticketId,d.summary,context.scoped)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.requestId})
       h.store.put('business-decision-action',key,{fingerprint,triggerId:trigger.id,decisionId:input.id})

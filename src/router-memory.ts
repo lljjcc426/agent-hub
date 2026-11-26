@@ -50,6 +50,7 @@ export function readRevocations(stateDir:string):Revocation[]{
 }
 export class RouterMemory {
  private readOnlyDepth=0
+ private verifiedLedger?:{stamp:string;rows:Revocation[]}
  readonly cleanup:HistoryCleanup
  recall?:(context:ScopeContext,query:string)=>{items:MemoryProjection[];status:string;reason?:string}
  onMutation?:()=>void
@@ -58,7 +59,7 @@ export class RouterMemory {
  validateUse?:(context:ScopeContext,refs:{id:string;revision:number}[])=>void
  validateKnowledge?:(context:ScopeContext,refs:{documentId:string;revision:number}[])=>void
  constructor(readonly store:Store,readonly scopes:RouterScopes,readonly stateDir:string){this.cleanup=new HistoryCleanup(store,stateDir);this.cleanup.onExpand=plan=>{
-  const ledger=readRevocations(stateDir),previous=ledger.at(-1),body={seq:(previous?.seq??0)+1,previous:previous?.hash??'',tenantId:ledger.find(r=>r.cleanup?.id===plan.id)!.tenantId,scopeId:plan.scopeId,action:'history.extend' as const,generation:this.generation(plan.scopeId),at:Date.now(),cleanup:plan},r={...body,hash:stableDigest(body)}
+  const ledger=this.ledger(),previous=ledger.at(-1),body={seq:(previous?.seq??0)+1,previous:previous?.hash??'',tenantId:ledger.find(r=>r.cleanup?.id===plan.id)!.tenantId,scopeId:plan.scopeId,action:'history.extend' as const,generation:this.generation(plan.scopeId),at:Date.now(),cleanup:plan},r={...body,hash:stableDigest(body)}
   this.appendRevocation(r);this.store.put('memory-revocation-head','current',{seq:r.seq,hash:r.hash})
  };this.reconcile()}
  generation(scopeId:string){return this.store.get<number>('memory-generation',scopeId)??0}
@@ -66,10 +67,18 @@ export class RouterMemory {
   const file=statSync(join(this.stateDir,'memory-revocations.jsonl'),{bigint:true,throwIfNoEntry:false})
   return file?`${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`:''
  }
+ private ledger(){
+  const stamp=this.revocationStamp()
+  if(this.verifiedLedger?.stamp===stamp)return this.verifiedLedger.rows
+  const rows=readRevocations(this.stateDir)
+  if(this.revocationStamp()!==stamp)throw Error('Memory revocation ledger changed during verification')
+  this.verifiedLedger={stamp,rows}
+  return rows
+ }
  /** Authenticated control-plane operation; never exposed as an agent tool. */
  resetChat(owner:string,operationId:string,conversationIds:string[]){
   this.reconcile()
-  const scopeId='@chat:'+stableDigest(owner),id='chat-reset:'+stableDigest([owner,operationId]),ledger=readRevocations(this.stateDir)
+  const scopeId='@chat:'+stableDigest(owner),id='chat-reset:'+stableDigest([owner,operationId]),ledger=this.ledger()
   if(ledger.some(r=>r.cleanup?.id===id))return {cleanupId:id}
   const at=Math.max(Date.now(),(this.store.get<number>('memory-clock','last')??0)+1)
   const cleanup=addPersonalReset(this.store,planChatHistory(this.store,this.stateDir,scopeId,id,at,conversationIds),owner,conversationIds)
@@ -112,7 +121,7 @@ export class RouterMemory {
   if(!entry)return {status:'unbound'}
   const key=stableDigest([sourceId,change.id]),fingerprint=stableDigest(change),old=this.store.get<any>('source-change-receipt',key)
   if(old){if(old.fingerprint!==fingerprint)throw Error('Source change ID reused with different content');return old}
-  const previous=readRevocations(this.stateDir).at(-1),body={seq:(previous?.seq??0)+1,previous:previous?.hash??'',tenantId:entry.tenantId,scopeId:entry.scopeId,action:'source.change' as const,generation:this.generation(entry.scopeId),at:Date.now(),sourceChange:{...change,sourceId}},r={...body,hash:stableDigest(body)}
+  const previous=this.ledger().at(-1),body={seq:(previous?.seq??0)+1,previous:previous?.hash??'',tenantId:entry.tenantId,scopeId:entry.scopeId,action:'source.change' as const,generation:this.generation(entry.scopeId),at:Date.now(),sourceChange:{...change,sourceId}},r={...body,hash:stableDigest(body)}
   this.appendRevocation(r);this.store.atomic(()=>this.applyRevocation(r));return this.store.get('source-change-receipt',key)
  }
  private applySourceChange(r:Revocation){
@@ -362,7 +371,7 @@ export class RouterMemory {
  private queryChanged(tenantId:string){this.store.put('memory-query-version',tenantId,(this.store.get<number>('memory-query-version',tenantId)??0)+1)}
  private save(f:MemoryFact){this.queryChanged(f.tenantId);this.store.put('memory-fact',f.id,f);this.store.db.prepare('DELETE FROM memory_search WHERE id=?').run(f.id);if(f.state==='active')this.store.db.prepare('INSERT INTO memory_search(id,body) VALUES(?,?)').run(f.id,f.subject+' '+f.content)}
  private revoke(c:ScopeContext,input:Pick<Revocation,'action'|'generation'>&Partial<Pick<Revocation,'id'|'targetEntry'>>){
-  const previous=readRevocations(this.stateDir).at(-1)
+  const previous=this.ledger().at(-1)
   const at=Math.max(Date.now(),(this.store.get<number>('memory-clock','last')??0)+1)
   const cleanup=['history.delete','source.delete'].includes(input.action)?planHistory(this.store,this.stateDir,c.route.scopeId,'cleanup-'+randomUUID(),at,input.action==='source.delete'?input.id:undefined):undefined
   const forgotten=input.action==='forget'&&input.id?this.fact(input.id):undefined
@@ -376,7 +385,7 @@ export class RouterMemory {
  private appendRevocations(rows:Revocation[]){const path=join(this.stateDir,'memory-revocations.jsonl');appendFileSync(path,rows.map(r=>JSON.stringify(r)+'\n').join(''),{mode:0o600});const fd=openSync(path,'r');try{fsyncSync(fd)}finally{closeSync(fd)}}
  /** Observation cannot apply a revocation ledger that has not been reconciled. */
  assertReconciled(){
-  const rows=readRevocations(this.stateDir),last=rows.at(-1),head=this.store.get<{seq:number;hash:string}>('memory-revocation-head','current')
+  const rows=this.ledger(),last=rows.at(-1),head=this.store.get<{seq:number;hash:string}>('memory-revocation-head','current')
   if((last?.seq??0)!==(head?.seq??0)||(last?.hash??'')!==(head?.hash??''))throw Error('Memory reconciliation is required')
  }
  readOnly<T>(read:()=>T):T {
@@ -385,7 +394,7 @@ export class RouterMemory {
  }
  reconcile(){
   if(this.readOnlyDepth){this.assertReconciled();return}
-  const rows=readRevocations(this.stateDir),head=this.store.get<{seq:number;hash:string}>('memory-revocation-head','current')
+  const rows=this.ledger(),head=this.store.get<{seq:number;hash:string}>('memory-revocation-head','current')
   if(head&&!rows.some(r=>r.seq===head.seq&&r.hash===head.hash))throw Error('Latest memory revocation ledger is required before restoring service')
   this.store.atomic(()=>{for(const r of rows)if(r.seq>(head?.seq??0))this.applyRevocation(r)})
  }

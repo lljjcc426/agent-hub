@@ -75,7 +75,7 @@ export class RouterIngress {
  }
  authority(id:string,discussion?:string):Mandate{
   if(this.store.get('router-cancelled',id))throw Error('Router run was cancelled')
-  if(this.store.list<{triggers:string[]}>('history-plan').some(p=>p.triggers.includes(id)))throw Error('Source history was deleted; a new authorized input is required')
+  if(this.store.historyFence.current().triggers.has(id))throw Error('Source history was deleted; a new authorized input is required')
   if(this.config.execution.router?.mode!=='host')throw Error('Host Router is not enabled')
   const scheduled=this.scheduledAuthority?.(id)
   if(scheduled){if(discussion&&this.get(id)?.discussion!==discussion)throw Error('Schedule discussion mismatch');return scheduled}

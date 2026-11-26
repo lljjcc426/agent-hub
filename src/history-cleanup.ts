@@ -1,5 +1,6 @@
 import {existsSync,lstatSync,rmSync} from 'node:fs'
 import {join,resolve,relative,sep,dirname} from 'node:path'
+import {setImmediate as yieldToIO} from 'node:timers/promises'
 import type {PersonalReset} from './personal-memory-reset.ts'
 import type {Store} from './store.ts'
 import {stableDigest} from './sources.ts'
@@ -29,7 +30,7 @@ export function redactBody(value:any,key=''):any {
  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([k])=>metadata.has(k)||payloads.has(k)).map(([k,v])=>[k,redactBody(v,k)]))
  return null
 }
-function references(value:any,ids:Set<string>):boolean {
+function references(value:any,ids:ReadonlySet<string>):boolean {
  if(typeof value==='string'){
   if(ids.has(value))return true
   // Resource names and encoded principals are references, not substring keywords.
@@ -37,7 +38,11 @@ function references(value:any,ids:Set<string>):boolean {
   // Cached resource pages can refer to a source only through their resource URI.
   // Match the documented grammar and an ID boundary, never arbitrary substrings.
   const resource=/^(?:trigger|ticket|transcript|native|feishu|wecom|trigger-source|thread|decision|asset|tool-call|model-tool-receipt|agent-configuration|job)\/(.+)$/.exec(value)
-  return !!resource&&[...ids].some(id=>resource[1]===id||resource[1]!.startsWith(id+'/'))
+  if(!resource)return false
+  const ref=resource[1]!
+  if(ids.has(ref))return true
+  for(let end=ref.indexOf('/');end>=0;end=ref.indexOf('/',end+1))if(ids.has(ref.slice(0,end)))return true
+  return false
  }
  return value&&typeof value==='object'?Object.values(value).some(v=>references(v,ids)):false
 }
@@ -111,7 +116,10 @@ export class HistoryCleanup {
  }
  plans(){return this.store.list<HistoryPlan>('history-plan')}
  receipts(){return this.store.list<CleanupReceipt>('history-cleanup')}
- blocked(kind:string,id:string,value?:unknown){return this.plans().some(p=>p.records.some(([k,i])=>k===kind&&i===id)||!excluded.test(kind)&&references(value,new Set(p.roots)))}
+ blocked(kind:string,id:string,value?:unknown){
+  const fence=this.store.historyFence.current()
+  return fence.records.get(kind)?.has(id)===true||fence.roots.size>0&&!excluded.test(kind)&&!!references(value,fence.roots)
+ }
  private filter(kind:string,id:string,value:unknown){
   if(!this.blocked(kind,id,value))return value
   if(kind.startsWith('memory-'))return {deleted:true}
@@ -138,11 +146,12 @@ export class HistoryCleanup {
   this.store.put('history-cleanup',plan.id,{id:plan.id,scopeId:plan.scopeId,status:'processing',phase:'quiescing',attempts:previous?.attempts??0,nativeDone:[],external:'not_managed',backups:'restore_fenced',at:Date.now()} satisfies CleanupReceipt)
   this.sweep(plan)
  }
- private sweep(plan:HistoryPlan){
+ private sweep(plan:HistoryPlan,onlyChanged=false){
   const ids=new Set(plan.roots)
   this.store.atomic(()=>{
    for(const r of rows(this.store))if(this.blocked(r.kind,r.id,r.body)){
     if(r.kind==='knowledge-chunk')this.store.db.prepare('DELETE FROM memory_search WHERE id=?').run(r.id)
+    if(onlyChanged&&JSON.stringify(r.body)===JSON.stringify(this.filter(r.kind,r.id,r.body)))continue
     this.store.put(r.kind,r.id,r.body)
    }
    for(const id of plan.tickets){const o=this.store.get<any>('task-ownership',id);if(o)this.store.put('task-ownership',id,{...o,state:'held',reason:'History body deleted; explicit current authorization required'})}
@@ -153,14 +162,25 @@ export class HistoryCleanup {
  }
  async process(model:Model,quiesce:(plan:HistoryPlan)=>Promise<boolean>){
   if(this.busy)return;this.busy=true
-  try{for(const old of this.plans()){
-   let receipt=this.store.get<CleanupReceipt>('history-cleanup',old.id)!
+  try{for(const id of this.store.historyFence.current().planIds){
+   let receipt=this.store.get<CleanupReceipt>('history-cleanup',id)!
    if(receipt.status==='completed'||(receipt.nextAt??0)>Date.now())continue
+   const old=this.store.get<HistoryPlan>('history-plan',id)!
    const plan=expandPlan(this.store,this.stateDir,old)
-   if(JSON.stringify(plan)!==JSON.stringify(old))this.onExpand?.(plan)
-   this.store.put('history-plan',plan.id,plan)
-   for(const session of plan.sessions)this.store.put('backend-delete-pending',session.threadId,{threadId:session.threadId,cleanupId:plan.id})
+   this.store.atomic(()=>{
+    if(JSON.stringify(plan)!==JSON.stringify(old)){
+     this.onExpand?.(plan)
+     this.store.put('history-plan',plan.id,plan)
+    }
+    for(const session of plan.sessions)this.store.put('backend-delete-pending',session.threadId,{threadId:session.threadId,cleanupId:plan.id})
+   })
    const save=(patch:Partial<CleanupReceipt>)=>{receipt={...receipt,...patch,at:Date.now()};this.store.put('history-cleanup',plan.id,receipt)}
+   let sliceStart=performance.now()
+   const serveRequests=async()=>{
+    if(performance.now()-sliceStart<25)return
+    await yieldToIO()
+    sliceStart=performance.now()
+   }
    try{
     save({attempts:receipt.attempts+1,error:undefined,nextAt:undefined,phase:'quiescing'})
     if(!await quiesce(plan))continue
@@ -169,6 +189,7 @@ export class HistoryCleanup {
     for(const session of plan.sessions)if(!receipt.nativeDone.includes(session.threadId)){
      if(!model.purge)throw Error('Backend has no verifiable history deletion capability')
      await model.purge(session.threadId,session.cwd);save({nativeDone:[...receipt.nativeDone,session.threadId]})
+     await serveRequests()
     }
     save({phase:'files'})
     for(const path of plan.files){
@@ -177,8 +198,11 @@ export class HistoryCleanup {
      // Reject symlink ancestors; never traverse into a user workspace.
      const parts=rel.split(sep);for(let n=1;n<parts.length;n++){const parent=join(this.stateDir,...parts.slice(0,n));if(existsSync(parent)&&lstatSync(parent).isSymbolicLink())throw Error('Managed history path contains a symlink')}
      rmSync(path,{force:true,recursive:true});if(existsSync(path))throw Error('Managed file deletion readback failed')
+     await serveRequests()
     }
-    save({phase:'database'});this.sweep(plan)
+    save({phase:'database'})
+    await yieldToIO()
+    this.sweep(plan,true)
     for(const r of rows(this.store))if(this.blocked(r.kind,r.id,r.body)&&JSON.stringify(r.body)!==JSON.stringify(this.filter(r.kind,r.id,r.body)))throw Error('Body deletion readback failed')
     this.store.db.exec("INSERT INTO memory_search(memory_search) VALUES('rebuild')")
     if(Number(this.store.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()?.busy)!==0)throw Error('Database readers must release before physical cleanup')

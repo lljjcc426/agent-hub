@@ -111,10 +111,17 @@ function classify(run:Run|undefined,ticket:Ticket){
 }
 export class ExecutionTrace {
  private bound?:Store
+ private visibilityCache?:{version:string;digest:string}
  private readonly inFlight=new Set<string>()
  constructor(private readonly host:()=>Runtime){this.current()}
  private current(){const host=this.host();if(host.store!==this.bound){installProjection(host.store);this.bound=host.store}return host}
- private visibility(host:Runtime){return stableDigest(host.store.db.prepare("SELECT id,body FROM records WHERE kind='history-plan' ORDER BY id").all())}
+ private visibility(host:Runtime){
+  const {version}=host.store.historyFence.current()
+  if(this.visibilityCache?.version===version)return this.visibilityCache.digest
+  const digest=stableDigest(host.store.db.prepare("SELECT id,body FROM records WHERE kind='history-plan' ORDER BY id").all())
+  this.visibilityCache={version,digest}
+  return digest
+ }
  private head(host:Runtime){return Number(host.store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM audit').get()!.seq)}
  events(value:unknown={}){
   const query=traceQuerySchema.parse(value),host=this.current(),head=this.head(host)

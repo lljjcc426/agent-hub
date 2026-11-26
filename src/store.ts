@@ -3,6 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Repositories, Trigger, TriggerDisposition, Thread, Ticket, Decision, OutboundMessage } from './vendor/dsh-core/index.ts'
 import {RuntimeRevisions} from './runtime-revisions.ts'
+import {HistoryFence} from './history-fence.ts'
 // 8/9 are reserved for Webhook grants/continuations. Delegation must fence
 // Webhook-only releases from reopening service-authorized delegated work.
 export const DELEGATION_DB_SCHEMA=10
@@ -36,6 +37,7 @@ export interface Run {
 /** All engine mutations and the work they schedule share one SQLite transaction. */
 export class Store implements Repositories {
   readonly db: DatabaseSync
+  readonly historyFence:HistoryFence
   readonly revisions:RuntimeRevisions
   bodyFilter?:(kind:string,id:string,value:any)=>any
   readonly recordObservers=new Map<string,(id:string,value:any,previous:any)=>void>()
@@ -75,6 +77,7 @@ export class Store implements Repositories {
     `)
     this.ensureGoalReferences()
     this.revisions=this.atomic(()=>new RuntimeRevisions(this.db))
+    this.historyFence=this.atomic(()=>new HistoryFence(this.db))
   }
   // Derived only from authoritative goal records. Triggers also cover restores,
   // direct maintenance writes and rollbacks within an existing transaction.

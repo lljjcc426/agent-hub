@@ -1,0 +1,59 @@
+# CLI 自测记录
+
+日期：2026-11-26。业务代码基于 `f18f883`；本轮补充回归断言与测试记录，没有修改业务代码。
+
+## 结论
+
+本机 Node 24 全量检查和当前 CLI 的实际交互检查通过，未发现新的 CLI 功能故障。远程 CI 仍有两处上游版本也能复现的失败，因此不能认定所有环境全部通过。
+
+## 本机检查
+
+- 环境：macOS arm64，Node v24.21.0。
+- `npm run check`：宿主、Chat、预览 UI 的类型检查通过，Chat 构建通过；190 个测试文件通过、1 个按条件跳过；2,907 项测试通过、4 项按条件跳过。
+- 最后补充的后台任务断言通过 CLI 专项复测：4 个测试文件、21 项测试通过。完整命令如下。
+- 本轮新增的检查扩展了现有集成测试，因此测试项总数保持不变。
+- 尝试补跑本机 Node 22.19 专项测试，但运行时下载超时，未执行成功；未修改项目依赖。下面的 Node 22 结果来自已有远程 CI，不能视为本轮新增断言的 Node 22 验证。
+
+```sh
+npm run check
+npx vitest run tests/terminal.spec.ts tests/terminal-editor.spec.ts tests/terminal-settings.spec.ts tests/terminal-presentation.spec.ts
+git diff --check
+```
+
+## 已检查的行为
+
+| 范围 | 检查结果 |
+| --- | --- |
+| 连接与隔离 | 实际 CLI 配对、凭据权限、退出登录后撤销；终端凭据不能读取完整宿主配置；跨项目会话和任务访问被拒绝 |
+| 消息与任务 | 管道文本、文件附件、Router 分配 Worker 并等待结果；文本、JSON、NDJSON 输出；旧轮次结果保持独立 |
+| 会话 | 新建、恢复、中文重命名；个人会话选择同步到网页接口；新建会话后旧会话的任务仍然完成 |
+| 共享设置 | 模型目录、选择和恢复默认模型；只接受目录支持的思考强度；并发配置版本冲突；账号 ask/full 权限同步 |
+| 终端偏好 | 用户、项目、本地和启动参数优先级；实际菜单搜索、主题保存；错误配置报告 |
+| 退出码 | 成功 0；模型运行失败、连接失败、附件不存在 1；配置错误 2；真实待审批任务 3；超时 124；SIGINT 取消 130 |
+| 取消和退出 | SIGINT 后服务端轮次为 cancelled；实际终端执行 `/exit` 后，进行中的服务端任务继续完成 |
+| 终端操作 | 中文、emoji、多行括号粘贴；模型快捷键；Esc 恢复草稿；历史搜索；连续 Ctrl+C 退出并恢复终端模式 |
+| 窗口与降级 | 宽度 100 缩至 45 列后继续操作；`TERM=dumb` 下菜单文本、切换会话和继续输入可用 |
+| 服务停止 | CLI 返回结构化 `host_unavailable` 错误，退出码 1 |
+
+终端检查使用操作系统 PTY 启动真正的 `bin/roppo.mjs`，同时读取独立宿主的 API 核对持久状态。网页同步通过网页使用的会话和权限接口核对，没有把它描述成完整浏览器验收。
+
+本机原始日志保存在忽略目录 `.local/`：`cli-selftest-check.log`、`cli-final-terminal-tests.log`、`cli-pty-check.log`、`cli-background-check.log`、`cli-offline-check.log`。这些日志和测试账号凭据不提交到仓库。
+
+## 远程 CI 的已知失败
+
+以下远程结果对应业务代码提交 `f18f883`，本轮尚未重新推送测试文件。
+
+- Node 24：Ubuntu 和 macOS 检查通过，见 [分支 CI](https://github.com/lljjcc426/agent-hub/actions/runs/45766295517)。
+- Node 22.19：2,906 项通过、4 项跳过，只有 `tests/plugin-packages.spec.ts:104` 的一万多次操作批处理测试超过 5 秒。未改动的上游同步分支出现相同失败，见 [基线 CI](https://github.com/lljjcc426/agent-hub/actions/runs/45762890723)。目前未改超时时间，也未认定具体性能原因。
+- Docker：镜像构建完成，`compose.sh up` 阶段容器变为 unhealthy。[CLI 分支](https://github.com/lljjcc426/agent-hub/actions/runs/45766295518)与[上游同步基线](https://github.com/lljjcc426/agent-hub/actions/runs/45766718632)均复现；现有失败日志不足以定位容器内部原因。本机没有 Docker，未宣称本机容器验收通过。
+
+## 验证边界
+
+使用独立测试账号和确定性模型实现，覆盖真实宿主、HTTP、任务调度、文件和终端流程。未使用个人模型凭据，未调用付费模型或外部业务平台；实际供应商登录、模型质量与外部工具执行不在本次通过结论内。Claude Code 尚未对齐的功能仍以 [CLI 兼容范围](CLI_COMPATIBILITY.md) 为准。
+
+## 本轮文件说明
+
+- `tests/terminal.spec.ts`：补充真实宿主上的模型、强度、权限、会话、后台任务、取消、审批、失败退出码和输出格式回归断言。
+- `docs/CLI_SELF_TEST.md`：新增本记录，说明结果、失败项和验证范围。
+
+没有删除已有项目文件，没有修改依赖或业务逻辑。测试服务已停止；清理了本轮下载失败生成的 `.local/node22.tgz`，临时脚本和日志保留在 `.local/` 便于复查。

@@ -19,7 +19,9 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { TerminalPairing } from '../src/terminal/pairing.ts'
-import { clean, localOrigin } from '../src/terminal/client.ts'
+import { clean, localOrigin, TerminalClient } from '../src/terminal/client.ts'
+import { controlCommand } from '../src/terminal/controls.ts'
+import { loadTerminalSettings } from '../src/terminal/settings.ts'
 import { parseArgs } from '../src/terminal/main.ts'
 import { configSchema, type Config } from '../src/config.ts'
 import { Runtime } from '../src/runtime.ts'
@@ -95,9 +97,14 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     ]
   })
   const cwds: string[] = []
+  let workerApproval = false
+  const savedHome = process.env.ROPPO_CLI_HOME
   const create = (config: Config) =>
     new Runtime(config, {
       model: {
+        async catalog() {
+          return { data: [{ id: 'fixture-model', supportedReasoningEfforts: ['low', 'high'] }] }
+        },
         async run(r: ModelRequest) {
           cwds.push(realpathSync(r.cwd))
           const threadId = r.threadId ?? randomUUID(),
@@ -106,6 +113,10 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
           r.onTurn?.(turnId)
           let result: unknown
           if (r.role === 'worker') {
+            if (workerApproval) {
+              workerApproval = false
+              await r.onHumanRequest!({ id: randomUUID(), method: 'item/commandExecution/requestApproval', params: { command: 'read fixture', cwd: r.cwd } })
+            }
             await delay(200)
             result = {
               state: 'ready',
@@ -117,6 +128,8 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
             }
           } else {
             const input = JSON.parse(r.input)
+            if (input.kind === 'user_message' && input.trigger.text === 'failure') throw Error('Fixture provider unavailable')
+            if (input.kind === 'user_message' && input.trigger.text === 'delegate approval') workerApproval = true
             if (input.kind === 'user_message' && input.trigger.text === 'slow') await delay(1400)
             if (input.kind === 'user_message' && input.trigger.text.includes('delegate')) {
               const assigned = await r.onTool!(
@@ -146,7 +159,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     })
   const host = await serve(create(config), { createRuntime: create })
   const bin = fileURLToPath(new URL('../bin/roppo.mjs', import.meta.url))
-  const cli = (args: string[], stdin = '', onError?: (line: string) => void) => {
+  const cli = (args: string[], stdin = '', onError?: (line: string) => void, interrupt = false) => {
     const child = spawn(process.execPath, [bin, ...args], {
       cwd: project,
       env: { ...process.env, CI: '1', ROPPO_HOST: host.url, ROPPO_CLI_HOME: home },
@@ -154,7 +167,13 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     })
     let stdout = '',
       stderr = ''
-    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+      if (interrupt && stdout.includes('"subtype":"init"')) {
+        interrupt = false
+        child.kill('SIGINT')
+      }
+    })
     child.stderr.on('data', (chunk) => {
       stderr += chunk
       onError?.(String(chunk))
@@ -366,9 +385,80 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect(diff.diff).toContain('+change in task')
     expect(diff.untracked).toEqual(['new.txt'])
     expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('visible')
+    const interrupted = await cli(['-r', run.conversationId, '-p', 'slow', '--output-format', 'stream-json'], '', undefined, true)
+    expect(interrupted.code, interrupted.stderr + interrupted.stdout).toBe(130)
+    const cancelledResult = JSON.parse(interrupted.stdout.trim().split('\n').at(-1)!)
+    expect(cancelledResult).toMatchObject({ type: 'result', status: 'cancelled' })
+    expect((await get('/api/chat/conversations/' + run.conversationId + '?run=' + cancelledResult.runId)).run.state).toBe('cancelled')
+
+    // Exercise slash commands through their real authenticated host routes.
+    process.env.ROPPO_CLI_HOME = home
+    const client = new TerminalClient(host.url)
+    const conversation = (await client.view(run.conversationId)).conversation
+    const preferences = loadTerminalSettings(project).settings
+    const control = (input: string) => controlCommand(client, conversation, input, project, preferences, [])
+    expect((await control('/status'))?.text).toContain('fixture-model')
+    expect((await control('/context'))?.text).not.toContain('undefined')
+    expect((await control('/model'))?.menu?.items.some(item => item.value === '/model codex')).toBe(true)
+    expect((await control('/model codex'))?.menu?.items.some(item => item.value === '/model codex fixture-model')).toBe(true)
+    expect((await control('/effort'))?.menu?.items.map(item => item.label)).toEqual(['default', 'low', 'high'])
+    await control('/effort high')
+    expect(await client.request('/api/terminal/settings')).toMatchObject({ effort: 'high' })
+    await expect(control('/effort ultra')).rejects.toThrow()
+    expect(await client.request('/api/terminal/settings')).toMatchObject({ effort: 'high' })
+    await control('/effort default')
+    await control('/model codex --default')
+    expect((await client.request<any>('/api/terminal/settings')).model).toBeUndefined()
+    await control('/permissions full')
+    expect((await (await post('/api/chat/space', {}, { cookie })).json()).approvalMode).toBe('full')
+    await control('/permissions ask')
+    await control('/rename 中文项目会话')
+    expect((await client.view(conversation.id)).conversation.title).toBe('中文项目会话')
+    await control('/config theme=mono local')
+    await control('/config verbose=true project')
+    expect(loadTerminalSettings(project).settings).toMatchObject({ theme: 'mono', verbose: true })
+    const background = await client.send(conversation.id, 'slow', [], 'en')
+    const cleared = (await control('/clear'))!.next!
+    expect(cleared.id).not.toBe(conversation.id)
+    expect(cleared.project).toBe(conversation.project)
+    expect((await client.view(conversation.id)).messages.length).toBeGreaterThan(0)
+    let backgroundView = await client.view(conversation.id, background.runId)
+    for (let i = 0; i < 100 && backgroundView.run?.state !== 'completed'; i++) {
+      await delay(50)
+      backgroundView = await client.view(conversation.id, background.runId)
+    }
+    expect(backgroundView.run?.state).toBe('completed')
+    expect((await control('/resume ' + conversation.id))?.next?.id).toBe(conversation.id)
+    await expect(control('/resume ' + JSON.parse(bound.stdout).conversationId)).rejects.toThrow('workspace')
+    const personal = (await client.request<any>('/api/chat/space', {})).conversation
+    const personalClear = (await controlCommand(client, personal, '/clear', project, preferences, []))!.next!
+    expect((await (await post('/api/chat/space', {}, { cookie })).json()).conversation.id).toBe(personalClear.id)
+
+    const text = await cli(['-p', 'plain text', '--output-format', 'text'])
+    expect(text.code, text.stderr).toBe(0)
+    expect(text.stdout.trim()).toBe('Echo plain text')
+    const invalid = await cli(['-p', 'invalid', '--settings', '{"permissions":"full"}', '--output-format', 'stream-json'])
+    expect(invalid.code).toBe(2)
+    expect(JSON.parse(invalid.stdout)).toMatchObject({ type: 'result', status: 'error', code: 'invalid_settings' })
+    const missing = await cli(['-p', 'missing file', '--file', 'absent.txt', '--json'])
+    expect(missing.code).toBe(1)
+    expect(JSON.parse(missing.stdout).status).toBe('error')
+    const failed = await cli(['-p', 'failure', '--json', '--timeout', '10'])
+    expect(failed.code, failed.stdout + failed.stderr).toBe(1)
+    expect(JSON.parse(failed.stdout)).toMatchObject({ status: 'failed' })
+    const waiting = await cli(['-p', 'delegate approval', '--json', '--timeout', '10'])
+    expect(waiting.code, waiting.stdout + waiting.stderr).toBe(3)
+    const approvalRun = JSON.parse(waiting.stdout)
+    expect(approvalRun.status).toBe('waiting')
+    const approvalView = await client.view(approvalRun.conversationId)
+    const approval = approvalView.approvals.find(a => a.state === 'pending')!
+    expect(approval).toBeDefined()
+    await client.request('/api/terminal/tasks', { conversation: approvalRun.conversationId, ticket: approval.ticketId, action: 'answer', approval: approval.id, answer: 'decline' })
     expect((await cli(['logout'])).code).toBe(0)
     expect((await fetch(host.url + '/api/chat/readiness', { headers: auth })).status).toBe(401)
   } finally {
+    if (savedHome === undefined) delete process.env.ROPPO_CLI_HOME
+    else process.env.ROPPO_CLI_HOME = savedHome
     host.server.closeAllConnections()
     await new Promise<void>((r) => host.server.close(() => r()))
     await host.closeRuntime()

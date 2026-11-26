@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.error
@@ -173,6 +174,15 @@ try:
     (args.output / 'browser.json').write_text(json.dumps({'base': base, 'username': username, 'password': password, 'project': args.project}))
     (args.output / 'result.json').write_text(json.dumps({'passed': True, 'mode': 'fixture-api-real-container', 'commercialModelCalls': 0, 'project': args.project, 'image': args.image, 'checks': checks, 'doctor': capability}, indent=2))
     print(json.dumps({'passed': True, 'checks': list(checks), 'evidence': str(args.output)}))
+except Exception:
+    # Collect evidence before removing the isolated container and its volume.
+    logs = compose('logs', '--no-color', '--tail', '100', 'roppo', check=False, name='failure-container')
+    print(re.sub(r'#pair=[A-Za-z0-9_-]+', '#pair=REDACTED', logs.stdout + logs.stderr), file=sys.stderr)
+    cid = compose('ps', '--all', '-q', 'roppo', check=False).stdout.strip()
+    if cid:
+        state = run(['docker', 'inspect', '--format', '{{json .State}}', cid], check=False, name='failure-state')
+        print(state.stdout + state.stderr, file=sys.stderr)
+    raise
 finally:
     if not args.keep:
         compose('down', '--volumes', check=False, name='cleanup')

@@ -367,11 +367,14 @@ export class Runtime {
         this.recoverAnsweredQuestionsOnResume=true
         continue
       }
-      // Retain an accounted terminal report while maintenance owns the pause.
+      // While paused, keep an existing held report and its unresolved receipts.
       if(this.paused&&run.phase==='uncertain'){
-        const assignment=this.store.tickets.get(run.ticketId)?.assignments.at(-1)
+        const ticket=this.store.tickets.get(run.ticketId),assignment=ticket?.assignments.at(-1)
+        const goal=ticket&&!ticket.ended?this.goals.forTask(run.ticketId):undefined
+        const held=ticket&&goal?.managed&&goal.state==='held'&&this.isChatTask(ticket)&&
+          goal.nodes?.some(node=>node.ticketId===run.ticketId&&node.state==='held'&&node.failure?.kind==='uncertain')
         if(assignment?.id===run.assignmentId&&assignment.state==='running'&&assignment.report?.state==='blocked'&&
-          (refusedWorkerJobReads(this.store,config.stateDir,run)||unstartedWorkerShell(this.store,config.stateDir,run)||
+          (held||refusedWorkerJobReads(this.store,config.stateDir,run)||unstartedWorkerShell(this.store,config.stateDir,run)||
            settledProviderTurn(this.store,config.stateDir,run)))continue
       }
       if (run.phase === 'running' || run.phase === 'starting' || run.phase === 'background' || run.phase==='interrupted' || run.phase === 'uncertain' || run.phase === 'delivering' || run.phase==='merging') {

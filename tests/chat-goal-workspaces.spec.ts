@@ -108,6 +108,34 @@ function startCommand(text:string,fields:Record<string,unknown>={}){
   ...fields}
 }
 
+it('preserves an already held Worker report and unresolved callback when restarting under maintenance',async()=>{
+ let turns=0
+ const f=fixture(async request=>{
+  if(request.role!=='worker')return {reply:''}
+  turns++
+  return {state:'blocked',summary:'The browser read stopped before returning a receipt.',reply:'',question:null,handbacks:[],files:[]}
+ })
+ const goal=f.start('Inspect the retained browser result',{maxReplans:0})
+ await f.until(()=>f.host.goals.get(goal.id)?.state==='held')
+ const held=f.host.goals.get(goal.id)!,node=held.nodes![0]!,ticketId=node.ticketId!
+ await f.until(()=>!f.host.executionActive(ticketId))
+ const {store}=f.host,run=store.get<Run>('run',ticketId)!,threadId='plugin:'+randomUUID(),effectId=randomUUID()
+ node.failure={kind:'uncertain',reason:'The browser read stopped before returning a receipt.'}
+ store.put('router-goal',goal.id,held)
+ store.put('run',ticketId,{...run,phase:'uncertain',threadId,error:'Original provider failure'})
+ store.put('backend-plugin-thread',threadId,{id:threadId,pluginId:'opencode-cli',state:'failed',effectIds:[effectId]})
+ store.put('backend-plugin-tool',effectId,{state:'running',fingerprint:stableDigest('browser snapshot')})
+ const before=store.tickets.get(ticketId)!.assignments.at(-1)!.report
+ f.host.pause(true)
+ await f.restart()
+ expect(f.host.schedulingPaused).toBe(true)
+ expect(f.host.store.get<Run>('run',ticketId)).toMatchObject({phase:'uncertain',error:'Original provider failure'})
+ expect(f.host.store.tickets.get(ticketId)!.assignments.at(-1)!.report).toEqual(before)
+ expect(f.host.store.get('backend-plugin-tool',effectId)).toMatchObject({state:'running'})
+ expect(f.host.goals.get(goal.id)?.state).toBe('held')
+ expect(turns).toBe(1)
+})
+
 it('lets the independent verifier read the original desktop observation from a Chat Worker',async()=>{
  const args={action:'get_window_state',requestId:'observe-window',arguments:{window_id:120,include_screenshot:false}}
  const result={success:true,contentItems:[{type:'inputText' as const,text:JSON.stringify({tree_markdown:'Preference pane: previous profile'})}]}

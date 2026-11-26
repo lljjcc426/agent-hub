@@ -105,6 +105,7 @@ try:
         time.sleep(.25)
     else:
         (args.output / 'failed-status.json').write_text(json.dumps(state, indent=2))
+        print(json.dumps({'active': state['active'], 'tickets': current_tickets, 'deliveries': state['deliveries']}), file=sys.stderr)
         raise RuntimeError('API-to-Worker shell workflow did not complete')
     records = json.loads(node("import {DatabaseSync} from 'node:sqlite';const d=new DatabaseSync('/data/state/state.sqlite',{readOnly:true});console.log(JSON.stringify(d.prepare(\"SELECT body FROM records WHERE kind='work'\").all().map(r=>JSON.parse(r.body))));d.close()"))
     current_ticket_ids = {t['id'] for t in current_tickets}

@@ -30,20 +30,46 @@ async function* events(reader:ReadableStreamDefaultReader<Uint8Array>,maxBytes:n
 function parse(data:string){try{return JSON.parse(data)}catch{throw Error('Invalid backend stream event')}}
 function providerError(value:any){if(value.error||value.type==='error')throw new OperationError('backend_stream',value.error?.code??value.error?.type)}
 
+export function finishResponsesCommentary(output:any[],onOutput?:Output,finished=new Set<string>()){
+  if(!onOutput)return
+  for(const item of output){
+    if(item?.type!=='message'||item.phase!=='commentary'||typeof item.id!=='string'||!Array.isArray(item.content))continue
+    for(const [index,part] of item.content.entries()){
+      const id=item.id+':'+index
+      if(part?.type!=='output_text'||typeof part.text!=='string'||finished.has(id))continue
+      finished.add(id)
+      onOutput({id,type:'end',phase:'commentary',text:part.text})
+    }
+  }
+}
+
 export async function readResponsesStream(reader:ReadableStreamDefaultReader<Uint8Array>,maxBytes:number,signal:AbortSignal,onOutput?:Output,onUsage?:Usage){
-  const phases=new Map<string,'answer'|'commentary'>(),started=new Set<string>()
+  const commentary=new Set<string>(),started=new Set<string>(),finished=new Set<string>()
+  const withPhase=(item:any)=>item?.type==='message'&&item.phase==null&&commentary.has(item.id)?{...item,phase:'commentary'}:item
   for await(const data of events(reader,maxBytes,signal)){
     if(data==='[DONE]')continue
     const value=parse(data);if(value.response?.usage)onUsage?.(value.response.usage);providerError(value)
     if(value.type==='response.incomplete'&&value.response?.incomplete_details?.reason==='max_output_tokens')throw new ApiFailure('model_output_truncated')
     if(['response.failed','response.incomplete'].includes(value.type))throw Error('Responses stream '+value.type)
-    if(value.type==='response.output_item.added'&&value.item?.type==='message')phases.set(value.item.id,value.item.phase==='commentary'?'commentary':'answer')
+    if(value.type==='response.output_item.added'||value.type==='response.output_item.done'){
+      const item=value.item
+      if(item?.type==='message'&&item.phase==='commentary'&&typeof item.id==='string')commentary.add(item.id)
+      if(value.type==='response.output_item.done')finishResponsesCommentary([withPhase(item)],onOutput,finished)
+    }
     if(value.type==='response.output_text.delta'&&typeof value.delta==='string'){
-      const id=String(value.item_id??value.output_index??'answer')+':'+(value.content_index??0),phase=phases.get(value.item_id)??'answer'
+      const id=String(value.item_id??value.output_index??'answer')+':'+(value.content_index??0),phase=commentary.has(value.item_id)?'commentary':'answer'
+      if(finished.has(id))continue
       if(!started.has(id)){started.add(id);onOutput?.({id,type:'start',phase})}
       onOutput?.({id,type:'delta',phase,text:value.delta})
     }
-    if(value.type==='response.completed'){if(value.response?.status!=='completed')throw Error('Invalid completed response');return value.response}
+    if(value.type==='response.completed'){
+      if(value.response?.status!=='completed')throw Error('Invalid completed response')
+      if(Array.isArray(value.response.output)){
+        value.response.output=value.response.output.map(withPhase)
+        finishResponsesCommentary(value.response.output,onOutput,finished)
+      }
+      return value.response
+    }
   }
   throw new TransientModelError('Responses stream disconnected before response.completed')
 }

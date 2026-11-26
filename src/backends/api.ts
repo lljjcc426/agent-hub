@@ -8,7 +8,7 @@ import type {BackendDescription,Model,ModelRequest,ModelResult,ToolContent} from
 import {TransientModelError} from '../model.ts'
 import {checkBudget,protocolBytes,receiptReference,ContextBudgetExceeded} from '../context-budget.ts'
 import {protocolTombstone} from '../history-cleanup.ts'
-import {readResponsesStream,readChatStream,readAnthropicStream} from './stream.ts'
+import {readResponsesStream,readChatStream,readAnthropicStream,finishResponsesCommentary} from './stream.ts'
 import {contextProjection,recall,recallSpec} from './context.ts'
 import {providerUsage} from '../model-usage.ts'
 import {ApiOutputLimitError,apiResponseError} from './api-errors.ts'
@@ -59,7 +59,9 @@ export class ApiModel implements Model {
    }}finally{requestSignal.removeEventListener('abort',abort)}
    let value:any;try{value=JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{throw Error('Backend returned invalid JSON')}
 
-   if(value.usage)onUsage?.(value.usage);return value
+   if(value.usage)onUsage?.(value.usage)
+   if(d.kind==='openai-responses'&&value.status==='completed'&&Array.isArray(value.output))finishResponsesCommentary(value.output,onOutput)
+   return value
   }catch(error){signal.throwIfAborted();if(timeout.aborted)throw new ApiNetworkFailure('connection_timeout');if(error instanceof TransientModelError)throw new ApiNetworkFailure('connection_network_failed');throw error}
  }
  async catalog(provider?:string){
@@ -125,7 +127,10 @@ export class ApiModel implements Model {
    if(item.type==='function_call'){calls.push({id:item.call_id,name:item.name,arguments:item.arguments});wire.push({type:'function_call',call_id:item.call_id,name:item.name,arguments:item.arguments})}
    else if(item.type==='message'){
     if(item.content?.some((c:any)=>c.type==='refusal'))throw Error('Backend refused the request')
-    const content=(item.content??[]).filter((x:any)=>x.type==='output_text').map((x:any)=>({type:'output_text',text:x.text,annotations:[]}));texts.push(...content.map((x:any)=>x.text));wire.push({type:'message',role:'assistant',content})
+    const content=(item.content??[]).filter((x:any)=>x.type==='output_text').map((x:any)=>({type:'output_text',text:x.text,annotations:[]}))
+    const phase=item.phase==='commentary'||item.phase==='final_answer'?item.phase:undefined
+    if(phase!=='commentary')texts.push(...content.map((x:any)=>x.text))
+    wire.push({type:'message',role:'assistant',content,...(phase?{phase}:{})})
    }else if(item.type==='reasoning')wire.push({...item})
    else throw Error('Unsupported provider output item')
   }

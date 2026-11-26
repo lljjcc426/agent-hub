@@ -1101,6 +1101,62 @@ it('clears a replaced output attempt and never exposes commentary or malformed J
   h.chat.reply('job',run.runId,'Corrected')
   expect(h.chat.view(c.id,'owner').messages.at(-1)?.text).toBe('Corrected')
 })
+it('streams Router commentary into the originating conversation before the final response and keeps it across restart',async()=>{
+ let complete!:()=>void
+ const finish=new Promise<void>(resolve=>{complete=resolve})
+ const progress='I found the entry point and started checking it.'
+ const f=fixture(async r=>{
+  expect(r.instructions).toContain('public commentary channel')
+  r.onOutput?.({id:'progress',type:'start',phase:'commentary'})
+  r.onOutput?.({id:'progress',type:'delta',phase:'commentary',text:progress.slice(0,23)})
+  await finish
+  r.onOutput?.({id:'progress',type:'end',phase:'commentary',text:progress})
+  r.onOutput?.({id:'progress',type:'end',phase:'commentary',text:progress})
+  return {reply:'The check passed.'}
+ }),c=f.h.chat.create('owner'),other=f.h.chat.create('other')
+ f.h.chat.setProgressMode('owner','autonomous')
+ const {runId}=send(f.h,c.id)
+ try{
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.some(m=>m.commentary))
+  expect(f.h.chat.view(c.id,'owner').messages.at(-1)).toMatchObject({text:progress.slice(0,23),status:'streaming',commentary:true,runId})
+  expect(f.h.chat.view(other.id,'other').messages).toHaveLength(0)
+  expect(f.h.chat.hasVisibleAnswer(runId)).toBe(false)
+ }finally{complete()}
+ await settle(f.h,()=>f.h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(f.h.chat.view(c.id,'owner').messages.slice(1)).toMatchObject([
+  {text:progress,status:'complete',commentary:true,runId},{text:'The check passed.',status:'complete',runId},
+ ])
+ expect(f.h.chat.history(runId).some(m=>m.text===progress)).toBe(false)
+ hosts.splice(hosts.indexOf(f.h),1);await f.h.close()
+ const restarted=new Runtime(f.config,{model:f.model});hosts.push(restarted)
+ expect(restarted.chat.space('owner').progressMode).toBe('autonomous')
+ expect(restarted.chat.view(c.id,'owner').messages.filter(m=>m.commentary)).toMatchObject([{text:progress,status:'complete',runId}])
+})
+it('stops commentary after cancellation without changing the previously visible text',async()=>{
+ const {h}=fixture(async r=>{
+  r.onOutput?.({id:'progress',type:'delta',phase:'commentary',text:'Checking the result.'})
+  await waitForAbort(r)
+  r.onOutput?.({id:'progress',type:'end',phase:'commentary',text:'Late output.'})
+  return {reply:'Cancelled answer'}
+ }),c=h.chat.create('owner')
+ h.chat.setProgressMode('owner','autonomous')
+ const {runId}=send(h,c.id)
+ await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.commentary&&m.status==='streaming'))
+ await h.chat.cancel(c.id,'owner',runId)
+ await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.commentary&&m.status==='interrupted'))
+ expect(h.chat.view(c.id,'owner').messages.slice(1)).toMatchObject([{commentary:true,text:'Checking the result.',status:'interrupted'}])
+})
+it('mutes a buffered commentary as soon as its conversation owner switches modes',async()=>{
+ const {h}=fixture(),c=h.chat.create('owner'),{runId}=send(h,c.id)
+ h.chat.setProgressMode('owner','autonomous')
+ h.chat.output('job',runId,{id:'progress',type:'delta',phase:'commentary',text:'Public update.'})
+ await vi.waitFor(()=>expect(h.chat.view(c.id,'owner').messages.at(-1)).toMatchObject({commentary:true,status:'streaming'}))
+ h.chat.setProgressMode('other-account','completion')
+ expect(h.chat.view(c.id,'owner').messages.at(-1)?.status).toBe('streaming')
+ h.chat.setProgressMode('owner','completion')
+ h.chat.output('job',runId,{id:'progress',type:'end',phase:'commentary',text:'Public update. Muted tail.'})
+ expect(h.chat.view(c.id,'owner').messages.slice(1)).toMatchObject([{commentary:true,text:'Public update.',status:'interrupted'}])
+})
 it('preserves partial output as interrupted when cancelled and ignores all late deltas',async()=>{
   const {h}=fixture(async r=>{r.onOutput?.({id:'answer',type:'delta',phase:'answer',text:'{"reply":"partial'});await waitForAbort(r);r.onOutput?.({id:'answer',type:'delta',phase:'answer',text:' late"}'});return {reply:'late final'}}),c=h.chat.create('owner'),run=send(h,c.id)
   await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.status==='streaming'))
@@ -1576,6 +1632,21 @@ it('saves Chat detail mode per account independently of task permissions and lay
  expect(await (await patch('detailed')).json()).toMatchObject({
   detailMode:'detailed',display:'agents',approvalMode:'full',conversation:{id:conversation.id},
  })
+})
+
+it('validates the authenticated progress mode and preserves other Chat settings',async()=>{
+ const {h,root}=fixture(),host=await serve(h);servers.push(host.server)
+ const owner='local-operator'
+ h.chat.setDetailMode(owner,'simple')
+ const endpoint=host.url+'/api/chat/space',headers={
+  authorization:'Bearer '+readFileSync(join(root,'state/access-token'),'utf8').trim(),'content-type':'application/json',
+ }
+ const patch=(progressMode:string)=>fetch(endpoint,{method:'PATCH',headers,body:JSON.stringify({progressMode})})
+ expect(await (await fetch(endpoint,{headers})).json()).toMatchObject({progressMode:'completion'})
+ expect((await patch('periodic')).status).toBe(400)
+ expect(await (await patch('autonomous')).json()).toMatchObject({progressMode:'autonomous',detailMode:'simple',approvalMode:'ask'})
+ expect(h.chat.space('other-account').progressMode).toBe('completion')
+ expect(await (await patch('completion')).json()).toMatchObject({progressMode:'completion',detailMode:'simple'})
 })
 
 it('preserves external entry memory/history in the same scope, other accounts and unrelated running work',async()=>{

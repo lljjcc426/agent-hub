@@ -706,8 +706,10 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
             z.object({display:z.enum(['group','agents'])}).strict(),
             z.object({approvalMode:z.enum(['ask','full'])}).strict(),
             z.object({detailMode:z.enum(['detailed','simple'])}).strict(),
+            z.object({progressMode:z.enum(['completion','autonomous'])}).strict(),
           ]).parse(await operatorBody(req))
           if('detailMode' in input)send(res,200,runtime.chat.setDetailMode(owner,input.detailMode))
+          else if('progressMode' in input)send(res,200,runtime.chat.setProgressMode(owner,input.progressMode))
           else if('approvalMode' in input)send(res,200,runtime.chat.setApprovalMode(owner,input.approvalMode))
           else send(res,200,runtime.chat.display(owner,input.display))
           return

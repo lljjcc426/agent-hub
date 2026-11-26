@@ -339,13 +339,14 @@ function AssistantMessage() {
     speaker = useAuiState((s) => s.message.metadata.custom?.speaker) as Snapshot["participants"][number]|undefined,
     recipient = useAuiState((s) => s.message.metadata.custom?.recipient) as Snapshot["participants"][number]|undefined,
     status = useAuiState((s) => s.message.status),
+    commentary = useAuiState((s) => !!s.message.metadata.custom?.commentary),
     hasText = useAuiState((s) =>
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
     streaming = status?.type === "running",
     footerStatus = run && runMessageId === id ? runLabel(run.state,L,waitingLabel??'') : undefined;
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
-  if (streaming && !hasText) return <WorkflowCards anchor={id}/>;
+  if ((streaming || commentary) && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
   if (deliveries?.length) {
     body = <>{fileReview && <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>)}</>;
@@ -359,6 +360,7 @@ function AssistantMessage() {
   return (
     <><MessagePrimitive.Root
       className="message assistant-message"
+      data-commentary={commentary ? "true" : undefined}
       data-arrival={arrival}
       data-streaming={streaming ? "true" : undefined}
     >
@@ -366,7 +368,9 @@ function AssistantMessage() {
         <AgentAvatar id={speaker?.id} kind={speaker?.kind} size={32} />
         <strong>{speaker?.kind==='worker'?speaker.label:teamName(speaker?.label??routerLabel)}</strong>
         <Timestamp at={createdAt}/>
-        {streaming && showTranscriptDetails ? (
+        {commentary ? <span className="output-state">
+          {streaming && <span className="live-dot" />}{L("Task progress", "任务进度")}
+        </span> : streaming && showTranscriptDetails ? (
           <span className="output-state">
             <span className="live-dot" />
             {L("Writing", "正在输出")}
@@ -460,6 +464,7 @@ function App() {
   const [id, setId] = useState<string | null>(null),
     [display, setDisplay] = useState<ChatSpace["display"]>("group"),
     [detailMode, setDetailMode] = useState<ChatSpace["detailMode"]>("detailed"),
+    [progressMode, setProgressMode] = useState<ChatSpace["progressMode"]>("completion"),
     [approvalMode,setApprovalMode] = useState<ChatSpace["approvalMode"]>(),
     [ready, setReady] = useState<Ready | null>(null);
   const [personalization,setPersonalization] = useState<ChatPersonalization>();
@@ -515,6 +520,11 @@ function App() {
     spaceVersion.current++;
     setDetailMode(saved.detailMode);
   };
+  const saveProgressMode = async (mode: ChatSpace["progressMode"]) => {
+    const saved = await spaceRequest({progressMode: mode}, "PATCH");
+    spaceVersion.current++;
+    setProgressMode(saved.progressMode);
+  };
   const refreshList = useCallback(async () => {
     const version=++spaceVersion.current,space=await spaceRequest();if(version!==spaceVersion.current)return;
     if(space.cleanup && lastReset.current!==space.cleanup.id){
@@ -528,6 +538,7 @@ function App() {
     }
     setId(linked?.conversation || space.conversation?.id || null);setDisplay(space.display);setApprovalMode(space.approvalMode);
     setDetailMode(space.detailMode);
+    setProgressMode(space.progressMode);
     receivePersonalization(space.personalization);
   }, [recoverInitial,resetSends,receivePersonalization]);
   function focusComposer() {
@@ -692,6 +703,8 @@ function App() {
           setDisplay,
           detailMode,
           saveDetailMode,
+          progressMode,
+          saveProgressMode,
           approvalMode,
           saveApprovalMode,
           ready,
@@ -733,6 +746,8 @@ type ChatProps = {
   display: ChatSpace["display"];
   detailMode: ChatSpace["detailMode"];
   saveDetailMode: (mode: ChatSpace["detailMode"]) => Promise<void>;
+  progressMode: ChatSpace["progressMode"];
+  saveProgressMode: (mode: ChatSpace["progressMode"]) => Promise<void>;
   approvalMode?: ChatSpace["approvalMode"];
   saveApprovalMode: (mode: ChatSpace["approvalMode"]) => Promise<void>;
   setDisplay: (value:ChatSpace["display"])=>void;
@@ -1056,7 +1071,7 @@ function Chat(p: ChatProps) {
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
-  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.recipient)?.id ?? '' : '';
+  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.commentary && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
   const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId
     ? runLabel(run.state,L,waitingLabel??'') : undefined;
@@ -1227,7 +1242,7 @@ function Chat(p: ChatProps) {
   const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter,showTranscriptDetails);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];
-    return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient;
+    return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient && !before.commentary;
   }).map(m=>m.id));
   const inlineAnswers = new Set<string>();
   for (const block of blocks.values()) {
@@ -1243,7 +1258,7 @@ function Chat(p: ChatProps) {
   const awaitingReply = new Set(snapshot?.replyRunIds);
   if (run?.state==='queued'||run?.state==='running') awaitingReply.add(run.id);
   for (const message of snapshot?.messages ?? []) {
-    if (message.role==='assistant' && !message.recipient && message.opening!=='received') awaitingReply.delete(message.runId);
+    if (message.role==='assistant' && !message.recipient && !message.commentary && message.opening!=='received') awaitingReply.delete(message.runId);
   }
 
   const runtime = useExternalStoreRuntime({
@@ -1259,6 +1274,7 @@ function Chat(p: ChatProps) {
       createdAt: new Date(m.createdAt),
       metadata: { custom: {
         readReceipt: m.role==='user' && !readonly && !around && awaitingReply.has(m.runId),
+        commentary: m.commentary,
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
@@ -1595,6 +1611,7 @@ function Chat(p: ChatProps) {
             {workspaceIndex && <WorkspaceSettings L={L}/>}
             {general?<General onDisplayChange={p.setDisplay} openWorkspaces={()=>{history.pushState(null,"","/configure#advanced/host");window.dispatchEvent(new Event("roppo:navigation"));setPickerRequest(v=>v+1)}} lang={lang} setLang={setLang} display={display} L={L}
               detailMode={p.detailMode} onDetailModeChange={p.saveDetailMode}
+              progressMode={p.progressMode} onProgressModeChange={p.saveProgressMode}
               sendShortcut={p.sendShortcut} onSendShortcutChange={p.saveSendShortcut}
               onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
             {appearance && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading appearance…", "正在读取外观设置…")}</div>}><AppearanceSettings L={L}/></Suspense>}

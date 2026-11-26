@@ -1727,12 +1727,16 @@ export class Runtime {
           proposedQuestion:review.question,previousChecks:priorWorkerChecks(this,review.ticketId,review.assignmentId,triggerId),
           availableFiles:this.chat.retained.recentInputs(triggerId,review.ticketId)}}:{}),auxiliaryDecision,permissionReceipt,operationOutcome,fileReviewReceipt,replyPreferences}):input
       const replyReads:{tool:string;text:string}[]=[]
+      const chatOutput=!!chatBinding&&!candidates&&!followups
+      const streamAnswer=chatOutput&&!review
+      const showCommentary=chatOutput&&this.chat.progressMode(triggerId)==='autonomous'
       const request:ModelRequest={role:'router',coordinationTurn:!followups&&!candidates,...chatBinding,contextId:packet?.manifest.id,activity:{sourceId:source.id,triggerId},cwd:source.cwd,threadId,...(profile?{backendId:profile.backend,model:profile.model,useConnectionDefault:undefined,options:agentOptionsSchema.parse(Object.fromEntries(Object.entries(profile).filter(([k])=>k in agentOptionsSchema.shape)))}:{}),signal:handoff?.signal??controller.signal,schema,managed:true,skipContextCompaction:!!followups,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
         instructions:composeExecutionPrompt(this.config,{role:'router',hostRouter:true,environment:{source:source.id,cwd:source.cwd,discussion,agentName:profile?.label??this.config.execution.router?.label??'Router',replyLocale:this.chat.locale(triggerId),...(scoped?{routerId:scoped.route.routerId,scopeId:scoped.route.scopeId}: {})},scoped:!!scoped,project:!!source.workspace?.project}).text+
           (chatBinding?(fullAccess?'':'\n'+permissionInstructions)+'\nGive the Worker the user request, selected skill, relevant file context and the outcome the user needs. For diagnosis, delegate the question and relevant artifact, leaving the Worker free to choose read-only checks. Delegate file creation. To return an existing file, use chat_artifact_find and chat_artifact_deliver with the selected ID. Clarify ambiguous versions. Do not dispatch a Worker or resume a goal for a pickup. Mention a completed explicit file review once when the host supplies fileReviewReceipt. Set requested schedules with router_manage.':'')
           +(scoped&&chatBinding?'\nWhen the user asks to continue earlier work, use router_goal list to find the same goal and resume it. For an ended local goal, start the continuation with continueFrom and its retained task. An empty delivery index does not mean the old workspace lacks the files. Prefer inspecting that workspace to creating a file retrieval task or requesting another upload.':'')
           +(chatBinding?'\nKeep automatic retries, technical errors, receipt IDs and reconciliation states in the host logs. Describe verified user-visible progress. If no work is running, say that progress is saved. Ask only a concrete outstanding question when the user can act.':'')
           +(review?'\nReview the Worker report against the actual user objective in this conversation. A reproduced symptom alone does not explain its cause. If an authorized check could answer the open question, choose continue with that concrete next step for the same Worker. Ask which observation would distinguish the proposed cause from alternatives. Check the actual failing entry point and the policy of the exact build. If a live control is unavailable, consider the corresponding implementation or logs before asking the user to operate it. Use answer for a supported conclusion or ask_user for an indispensable human choice or access. For continue, leave reply empty.':'')
+          + (showCommentary?'\nWhen your model connection supports a public commentary channel, use it for short updates in the user language at meaningful stages of the task. Decide when an update is worth sending. Report verified progress and what you are doing next. Keep internal reasoning private and continue the work after each update. Return the final reply in the requested format.':'')
           + (feishuDirect ? '\nThis is a private Feishu chat. Answer this incoming message in a single nonempty reply, in the user’s language.' : ''),
         input:decorateInput(modelInput()),tools,allowPlainTextReply:!!chatBinding&&!candidates&&!followups&&!review,
         ...(scoped&&packet&&canReadHistory?{rebuildWorkingInput:(maxBytes:number)=>{
@@ -1755,13 +1759,18 @@ export class Runtime {
           }
           return value
         },
-        ...(!review&&!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
+        ...(streamAnswer||showCommentary?{onOutput:(event:import('./model.ts').ModelOutput)=>{
+          if(event.phase==='commentary'?!showCommentary:!streamAnswer)return
           if(controller.signal.aborted||handoff?.yielded&&!resumedAfterHandoff||live?.pending||live?.changed||
-             event.phase!=='commentary'&&dispatches().some(item=>item.checkingCheckpoint))return
+             event.phase==='answer'&&dispatches().some(item=>item.checkingCheckpoint))return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
           catch(error){controller.abort(error);return}
-          this.chat.output(job.id,triggerId,event,validateReplyContext)
+          if(review&&!currentReview(this,review))return
+          this.chat.output(job.id,triggerId,event,review?()=>{
+            validateReplyContext()
+            if(!currentReview(this,review))throw Error('Worker report was superseded')
+          }:validateReplyContext)
         }}:{}),
         onThread:id=>!continuity?.isolatedInquiry&&this.store.put('router-session',sessionKey,{...this.store.get<any>('router-session',sessionKey),backendIdentity,discussion,threadId:id,source:source.id,triggerId,routerId:scoped?.route.routerId,contextId:packet?.manifest.id,...(continuity?{signature:continuity.signature,eventIds:continuity.eventIds,contextIds:continuity.contextIds,inputBytes:continuity.inputBytes,turns:continuity.reuse?(previous?.turns??0)+1:1,knowledge:continuity.reuse?previous?.knowledge??[]:[]}:{}),at:Date.now()})}
       const desktop=browserRun?.openingLocale&&!permissionId&&!fileReviewId&&!teamResultId

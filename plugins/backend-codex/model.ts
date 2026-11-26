@@ -439,8 +439,9 @@ export class AppServer {
     }
     if (message.method === 'item/completed' && params?.item?.type === 'agentMessage') {
       const item = params.item
-      if (item.phase !== 'commentary') this.answer = item.text ?? ''
-      if(typeof item.id==='string')this.onOutput?.({id:item.id,type:'end',phase:item.phase==='commentary'?'commentary':'answer',text:item.text??''})
+      const phase=item.phase==null?this.outputPhases.get(item.id)??'answer':item.phase==='commentary'?'commentary':'answer'
+      if (phase !== 'commentary') this.answer = item.text ?? ''
+      if(typeof item.id==='string')this.onOutput?.({id:item.id,type:'end',phase,text:item.text??''})
     }
     if (message.method === 'turn/completed') {
       if (this.turnId && params.turn.id !== this.turnId) return

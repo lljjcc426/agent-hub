@@ -32,7 +32,8 @@ import type {Runtime} from './runtime.ts'
 import {jobInput,WorkItemUnavailable,type WorkOwner} from './work.ts'
 import type {ToolSpec} from './model.ts'
 import {knowledgeCommandSchema,knowledgeSpecs} from './knowledge.ts'
-import {browserAction,browserToolDefinition,browserToolSchema,workspaceAction,workspaceBrowserSpec} from './browser-contract.ts'
+import {browserReceiptId} from './browser-manager.ts'
+import {BrowserError,browserAction,browserToolDefinition,browserToolSchema,workspaceAction,workspaceBrowserSpec} from './browser-contract.ts'
 import {desktopToolDefinition} from './cua-desktop.ts'
 const git=promisify(execFile)
 const containsPath=(parent:string,path:string)=>{const r=relative(parent,path);return !r||r!=='..'&&!r.startsWith('..'+sep)&&!isAbsolute(r)}
@@ -322,7 +323,17 @@ export class WorkerTools {
    for(const item of this.host.knowledge.references(result,context)){const previous=refs.find(r=>r.documentId===item.documentId);if(previous)previous.revision=item.revision;else refs.push(item)}
    this.host.store.put('task-context',owner.ticketId,{...saved,manifest:{...manifest,knowledge:refs}})
   }
-  else if(name==='superagent_browser')result=await this.host.browser.tool(owner,args)
+  else if(name==='superagent_browser'){
+   try{result=await this.host.browser.tool(owner,args)}catch(error){
+    // Browser writes journal their request before contacting the driver. Only
+    // typed preflight refusals with no such receipt can release the tool turn.
+    if(!(error instanceof BrowserError)||!['browser_missing','browser_owner','browser_human_control','browser_control_changed',
+     'browser_stale_snapshot','browser_session_required'].includes(error.code)||
+     this.host.store.get('browser-receipt',browserReceiptId(owner,args.requestId)))throw error
+    return {success:false,contentItems:[{type:'inputText',text:JSON.stringify({code:error.code,dispatched:false,
+     message:error.code==='browser_missing'?'That tab is closed. If a new observation is needed, open a fresh session and use its returned ID.':error.message})}]}
+   }
+  }
   else if(name==='superagent_desktop')return this.host.desktop.call(owner,args,checkAuthority,fence.signal)
   else if(name==='superagent_tool')return this.host.toolConnections.call(owner,args)
   else if(name==='superagent_tools')result=await this.host.toolConnections.catalog(owner,args)

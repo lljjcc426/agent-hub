@@ -1,5 +1,7 @@
 import type {PermissionAction} from '../chat-permissions.ts'
 import type {WorkerAttempt,WorkerEventReceipt} from '../async-worker-inbox.ts'
+import {browserToolSchema} from '../browser-contract.ts'
+import {browserReceiptId} from '../browser-manager.ts'
 import {isParallelRead} from '../tool-dispatch.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
@@ -327,9 +329,41 @@ function settleReadBatch(record:PluginToolEffect,callId:string,args:unknown,owne
   children:children.map(child=>child.state==='running'?{...child,state:'complete',success:false}:child)} satisfies PluginToolEffect
 }
 
+// Match an earlier failed browser action to the managed browser's independent
+// write-ahead journal. Do not infer an outcome from the native exception alone.
+function unstartedBrowserAction(store:Pick<Store,'db'|'get'>,stateDir:string,run:Run){
+ if(!run.threadId||!run.assignmentId)return
+ const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
+ const model=store.get<{activity:string}>('model-session',run.threadId)
+ if(!thread?.lastFailure||!model?.activity)return
+ const callbacks=stoppedOpenCodeCallbacks(store,stateDir,thread)
+ if(callbacks.length!==1)return
+ const callback=callbacks[0]!,input=browserToolSchema.safeParse(callback.args)
+ if(callback.name!=='superagent_browser'||!input.success||!input.data.sessionId||
+    !['navigate','click','fill','press','back','forward','reload','scroll','select_tab'].includes(input.data.action))return
+ const {sessionId,requestId,action}=input.data
+ const tab=store.get<{id:string;active:boolean;personal:boolean;provider:string}>('browser-session',sessionId)
+ if(tab?.id!==sessionId||tab.active!==false||tab.personal!==false||tab.provider!=='roppo'||
+    store.get('browser-receipt',browserReceiptId({ticketId:run.ticketId,assignmentId:run.assignmentId},requestId)))return
+ const opens=store.db.prepare(`SELECT json_extract(body,'$.result.updatedAt') AS opened FROM records WHERE kind='browser-receipt'
+    AND json_extract(body,'$.action')='open' AND json_extract(body,'$.state')='complete'
+    AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.assignmentId')=? AND json_extract(body,'$.result.id')=?`).all(run.ticketId,run.assignmentId,sessionId)
+ const traces=store.db.prepare(`SELECT json_extract(body,'$.startedAt') AS started,json_extract(body,'$.endedAt') AS ended,
+    json_extract(body,'$.state') AS state FROM records WHERE kind='execution-call' AND json_extract(body,'$.parentId')=?
+    AND json_extract(body,'$.name')='superagent_browser' AND json_extract(body,'$.action')=?
+    AND json_extract(body,'$.workerId')=? AND json_extract(body,'$.ticketId')=? AND json_extract(body,'$.agentId') IS NULL`).all(model.activity,'browser:'+action,run.workerId??'',run.ticketId)
+ const opened=opens[0]?.opened,trace=traces[0]
+ if(opens.length!==1||typeof opened!=='number'||traces.length!==1||trace?.state!=='failed'||
+   typeof trace.started!=='number'||typeof trace.ended!=='number'||
+   !(opened<=trace.started&&trace.started<=trace.ended&&trace.ended<=thread.lastFailure.at))return
+ if(store.db.prepare(`SELECT 1 FROM records WHERE kind='history-cleanup'
+    AND (json_extract(body,'$.status') IS NOT 'completed' OR json_type(body,'$.at') IS NOT 'integer' OR json_extract(body,'$.at')>=?) LIMIT 1`).get(opened))return
+ return callback.id
+}
+
 /** Compare the native journal and the host ledger before opening a fresh
  * Worker session. Native operations outside the bridge need separate review. */
-function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input'|'read_batch'|'pause',handoffAttempt?:{attemptId:string;dataRevision:number|null}){
+function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:Run,mode:'cancelled'|'denied_reads'|'provider'|'boundary'|'input'|'read_batch'|'pause',handoffAttempt?:{attemptId:string;dataRevision:number|null},browserRefusal?:string){
  try{
   const boundary=mode==='boundary',checkpoint=boundary||mode==='provider'||mode==='input'||mode==='read_batch'||mode==='pause'
   const bound=boundWorkerSession(store,stateDir,run,boundary)
@@ -378,7 +412,21 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
     }
     const effectId=stableDigest([thread.id,turn.id,call.id])
     let record=store.get<PluginToolEffect>('backend-plugin-tool',effectId)
-    if(!effects.delete(effectId)||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
+    const registered=effects.delete(effectId)
+    if(!registered&&!record&&!call.result&&mode==='read_batch'&&turn===last&&browserRefusal&&settledBatches.has(browserRefusal)&&call.name==='superagent_shell'){
+     // OpenCode can journal a later request before a failed bridge callback ends
+     // the turn. The host registers every callback before granting execution.
+     const requestId=(call.args as {requestId?:unknown}|null)?.requestId
+     if(typeof requestId!=='string'||!requestId||store.get('work-request',run.ticketId+':'+run.assignmentId+':root:'+requestId))return
+     continue
+    }
+    if(!registered||!record||record.fingerprint!==stableDigest([call.name,call.args]))return
+    if(mode==='read_batch'&&turn===last&&!call.result&&effectId===browserRefusal&&handoffAttempt){
+     const a=record.admission
+     if(a?.stage!=='admitted'||a.attemptId!==handoffAttempt.attemptId||a.dataRevision!==handoffAttempt.dataRevision||record.children?.length)return
+     record={...record,state:'complete',result:{success:false,contentItems:[{type:'inputText',text:'The browser action was not dispatched. The old session is closed. Open a new session only if the remaining work needs it.'}]}}
+     settledBatches.set(effectId,record)
+    }
     if(mode==='read_batch'&&turn===last&&!call.result&&call.name==='code_mode'&&handoffAttempt){
      const settled=settleReadBatch(record,call.id,call.args,handoffAttempt)
      if(!settled)return
@@ -547,9 +595,10 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
  const provider=event.disposition==='applied'?accountedWorkerTurn(store,stateDir,run,'provider'):undefined
  const attempt=store.get<WorkerAttempt>('async-worker-attempt',event.attemptId)
  const owner=store.get<{ownerEpoch:number;dataRevision:number;state:string}>('task-ownership',run.ticketId)
+ const browserRefusal=!provider?unstartedBrowserAction(store,stateDir,run):undefined
  const batch=!provider&&!!event.basis&&owner?.state==='active'&&owner.ownerEpoch===event.basis.ownerEpoch&&owner.dataRevision===event.basis.dataRevision&&event.disposition==='applied'&&event.reason==='current'&&attempt?.ticketId===run.ticketId&&
   attempt.assignmentId===run.assignmentId&&stableDigest(attempt.basis)===stableDigest(event.basis)&&!store.get('async-worker-revoked',event.attemptId)
-  ?accountedWorkerTurn(store,stateDir,run,'read_batch',{attemptId:event.attemptId,dataRevision:event.basis.dataRevision}):undefined
+  ?accountedWorkerTurn(store,stateDir,run,'read_batch',{attemptId:event.attemptId,dataRevision:event.basis.dataRevision},browserRefusal):undefined
  const readBatch=batch?.settledBatches.size?batch:undefined
  const handoff=!provider&&!readBatch&&inputHandoff(store,run,event)
  const proof=provider??readBatch??(handoff?accountedWorkerTurn(store,stateDir,run,'input',handoff):undefined)
@@ -586,7 +635,7 @@ export function settledProviderTurn(store:Pick<Store,'db'|'get'>,stateDir:string
   }else if(!(proof.failure.diagnostic.operation==='transport'&&['turn_checkpoint','timeout'].includes(proof.failure.diagnostic.reason))&&
     !(proof.hostConfirmed&&proof.failure.diagnostic.operation==='run'&&proof.failure.diagnostic.reason==='exception'))return
  }
- const cause=handoff?'input_superseded' as const:readBatch?'settled_read_batch' as const:proof.failure.diagnostic!.reason
+ const cause=handoff?'input_superseded' as const:readBatch?(browserRefusal?'browser_not_dispatched' as const:'settled_read_batch' as const):proof.failure.diagnostic!.reason
  // A hard turn deadline also ends productive work. Only spend another
  // authorized goal turn when a real tool finished in the latter half.
  const productiveDeadline=(cause==='turn_checkpoint'||cause==='timeout')&&recentWorkerProgress(store,model.activity,run.ticketId,usage.at,at)

@@ -731,7 +731,8 @@ export class RouterGoals {
   }:{
    instruction:'Continue the next unfinished step in this same workspace. The previous model turn ended after the listed operations returned. Read only the exact receipt resources listed here for previous results. IDs are opaque. Use the retained child results directly and do not generate or enumerate receipt IDs. Reuse running jobs by ID with superagent_job. Preserve completed operations and the user’s answer. Use superagent_artifact_read with each prerequisite artifact.id.',recordedCalls:callIndex?calls?.slice(-4):calls,
    ...(callIndex?{callIndex,recordedCallCount:calls!.length}:{}),
-   ...(declared.length?{declaredOutputs:declared,delivery:'Inspect the current declared outputs first. When the requested work and its evidence are ready, hand them back for independent acceptance. Identify any remaining limitation. Reuse completed tests and receipts for the same version.'}:{}),
+   ...(declared.length?{declaredOutputs:declared,delivery:'Inspect the current declared outputs first. When the requested changes are in place, hand them back for independent acceptance with the stronger evidence already obtained. Report any environment-limited check explicitly. Do not restart an optional diagnostic already shown unavailable. Identify any remaining limitation. Reuse completed tests and receipts for the same version.'}:{}),
+   ...(provider?.cause==='browser_not_dispatched'?{browserSession:'The previous managed browser session has closed. Use a fresh session ID for any genuinely new observation. Inspect retained evidence before starting additional work.'}:{}),
    ...(provider?.cause==='input_superseded'?{inputHandoff:'Use the newest admitted user input. The previous activation ended. Its undispatched requests did not run.'}:{}),
    ...(liveJobs.length?{runningJobs:liveJobs.map(job=>({id:job.id,resource:'job/'+job.id}))}:{}),
   }
@@ -745,7 +746,7 @@ export class RouterGoals {
     store.audit({type:'backend.tool.reconciled',receiptId:callback.id,reason:'shell_not_dispatched',activityId,ticketId:id,confirmed:false})
    }else{
     for(const [receiptId,effect] of provider!.settledBatches){
-     const reconciliation={reason:'settled_read_batch',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,at:this.now()}
+     const reconciliation={reason:provider!.calls.find(call=>call.effectId===receiptId)?.tool==='superagent_browser'?'browser_not_dispatched':'settled_read_batch',ticketId:id,assignmentId:run.assignmentId,threadId:run.threadId,turnId:run.turnId,at:this.now()}
      store.put('backend-plugin-tool',receiptId,{...effect,reconciliation})
      store.audit({type:'backend.tool.reconciled',receiptId,...reconciliation})
     }

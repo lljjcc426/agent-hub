@@ -645,3 +645,33 @@ it('settles a refused delegated Chat browser action only with the original owner
  s.put('browser-receipt',browserReceiptId(owner,requestId),{state:'uncertain'})
  expect(prove()).toBeUndefined()
 })
+
+it('accounts for a closed managed browser and a later native request that never reached the host',()=>{
+ const h=host(),s=h.store,sessionId=randomUUID(),requestId='navigate-once'
+ const f=stoppedCallback(h,'superagent_browser',{sessionId,requestId,action:'navigate',url:'https://example.org'},'worker')
+ const model=s.get<{ticketId:string}>('model-session',f.thread.id)!,ticketId=model.ticketId,assignmentId='assignment',attemptId='attempt'
+ const run:Run={ticketId,assignmentId,workerId:'one',backendId:'codex',cwd:f.thread.cwd,phase:'uncertain',prepared:true,threadId:f.thread.id,turnId:f.thread.turnId}
+ const identity={ticketId,assignmentId,attemptId},basis={ownerEpoch:1,dataRevision:3}
+ const admission={attemptId,dataRevision:3,stage:'admitted' as const},at=f.thread.lastFailure!.at
+ const event={...identity,id:'event',kind:'blocked',disposition:'applied',reason:'current',nativeTurnDigest:stableDigest(run.turnId),basis}
+ s.put('async-worker-current',ticketId,identity);s.put('async-worker-attempt',attemptId,{...identity,basis})
+ s.put('async-worker-terminal',attemptId,{...identity,eventId:event.id});s.put('async-worker-event',event.id,event)
+ s.put('backend-plugin-thread',f.thread.id,{...f.thread,lastFailure:{...f.thread.lastFailure,diagnostic:{operation:'run',reason:'exception'}}})
+ s.put('backend-plugin-tool',f.receiptId,{...f.receipt,admission})
+ s.put('task-ownership',ticketId,{...basis,state:'active'})
+ writeFileSync(join(f.journal,run.turnId+'.ready'),'ready')
+ f.native.turns[0]!.tools.push({id:'number:2',name:'superagent_shell',args:{command:'pwd',requestId:'later'}})
+ writeFileSync(f.session,JSON.stringify(f.native))
+ s.put('browser-session',sessionId,{id:sessionId,provider:'roppo',active:false,personal:false})
+ s.put('browser-receipt','open',{ticketId,assignmentId,action:'open',state:'complete',result:{id:sessionId,updatedAt:at-400}})
+ s.put('execution-call','nav',{parentId:f.activity,name:'superagent_browser',action:'browser:navigate',workerId:'one',ticketId,state:'failed',startedAt:at-10,endedAt:at})
+ const prove=()=>settledProviderTurn(s,h.config.stateDir,run)
+ expect(prove()?.cause).toBe('browser_not_dispatched')
+ const key=ticketId+':'+assignmentId+':root:later'
+ s.put('work-request',key,'ran');expect(prove()).toBeUndefined()
+ s.db.prepare("DELETE FROM records WHERE kind='work-request' AND id=?").run(key)
+ const receipt=browserReceiptId({ticketId,assignmentId},requestId)
+ s.put('browser-receipt',receipt,{ticketId,assignmentId,state:'complete'});expect(prove()).toBeUndefined()
+ s.db.prepare("DELETE FROM records WHERE kind='browser-receipt' AND id=?").run(receipt)
+ s.put('history-cleanup','redaction',{status:'completed',at});expect(prove()).toBeUndefined()
+})

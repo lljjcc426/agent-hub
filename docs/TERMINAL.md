@@ -4,7 +4,7 @@ Run `roppo` from any directory to continue your personal conversation with the R
 
 ## Install and connect
 
-Use Node.js 22.19 or newer. From the Roppo checkout, run the following commands.
+Use Node.js 22.19 or newer. The interactive screen uses OpenTUI and the Bun runtime installed with this project; no global Bun or Node upgrade is needed. The host and print commands stay on Node. From the checkout, run:
 
 ```sh
 npm ci
@@ -29,17 +29,15 @@ roppo -r
 
 The main transcript shows your messages and public Router replies. Internal Worker conversations and task logs stay out of the default view. Delivered files appear as file notices and remain available through `/files`. The welcome screen does not ask you to select a project or manage Workers.
 
-Type `/` to browse commands and `@` to search local files. Use ↑ and ↓ to select, Tab to complete and Esc to dismiss. Git projects include tracked files and non-ignored untracked files. File names with spaces are quoted on insertion. Alt+Enter inserts a newline. Pasting several lines in a terminal with bracketed paste keeps them together until you press Enter.
+Type `/` to browse commands and `@` to browse local files and directories. File names with spaces are quoted on insertion. Ctrl+P opens a searchable command palette. Arrow keys select, Enter confirms, and Esc closes a menu while preserving the draft and cursor. Shift+Enter (where supported), Alt+Enter or Ctrl+J inserts a newline. Bracketed paste stays in the draft until Enter, including pasted slash commands.
 
-Run `roppo -r` to search personal conversation history by title. Selecting a conversation also makes it current in the web workspace. `/clear` explicitly starts a fresh conversation and retains the previous history and background work.
+The screen uses OpenTUI's alternate screen, native text input, Markdown and scroll container. Empty conversations show a centered wordmark and compact filled input with no scrollable filler. Existing conversations open directly. Messages scroll above the fixed composer. Internal Workers stay out of the transcript; `/tasks` opens execution details on demand.
 
-Interactive startup shows a compact, left-aligned welcome card and a warm accent color. The input uses horizontal rules and a `❯` prompt. Messages align left and the composer stays at the bottom through window resizing and incoming replies. Ctrl+O explicitly expands execution diagnostics; they stay collapsed by default.
+An eight-cell activity strip runs during real work and disappears on completion or when a response is needed. Replies update from host events without an artificial typing delay. Reading older messages pauses automatic following; Ctrl+End returns to the latest reply. `/settings` offers animation and theme controls. Esc or Ctrl+C interrupts the current run when no menu is open. Idle Ctrl+C clears a draft, or exits from an empty input. Ctrl+D on an empty prompt and `/exit` leave the host running.
 
-Sending a message and loading command options show immediate animated feedback. During execution, the status uses the Router’s public update, a published plan step, or a simple activity label. Replies update as real streamed content arrives. Ctrl+O expands internal tasks and tools. `/config motion=reduced` disables periodic animation; `motion=full` restores it. Animations do not move the input or override your history scroll position. Esc or Ctrl+C interrupts the current run when the picker is closed. Idle Ctrl+C clears the draft; on an empty prompt, press it twice within one second to exit. Ctrl+D on an empty prompt or `/exit` leaves work running.
+Ctrl+Y and `/approvals` review pending permissions, Router choices, structured questions and file deliveries. `/files` previews delivered text and saves files to a chosen path without overwriting existing files. `/memory` reviews, edits or forgets personal memories. `/schedules` reads, pauses and resumes scheduled actions; describe new reminders and timing changes in the same chat. `/tools` searches capabilities, and `/open` opens this conversation in the browser.
 
-Use `/plan` to read published steps, `/choose` to answer a Router question, and `/files` to see shared attachments and delivered files. `/approvals` lists actions that need your permission; select an action, review its scope, then choose Allow or Decline. Complex structured questions currently link to the same web conversation. `/tools` searches available capabilities; `/open` opens the shared conversation in the browser.
-
-Internal task and Git inspection commands remain available through `/help advanced` and explicit command names. They are not the default conversation navigation. See [the product boundary](CLI_PRODUCT.md) for the design and current limits.
+`roppo -r`, `/resume` and `/clear` remain explicit compatibility controls. The default navigation has one continuous personal conversation and no project or Worker session tabs. `ROPPO_LEGACY_TUI=1 roppo` temporarily selects the previous renderer for troubleshooting; it uses the same host and conversation.
 
 ## Settings and session controls
 
@@ -47,8 +45,8 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 
 | Command | Behavior and scope |
 | --- | --- |
-| `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
-| `/theme` | Dark, light or monochrome terminal colors; does not change the terminal application's background |
+| `/settings`, `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
+| `/theme` | System, dark, light or monochrome screen colors |
 | `/model` | Choose a configured connection and model for the **shared Router** |
 | `/model CONNECTION MODEL` | Select an explicit model ID; `--default` uses the connection default |
 | `/effort` | Choose an effort advertised by the selected model, or `default` |
@@ -58,10 +56,13 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | `/clear` | Start a new conversation without deleting the old one or stopping its work |
 | `/resume` | Search saved conversations in the current project, or personal Chat when outside a project session |
 | `/rename TITLE` | Rename the current conversation |
-| `/files` | Shared attachments and delivered file links |
+| `/files` | Preview and save delivered files |
+| `/memory` | Review, edit and forget shared personal memory |
+| `/schedules` | Read, pause and resume scheduled actions |
+| `/history` | Search this conversation and load older messages |
 | `/approvals` | Review and answer pending permission requests without entering task IDs |
 
-Model changes apply to subsequent Router turns, including those submitted from the web. They do not change Worker profiles or a turn's already captured model binding. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; Shift+Tab opens it without granting access automatically. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
+Model changes apply to subsequent Router turns, including those submitted from the web. They do not change Worker profiles or a turn's already captured model binding. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; full access requires a confirmation in the new interface. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
 
 Terminal preferences load from these sources, from lowest to highest priority:
 
@@ -72,7 +73,7 @@ Terminal preferences load from these sources, from lowest to highest priority:
 5. `--settings '{"theme":"mono"}'` or `--settings path/to/settings.json`.
 6. Dedicated launch flags such as `--theme`, `--verbose`, `--lang` and `--timeout`.
 
-Supported keys are `theme` (`dark`, `light`, `mono`), `language` (`en`, `zh`), `verbose` (boolean), `motion` (`full` or `reduced`), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
+Supported keys are `theme` (`system`, `dark`, `light`, `mono`), `language` (`en`, `zh`), `verbose` (boolean), `motion` (`full` or `reduced`), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
 
 ```sh
 roppo --theme dark --verbose
@@ -86,19 +87,19 @@ A `/config` edit takes effect immediately in the current session, and saves to `
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl+C / Esc | Interrupt an active run (Esc first dismisses an open picker) |
-| Ctrl+D | Exit when the prompt is empty; work remains on the host |
-| Ctrl+O | Toggle tool details |
-| Ctrl+L | Redraw the terminal |
-| Ctrl+R | Search input history; Enter restores the selected draft without sending it |
-| Ctrl+S | Stash a draft, then restore it into an empty prompt |
-| Alt+P | Open the model picker, preserving the draft |
-| Shift+Tab | Open shared-account permissions |
-| Alt+Enter / supported Shift+Enter / trailing `\` + Enter | Insert a newline |
-| Page Up / Page Down | Scroll conversation history |
-| Mouse wheel / trackpad scroll | Scroll the conversation by three lines, or move through the open menu |
+| Ctrl+P | Search commands |
+| F2 | Choose model |
+| Ctrl+K | Search this conversation |
+| Ctrl+Y | Review pending requests |
+| Ctrl+C / Esc | Close menu or interrupt work |
+| Ctrl+D | Exit from an empty prompt |
+| Shift+Enter / Alt+Enter / Ctrl+J | New line |
+| Page Up / Page Down | Scroll history; Page Up at the beginning loads older messages |
+| Ctrl+End | Return to the latest reply |
+| Ctrl+Shift+C | Copy selected text |
+| Mouse wheel | Scroll messages or document previews |
 
-The full-screen interface captures mouse events while running. An empty conversation stays fixed; overflowing messages scroll above the input. Exiting restores normal terminal mouse handling. In macOS Terminal, keep **View → Allow Mouse Reporting** enabled for this behavior. To select text with Terminal's native mouse handling, temporarily toggle it off with **Cmd+R**, then turn it back on to resume in-app scrolling.
+The interface restores terminal modes on exit. Keep mouse reporting enabled in your terminal for in-app scrolling and selection. Apple Terminal may send Enter and Shift+Enter identically; Alt+Enter or Ctrl+J works there without changing terminal settings.
 
 ## Use in scripts
 
@@ -146,10 +147,11 @@ roppo --cwd . -r <conversation-id>
 On first use of a new folder, Roppo shows its resolved project path and requested access. Subdirectories use the nearest Git root or a more specific registered workspace. Git projects with an existing commit use per-task worktrees. Empty repositories and other new directories use read-only access. Existing sources keep their configured workspace and permissions. Registering a new source uses the host's configuration update and requires an idle host. A subscription restricted to a specific source uses that registered source.
 
 
-## Claude Code alignment
+## Interface reference
 
-This fork uses Claude Code’s terminal layout, input, feedback and keyboard conventions as a reference. Its default experience is one personal conversation with the Router, with internal Worker collaboration retained behind the scenes. See [CLI compatibility and remaining work](CLI_COMPATIBILITY.md) for implemented behavior and gaps. It does not read or modify `~/.claude` configuration or use Claude's branding.
+The interactive screen follows OpenCode's input, searchable overlays, Markdown and activity feedback. Roppo retains one personal Router conversation, its local service and internal Worker collaboration. The host continues to own authorization, memory, schedules and file delivery.
 
-## References
+- [OpenCode TUI documentation](https://opencode.ai/docs/cli/tui/)
+- [OpenTUI runtime support](https://opentui.com/docs/getting-started/runtime-support/)
 
-The interaction and naming draw on Claude Code’s documented print and resume modes and Codex’s separate interactive and script interfaces. Roppo owns session storage and task execution. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) · [Claude Code repository license](https://github.com/anthropics/claude-code/blob/main/LICENSE.md) · [Codex CLI arguments](https://github.com/openai/codex/blob/main/codex-rs/exec/src/cli.rs) · [Codex session picker](https://github.com/openai/codex/blob/main/codex-rs/tui/src/resume_picker.rs).
+The interactive renderer runs on the bundled Bun because current OpenTUI requires Bun 1.3.14+ or Node 26.4+ with experimental FFI. Print mode and the service continue to support Node 22.19+.

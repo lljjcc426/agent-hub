@@ -1,0 +1,437 @@
+import {
+  BoxRenderable, TextRenderable, TextareaRenderable, InputRenderable, ScrollBoxRenderable,
+  MarkdownRenderable, SyntaxStyle, type CliRenderer, type KeyEvent
+} from '@opentui/core'
+import type { Snapshot } from './client.ts'
+import { clean } from './client.ts'
+import { publicMessage } from './conversation.ts'
+import { isApprovalPending } from '../chat-workflow.ts'
+import type { HostSettings } from './host-settings.ts'
+import type { TerminalSettings } from './settings.ts'
+import { ui } from './language.ts'
+import stringWidth from 'string-width'
+
+export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
+export interface TuiMenu { title: string; items: TuiItem[]; detail?: string }
+export interface TuiActions {
+  send(text: string): Promise<void>
+  command(text: string): Promise<void>
+  complete(text: string): Promise<TuiItem[]>
+  interrupt(): Promise<void>
+  older(): Promise<void>
+  review(): Promise<void>
+  copy?(text: string): Promise<void>
+  quit(): void
+}
+
+const dark = { bg: '#0b0b0b', panel: '#1c1c1c', selected: '#333333', fg: '#e3e3e3', muted: '#939393', accent: '#a795ff', warm: '#e2ae76' }
+const light = { bg: '#fafafa', panel: '#eeeeee', selected: '#dadada', fg: '#252525', muted: '#656565', accent: '#6553be', warm: '#946322' }
+
+/** Stable native nodes keep the draft, selection and scroll position independent of host events. */
+export class TuiScreen {
+  readonly frame: BoxRenderable
+  readonly transcript: ScrollBoxRenderable
+  readonly draft: TextareaRenderable
+  private header: TextRenderable
+  private home: BoxRenderable
+  private compose: BoxRenderable
+  private model: TextRenderable
+  private permissions: TextRenderable
+  private footer: TextRenderable
+  private activity: TextRenderable
+  private jump: TextRenderable
+  private pending: TextRenderable
+  private requestCards = new Map<string, { box: BoxRenderable; value: string }>()
+  private completions: BoxRenderable
+  private overlay?: BoxRenderable
+  private modalPanel?: BoxRenderable
+  private modalSearch?: InputRenderable
+  private modalRows?: BoxRenderable
+  private modalMenu?: TuiMenu
+  private modalItems: TuiItem[] = []
+  private modalIndex = 0
+  private completionItems: TuiItem[] = []
+  private completionIndex = 0
+  private completionRevision = 0
+  private completionTimer?: ReturnType<typeof setTimeout>
+  private messageNodes = new Map<string, { box: BoxRenderable; body: MarkdownRenderable | TextRenderable; value: string }>()
+  private style: SyntaxStyle
+  private palette = dark
+  private view?: Snapshot
+  private host?: HostSettings
+  private prefs: TerminalSettings
+  private busy = false
+  private loading = false
+  private connected = true
+  private started = 0
+  private pulse?: ReturnType<typeof setInterval>
+  private noticeTimer?: ReturnType<typeof setTimeout>
+  private closed = false
+  private history: string[] = []
+  private historyIndex = 0
+  private scratch = ''
+
+  constructor(readonly renderer: CliRenderer, preferences: TerminalSettings, private actions: TuiActions) {
+    this.prefs = preferences
+    this.palette = this.colors()
+    const p = this.palette
+    this.style = SyntaxStyle.fromStyles({
+      default: { fg: p.fg }, 'markup.heading': { fg: p.warm, bold: true },
+      'markup.strong': { fg: p.warm, bold: true }, 'markup.link': { fg: p.accent },
+      'markup.raw': { fg: p.warm }, comment: { fg: p.muted }
+    }, renderer.nativeScene)
+    this.frame = new BoxRenderable(renderer, { width: '100%', height: '100%', flexDirection: 'column', paddingX: 2, paddingY: 1, backgroundColor: p.bg })
+    renderer.root.add(this.frame)
+    this.header = this.text('roppo / personal', { height: 1, flexShrink: 0, fg: p.muted })
+    this.frame.add(this.header)
+    this.home = new BoxRenderable(renderer, { flexGrow: 1, minHeight: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 1, paddingBottom: 2 })
+    this.home.add(this.text('█▀▀▄ █▀▀█ █▀▀█ █▀▀█ █▀▀█\n█▄▄▀ █  █ █▄▄█ █▄▄█ █  █\n█  █ ▀▀▀▀ █    █    ▀▀▀▀'))
+    this.home.add(this.text(ui('A little more room for your life.', '给生活留一点空间。'), { fg: p.muted }))
+    this.frame.add(this.home)
+    this.transcript = new ScrollBoxRenderable(renderer, {
+      flexGrow: 1, flexBasis: 0, minHeight: 0, width: '100%', visible: false,
+      stickyScroll: true, stickyStart: 'bottom', scrollX: false,
+      verticalScrollbarOptions: { visible: false }, horizontalScrollbarOptions: { visible: false },
+      contentOptions: { gap: 1, paddingBottom: 1 }
+    })
+    this.frame.add(this.transcript)
+    this.jump = this.text(ui('↓ Back to latest · ctrl+end', '↓ 回到最新 · ctrl+end'), { visible: false, height: 1, fg: p.accent,
+      onMouseDown: () => this.latest() })
+    this.frame.add(this.jump)
+    this.pending = this.text('', { height: 1, visible: false, fg: p.warm, onMouseDown: () => this.run(this.actions.review()) })
+    this.frame.add(this.pending)
+    this.activity = this.text('', { height: 1, visible: false, fg: p.accent, marginTop: 1, flexShrink: 0 })
+    this.frame.add(this.activity)
+    this.completions = new BoxRenderable(renderer, { visible: false, flexShrink: 0, backgroundColor: p.panel, flexDirection: 'column' })
+    this.frame.add(this.completions)
+    this.compose = new BoxRenderable(renderer, { width: '100%', border: ['left'], borderColor: p.accent,
+      backgroundColor: p.panel, paddingX: 1, paddingY: 1, flexShrink: 0, marginTop: 1 })
+    this.draft = new TextareaRenderable(renderer, {
+      width: '100%', height: 2, textColor: p.fg, focusedTextColor: p.fg,
+      backgroundColor: p.panel, focusedBackgroundColor: p.panel, cursorColor: p.accent,
+      placeholder: ui('Ask Roppo anything…', '和 Roppo 聊聊…'), placeholderColor: p.muted,
+      keyBindings: [{ name: 'return', action: 'submit' }, { name: 'return', shift: true, action: 'newline' },
+        { name: 'return', meta: true, action: 'newline' }, { name: 'j', ctrl: true, action: 'newline' }],
+      onSubmit: () => this.submit(), onContentChange: () => this.changed()
+    })
+    this.compose.add(this.draft)
+    const meta = new BoxRenderable(renderer, { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, flexShrink: 0 })
+    this.model = this.text('Router', { fg: p.accent, height: 1, flexGrow: 1, flexShrink: 1, minWidth: 0, onMouseDown: () => this.run(this.actions.command('/model')) })
+    this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
+    meta.add(this.model); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
+    this.footer = this.text('', { height: 1, fg: p.muted, marginTop: 1, flexShrink: 0,
+      onMouseDown: () => this.run(this.actions.command('/commands')) })
+    this.frame.add(this.footer)
+    renderer.keyInput.on('keypress', this.key)
+    renderer.on('resize', this.resize)
+    renderer.on('theme_mode', this.themeChanged)
+    this.transcript.verticalScrollBar.on('change', () => {
+      this.jump.visible = this.transcript.scrollTop + this.transcript.viewport.height < this.transcript.scrollHeight - 1
+    })
+    this.resize(); this.draft.focus()
+  }
+
+  private colors() {
+    if (this.prefs.theme === 'mono') return { ...dark, accent: dark.fg, warm: dark.fg }
+    return this.prefs.theme === 'light' || this.prefs.theme === 'system' && this.renderer.themeMode === 'light' ? light : dark
+  }
+  private text(content: string, options: ConstructorParameters<typeof TextRenderable>[1] = {}) {
+    return new TextRenderable(this.renderer, { content: clean(content), fg: this.palette.fg, flexShrink: 0, ...options })
+  }
+  run(promise: Promise<unknown>) { promise.catch(error => { if (!this.closed) this.notice((error as Error).message, true) }) }
+  private themeChanged = () => { if (this.prefs.theme === 'system') this.preferences(this.prefs) }
+  private resize = () => {
+    const narrow = this.renderer.width < 65
+    this.frame.paddingX = narrow ? 1 : 3
+    this.compose.width = this.home.visible ? Math.min(78, this.renderer.width - (narrow ? 2 : 6)) : '100%'
+    this.compose.alignSelf = 'center'
+    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18) / 2)) : 0
+    this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
+    this.footer.content = this.connected
+      ? ui(narrow ? 'Personal · ctrl+p commands' : 'Personal · synced with web                  enter send · ctrl+p commands', narrow ? '个人对话 · ctrl+p 命令' : '个人对话 · 与网页同步                  enter 发送 · ctrl+p 命令')
+      : ui('Reconnecting to local service…', '正在重新连接本机服务…')
+    if (this.host) this.model.content = 'Router · ' + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
+    if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu() }
+  }
+
+  preferences(prefs: TerminalSettings) {
+    this.prefs = prefs; this.palette = this.colors(); const p = this.palette
+    this.renderer.setBackgroundColor(p.bg); this.frame.backgroundColor = p.bg
+    this.compose.backgroundColor = p.panel; this.compose.borderColor = p.accent
+    this.draft.backgroundColor = p.panel; this.draft.focusedBackgroundColor = p.panel
+    this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
+    this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
+    this.model.fg = p.accent; this.footer.fg = p.muted; this.header.fg = p.muted; this.permissions.fg = p.muted
+    this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
+    this.completions.backgroundColor = p.panel
+    this.style.registerStyle('default', { fg: p.fg })
+    this.style.registerStyle('markup.heading', { fg: p.warm, bold: true })
+    this.style.registerStyle('markup.strong', { fg: p.warm, bold: true })
+    for (const [id, node] of this.messageNodes) {
+      const user = this.view?.messages.find(m => m.id === id)?.role === 'user'
+      node.box.backgroundColor = user ? p.panel : p.bg
+      if (user) node.box.borderColor = p.accent
+      node.body.fg = p.fg
+    }
+    this.home.getChildren().forEach((child, index) => {
+      if (child instanceof TextRenderable) {
+        child.fg = index ? p.muted : p.fg
+        if (index) child.content = ui('A little more room for your life.', '给生活留一点空间。')
+      }
+    })
+    for (const card of this.requestCards.values()) card.box.destroyRecursively()
+    this.requestCards.clear()
+    if (this.view) this.update(this.view)
+    this.syncActivity(); this.resize()
+  }
+  settings(host: HostSettings) { this.host = host; this.permissions.content = host.approvalMode + ' · ' + ui('permissions', '权限'); this.resize() }
+  connection(connected: boolean) { this.connected = connected; this.resize() }
+  setLoading(value: boolean) { if (!this.closed) { this.loading = value; this.syncActivity() } }
+  notice(message: string, error = false) {
+    clearTimeout(this.noticeTimer)
+    this.header.content = clean(message); this.header.fg = error ? this.palette.warm : this.palette.accent
+    this.noticeTimer = setTimeout(() => { if (!this.closed) { this.header.content = 'roppo / personal'; this.header.fg = this.palette.muted } }, error ? 8000 : 3500)
+  }
+  setDraft(value: string) { this.draft.setText(value); this.draft.gotoBufferEnd(); this.draft.focus() }
+  latest() { this.transcript.scrollTo(Infinity); this.jump.visible = false; this.draft.focus() }
+
+  update(view: Snapshot, prepend = false) {
+    const first = this.transcript.getChildren()[0]
+    const release = prepend && first ? this.transcript.anchor(first) : undefined
+    this.view = view
+    const visible = view.messages.filter(publicMessage)
+    this.home.visible = visible.length === 0; this.transcript.visible = visible.length > 0
+    const ids = new Set(visible.map(m => m.id))
+    for (const [id, node] of this.messageNodes) if (!ids.has(id)) { node.box.destroyRecursively(); this.messageNodes.delete(id) }
+    visible.forEach((message, index) => {
+      const user = message.role === 'user', p = this.palette
+      const attachments = message.attachments?.map(f => '@ ' + f.name).join('\n') ?? ''
+      const delivered = message.deliveries?.map(f => '▤ ' + f.name + '  ·  /files').join('\n') ?? ''
+      const value = clean([message.text, attachments, delivered].filter(Boolean).join('\n\n'))
+      let node = this.messageNodes.get(message.id)
+      if (!node) {
+        const box = new BoxRenderable(this.renderer, { id: 'message-' + message.id, width: '100%', flexShrink: 0,
+          backgroundColor: user ? p.panel : p.bg, ...(user ? { border: ['left'] as const, borderColor: p.accent } : {}),
+          paddingX: user ? 1 : 2, paddingY: user ? 1 : 0 })
+        const body = user ? this.text(value, { width: '100%', wrapMode: 'word', selectable: true })
+          : new MarkdownRenderable(this.renderer, { width: '100%', content: value, fg: p.fg, syntaxStyle: this.style, streaming: message.status !== 'complete' })
+        box.add(body); this.transcript.add(box, index)
+        node = { box, body, value }; this.messageNodes.set(message.id, node)
+      } else if (node.value !== value) { node.body.content = value; node.value = value }
+      if (node.body instanceof MarkdownRenderable) node.body.streaming = message.status === 'streaming'
+    })
+    if (release) this.transcript.afterLayout(release)
+    this.history = visible.filter(m => m.role === 'user').map(m => m.text)
+    this.historyIndex = this.history.length
+    const messageCards = [...view.messages, ...(view.earlierCards ?? []).filter(c => !view.messages.some(m => m.id === c.id))]
+    const requests = view.approvals.filter(a => isApprovalPending(a)).length + messageCards.filter(m => m.fileReview?.state === 'pending' || m.decision && !m.decision.replyRunId && !m.decision.closed).length + (view.decisions ?? []).filter(d => d.status === 'pending').length
+    this.pending.visible = requests > 0
+    this.pending.content = ui(`${requests} awaiting your reply · ctrl+y review`, `${requests} 项等待你处理 · ctrl+y 查看`)
+    const cards = view.approvals.filter(a => isApprovalPending(a)).map(a => ({ id: a.id,
+      text: [ui('Permission or reply needed', '需要授权或回答'), a.questions.map(q => q.question).join('\n'), ...Object.values(a.facts)].filter(Boolean).join('\n') }))
+    for (const m of messageCards) {
+      if (m.fileReview?.state === 'pending') cards.push({ id: m.id, text: ui('Review file delivery', '确认文件交付') + ('text' in m ? ': ' + m.text : '') })
+      else if (m.decision && !m.decision.replyRunId && !m.decision.closed) cards.push({ id: m.id, text: m.decision.question + '\n' + m.decision.options.map(o => '· ' + o.label).join('\n') })
+    }
+    for (const d of view.decisions ?? []) if (d.status === 'pending') cards.push({ id: d.id, text: d.question })
+    for (const [id, card] of this.requestCards) if (!cards.some(c => c.id === id)) { card.box.destroyRecursively(); this.requestCards.delete(id) }
+    for (const card of cards) {
+      const previous = this.requestCards.get(card.id)
+      if (previous?.value === card.text) continue
+      previous?.box.destroyRecursively()
+      const box = new BoxRenderable(this.renderer, { border: ['left'], borderColor: this.palette.warm,
+        padding: 1, width: '100%', backgroundColor: this.palette.panel, flexShrink: 0 })
+      box.add(this.text(card.text, { wrapMode: 'word', width: '100%' }))
+      box.add(this.text(ui('› Review and respond · ctrl+y', '› 查看并处理 · ctrl+y'), { fg: this.palette.accent, marginTop: 1,
+        onMouseDown: () => this.run(this.actions.review()) }))
+      this.transcript.add(box); this.requestCards.set(card.id, { box, value: card.text })
+    }
+    this.busy = !!(view.run && ['queued', 'running', 'cancel_requested'].includes(view.run.state)) || view.tasks.some(t => ['running', 'queued'].includes(t.state))
+    if (view.run?.state === 'waiting' || requests) this.busy = false
+    this.syncActivity(); this.resize()
+  }
+
+  private syncActivity() {
+    const working = this.busy || this.loading
+    this.activity.visible = working
+    if (working && !this.started) this.started = Date.now()
+    if (!working) this.started = 0
+    if (working && this.prefs.motion !== 'reduced' && !this.pulse) this.pulse = setInterval(() => this.paintActivity(), 125)
+    if ((!working || this.prefs.motion === 'reduced') && this.pulse) { clearInterval(this.pulse); this.pulse = undefined }
+    if (working) this.paintActivity()
+  }
+  private paintActivity() {
+    const seconds = Math.floor((Date.now() - this.started) / 1000), head = Math.floor((Date.now() - this.started) / 125) % 12
+    const bar = this.prefs.motion === 'reduced' ? '········' : Array.from({ length: 8 }, (_, i) => i <= head && i > head - 3 ? '■' : '⬝').join('')
+    const label = this.loading ? ui('Connecting', '连接中') : this.view?.run?.state === 'cancel_requested' ? ui('Stopping', '停止中')
+      : this.view?.reply ? ui('Writing reply', '正在回复') : ui('Working', '处理中')
+    this.activity.content = `${bar}  ${label}  ${seconds}s  · esc ${ui('interrupt', '中断')}`
+  }
+  private changed() {
+    this.resize()
+    clearTimeout(this.completionTimer)
+    const revision = ++this.completionRevision
+    this.completionTimer = setTimeout(() => this.run((async () => {
+      const items = await this.actions.complete(this.draft.plainText)
+      if (this.closed || revision !== this.completionRevision || this.overlay) return
+      this.completionItems = items; this.completionIndex = 0; this.drawCompletions()
+    })()), 80)
+  }
+  private drawCompletions() {
+    for (const child of this.completions.getChildren()) child.destroyRecursively()
+    this.completions.visible = this.completionItems.length > 0
+    const capacity = Math.max(2, Math.min(7, this.renderer.height - 14)), start = Math.max(0, this.completionIndex - capacity + 1)
+    this.completionItems.slice(start, start + capacity).forEach((item, offset) => {
+      const index = start + offset
+      this.completions.add(this.text((index === this.completionIndex ? '▎ ' : '  ') + item.label + '  ' + (item.detail ?? ''), {
+        height: 1, paddingX: 1, bg: index === this.completionIndex ? this.palette.selected : this.palette.panel,
+        onMouseDown: () => this.chooseCompletion(index)
+      }))
+    })
+  }
+  private chooseCompletion(index: number) {
+    const item = this.completionItems[index]; this.dismissCompletions()
+    if (item) this.run(Promise.resolve(item.run()))
+  }
+  private dismissCompletions() { ++this.completionRevision; clearTimeout(this.completionTimer); this.completionItems = []; this.completions.visible = false }
+  private submit() {
+    const text = this.draft.plainText.trim(); if (!text) return
+    if (this.completionItems.length) { this.chooseCompletion(this.completionIndex); return }
+    this.draft.setText(''); this.dismissCompletions()
+    this.run((text.startsWith('/') && !text.includes('\n') ? this.actions.command(text) : this.actions.send(text)).catch(error => {
+      if (!this.closed && !this.draft.plainText) this.setDraft(text)
+      throw error
+    }))
+  }
+
+  menu(menu: TuiMenu) {
+    const panel = this.modal(menu.title)
+    this.modalMenu = menu; this.modalIndex = 0
+    this.modalSearch = new InputRenderable(this.renderer, { width: '100%', placeholder: ui('Search…', '搜索…'),
+      backgroundColor: this.palette.panel, focusedBackgroundColor: this.palette.panel, textColor: this.palette.fg, focusedTextColor: this.palette.fg })
+    this.modalSearch.on('input', () => { this.modalIndex = 0; this.filterMenu() })
+    panel.add(this.modalSearch)
+    this.modalRows = new BoxRenderable(this.renderer, { width: '100%', marginTop: 1, flexShrink: 0 })
+    panel.add(this.modalRows)
+    panel.add(this.text(menu.detail ?? ui('↑↓ select · enter choose · esc back', '↑↓ 选择 · enter 确认 · esc 返回'), { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
+    this.filterMenu(); this.modalSearch.focus()
+  }
+  private filterMenu() {
+    const query = this.modalSearch?.value.toLowerCase() ?? ''
+    this.modalItems = this.modalMenu?.items.filter(i => (i.label + ' ' + (i.detail ?? '') + ' ' + (i.search ?? '')).toLowerCase().includes(query)) ?? []
+    this.drawMenu()
+  }
+  private drawMenu() {
+    if (!this.modalRows) return
+    for (const child of this.modalRows.getChildren()) child.destroyRecursively()
+    const capacity = Math.max(2, Math.min(10, Math.floor((this.renderer.height - 9) / 2))), start = Math.max(0, this.modalIndex - capacity + 1)
+    if (!this.modalItems.length) this.modalRows.add(this.text(ui('No matching items', '没有匹配项'), { fg: this.palette.muted }))
+    this.modalItems.slice(start, start + capacity).forEach((item, offset) => {
+      const index = start + offset
+      const row = new BoxRenderable(this.renderer, { width: '100%', height: item.detail ? 2 : 1,
+        backgroundColor: index === this.modalIndex ? this.palette.selected : this.palette.panel,
+        paddingLeft: 1, onMouseDown: () => this.chooseMenu(index) })
+      row.add(this.text((index === this.modalIndex ? '▎ ' : '  ') + item.label, { height: 1 }))
+      if (item.detail) row.add(this.text('  ' + item.detail, { fg: this.palette.muted, height: 1 }))
+      this.modalRows!.add(row)
+    })
+  }
+  private chooseMenu(index: number) {
+    const item = this.modalItems[index]; if (!item) return
+    this.closeModal(); this.run(Promise.resolve(item.run()))
+  }
+  private modal(title: string) {
+    this.closeModal(); this.dismissCompletions(); this.draft.blur()
+    const p = this.palette
+    this.overlay = new BoxRenderable(this.renderer, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%',
+      zIndex: 20, backgroundColor: '#00000099', justifyContent: 'center', alignItems: 'center' })
+    const panel = new BoxRenderable(this.renderer, { width: Math.min(78, this.renderer.width - 4), maxHeight: this.renderer.height - 2,
+      backgroundColor: p.panel, padding: 1, flexDirection: 'column' })
+    this.modalPanel = panel
+    const heading = new BoxRenderable(this.renderer, { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 1, flexShrink: 0 })
+    heading.add(this.text(title, { fg: p.accent, flexShrink: 1 }))
+    heading.add(this.text('esc', { fg: p.muted, onMouseDown: () => this.closeModal() }))
+    panel.add(heading); this.overlay.add(panel); this.renderer.root.add(this.overlay)
+    return panel
+  }
+  document(title: string, content: string, actions: TuiItem[] = []) {
+    const panel = this.modal(title)
+    const columns = Math.max(1, Math.min(78, this.renderer.width - 4) - 4)
+    const lines = content.split('\n').reduce((count, line) => count + Math.max(1, Math.ceil(stringWidth(line) / columns)), 0)
+    const scroll = new ScrollBoxRenderable(this.renderer, { height: Math.max(3, Math.min(lines, this.renderer.height - 10, 18)), minHeight: 1, flexShrink: 1, width: '100%', scrollX: false })
+    scroll.add(this.text(content, { width: '100%', wrapMode: 'word', selectable: true })); panel.add(scroll)
+    if (actions.length) {
+      this.modalMenu = { title, items: actions }; this.modalItems = actions; this.modalIndex = 0
+      this.modalRows = new BoxRenderable(this.renderer, { marginTop: 1, width: '100%', flexShrink: 0 })
+      panel.add(this.modalRows); this.drawMenu()
+      panel.add(this.text(ui('tab actions · enter choose', 'tab 切换操作 · enter 确认'), { fg: this.palette.muted }))
+    }
+    scroll.focus()
+  }
+  prompt(title: string, initial: string, submit: (value: string) => Promise<void>, multiline = false, secret = false) {
+    const panel = this.modal(title)
+    const input = new TextareaRenderable(this.renderer, { width: '100%', height: multiline ? Math.max(3, Math.min(8, this.renderer.height - 10)) : 1,
+      initialValue: initial, backgroundColor: this.palette.selected, focusedBackgroundColor: this.palette.selected,
+      textColor: secret ? this.palette.selected : this.palette.fg, focusedTextColor: secret ? this.palette.selected : this.palette.fg,
+      selectable: !secret, selectionFg: secret ? this.palette.selected : undefined, selectionBg: secret ? this.palette.selected : undefined,
+      keyBindings: [{ name: 'return', ctrl: multiline, action: 'submit' }],
+      onSubmit: () => { const value = input.plainText.trim(); if (!value) return; this.closeModal(); this.run(submit(value)) }
+    })
+    panel.add(input); panel.add(this.text(multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
+    if (secret) panel.add(this.text(ui('Input hidden', '输入内容已隐藏'), { fg: this.palette.muted }))
+    input.focus(); input.gotoBufferEnd()
+  }
+  closeModal() {
+    this.overlay?.destroyRecursively(); this.overlay = undefined; this.modalSearch = undefined
+    this.modalPanel = undefined; this.modalRows = undefined; this.modalMenu = undefined; this.modalItems = []; this.draft?.focus()
+  }
+  private key = (key: KeyEvent) => {
+    const consume = () => { key.preventDefault(); key.stopPropagation() }
+    if (key.ctrl && key.shift && key.name === 'c') {
+      consume(); const text = this.renderer.getSelection()?.getSelectedText()
+      if (text) {
+        if (this.actions.copy) this.run(this.actions.copy(text))
+        else this.renderer.copyToClipboardOSC52(text)
+      }
+      return
+    }
+    if (key.ctrl && key.name === 'c') { consume(); if (this.overlay) this.closeModal(); else if (this.busy) this.run(this.actions.interrupt()); else if (this.draft.plainText) this.setDraft(''); else this.actions.quit(); return }
+    if (key.name === 'escape') { consume(); if (this.overlay) this.closeModal(); else if (this.completionItems.length) this.dismissCompletions(); else this.run(this.actions.interrupt()); return }
+    if (this.overlay) {
+      if (this.modalItems.length && ['up', 'down', 'tab', 'return'].includes(key.name) && !key.ctrl && !key.meta) {
+        consume()
+        if (key.name === 'return') this.chooseMenu(this.modalIndex)
+        else { this.modalIndex = (this.modalIndex + (key.name === 'up' || key.shift ? -1 : 1) + this.modalItems.length) % this.modalItems.length; this.drawMenu() }
+      }
+      return
+    }
+    if (key.ctrl && ['p', 'k', 'y', 'd'].includes(key.name)) {
+      consume()
+      if (key.name === 'd') { if (!this.draft.plainText) this.actions.quit() }
+      else this.run(key.name === 'y' ? this.actions.review() : this.actions.command(key.name === 'p' ? '/commands' : '/history'))
+      return
+    }
+    if (key.name === 'f2') { consume(); this.run(this.actions.command('/model')); return }
+    if (key.ctrl && key.name === 'end') { consume(); this.latest(); return }
+    if (['pageup', 'pagedown'].includes(key.name)) {
+      consume(); this.transcript.scrollBy(key.name === 'pageup' ? -1 : 1, 'viewport')
+      if (key.name === 'pageup' && this.transcript.scrollTop === 0) this.run(this.actions.older())
+      return
+    }
+    if (this.completionItems.length && ['up', 'down', 'tab', 'return'].includes(key.name) && !key.shift) {
+      consume(); if (['tab', 'return'].includes(key.name)) this.chooseCompletion(this.completionIndex)
+      else { this.completionIndex = Math.max(0, Math.min(this.completionItems.length - 1, this.completionIndex + (key.name === 'up' ? -1 : 1))); this.drawCompletions() }
+      return
+    }
+    if ((key.name === 'up' || key.name === 'down') && !this.draft.plainText.includes('\n') && (key.ctrl || !this.draft.plainText || this.historyIndex < this.history.length)) {
+      consume(); if (this.historyIndex === this.history.length) this.scratch = this.draft.plainText
+      this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + (key.name === 'up' ? -1 : 1)))
+      this.setDraft(this.history[this.historyIndex] ?? this.scratch)
+    }
+  }
+  close() {
+    this.closed = true; clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
+    this.renderer.keyInput.off('keypress', this.key); this.renderer.off('resize', this.resize); this.renderer.off('theme_mode', this.themeChanged)
+    this.overlay?.destroyRecursively(); this.frame.destroyRecursively(); this.style.destroy()
+  }
+}

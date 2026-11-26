@@ -1,69 +1,61 @@
-# CLI 与 Claude Code 的对齐范围
+# CLI 交互与兼容范围
 
-本分支以 Claude Code 的公开终端文档为交互参考，保留 Roppo 本机服务。CLI 与网页共享账号、会话、任务和文件；退出终端后，后台任务继续运行。实现代码沿用 Roppo 自己的终端编辑器和运行协议。
+更新：2026-11-26。交互界面改以 OpenCode 为参考，采用 OpenTUI 的原生输入、布局、Markdown、滚动和鼠标组件。Roppo 本机服务继续负责会话和执行。产品边界见 [CLI_PRODUCT.md](CLI_PRODUCT.md)。
 
-参考日期：2026-11-26。产品取舍以 [Roppo CLI 产品边界](CLI_PRODUCT.md) 为准，默认入口围绕用户与 Router 的持续对话。
-
-## 已实现
+## 当前行为
 
 | 范围 | Roppo 行为 |
 | --- | --- |
-| 界面 | 个人对话欢迎卡、暖色强调、固定输入区、公开 Router 进度、文件交付提示；内部任务按需展开 |
-| 动效 | 发送、命令加载和执行活动动画，真实流式回复，减少动效设置；不抢滚动位置 |
-| 输入 | 多行、括号粘贴、`@` 文件补全、斜杠菜单、搜索历史、草稿暂存 |
-| 会话 | `-c`、`-r`、`/resume`、`/rename`、`/clear`；旧会话和后台工作保留 |
-| 配置 | 用户/项目/项目本地设置、`--settings` 文件或 JSON、启动参数覆盖、`/config`、`/theme` |
-| 模型 | `/model` 读取已配置的连接与模型目录，也可手工指定模型 ID；`/effort` 只提供模型声明支持的强度 |
-| 权限 | `/permissions ask\|full` 接入真实账号权限；Shift+Tab 打开明确标注作用范围的菜单 |
-| 操作 | `/files`、`/stop`、`/approvals`、`/choose`；任务、diff 和底层答复命令保留为显式诊断入口 |
-| 工具 | 现有 `/tools` 搜索宿主工具、技能、MCP 等能力 |
-| 用量与状态 | `/status`、`/context`；缺失测量不显示伪造数值 |
-| 脚本 | 管道输入、附件、单次运行、文本/JSON/NDJSON、超时与退出码、Ctrl+C 请求取消 |
+| 界面 | 空首页、持续个人对话、固定输入、搜索浮层；无项目和 Worker 标签页 |
+| 输入 | 中文/宽字符编辑、括号粘贴、多行、目录和文件补全；浮层保留草稿 |
+| 动效 | 八格活动条、真实回复更新、等待时停止、减少动效选项 |
+| 导航 | `/`、Ctrl+P、F2 模型、Ctrl+K 对话搜索、Ctrl+Y 待处理事项 |
+| 滚动 | 原生 ScrollBox；翻阅时暂停跟随，Ctrl+End 回到底部，PageUp 加载更早记录 |
+| 文件 | 文本预览、保存交付文件，不覆盖本机已有文件 |
+| 记忆 | 读取、编辑、确认后忘记真实个人记忆 |
+| 计划 | 读取、暂停和恢复；通过 Router 对话创建或更改要求 |
+| 确认 | 权限、结构化问答、Router 选项、业务决策、文件交付确认 |
+| 配置 | 用户/目录/本地配置和启动覆盖；主题、动效、语言及共享模型设置 |
+| 脚本 | Node 22.19+；文本、JSON、NDJSON、管道、附件、超时和取消机制保持兼容 |
 
-## 保留的架构差异
+## 实现边界
 
-- `roppo`、`-c`、`-p` 默认继续同一个人 Chat；`--cwd .` 保留为显式兼容入口。首次连接仍使用本机服务的浏览器配对。
-- `/model`、`/effort` 修改共享 Router 的后续轮次默认值。Worker 配置独立管理，进行中的轮次保留已绑定模型。
-- `/permissions` 是账号共享设置，仍受既有来源和沙箱约束。项目 JSON 设置只能改变终端偏好。
-- `/plan` 查看 Roppo 发布的执行步骤；当前没有 Claude Code 的只读计划权限模式。
-- `stream-json` 发送宿主快照中的消息替换和任务更新，不保证逐 token，也不兼容 Claude SDK 事件协议。
-- 界面继续使用 Roppo 现有全屏终端布局和历史翻页；不承诺与 Claude Code 每一版本的渲染相同。
+- OpenTUI 0.9.9 要求 Bun 1.3.14+ 或 Node 26.4+ experimental FFI；本项目随依赖安装 Bun 1.4.5，只用于交互进程。系统 Node 和宿主运行方式不变。
+- 默认是一段共享 Router 对话。`--cwd`、`-r`、`/resume` 和 `/clear` 保留显式兼容用途。
+- 模型与思考强度修改影响后续 Router 轮次；Worker 配置独立。权限是共享账号设置，仍受宿主沙箱限制。
+- 对话搜索作用于已加载消息，可继续加载更早记录。图像和二进制文件可保存，不在终端内解码显示。
+- Apple Terminal 不一定区分 Enter 和 Shift+Enter，可使用 Alt+Enter 或 Ctrl+J。中文输入法候选窗口由终端和系统管理。
+- `ROPPO_LEGACY_TUI=1 roppo` 可使用旧渲染器；它不包含新浮层。`TERM=dumb` 与脚本输出不加载 OpenTUI。
+- 尚未实现外部编辑器、Vim、图片剪贴板、可配置快捷键、会话分叉/rewind、CLI 插件安装认证。不会用空菜单冒充已完成能力。
 
-## 后续开发清单
+## 验证
 
-这些能力尚未实现，CLI 不会把它们展示为已生效：
+`npm run check` 检查宿主、Chat、预览 UI 类型和既有行为；本轮结果为 2,914 项通过，4 项按既有条件跳过。终端新增接口覆盖记忆访问、无效对话拒绝和宿主配置隔离。
 
-1. 会话级 `--model`、`--effort`、系统提示覆盖；需要在宿主中保存独立绑定并处理恢复与任务继承。
-2. `default`、`acceptEdits`、`plan` 等权限模式和工具 allow/ask/deny 规则；需要完整的宿主执行约束。
-3. `!` shell 模式、外部编辑器、图片剪贴板、Vim 模式、快捷键配置。
-4. 会话内 `/compact`、文件检查点与 rewind、会话分叉、导出。
-5. CLI 管理 MCP、插件和技能的安装/认证流程；现有 `/tools` 提供发现与查看。
-6. hooks、结构化流式输入、JSON Schema 输出、预算/最大轮次控制，以及用量金额统计。
+`npm run test:tui` 使用实际 OpenTUI 原生测试渲染器检查空屏滚动、中文与多行粘贴、草稿/光标保留、快速搜索后回车、消息滚动跟随、回复无外框、审批按键、窗口缩放和中断。
 
-实施顺序以共享服务和已有执行能力为基础；新增参数必须接入真实后端行为，拒绝只保存一个没有执行效果的配置值。
+本机通过全局 `roppo` 入口启动真实 PTY，检查共享历史、模型选择入口、命令搜索、记忆、文件和计划菜单，并发送一次明确标记的界面自测消息。Router 返回“CLI 连接正常”，活动条结束后收起，Ctrl+D 正常退出并恢复终端。该测试消息保留在个人对话中。原生画面另外经过渲染捕获检查；网页方案预览不计入通过证据。
 
-## 修改说明
+## 本轮文件变更
 
-- `src/terminal/settings.ts`：本机终端偏好读取、合并和保存。
-- `src/terminal/host-settings.ts`、`src/server.ts`、`src/personal-account.ts`：提供有限的终端模型/权限接口及相应认证路径。
-- `src/terminal/controls.ts`、`src/chat.ts`：终端设置命令、会话选择与共享个人 Chat 同步。
-- `src/terminal/main.ts`、`client.ts`、`output.ts`：接入新命令、启动参数、结构化输出与取消。
-- `src/terminal/editor.ts`、`presentation.ts`、`session-display.ts`、`commands.ts`：菜单、快捷键、配色、欢迎卡与命令帮助。
-- `tests/terminal*.spec.ts`：配置优先级、流式输出、会话选择、设置同步和终端交互回归。
-- `docs/images/product/terminal-cli-preview.svg`：欢迎页和配置菜单的渲染预览。
-- `.gitignore`、中英文 README 和终端文档：本地设置排除、使用入口和行为差异。
+| 文件 | 变更用途 |
+| --- | --- |
+| `src/terminal/tui.ts`（新增） | 新终端的连接、发送、事件流和退出生命周期 |
+| `src/terminal/tui-screen.ts`（新增） | 原生布局、输入、滚动、Markdown、浮层和动效 |
+| `src/terminal/tui-actions.ts`（新增） | 命令与模型、记忆、文件、计划、确认接口的连接 |
+| `bin/roppo.mjs`、`src/terminal/main.ts` | 交互运行时入口与兼容路径 |
+| `src/terminal/settings.ts`、`src/terminal/controls.ts` | 跟随终端配色的设置选项 |
+| `src/terminal/client.ts` | 文件的二进制下载 |
+| `src/personal-account.ts` | CLI 凭据访问个人控制接口 |
+| `package.json`、`package-lock.json` | 固定渲染器与运行时依赖，纳入原生测试 |
+| `tests/terminal-tui.ts`（新增）、`tests/terminal.spec.ts` | 原生交互回归及新增接口授权验证 |
+| `docs/TERMINAL.md`、`docs/CLI_PRODUCT.md`、本文 | 使用说明、产品边界与验证记录 |
+| `THIRD_PARTY.md` | 新依赖归属说明 |
 
-没有删除项目文件。原有皮肤分支保留，未混入 CLI 开发分支。
+没有删除项目文件。
 
-## 验证记录
+## 参考
 
-- `npm run check` 通过：宿主、Chat 和预览 UI 类型检查通过；Chat 构建通过；2,907 项测试通过，4 项按现有条件跳过。
-- 独立测试服务与真实伪终端已检查：欢迎页、配置搜索、主题保存、新建会话、发送和接收消息、恢复会话菜单。
-- 增加切换会话后输入流恢复的回归测试。
-- 早期界面预览 由实际 `TerminalLayout` 输出生成，并检查了渲染结果。使用确定性样例，没有调用真实模型或外部业务平台。
-
-## 官方参考
-
-- [CLI reference](https://code.claude.com/docs/en/cli-reference)
-- [Interactive mode](https://code.claude.com/docs/en/interactive-mode)
-- [Settings files and precedence](https://code.claude.com/docs/en/settings)
+- [OpenCode TUI](https://opencode.ai/docs/cli/tui/)
+- [OpenTUI](https://github.com/anomalyco/opentui)
+- [OpenTUI 运行要求](https://opentui.com/docs/getting-started/runtime-support/)

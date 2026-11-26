@@ -6,7 +6,7 @@ import { terminalProfileDirectory } from './profile.ts'
 import { CliError } from './client.ts'
 
 export const terminalSettingsSchema = z.object({
-  theme: z.enum(['dark', 'light', 'mono']).optional(),
+  theme: z.enum(['system', 'dark', 'light', 'mono']).optional(),
   language: z.enum(['en', 'zh']).optional(),
   verbose: z.boolean().optional(),
   motion: z.enum(['full', 'reduced']).optional(),
@@ -16,7 +16,7 @@ export const terminalSettingsSchema = z.object({
 export type TerminalSettings = z.infer<typeof terminalSettingsSchema>
 export type Theme = NonNullable<TerminalSettings['theme']>
 export type OutputFormat = NonNullable<TerminalSettings['outputFormat']>
-export const defaultSettings = { theme: 'dark', verbose: false, motion: 'full', outputFormat: 'text', timeout: 600 } as const
+export const defaultSettings = { theme: 'system', verbose: false, motion: 'full', outputFormat: 'text', timeout: 600 } as const
 export const settingsPaths = (cwd: string) => ({
   user: join(terminalProfileDirectory(), 'settings.json'),
   project: join(cwd, '.roppo', 'settings.json'),

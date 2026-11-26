@@ -211,6 +211,14 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     const credential = JSON.parse(readFileSync(profile, 'utf8')).token
     const auth = { authorization: 'Roppo-CLI ' + credential }
     expect((await fetch(host.url + '/settings', { headers: auth })).status).toBe(401)
+    const memory = await fetch(host.url + '/api/chat/memory', { headers: auth })
+    expect(memory.status).toBe(200)
+    expect(await memory.json()).toHaveProperty('contexts')
+    // Newly exposed personal controls still resolve the signed-in owner on the server.
+    expect((await post('/api/chat/memory', { action: 'forget', entryId: 'someone-else', id: 'private', revision: 1 }, auth)).status).toBe(400)
+    const missingConversation = randomUUID()
+    expect((await post('/api/chat/conversations/' + missingConversation + '/approvals', { id: randomUUID(), value: 'accept' }, auth)).status).toBe(404)
+    expect((await fetch(host.url + '/api/chat/conversations/' + missingConversation + '/schedules', { method: 'PATCH', headers: { ...auth, origin: host.url, 'content-type': 'application/json' }, body: JSON.stringify({ id: 'private', operationId: randomUUID(), expectedRevision: 1, active: false }) })).status).toBe(404)
     const forged = cookie.split('=')[0] + '=terminal:' + credential
     expect((await fetch(host.url + '/settings', { headers: { cookie: forged } })).status).toBe(401)
     const space = await post('/api/chat/space', {}, { cookie })

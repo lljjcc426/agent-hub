@@ -32,7 +32,7 @@ const help = () =>
   --output-format FORMAT         text, json or stream-json (print mode)
   --json                         Alias for --output-format json
   --settings JSON_OR_FILE        Override terminal preferences for this launch
-  --theme dark|light|mono         Terminal color theme
+  --theme system|dark|light|mono  Terminal color theme
   --verbose                      Expand tool activity by default
   --file PATH                    Attach a file (repeatable)
   --trust-project                Register the project on first use
@@ -59,7 +59,7 @@ const help = () =>
   --output-format 格式         text、json 或 stream-json（单次输出）
   --json                       等同于 --output-format json
   --settings JSON或文件        覆盖此次运行的终端设置
-  --theme dark|light|mono       终端配色
+  --theme system|dark|light|mono 终端配色
   --verbose                    默认展开工具活动
   --trust-project              首次使用时注册项目
   --timeout 秒                 单次运行的等待时限（默认 600 秒）
@@ -127,7 +127,7 @@ export function parseArgs(args: string[]): Options {
     else if (a === '--verbose') o.preferences.verbose = true
     else if (a === '--theme') {
       const theme = value()
-      if (!['dark', 'light', 'mono'].includes(theme)) throw new CliError('Choose --theme dark|light|mono', 'usage', 2)
+      if (!['system', 'dark', 'light', 'mono'].includes(theme)) throw new CliError('Choose --theme system|dark|light|mono', 'usage', 2)
       o.preferences.theme = theme as TerminalSettings['theme']
     }
     else if (a === '--continue' || a === '-c') o.latest = true
@@ -329,6 +329,10 @@ async function printRun(client: TerminalClient, c: Conversation, o: Options) {
   }
 }
 async function interactive(client: TerminalClient, c: Conversation, o: Options) {
+  if (process.env.TERM !== 'dumb' && process.env.ROPPO_LEGACY_TUI !== '1') {
+    const { interactiveTui } = await import('./tui.ts')
+    return interactiveTui(client, c, o)
+  }
   const plain = process.env.TERM === 'dumb'
   const editor = plain
     ? undefined
@@ -584,7 +588,7 @@ export async function main(args: string[]): Promise<number> {
     streaming = print && o.outputFormat === 'stream-json'
     const screen = tty && process.env.TERM !== 'dumb' && !o.print && !o.json
     const clearScreen = '\x1b[2J\x1b[H'
-    if (screen && o.action !== 'logout') process.stdout.write(clearScreen)
+    if (screen && process.env.ROPPO_LEGACY_TUI === '1' && o.action !== 'logout') process.stdout.write(clearScreen)
     if (o.action === 'init') {
       const child = spawn(fileURLToPath(new URL('../../start.sh', import.meta.url)), ['setup'], {
         stdio: 'inherit'

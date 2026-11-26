@@ -95,9 +95,10 @@ export class TerminalClient {
     {
       native,
       binary,
+      bytes,
       signal,
       method
-    }: { native?: boolean; binary?: Uint8Array; signal?: AbortSignal; method?: 'DELETE' | 'PATCH' } = {}
+    }: { native?: boolean; binary?: Uint8Array; bytes?: boolean; signal?: AbortSignal; method?: 'DELETE' | 'PATCH' } = {}
   ): Promise<T> {
     const headers: Record<string, string> = {}
     if (!native) {
@@ -131,6 +132,7 @@ export class TerminalClient {
         'host_unavailable'
       )
     }
+    if (response.ok && bytes) return new Uint8Array(await response.arrayBuffer()) as T
     const result = (await response.json()) as { error?: string; code?: string }
     if (!response.ok)
       throw new CliError(

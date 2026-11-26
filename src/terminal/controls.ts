@@ -28,7 +28,7 @@ export async function controlCommand(client: TerminalClient, conversation: Conve
       return { preferences: saved.patch, text: ui('Saved: ', '已保存：') + saved.path }
     }
     const title = name === '/theme' ? ui('Theme', '主题') : ui('Terminal settings · user defaults', '终端设置 · 用户默认值')
-    const items: Choice[] = (['dark', 'light', 'mono'] as const).map(value => ({ label: 'theme = ' + value,
+    const items: Choice[] = (['system', 'dark', 'light', 'mono'] as const).map(value => ({ label: 'theme = ' + value,
       detail: preferences.theme === value ? '✓' : '', value: '/config theme=' + value }))
     if (name === '/config') items.push(
       { label: 'verbose = ' + !preferences.verbose, detail: ui('Execution details', '内部执行详情'), value: '/config verbose=' + !preferences.verbose },

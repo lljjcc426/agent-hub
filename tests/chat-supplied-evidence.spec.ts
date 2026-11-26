@@ -147,6 +147,11 @@ it('binds ordinary briefs to the original participants and never redistributes t
   expect(first.plan).toBeUndefined()
   const replay=await namedEvidenceGroup(text,roster,true,async()=>{throw Error('unexpected replay')},first.group)
   expect(replay.group).toEqual(first.group)
+  const plainLayout='Could @east and @west review these records?\nDifferent layout\nWhat applies?'
+  const decisions=['{"route":"READ"}','{"access":"shared","briefs":{"east":"","west":""}}']
+  const ordinary=await namedEvidenceGroup(plainLayout,roster,true,async()=>({text:decisions.shift()!,threadId:'x',turnId:'y'}))
+  expect(ordinary.group).toMatchObject({ordinary:true,workers:['east','west']})
+  expect(ordinary.plan).toBeUndefined()
   const quoted='Yesterday I wrote “please have @east and @west review these records”. What does that sentence mean?'
   expect(await namedEvidenceGroup(quoted,roster,true,async()=>{throw Error('no activation expected')})).toEqual({})
 })

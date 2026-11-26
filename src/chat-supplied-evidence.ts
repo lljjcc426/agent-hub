@@ -59,12 +59,13 @@ export async function namedEvidenceGroup(text:string,roster:readonly Profile[],f
   const qualified=/\b(?:cancel|withdraw|hypothetical|pretend|instead|if|do not|never mind|disregard)\b|[“”"`]|取消|撤回请求|假设|不要|不用|如果|改为我自己/iu.test(text)
   if(verdict!=='PLAN'&&qualified)return {}
   const ordinary={group:{...group,ordinary:true as const}}
-  const unresolved=verdict==='PLAN'||!verdict&&draft?ordinary:{}
+  const required=verdict==='READ'||verdict==='PLAN'
+  const unresolved=required||!verdict&&draft?ordinary:{}
   const schema=objectSchema({access:{type:'string',enum:['shared','individual','none']},briefs:objectSchema(fields)})
   const response=await read('Make work orders, without answering the userMessage. Return JSON with "access" and "briefs" (one string for each of '+workers.join(', ')+'). Use shared only if everyone is explicitly asked to check the supplied evidence together now for one answer with no other action. Use individual for other current assignments; include for each person only facts and instructions this person may see. For no present assignment use none and empty briefs.',quoted,schema)
   const selection=suppliedRecord(response.text)
   if(selection?.access==='shared'&&draft&&verdict!=='PLAN')return {plan:draft,group}
-  if(selection?.access==='none')return verdict==='PLAN'?ordinary:{}
+  if(selection?.access==='none')return required?ordinary:{}
   const briefs=selection?.briefs as Record<string,string>|undefined
   if(selection?.access!=='individual'||!briefs||Object.keys(briefs).length!==workers.length||!workers.every(id=>Object.hasOwn(briefs,id)&&typeof briefs[id]==='string'&&briefs[id]!.trim()&&briefs[id]!.length<=6000))return unresolved
   return {group:{...group,ordinary:true as const,briefs}}

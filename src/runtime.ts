@@ -1594,7 +1594,8 @@ export class Runtime {
                 if(action==='start'||action==='resume'){
                   const goal=output as RouterGoal & {pendingQuestion?:string}
                   if(action==='resume'&&goal.pendingQuestion)saveDispatch({kind:'question',id:goal.id,label:goal.title,reason:goal.pendingQuestion})
-                  else if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:action==='resume'?'resumed':'plan',id:goal.id,label:goal.title})
+                  else if(goal.state==='active'&&(goal.nodes?.length||goal.taskIds.length))saveDispatch({kind:action==='resume'?'resumed':'plan',id:goal.id,label:goal.title,
+                    ...(action==='resume'&&this.goals.checkingResume(goal.id)?{checkingCheckpoint:true}:{})})
                   if(action==='resume'&&!goal.pendingQuestion)refreshTaskRevisions(goal.taskIds)
                 }else if(action==='resume_many'){
                   const outcomes:GoalResumeOutcome[]=output.outcomes
@@ -1602,7 +1603,8 @@ export class Runtime {
                   refreshTaskRevisions(resumed.flatMap(item=>item.taskIds??[]))
                   for(const item of outcomes){
                     if(item.pendingQuestion)saveDispatch({kind:'question',id:item.id,label:item.title,reason:item.pendingQuestion})
-                    else if(resumed.length)saveDispatch({kind:item.resumed?'resumed':'blocked',id:item.id,label:item.title,reason:item.reason})
+                    else if(resumed.length)saveDispatch({kind:item.resumed?'resumed':'blocked',id:item.id,label:item.title,reason:item.reason,
+                      ...(item.resumed&&this.goals.checkingResume(item.id)?{checkingCheckpoint:true}:{})})
                   }
                 }
                 return output
@@ -1748,7 +1750,7 @@ export class Runtime {
         },
         ...(!review&&!candidates&&!followups&&this.chat.binding(triggerId)?{onOutput:(event:import('./model.ts').ModelOutput)=>{
           if(controller.signal.aborted||handoff?.yielded&&!resumedAfterHandoff||live?.pending||live?.changed||
-             event.phase!=='commentary'&&dispatches().some(item=>item.kind==='resumed'))return
+             event.phase!=='commentary'&&dispatches().some(item=>item.checkingCheckpoint))return
           // Apply the final-result authority fence to live output as well; native notification callbacks must not throw.
           try{validateReplyContext()}
           catch(error){controller.abort(error);return}
@@ -2021,7 +2023,7 @@ export class Runtime {
       if(pendingMessages.some(m=>!authorizedMessage(m)))throw Error('Worker result authorization withdrawn')
       const output=JSON.parse(result.text);if(typeof output.reply!=='string')throw Error('Invalid Router reply')
       if(quiet)output.reply=''
-      else if(handoff&&dispatches().some(item=>item.kind==='resumed'))output.reply=handoff.reply()
+      else if(handoff&&dispatches().some(item=>item.checkingCheckpoint))output.reply=handoff.reply()
       else if(reportMessage?.inquiryId&&!output.reply.trim())output.reply=reportMessage.text
       else if(browserRun&&!permissionId&&!fileReviewId&&!teamResultId&&!hostCommand&&!output.reply.trim()&&!this.chat.hasVisibleAnswer(triggerId)&&
               !/^(?:请?(?:先|暂时)?(?:不用|不要|无需|别)回复(?:这条消息|我)?|(?:please\s+)?(?:do not reply|don't reply|no reply (?:needed|required)))[。.!！\s]*$/iu.test(trigger.text.trim())){

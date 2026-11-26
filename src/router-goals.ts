@@ -542,6 +542,10 @@ export class RouterGoals {
    !host.work.list(id).some(j=>(j.state==='starting'||j.state==='running')&&(j.assignmentId!==run.assignmentId||j.agentId||j.cwd!==run.cwd||!host.work.ownsRunningShell(j)))&&
    workerCheckpointReady(host.store,host.config.stateDir,run)
  }
+ checkingResume(goalId:string){
+  const goal=this.get(goalId)
+  return !!goal?.nodes?.some(node=>node.ticketId&&relatedPause(this.host.store,goal,node.ticketId))
+ }
  /** A resume on an interrupted native writer must pass reconciliation before the scheduler can reuse it. */
  pendingPausedWorker(g:RouterGoal|undefined,id:string,run=this.host.store.get<Run>('run',id)){
   const {store}=this.host

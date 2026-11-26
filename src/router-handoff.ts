@@ -4,6 +4,7 @@ export interface RouterDispatch {
   kind:'assign'|'send'|'running'|'plan'|'team'|'resumed'|'blocked'|'question'
   inquiry?:boolean
   hostRouted?:boolean
+  checkingCheckpoint?:boolean
   reason?:string
   id:string
   label:string

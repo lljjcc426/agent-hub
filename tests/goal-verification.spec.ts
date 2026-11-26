@@ -1130,7 +1130,7 @@ it('reuses an accepted dependent result when repair leaves its declared input un
  expect(f.goal().nodes!.map(n=>f.attempts.get(n.ticketId!))).toEqual([2,1])
 })
 
-it.each(['default','summary','full','no-reader'])('returns scoped test output with the requested presentation (%s)',async mode=>{
+it.each(['default','summary','full','no-reader','missing-tail'])('returns scoped test output with the requested presentation (%s)',async mode=>{
  const id='12345678-1234-1234-1234-123456789abc',command=mode==='summary'?'python3 check_results.py':'python3 -m unittest -v'
  const output='supplementary test output\n'.repeat(1600)+'\x1b[31mFAIL: test_sum (Suite)\x1b[0m\nRan 35 tests in 0.123s\n\nFAILED (failures=1, skipped=2)\n'
  const f=fixture(async r=>{
@@ -1140,6 +1140,7 @@ it.each(['default','summary','full','no-reader'])('returns scoped test output wi
   f.h.store.put('work',id,item)
   writeFileSync(join(f.h.work.directory,id+'.output'),output)
   f.h.work.shell=async()=>f.h.work.view(item)
+  if(mode==='missing-tail')f.h.work.outputTail=()=>{throw Object.assign(Error('Log archived'),{code:'ENOENT'})}
   if(mode==='no-reader'){
    const run=f.h.store.get<Run>('run',ticketId)!
    f.h.store.put('run',ticketId,{...run,agentOptions:{...run.agentOptions,tools:['superagent_shell']}})
@@ -1147,7 +1148,7 @@ it.each(['default','summary','full','no-reader'])('returns scoped test output wi
   const tool=await r.onTool!('superagent_shell',{command,requestId:'tests',...(['summary','full'].includes(mode)?{outputMode:mode}:{})},'tests')
   expect(tool.success).toBe(false)
   const preview=JSON.parse(tool.contentItems[0]!.text!)
-  if(mode==='no-reader'||mode==='full'){
+  if(['no-reader','full','missing-tail'].includes(mode)){
    expect(preview).toMatchObject({output:output.slice(0,32000),nextOffset:32000})
    expect(preview).not.toHaveProperty('outputTail')
    return ready()

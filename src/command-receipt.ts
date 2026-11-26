@@ -15,7 +15,15 @@ export function commandReceipt(job:ReturnType<WorkManager['view']>,mode:CommandO
    job.outputCharacters<=2*pageCharacters||mode!=='summary'&&!isTestCommand(job.command??''))return job
  const head=textPage(job.output,0,pageCharacters)
  const offset=job.outputCharacters-pageCharacters
- const raw=job.nextOffset===null?job.output.slice(offset):readTail(pageCharacters)
+ let raw:string
+ try{raw=job.nextOffset===null?job.output.slice(offset):readTail(pageCharacters)}
+ catch(error){
+  // The completed command already has a valid receipt. A missing auxiliary log page must
+  // not cause permission reconciliation or another shell execution.
+  if(['ENOENT','EIO','ESTALE'].includes((error as NodeJS.ErrnoException).code??''))return job
+  throw error
+ }
+ if(raw.length!==pageCharacters)return job
  const split=/^[\uDC00-\uDFFF]/.test(raw)
  const tail=split?raw.slice(1):raw
  const plainTail=stripVTControlCharacters(tail)

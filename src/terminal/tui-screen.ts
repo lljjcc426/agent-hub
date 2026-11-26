@@ -150,7 +150,7 @@ export class TuiScreen {
     this.footer.content = this.connected
       ? ui(narrow ? 'Personal · ctrl+p commands' : 'Personal · synced with web                  enter send · ctrl+p commands', narrow ? '个人对话 · ctrl+p 命令' : '个人对话 · 与网页同步                  enter 发送 · ctrl+p 命令')
       : ui('Reconnecting to local service…', '正在重新连接本机服务…')
-    if (this.host) this.model.content = 'Router · ' + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
+    if (this.host) this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
     if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu() }
   }
 

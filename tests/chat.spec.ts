@@ -2070,3 +2070,58 @@ it.each([true,false])('answers an explicit question once with a text-only recove
  expect(answer[0]!.text).toBe(replies?'在，我收到了。':'我在，已收到你这条消息。')
  expect(f.h.store.tickets.list()).toHaveLength(0)
 })
+
+it('plans through clarification turns without tools, delegation or automatic execution',async()=>{
+ const {h,calls}=fixture(async r=>({reply:JSON.parse(r.input).request.includes('budget')?'Detailed plan: requirements, steps, tests and acceptance.':'What outcome and budget do you need?'}))
+ const c=h.chat.space('owner',true).conversation!
+ h.chat.setMode(c.id,'owner','plan')
+ const first=send(h,c.id,'Build a personal website')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(calls[0]!.tools).toEqual([]);expect(calls[0]!.onTool).toBeUndefined()
+ expect(calls[0]!.options?.tools).toEqual([]);expect(calls[0]!.allowNativeTools).toBe(false)
+ expect(calls[0]!.instructions).toContain('PLAN MODE')
+ expect(h.store.tickets.list()).toEqual([])
+ send(h,c.id,'My budget is 100 and it must work on mobile')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ expect(JSON.parse(calls[1]!.input).conversation.some((m:any)=>m.text==='What outcome and budget do you need?')).toBe(true)
+ expect(h.chat.view(c.id,'owner').messages.at(-1)?.text).toContain('Detailed plan')
+ h.chat.setMode(c.id,'owner','act')
+ expect(h.chat.view(c.id,'owner').conversation.mode).toBe('act')
+ expect(calls).toHaveLength(2)
+ expect(h.store.get<any>('chat-run',first.runId).mode).toBe('plan')
+})
+
+it('clears only conversation messages and working context, preserving memory and live schedules',async()=>{
+ const {h,calls}=fixture(async()=>({reply:'OK'})),c=h.chat.space('owner',true).conversation!
+ h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
+ const {runId}=send(h,c.id,'Remember my favorite color and remind me later'),trigger=h.store.triggers.get(runId)!
+ const context=h.scopes.context(trigger,'local:chat:'+c.id)!,e=h.memory.ingest(context)
+ const fact=h.memory.command(context,{action:'remember',operationId:'remember',expectedRevision:0,subject:'Color',content:'Blue',sourceIds:[e.id],candidate:false},true) as any
+ h.proactive.command({action:'schedule.put',scopeId:context.route.scopeId,operationId:'schedule',expectedRevision:0,schedule:{id:'reminder',name:'Reminder',triggerId:runId,prompt:'Review the plan',mode:'standalone',notification:'always',timing:{kind:'once',startAt:new Date(Date.now()+3600000).toISOString()}}},context)
+ expect(()=>h.chat.clearConversation(c.id,'owner',randomUUID(),h.chat.view(c.id,'owner').conversation.sequence)).toThrow('Finish or stop')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ const op=randomUUID(),before=h.chat.view(c.id,'owner').conversation
+ expect(()=>h.chat.clearConversation(c.id,'owner',op,before.sequence-1)).toThrow('New messages')
+ expect(()=>h.chat.clearConversation(c.id,'other',op,before.sequence)).toThrow()
+ h.chat.clearConversation(c.id,'owner',op,before.sequence)
+ expect(h.chat.space('owner').conversation?.id).toBe(c.id)
+ expect(h.chat.view(c.id,'owner').messages).toEqual([])
+ expect(h.chat.view(c.id,'owner').run).toBeNull()
+ expect(h.memory.fact(fact.id)?.content).toBe('Blue')
+ expect(JSON.stringify(h.chat.memory(c.id,'owner'))).toContain('Blue')
+ expect(h.chat.view(c.id,'owner').schedules).toMatchObject([{id:'reminder',active:true}])
+ h.chat.changeSchedule(c.id,'owner',{id:'reminder',active:false,expectedRevision:1,operationId:randomUUID()})
+ h.chat.changeSchedule(c.id,'owner',{id:'reminder',active:true,expectedRevision:2,operationId:randomUUID()})
+ const scheduled=h.proactive.command({action:'schedule.run',scopeId:context.route.scopeId,id:'reminder',expectedRevision:3,operationId:'launch'},context) as {triggerId:string}
+ h.chat.reply('reminder-after-clear',scheduled.triggerId,'Reminder still works')
+ expect(h.chat.view(c.id,'owner').messages.at(-1)?.text).toBe('Reminder still works')
+ h.chat.reply('late-old-reply',runId,'Old context must not return')
+ expect(h.chat.view(c.id,'owner').messages.some(m=>m.text==='Old context must not return')).toBe(false)
+ const fresh=send(h,c.id,'New conversation context')
+ await settle(h,()=>h.chat.view(c.id,'owner').run?.state==='completed')
+ const latest=calls.findLast(r=>r.input.includes('New conversation context'))!
+ expect(latest.threadId).toBeUndefined()
+ expect(h.chat.history(fresh.runId).map(m=>m.text)).not.toContain('Remember my favorite color and remind me later')
+ h.chat.clearConversation(c.id,'owner',op,before.sequence)
+ expect(h.chat.view(c.id,'owner').messages.some(m=>m.text==='New conversation context')).toBe(true)
+})

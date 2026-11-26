@@ -114,7 +114,7 @@ export class PersonalAccount {
   private token(request: IncomingMessage) {
     const path = new URL(request.url ?? '/', 'http://localhost').pathname
     const credential = /^Roppo-CLI ([a-zA-Z0-9_-]{43})$/.exec(request.headers.authorization ?? '')
-    if (credential && (/^\/api\/terminal\/(projects|conversations|tasks|logout|settings|models|session)$/.test(path) ||
+    if (credential && (/^\/api\/terminal\/(projects|conversations|tasks|logout|settings|models|session|clear|mode)$/.test(path) ||
       (path === '/api/chat/space' && ['GET','POST'].includes(request.method ?? '')) ||
       path === '/api/capability-library' || path === '/api/chat/readiness' || path === '/api/chat/memory' ||
       /^\/api\/chat\/conversations(?:\/[a-f0-9-]{36}(?:\/(?:messages|events|cancel|decisions|context|schedules|approvals|file-reviews|(?:attachments|deliveries)\/[a-f0-9-]{36}))?)?$/.test(path))) return 'terminal:' + credential[1]

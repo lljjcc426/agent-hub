@@ -24,7 +24,6 @@ Choose `roppo lang zh` for Chinese or `roppo lang en` for English. This preferen
 roppo
 roppo -c
 roppo -p "Help me plan tomorrow"
-roppo -r
 ```
 
 The main transcript shows your messages and public Router replies. Internal Worker conversations and task logs stay out of the default view. Delivered files appear as file notices and remain available through `/files`. The welcome screen does not ask you to select a project or manage Workers.
@@ -37,7 +36,7 @@ An eight-cell activity strip runs during real work and disappears on completion 
 
 Ctrl+Y and `/approvals` review pending permissions, Router choices, structured questions and file deliveries. `/files` previews delivered text and saves files to a chosen path without overwriting existing files. `/memory` reviews, edits or forgets personal memories. `/schedules` reads, pauses and resumes scheduled actions; describe new reminders and timing changes in the same chat. `/tools` searches capabilities, and `/open` opens this conversation in the browser.
 
-`roppo -r`, `/resume` and `/clear` remain explicit compatibility controls. The default navigation has one continuous personal conversation and no project or Worker session tabs. `ROPPO_LEGACY_TUI=1 roppo` temporarily selects the previous renderer for troubleshooting; it uses the same host and conversation.
+`/history` searches this conversation; `/resume` and `/new` are no longer interactive navigation commands. `roppo -r` remains a script/project compatibility option. The default navigation has one continuous personal conversation and no project or Worker session tabs. `ROPPO_LEGACY_TUI=1 roppo` temporarily selects the previous renderer for troubleshooting; it uses the same host and conversation.
 
 ## Settings and session controls
 
@@ -47,22 +46,30 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | --- | --- |
 | `/settings`, `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
 | `/theme` | System, dark, light or monochrome screen colors |
-| `/model` | Choose a configured connection and model for the **shared Router** |
-| `/model CONNECTION MODEL` | Select an explicit model ID; `--default` uses the connection default |
-| `/effort` | Choose an effort advertised by the selected model, or `default` |
+| `/model` | Choose Router or Worker, then a specific Worker if needed, a connection and model |
+| `/effort` | Choose Router or Worker, then a supported reasoning level or `default` |
+| `/plan` | Choose Plan (clarify requirements, then produce a detailed plan) or Act (normal conversation) |
 | `/permissions` | Select `ask` or `full` for the **shared account**; existing source sandbox limits still apply |
 | `/status` | Connection, shared conversation, model, permissions and loaded preference files |
 | `/context` | Recorded input-token/context measurements; unavailable measurements are shown as unavailable |
-| `/clear` | Start a new conversation without deleting the old one or stopping its work |
-| `/resume` | Search saved conversations in the current project, or personal Chat when outside a project session |
-| `/rename TITLE` | Rename the current conversation |
+| `/clear` | Confirm clearing messages and working context; keep long-term memory and scheduled actions |
+| `/rename` | Choose a Worker, then edit its display name |
+| `/diff` | Choose a Worker, then one of its tasks to inspect Git changes |
 | `/files` | Preview and save delivered files |
 | `/memory` | Review, edit and forget shared personal memory |
 | `/schedules` | Read, pause and resume scheduled actions |
 | `/history` | Search this conversation and load older messages |
 | `/approvals` | Review and answer pending permission requests without entering task IDs |
 
-Model changes apply to subsequent Router turns, including those submitted from the web. They do not change Worker profiles or a turn's already captured model binding. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; full access requires a confirmation in the new interface. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
+Model and effort changes apply to the selected Router or Worker and are shared with the web. Router turns already accepted retain their captured model binding. Worker renaming changes its display name and preserves its identity and tasks. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; full access requires a confirmation in the new interface. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
+
+Plan mode asks focused questions about the goal, constraints, scope and acceptance criteria before writing a detailed plan. It uses a separate text-only Router turn with tools and Worker dispatch disabled. It can use conversation text; it does not inspect attachment contents or the workspace. The mode label appears above the input. Use `/plan` to return to Act, then send an explicit execution instruction. Switching modes does not launch work or stop existing tasks and reminders. The mode is shared with this conversation's web and print clients.
+
+Clearing stays in the same personal conversation. The confirmation defaults to Cancel; messages that arrive while it is open require reviewing and confirming again. Finish or stop active requests first. Clearing deletes visible messages and starts fresh working context, preserving long-term memory, reminders, files and task audit records. It is not a secure purge of execution archives. This also clears the shared web transcript.
+
+`/diff` shows recorded project changes or an available managed Git worktree. Ordinary non-Git tasks may have no comparison baseline; use `/files` for their deliverables. Shared workspaces can contain changes from several cooperating Workers. `/history` and Ctrl+K search loaded conversation messages, with an option to load earlier messages.
+
+For initial configuration gaps and the corresponding web settings, see [CLI settings inventory](CLI_SETTINGS_GAPS.md).
 
 Terminal preferences load from these sources, from lowest to highest priority:
 

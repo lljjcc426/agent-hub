@@ -9,21 +9,20 @@ import { TerminalClient, CliError, type Snapshot } from './client.ts'
 export const commands = (advanced = false) =>
   [
     { name: '/config', usage: '', description: ui('Terminal settings', '终端设置') },
-    { name: '/model', usage: '', description: ui('Choose the shared Router model', '选择共享 Router 模型') },
+    { name: '/model', usage: '', description: ui('Choose a Router or Worker model', '选择 Router 或 Worker 模型') },
     { name: '/effort', usage: '', description: ui('Choose reasoning effort', '选择思考强度') },
     { name: '/permissions', usage: '', description: ui('Shared account permissions', '账号共享权限') },
     { name: '/theme', usage: '', description: ui('Choose a terminal theme', '选择终端主题') },
     { name: '/status', usage: '', description: ui('Connection, session and settings', '连接、会话和设置状态') },
     { name: '/context', usage: '', description: ui('Measured context usage', '实测上下文用量') },
-    { name: '/clear', usage: '', description: ui('Start a new conversation; keep history', '开始新对话，保留历史') },
-    { name: '/resume', usage: '', description: ui('Resume a saved conversation', '继续历史会话') },
-    { name: '/rename', usage: 'TITLE', description: ui('Rename this conversation', '重命名当前会话') },
+    { name: '/clear', usage: '', description: ui('Confirm clearing conversation and working context', '确认后清理对话和工作上下文') },
+    { name: '/rename', usage: '', description: ui('Choose and rename a Worker', '选择并重命名 Worker') },
     { name: '/files', usage: '', description: ui('Files shared in this conversation', '查看对话中的文件') },
     { name: '/tasks', usage: '', description: ui('Inspect internal tasks', '查看内部任务') },
     {
       name: '/diff',
-      usage: 'TICKET',
-      description: ui('Review changes for a task', '查看任务的文件改动')
+      usage: '',
+      description: ui('Choose a Worker and review changes', '选择 Worker 查看文件改动')
     },
     {
       name: '/approvals',
@@ -33,7 +32,7 @@ export const commands = (advanced = false) =>
     {
       name: '/plan',
       usage: '',
-      description: ui('Read the current execution plan', '查看当前执行计划')
+      description: ui('Clarify requirements and prepare a plan', '澄清需求并制定计划')
     },
     {
       name: '/choose',

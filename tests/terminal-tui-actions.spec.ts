@@ -1,0 +1,67 @@
+import { expect, it } from 'vitest'
+import { TuiCommands, personalCommands } from '../src/terminal/tui-actions.ts'
+import type { TuiMenu, TuiScreen } from '../src/terminal/tui-screen.ts'
+import type { TerminalClient, Snapshot } from '../src/terminal/client.ts'
+import { configureLanguage } from '../src/terminal/language.ts'
+
+function fixture() {
+  configureLanguage('en')
+  let menu: TuiMenu, prompt: { initial: string; submit: (value: string) => Promise<void> }, notice = ''
+  const requests: { path: string; body?: any }[] = []
+  const settings = { revision: 7, backend: 'codex', model: 'router-model', effort: 'low', connections: [{ id: 'codex', label: 'Codex', kind: 'codex' }], workers: [
+    { id: 'one', label: 'Research', backend: 'codex', model: 'worker-model', effort: 'high' },
+    { id: 'two', label: 'Writing', backend: 'codex', model: 'writer-model' }
+  ] }
+  const client = { request: async (path: string, body?: any) => {
+    requests.push({ path, body })
+    if (path === '/api/terminal/settings') return settings
+    if (path.startsWith('/api/terminal/models')) return { models: ['router-model', 'worker-model'], reasoning: { efforts: ['low', 'high'] } }
+    if (path === '/api/terminal/tasks') return { diff: '+new text' }
+    return {}
+  } } as unknown as TerminalClient
+  const screen = { setLoading() {}, menu(value: TuiMenu) { menu = value }, prompt(_title: string, initial: string, submit: (value: string) => Promise<void>) { prompt = { initial, submit } },
+    notice(value: string) { notice = value }, document(_title: string, text: string) { notice = text }, setDraft() {}
+  } as unknown as TuiScreen
+  const view = { conversation: { id: 'chat', sequence: 12, mode: 'act' }, workers: settings.workers, messages: [], tasks: [
+    { id: 'research-task', workerId: 'one', title: 'Research change', state: 'completed', updatedAt: 2 },
+    { id: 'writing-task', workerId: 'two', title: 'Writing change', state: 'completed', updatedAt: 1 }
+  ] } as unknown as Snapshot
+  const commands = new TuiCommands(client, view.conversation, screen, { cwd: '.', preferences: {}, settingsSources: [] }, () => view, async () => {}, () => {}, async () => {})
+  return { commands, requests, view, menu: () => menu, prompt: () => prompt, notice: () => notice,
+    choose: async (label: string) => { const item = menu.items.find(i => i.label === label); expect(item, label).toBeDefined(); await item!.run() } }
+}
+it('selects an explicit Worker for model and effort changes and keeps Router as a separate target', async () => {
+  const f = fixture()
+  await f.commands.execute('/model'); expect(f.menu().items.map(i => i.label)).toEqual(['Router', 'Worker'])
+  await f.choose('Worker'); await f.choose('Research'); await f.choose('Codex'); await f.choose('worker-model')
+  expect(f.requests.at(-1)?.body).toEqual({ action: 'model', revision: 7, worker: 'one', backend: 'codex', model: 'worker-model' })
+  await f.commands.execute('/effort'); await f.choose('Worker'); await f.choose('Writing'); await f.choose('high')
+  expect(f.requests.at(-1)?.body).toEqual({ action: 'effort', revision: 7, worker: 'two', effort: 'high' })
+  await f.commands.execute('/effort'); await f.choose('Router'); await f.choose('low')
+  expect(f.requests.at(-1)?.body).toEqual({ action: 'effort', revision: 7, effort: 'low' })
+})
+it('renames a selected Worker and filters changes to that Worker’s tasks', async () => {
+  const f = fixture()
+  await f.commands.execute('/rename'); await f.choose('Writing')
+  expect(f.prompt().initial).toBe('Writing'); await f.prompt().submit('Editor')
+  expect(f.requests.at(-1)?.body).toMatchObject({ action: 'rename', worker: 'two', label: 'Editor' })
+  await f.commands.execute('/diff'); await f.choose('Research')
+  expect(f.menu().items.map(i => i.label)).toEqual(['Research change'])
+  await f.choose('Research change')
+  expect(f.requests.at(-1)).toMatchObject({ path: '/api/terminal/tasks', body: { ticket: 'research-task', action: 'diff' } })
+  expect(f.notice()).toBe('+new text')
+})
+it('does not clear without confirmation and binds confirmation to the displayed conversation version', async () => {
+  const f = fixture()
+  await f.commands.execute('/clear'); await f.choose('Cancel'); expect(f.requests).toEqual([])
+  await f.commands.execute('/clear'); f.view.conversation.sequence++
+  await f.choose('Confirm clear')
+  expect(f.requests[0]).toMatchObject({ path: '/api/terminal/clear', body: { conversation: 'chat', expectedSequence: 12 } })
+})
+it('keeps single-conversation search, removes session navigation and changes mode without sending a task', async () => {
+  const f = fixture()
+  expect(personalCommands().map(c => c.name)).toContain('/history')
+  await f.commands.execute('/resume'); expect(f.requests).toEqual([])
+  await f.commands.execute('/plan'); await f.choose('Plan · clarify and design')
+  expect(f.requests).toEqual([{ path: '/api/terminal/mode', body: { conversation: 'chat', mode: 'plan' } }])
+})

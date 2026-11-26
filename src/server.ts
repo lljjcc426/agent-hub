@@ -334,7 +334,9 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/terminal/settings'&&req.method==='POST'){
         const input=terminalHostChange.parse(await operatorBody(req))
         if(input.action==='effort'&&input.effort!==null){
-          const selected=terminalHostSettings(runtime,owner)
+          const settings=terminalHostSettings(runtime,owner)
+          const selected=input.worker?settings.workers.find(w=>w.id===input.worker):settings
+          if(!selected){send(res,404,{code:'worker_missing',error:'Worker no longer exists.'});return}
           const capabilities=await modelCapabilities.read(runtime,selected.backend,selected.model,options.configurationPreview===true)
           requireCurrentOperator(req)
           if(!capabilities.reasoning.efforts.includes(input.effort)){send(res,400,{code:'unsupported_effort',error:'This model does not advertise that reasoning effort.'});return}
@@ -347,6 +349,14 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       const owner=account.status(req).user?.id
       if(!owner){send(res,401,{code:'account_login_required'});return}
       const raw=await operatorBody(req)
+      if(path==='/api/terminal/clear'){
+        const input=z.object({conversation:z.string().uuid(),operationId:z.string().uuid(),expectedSequence:z.number().int().nonnegative()}).strict().parse(raw)
+        send(res,200,runtime.chat.clearConversation(input.conversation,owner,input.operationId,input.expectedSequence));return
+      }
+      if(path==='/api/terminal/mode'){
+        const input=z.object({conversation:z.string().uuid(),mode:z.enum(['act','plan'])}).strict().parse(raw)
+        send(res,200,runtime.chat.setMode(input.conversation,owner,input.mode));return
+      }
       if(path==='/api/terminal/session'){
         const {id}=z.object({id:z.string().uuid()}).strict().parse(raw)
         send(res,200,runtime.chat.selectTerminalSession(owner,id));return

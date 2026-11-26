@@ -285,7 +285,7 @@ export class Runtime {
     this.continuity=new RouterContinuity(this)
     this.projectCode=new ProjectCode(config,this.store)
     this.goals=new RouterGoals(this,options.clock)
-    this.routerIngress.explicitCommand=t=>this.goals.chatReview(t)||this.workflows.queueReply(t)
+    this.routerIngress.explicitCommand=t=>!this.chat.planningInput(t)&&(this.goals.chatReview(t)||this.workflows.queueReply(t))
     this.verification=new GoalVerification(this,options.clock)
     this.replanning=new GoalReplanning(this,options.clock)
     try{this.webhooks=new Webhooks(this,options.clock)}catch(error){this.approvals.close();this.store.close();unlinkSync(this.lock);throw error}
@@ -1019,8 +1019,8 @@ export class Runtime {
     if(this.config.execution.router?.mode==='host'){
       if(existing&&!this.routerIngress.get(trigger.id))return {disposition:'duplicate',triggerId:trigger.id,thread:trigger.threads[0]?.id,related:this.related(trigger)}
       const result=this.routerIngress.receive(trigger)
-      if(trigger.human&&!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate')try{const c=this.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(c&&this.routerIngress.authority(trigger.id).strength==='explicit'){if(this.agentMemory.enabled(c))this.memory.captureExplicit(c);this.agentMemory.observe(c)}}catch{this.store.audit({type:'memory.input_deferred',triggerId:trigger.id})}
-      if(!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate'&&!this.store.get('project-review-input',trigger.id)&&!this.workflows.isDecisionReply(trigger))relayRouterFollowups(this,trigger)
+      if(trigger.human&&!this.chat.planningInput(trigger)&&!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate')try{const c=this.scopes.context(trigger,trigger.source+':'+trigger.threads[0]!.id);if(c&&this.routerIngress.authority(trigger.id).strength==='explicit'){if(this.agentMemory.enabled(c))this.memory.captureExplicit(c);this.agentMemory.observe(c)}}catch{this.store.audit({type:'memory.input_deferred',triggerId:trigger.id})}
+      if(!this.chat.planningInput(trigger)&&!this.chat.isReactionInput(trigger.id)&&result.disposition!=='duplicate'&&!this.store.get('project-review-input',trigger.id)&&!this.workflows.isDecisionReply(trigger))relayRouterFollowups(this,trigger)
       return result
     }
     const disposition = this.engine.receive(trigger)
@@ -1341,6 +1341,29 @@ export class Runtime {
     if(!this.routerIngress.get(triggerId))this.store.atomic(()=>this.routerIngress.restoreLegacy(triggerId,discussion))
     const chatRun=this.store.get<ChatRun>('chat-run',triggerId)
     if(chatRun?.cancelRequested||chatRun?.cancelled)return
+    if(chatRun?.mode==='plan'){
+      const controller=new AbortController(),key='router:'+discussion
+      this.controllers.set(key,controller)
+      try{
+        this.routerIngress.authority(triggerId,discussion)
+        const binding=this.chat.binding(triggerId)
+        const result=await this.runModel({role:'router',...binding,activity:{sourceId:source.id,triggerId},
+          cwd:source.cwd,signal:controller.signal,managed:true,privateState:this.config.stateDir,archiveOnComplete:true,sandbox:'read-only',
+          options:{...binding?.options,tools:[],toolConnections:[],prompt:''},allowNativeTools:false,tools:[],
+          schema:{type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false},
+          instructions:'You are Roppo Router in PLAN MODE. Respond in the user language. First ask focused follow-up questions to establish the actual goal, constraints, priorities, existing situation, scope, tradeoffs and acceptance criteria. Ask a manageable set of concrete questions per turn; offer sensible choices when useful. Do not prematurely write a final plan while material requirements remain unresolved. Once the answers are sufficient, produce a detailed, actionable plan covering the agreed requirements, proposed approach, Worker responsibilities, ordered steps, dependencies, deliverables, tests, acceptance criteria and remaining assumptions. Revise the plan through conversation. You cannot execute tools, delegate tasks, change settings, save memory or schedule work in this mode. Never claim to have inspected files or completed work. If execution is requested, explain that the user must switch to Act through /plan and send an implementation instruction. Return JSON with reply containing your questions or plan.',
+          input:JSON.stringify({request:trigger.text,conversation:this.chat.history(triggerId).slice(-100),
+            workers:workerProfiles(this.config).map(w=>({label:w.label??w.id,state:w.state??'enabled'})),
+            notice:'Conversation is background context. Attachments are names only; do not claim to have read their contents.'}),
+          onOutput:event=>this.chat.output(job.id,triggerId,event,()=>{controller.signal.throwIfAborted();this.routerIngress.authority(triggerId,discussion)}),
+        })
+        controller.signal.throwIfAborted();this.routerIngress.authority(triggerId,discussion)
+        const output=JSON.parse(result.text) as {reply:string}
+        this.store.put('router-result',job.id,{discussion,threadId:result.threadId,turnId:result.turnId,reply:output.reply})
+        this.chat.reply(job.id,triggerId,output.reply)
+      }finally{this.chat.endOutput(job.id);if(this.controllers.get(key)===controller)this.controllers.delete(key)}
+      return
+    }
     if(job.id==='router:'+triggerId&&chatRun?.interjection?.state==='stop'){
       const parent=this.store.get<ChatRun>('chat-run',chatRun.interjection.parentId)
       const c=this.store.get<ChatConversation>('chat-conversation',chatRun.conversationId)

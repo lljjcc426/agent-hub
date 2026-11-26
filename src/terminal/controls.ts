@@ -119,27 +119,8 @@ export async function controlCommand(client: TerminalClient, conversation: Conve
     await client.request('/api/terminal/settings', { action: 'model', revision: settings.revision, backend, ...(model === '--default' ? {} : { model }) })
     return { text: backend + ' / ' + model + ' · ' + shared() }
   }
-  if (name === '/rename') {
-    const title = args.join(' ')
-    if (!title || title.length > 100) throw new CliError(ui('Use /rename TITLE (up to 100 characters).', '用法：/rename 标题（最多 100 字符）。'))
-    await client.request('/api/chat/conversations/' + conversation.id, { title }, { method: 'PATCH' })
-    return { text: ui('Renamed: ', '已重命名：') + title }
-  }
-  if (name === '/clear' || name === '/new') {
-    if (args.length) throw new CliError('Use /clear without arguments')
-    const next = conversation.project ? await client.create(conversation.project) : await client.request<Conversation>('/api/chat/conversations', {})
-    await client.request('/api/terminal/session', { id: next.id })
-    return { next }
-  }
-  if (name === '/resume') {
-    const { conversations } = await client.request<{conversations: Conversation[]}>('/api/chat/conversations')
-    const list = conversations.filter(c => c.project === conversation.project)
-    if (!args.length) return { menu: { title: ui('Resume conversation', '继续会话'), items: list.map(c => ({
-      label: c.title || ui('New conversation', '新会话'), detail: c.id, value: '/resume ' + c.id
-    })) } }
-    const next = args.length === 1 && list.find(c => c.id === args[0])
-    if (!next) throw new CliError(ui('Conversation not found in this workspace.', '当前工作区找不到该会话。'))
-    await client.request('/api/terminal/session', { id: next.id })
-    return { next }
-  }
+  if (['/clear', '/rename', '/diff', '/plan'].includes(name!))
+    return { text: ui('Open the interactive terminal to choose and confirm this operation.', '请在交互终端中选择并确认此操作。') }
+  if (name === '/resume' || name === '/new')
+    return { text: ui('Roppo uses one personal conversation. Use /history to search it.', 'Roppo 使用一段个人对话，可用 /history 搜索。') }
 }

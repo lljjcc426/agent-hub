@@ -10,11 +10,17 @@ import { publicMessage } from './conversation.ts'
 import { isApprovalPending } from '../chat-workflow.ts'
 import { saveTerminalSetting, type TerminalSettings } from './settings.ts'
 import { configureLanguage, ui } from './language.ts'
+import type { HostSettings } from './host-settings.ts'
+import type { ModelCapabilities } from '../reasoning-effort.ts'
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
 export const personalCommands = () => [
-  { name: '/model', label: ui('Models', '模型'), detail: ui('Choose the shared Router model · F2', '选择共享 Router 模型 · F2') },
+  { name: '/model', label: ui('Models', '模型'), detail: ui('Choose Router or Worker model · F2', '选择 Router 或 Worker 模型 · F2') },
   { name: '/effort', label: ui('Reasoning effort', '思考强度'), detail: ui('Model reasoning level', '模型思考级别') },
+  { name: '/plan', label: ui('Plan mode', '计划模式'), detail: ui('Clarify requirements, then make a detailed plan', '先反问澄清需求，再给详细计划') },
+  { name: '/clear', label: ui('Clear conversation', '清理会话'), detail: ui('Confirm first; keep memory and schedules', '确认后清理，保留记忆和计划事项') },
+  { name: '/rename', label: ui('Rename a Worker', '重命名 Worker'), detail: ui('Choose a Worker and edit its name', '选择 Worker 并修改名称') },
+  { name: '/diff', label: ui('Worker changes', 'Worker 改动'), detail: ui('Choose a Worker and inspect its task changes', '选择 Worker 查看任务改动') },
   { name: '/files', label: ui('Files', '文件'), detail: ui('View and save conversation files', '查看和保存对话文件') },
   { name: '/memory', label: ui('Memory', '记忆'), detail: ui('Review and edit personal memory', '查看和编辑个人记忆') },
   { name: '/schedules', label: ui('Scheduled actions', '计划事项'), detail: ui('Reminders and routines', '提醒和定时事项') },
@@ -70,6 +76,12 @@ export class TuiCommands {
       this.screen.menu({ title: ui('Commands', '命令'), items: personalCommands().map(c => ({ label: c.label, detail: c.name + ' · ' + c.detail, run: () => this.execute(c.name) })) }); return
     }
     if (name === '/settings' || input === '/config') { this.settings(); return }
+    if (name === '/model' || name === '/effort') { await this.agentSetting(name === '/model' ? 'model' : 'effort'); return }
+    if (name === '/rename') { await this.renameWorker(); return }
+    if (name === '/diff') { this.workerDiff(); return }
+    if (name === '/clear') { this.clearConversation(); return }
+    if (name === '/plan') { this.planMode(); return }
+    if (['/new', '/resume'].includes(name!)) { this.screen.notice(ui('Roppo uses one personal conversation. Use /history to search it.', 'Roppo 使用一段个人对话，可用 /history 搜索。')); return }
     if (input === '/history') { this.history(); return }
     if (input === '/files') { this.files(); return }
     if (input === '/memory') { await this.memory(); return }
@@ -116,6 +128,77 @@ export class TuiCommands {
     if (result) this.screen.document(name ?? 'Roppo', result)
     await this.refresh()
   }
+  private async agentSetting(action: 'model' | 'effort') {
+    const settings = await this.client.request<HostSettings>('/api/terminal/settings')
+    const choose = async (worker?: HostSettings['workers'][number]) => {
+      const selected = worker ?? settings, label = worker?.label ?? 'Router'
+      const save = async (value: object) => {
+        await this.client.request('/api/terminal/settings', { action, revision: settings.revision, ...(worker ? { worker: worker.id } : {}), ...value })
+        await this.refresh(); this.screen.notice(ui('Updated: ', '已更新：') + label)
+      }
+      if (action === 'effort') {
+        const catalog = await this.client.request<ModelCapabilities>('/api/terminal/models?' + new URLSearchParams({ backend: selected.backend, ...(selected.model ? { model: selected.model } : {}) }))
+        this.screen.menu({ title: label + ' · ' + ui('Reasoning effort', '思考强度'), items: [
+          { label: 'default', run: () => save({ effort: null }) },
+          ...catalog.reasoning.efforts.map(effort => ({ label: effort, detail: selected.effort === effort ? '✓' : '', run: () => save({ effort }) }))
+        ] }); return
+      }
+      this.screen.menu({ title: label + ' · ' + ui('Model connection', '模型连接'), items: settings.connections.map(connection => ({
+        label: connection.label, detail: connection.id === selected.backend ? '✓' : connection.kind, run: async () => {
+          const catalog = await this.client.request<ModelCapabilities>('/api/terminal/models?' + new URLSearchParams({ backend: connection.id }))
+          this.screen.menu({ title: label + ' · ' + connection.label, items: [
+            { label: ui('Connection default', '连接默认模型'), run: () => save({ backend: connection.id }) },
+            ...catalog.models.map(model => ({ label: model, detail: model === selected.model && selected.backend === connection.id ? '✓' : '', run: () => save({ backend: connection.id, model }) })),
+            { label: ui('Enter model ID…', '输入模型 ID…'), run: () => this.screen.prompt('Model ID', '', model => save({ backend: connection.id, model })) }
+          ] })
+        }
+      })) })
+    }
+    this.screen.menu({ title: ui('Configure which agent?', '配置哪个 Agent？'), items: [
+      { label: 'Router', detail: settings.model ?? settings.backend, run: () => choose() },
+      { label: 'Worker', detail: ui('Choose a specific Worker', '选择具体 Worker'), run: () => this.screen.menu({ title: ui('Choose a Worker', '选择 Worker'), items: settings.workers.map(w => ({ label: w.label, detail: (w.model ?? w.backend) + ' · ' + w.state, run: () => choose(w) })) }) }
+    ] })
+  }
+  private async renameWorker() {
+    const settings = await this.client.request<HostSettings>('/api/terminal/settings')
+    this.screen.menu({ title: ui('Rename which Worker?', '重命名哪个 Worker？'), items: settings.workers.map(w => ({
+      label: w.label, detail: w.model ?? w.backend, run: () => this.screen.prompt(ui('Worker name', 'Worker 名称'), w.label, async label => {
+        await this.client.request('/api/terminal/settings', { action: 'rename', worker: w.id, revision: settings.revision, label })
+        await this.refresh(); this.screen.notice(ui('Renamed: ', '已重命名：') + label)
+      })
+    })) })
+  }
+  private workerDiff() {
+    const view = this.view()
+    this.screen.menu({ title: ui('Choose a Worker', '选择 Worker'), items: view.workers.map(w => ({
+      label: w.label, run: () => {
+        const tasks = view.tasks.filter(t => t.workerId === w.id).sort((a, b) => b.updatedAt - a.updatedAt)
+        this.screen.menu({ title: w.label + ' · ' + ui('Changes', '改动'), detail: tasks.length ? undefined : ui('This Worker has no tasks in this conversation.', '此 Worker 在当前对话中还没有任务。'), items: tasks.map(t => ({
+          label: t.title, detail: t.state, run: async () => {
+            const diff = await command(this.client, this.conversation.id, '/diff ' + t.id)
+            this.screen.document(w.label + ' · ' + t.title, diff)
+          }
+        })) })
+      }
+    })) })
+  }
+  private clearConversation() {
+    const expectedSequence = this.view().conversation.sequence
+    this.screen.menu({ title: ui('Clear this conversation?', '确认清理此对话？'), detail: ui('Clears messages and working context, after the current request has finished. Long-term memory and scheduled actions are kept. This cannot be undone.', '清理消息和工作上下文，当前任务需先结束。保留长期记忆和计划事项。此操作无法撤销。'), items: [
+      { label: ui('Cancel', '取消'), run: () => {} },
+      { label: ui('Confirm clear', '确认清理'), run: async () => {
+        await this.client.request('/api/terminal/clear', { conversation: this.conversation.id, expectedSequence, operationId: randomUUID() })
+        await this.refresh(); this.screen.setDraft(''); this.screen.notice(ui('Conversation cleared. Memory and schedules kept.', '对话已清理，记忆和计划事项已保留。'))
+      } }
+    ] })
+  }
+  private planMode() {
+    const active = this.view().conversation.mode === 'plan'
+    this.screen.menu({ title: ui('Conversation mode', '对话模式'), detail: ui('Plan: clarify requirements first, then produce a detailed plan. No Worker execution. Switching back does not start work automatically.', '计划模式：先反问澄清需求，再形成详细计划，不执行 Worker 任务。切回执行模式不会自动开始任务。'), items: [
+      { label: ui('Plan · clarify and design', '计划 · 澄清与设计'), detail: active ? '✓' : '', run: () => this.change('/api/terminal/mode', { conversation: this.conversation.id, mode: 'plan' }) },
+      { label: ui('Act · normal conversation', '执行 · 正常对话'), detail: active ? '' : '✓', run: () => this.change('/api/terminal/mode', { conversation: this.conversation.id, mode: 'act' }) }
+    ] })
+  }
   private settings() {
     const save = (key: string, value: string) => {
       const { patch } = saveTerminalSetting(this.options.cwd, key, value)
@@ -123,13 +206,16 @@ export class TuiCommands {
       if (patch.language) configureLanguage(patch.language)
       this.screen.preferences(this.options.preferences); this.settings()
     }
-    this.screen.menu({ title: ui('Settings · this terminal', '设置 · 此终端'), items: [
+    this.screen.menu({ title: ui('Settings', '设置'), detail: ui('Appearance is local. Agent settings are shared with the web.', '外观仅影响此终端；Agent 设置与网页共享。'), items: [
       { label: ui('Color mode', '配色'), detail: this.options.preferences.theme ?? 'system', run: () => this.screen.menu({ title: ui('Color mode', '配色'), items: ['system', 'dark', 'light', 'mono'].map(theme => ({ label: theme, run: () => save('theme', theme) })) }) },
       { label: ui('Animations', '动效'), detail: this.options.preferences.motion === 'reduced' ? 'off' : 'on', run: () => save('motion', this.options.preferences.motion === 'reduced' ? 'full' : 'reduced') },
       { label: ui('Interface language', '界面语言'), detail: this.options.preferences.language ?? 'en', run: () => this.screen.menu({ title: ui('Interface language', '界面语言'), items: [
         { label: 'English', run: () => save('language', 'en') }, { label: '中文', run: () => save('language', 'zh') }
       ] }) },
-      { label: ui('Reasoning effort', '思考强度'), detail: ui('Shared Router setting', '共享 Router 设置'), run: () => this.execute('/effort') },
+      { label: ui('Models', '模型'), detail: 'Router / Worker', run: () => this.execute('/model') },
+      { label: ui('Reasoning effort', '思考强度'), detail: 'Router / Worker', run: () => this.execute('/effort') },
+      { label: ui('Rename a Worker', '重命名 Worker'), run: () => this.execute('/rename') },
+      { label: ui('Permissions', '权限'), run: () => this.execute('/permissions') },
       { label: ui('Connection details', '连接详情'), run: () => this.execute('/status') }
     ] })
   }

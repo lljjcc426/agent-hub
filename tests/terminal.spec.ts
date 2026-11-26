@@ -241,6 +241,21 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     expect(modelChange.status).toBe(200)
     expect(host.runtime.config.execution.router?.model).toBe('fixture-model')
     expect((await post('/api/terminal/settings', { action: 'model', revision: terminalSettings.revision, backend: 'codex' }, auth)).status).toBe(409)
+    let agents = await modelChange.json() as any
+    const worker = agents.workers[0].id
+    const setWorker = async (patch: object) => {
+      const response = await post('/api/terminal/settings', { revision: agents.revision, worker, ...patch }, auth)
+      expect(response.status).toBe(200); agents = await response.json() as any
+    }
+    await setWorker({ action: 'model', backend: 'codex', model: 'fixture-model' })
+    await setWorker({ action: 'effort', effort: 'high' })
+    await setWorker({ action: 'rename', label: 'My Worker' })
+    expect(agents.workers[0]).toMatchObject({ id: worker, label: 'My Worker', model: 'fixture-model', effort: 'high' })
+    expect(agents.effort).not.toBe('high')
+    expect((await post('/api/terminal/settings', { action: 'effort', revision: agents.revision, worker, effort: 'ultra' }, auth)).status).toBe(400)
+    expect((await post('/api/terminal/settings', { action: 'rename', revision: agents.revision, worker: 'missing', label: 'Wrong' }, auth)).status).toBe(404)
+    expect((await post('/api/terminal/mode', { conversation: missingConversation, mode: 'plan' }, auth)).status).toBe(404)
+    expect((await post('/api/terminal/clear', { conversation: missingConversation, operationId: randomUUID(), expectedSequence: 0 }, auth)).status).toBe(404)
     expect((await post('/api/terminal/settings', { action: 'permissions', mode: 'full', tools: ['*'] }, auth)).status).toBe(400)
     expect((await post('/api/terminal/settings', { action: 'permissions', mode: 'full' }, auth)).status).toBe(200)
     expect((await (await post('/api/chat/space', {}, { cookie })).json()).approvalMode).toBe('full')
@@ -402,6 +417,10 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     const diff = (await (await taskQuery('diff')).json()) as any
     expect(diff.diff).toContain('+change in task')
     expect(diff.untracked).toEqual(['new.txt'])
+    const savedConversation = host.runtime.store.get<any>('chat-conversation', run.conversationId)
+    host.runtime.store.put('chat-conversation', run.conversationId, { ...savedConversation, project: undefined })
+    expect((await (await taskQuery('diff')).json() as any).diff).toContain('+change in task')
+    host.runtime.store.put('chat-conversation', run.conversationId, savedConversation)
     expect(readFileSync(join(project, 'notes.txt'), 'utf8')).toBe('visible')
     const interrupted = await cli(['--cwd', project, '-r', run.conversationId, '-p', 'slow', '--output-format', 'stream-json'], '', undefined, true)
     expect(interrupted.code, interrupted.stderr + interrupted.stdout).toBe(130)
@@ -430,15 +449,13 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     await control('/permissions full')
     expect((await (await post('/api/chat/space', {}, { cookie })).json()).approvalMode).toBe('full')
     await control('/permissions ask')
-    await control('/rename 中文项目会话')
-    expect((await client.view(conversation.id)).conversation.title).toBe('中文项目会话')
+    expect((await control('/rename'))?.text).toContain('interactive terminal')
     await control('/config theme=mono local')
     await control('/config verbose=true project')
     expect(loadTerminalSettings(project).settings).toMatchObject({ theme: 'mono', verbose: true })
     const background = await client.send(conversation.id, 'slow', [], 'en')
-    const cleared = (await control('/clear'))!.next!
-    expect(cleared.id).not.toBe(conversation.id)
-    expect(cleared.project).toBe(conversation.project)
+    expect((await control('/clear'))?.next).toBeUndefined()
+    expect((await control('/clear'))?.text).toContain('interactive terminal')
     expect((await client.view(conversation.id)).messages.length).toBeGreaterThan(0)
     let backgroundView = await client.view(conversation.id, background.runId)
     for (let i = 0; i < 100 && backgroundView.run?.state !== 'completed'; i++) {
@@ -446,11 +463,7 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
       backgroundView = await client.view(conversation.id, background.runId)
     }
     expect(backgroundView.run?.state).toBe('completed')
-    expect((await control('/resume ' + conversation.id))?.next?.id).toBe(conversation.id)
-    await expect(control('/resume ' + JSON.parse(bound.stdout).conversationId)).rejects.toThrow('workspace')
-    const personal = (await client.request<any>('/api/chat/space', {})).conversation
-    const personalClear = (await controlCommand(client, personal, '/clear', project, preferences, []))!.next!
-    expect((await (await post('/api/chat/space', {}, { cookie })).json()).conversation.id).toBe(personalClear.id)
+    expect((await control('/resume'))?.next).toBeUndefined()
 
     const text = await cli(['-p', 'plain text', '--output-format', 'text'])
     expect(text.code, text.stderr).toBe(0)

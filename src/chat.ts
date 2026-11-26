@@ -60,6 +60,9 @@ interface Conversation {
   sourceId:string; actor:string; discussion:string; sequence:number
   project?:string
   nativeId?:string
+  contextVersion?:number
+  clearedAt?:number
+  mode?:'act'|'plan'
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
@@ -71,7 +74,7 @@ type PendingCard =
   | {kind:'approval';id:string;messageId:string;createdAt:number;request:ReturnType<typeof publicApproval>|ReturnType<typeof permissionCard>}
   | {kind:'question';id:string;messageId:string;createdAt:number;question:ReturnType<ChatSessions['businessDecisions']>[number]}
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
-interface ChatRun {interjection?:ChatInterjection;inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
+interface ChatRun {contextVersion?:number;mode?:'act'|'plan';interjection?:ChatInterjection;inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery}
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
 interface Delegation {ticketId:string; workerId:string; discussion:string; parentTrigger?:string}
@@ -328,8 +331,8 @@ export class ChatSessions {
         this.bindEntry(c)
         const clientMessageId='reaction:'+randomUUID(),eventId='chat:'+c.id+':'+clientMessageId,triggerId=c.sourceId+':'+eventId
         const previous=this.rows<ChatRun>('chat-run','conversationId',c.id).findLast(run=>run.locale||run.timeZone)
-        this.host.store.put('chat-run',triggerId,{id:triggerId,triggerId,conversationId:c.id,clientMessageId,locale:previous?.locale,timeZone:pending.timeZone??previous?.timeZone,createdAt:now,feedback:pending.changes} satisfies ChatRun)
-        this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+c.id,scope:c.nativeId??'chat:'+c.id,text:'The user updated emoji reactions in Chat. Treat these as conversational feedback, not a new task or approval. See chat.feedback for the messages and changes.',addressed:true})
+        this.host.store.put('chat-run',triggerId,{contextVersion:c.contextVersion??0,mode:c.mode??'act',id:triggerId,triggerId,conversationId:c.id,clientMessageId,locale:previous?.locale,timeZone:pending.timeZone??previous?.timeZone,createdAt:now,feedback:pending.changes} satisfies ChatRun)
+        this.host.receive(c.sourceId,c.actor,{id:eventId,thread:c.discussion.slice(c.sourceId.length+1),scope:c.nativeId??'chat:'+c.id,text:'The user updated emoji reactions in Chat. Treat these as conversational feedback, not a new task or approval. See chat.feedback for the messages and changes.',addressed:true})
         this.host.store.db.prepare("DELETE FROM records WHERE kind='chat-pending-reactions' AND id=?").run(c.id)
         this.changed(c.id)
       })
@@ -391,7 +394,7 @@ export class ChatSessions {
     else if(h.store.get<boolean>('settings','paused'))code='host_paused'
     return {uploads:chatUploadLimits,routerLabel:h.config.execution.router?.label??'Router',workers:workerProfiles(h.config).map(w=>({id:w.id,label:w.label??w.id,model:w.model,state:w.state??'enabled',tasks:[] as ChatTask[]})),ready:code==='ready',code,backend,model,mode:h.config.execution.router?.mode??'assessment',configurationUrl:'/configure#execution/configuration'}
   }
-  private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,sequence:c.sequence,title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,...(c.project?{project:c.project}:{}),backend,model}}
+  private publicConversation(c:Conversation){const {backend,model}=this.readiness();return {id:c.id,sequence:c.sequence,contextVersion:c.contextVersion??0,mode:c.mode??'act',title:c.title,createdAt:c.createdAt,updatedAt:c.updatedAt,archived:c.archived,...(c.project?{project:c.project}:{}),backend,model}}
   private routerBinding(ready=this.readiness()):ChatRouterBinding{
     const router=this.host.config.execution.router??{}
     const definition=this.host.model instanceof BackendRegistry?this.host.model.definition(ready.backend!):undefined
@@ -502,6 +505,32 @@ export class ChatSessions {
     for(const id of this.listeners.keys())this.changed(id)
     return {...this.space(owner),...result}
   }
+  setMode(id:string,owner:string,mode:'act'|'plan'){
+    const c=this.get(id,owner)
+    this.host.store.put('chat-conversation',id,{...c,mode});this.changed(id)
+    return this.publicConversation({...c,mode})
+  }
+  planningInput(trigger:{source:string;human?:boolean;actor:{id:string};threads:{id:string}[]}){
+    return !!trigger.human&&this.rows<Conversation>('chat-conversation','discussion',trigger.source+':'+trigger.threads[0]?.id)
+      .some(c=>c.actor===trigger.actor.id&&c.mode==='plan')
+  }
+  clearConversation(id:string,owner:string,operationId:string,expectedSequence:number){
+    const c=this.get(id,owner),key=owner+':'+operationId
+    if(this.host.store.get('chat-clear',key))return this.publicConversation(c)
+    if(c.sequence!==expectedSequence)throw new ChatError('conversation_changed','New messages arrived. Review the conversation before clearing.',409)
+    const view=this.view(id,owner)
+    if(view.run&&['queued','running','waiting','cancel_requested'].includes(view.run.state)||
+      view.tasks.some(t=>['queued','running','waiting'].includes(t.state)))
+      throw new ChatError('conversation_busy','Finish or stop the current request before clearing the conversation.',409)
+    const version=(c.contextVersion??0)+1,at=Date.now()
+    const next={...c,sequence:0,contextVersion:version,clearedAt:at,discussion:c.sourceId+':chat:'+c.id+':context:'+version,updatedAt:at}
+    this.host.store.atomic(()=>{
+      this.host.store.db.prepare("DELETE FROM records WHERE kind IN ('chat-message','chat-pending-reactions') AND json_extract(body,'$.conversationId')=?").run(id)
+      this.host.store.put('chat-conversation',id,next)
+      this.host.store.put('chat-clear',key,{conversationId:id,at,contextVersion:version})
+    })
+    this.changed(id);return this.publicConversation(next)
+  }
   create(owner:string,project?:{cwd:string;sourceId:string}){
     const ready=this.readiness();if(!ready.ready)throw new ChatError(ready.code,'Configure an available host Router before starting a conversation.')
     const entry=this.source(project?.sourceId)
@@ -520,14 +549,18 @@ export class ChatSessions {
     const run=this.rows<ChatRun>('chat-run','conversationId',id).at(-1)
     const trigger=run?this.host.store.triggers.get(run.triggerId):undefined
     if(!trigger){if(input)throw new ChatError('memory_unavailable','This conversation has no memory context.');return {unavailable:true}}
-    this.host.routerIngress.authority(trigger.id,conversation.discussion)
-    const context=this.host.scopes.context(trigger,conversation.discussion)
+    const discussion=this.host.routerIngress.get(trigger.id)!.discussion
+    this.host.routerIngress.authority(trigger.id,discussion)
+    const context=this.host.scopes.context(trigger,discussion)
     if(!context){if(input)throw new ChatError('memory_unavailable','This conversation has no memory context.');return {unavailable:true}}
     if(input?.kind==='memory')return this.host.memory.command(context,input.command,true)
     return this.host.agentMemory.manage(context,input?.command??{action:'inspect'})
   }
   private message(c:Conversation, m:Omit<Message,'conversationId'|'sequence'|'createdAt'>){
     if(this.host.memory.cleanup.blocked('chat-conversation',c.id,c))return
+    const current=this.host.store.get<Conversation>('chat-conversation',c.id)!
+    const trigger=this.host.store.triggers.get(m.runId)
+    if(current.contextVersion&&!m.runId.startsWith('scheduled:')&&trigger&&trigger.source+':'+trigger.threads[0]?.id!==current.discussion)return
     if(m.role==='assistant'&&!m.speaker)m={...m,speaker:this.router(m.runId)}
     const existing=this.host.store.get<Message>('chat-message',m.id)
     if(existing){if(existing.role==='assistant'&&existing.status!=='complete'&&(existing.text!==m.text||existing.status!==m.status))this.host.store.put('chat-message',m.id,{...existing,...m});return}
@@ -1010,7 +1043,7 @@ export class ChatSessions {
   changeSchedule(id:string,owner:string,input:{id:string;expectedRevision:number;operationId:string}&ScheduleEdit){
     const c=this.get(id,owner),plan=this.schedules(c).find(p=>p.id===input.id)
     const trigger=plan&&this.host.store.triggers.get(plan.triggerId)
-    const context=trigger&&this.host.scopes.context(trigger,c.discussion)
+    const context=trigger&&this.host.scopes.context(trigger,this.host.routerIngress.get(trigger.id)!.discussion)
     if(!plan||!context)throw new ChatError('schedule_missing','Scheduled task unavailable.',404)
     try{
       const change='timing' in input?{action:'schedule.retime',timing:input.timing}:{action:input.active?'schedule.resume':'schedule.pause'}
@@ -1129,12 +1162,12 @@ export class ChatSessions {
       if(input.skillId&&!skill)throw new ChatError('skill_unavailable','This skill is no longer available for this conversation.',409)
       this.bindEntry(c)
       const eventId='chat:'+id+':'+input.clientMessageId
-      const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text:text||attachments.map(a=>a.name).join('\n'),addressed:true,...(attachments.length?{attachments:attachments.map(a=>({id:'asset/'+a.id,name:a.name,mimeType:a.mimeType}))}:{})}) as {triggerId:string}
+      const received=this.host.receive(c.sourceId,c.actor,{id:eventId,thread:c.discussion.slice(c.sourceId.length+1),scope:c.nativeId??'chat:'+id,text:text||attachments.map(a=>a.name).join('\n'),addressed:true,...(attachments.length?{attachments:attachments.map(a=>({id:'asset/'+a.id,name:a.name,mimeType:a.mimeType}))}:{})}) as {triggerId:string}
       const admitted=this.host.routerIngress.get(received.triggerId)
       if(admitted?.state==='unavailable')throw new ChatError('chat_entry_unavailable','This Chat entry is unavailable in the current Router scope.')
       if(admitted?.state!=='accepted')throw new ChatError('request_not_admitted','This request was not admitted by the current Router policy.')
       // Settings edits apply to messages accepted after the edit, including when turns are queued.
-      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now(),router:this.routerBinding(ready),...(skill?{skill}:{})}
+      const run:ChatRun={contextVersion:c.contextVersion??0,mode:c.mode??'act',permissionEpoch:this.permissionSetting(owner).epoch,id:received.triggerId,triggerId:received.triggerId,conversationId:id,clientMessageId:input.clientMessageId,locale:input.locale,timeZone:input.timeZone,openingLocale:input.openingLocale,createdAt:Date.now(),router:this.routerBinding(ready),...(skill?{skill}:{})}
       this.host.store.put('chat-run',run.id,run)
       this.uploads.bind(attachments.map(a=>a.id),run.id)
       this.message(c,{id:'user:'+run.id,runId:run.id,role:'user',text,clientMessageId:input.clientMessageId,...(input.quote?{quote:input.quote}:{}),
@@ -1144,12 +1177,12 @@ export class ChatSessions {
       if(this.host.store.get('project-review-input',run.id)||
         this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='workflow-decision'").get('workflow-decision:'+run.id))
         this.host.store.enqueue('router:'+run.id,'router',{discussion:c.discussion,triggerId:run.id})
-      if(text&&!existingFileRequest(text)&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
+      if(run.mode!=='plan'&&text&&!existingFileRequest(text)&&sourceMessage?.decision&&!sourceMessage.decision.replyRunId){
         const questionRun=this.host.store.get<ChatRun>('chat-run',sourceMessage.runId)
         if(questionRun&&!questionRun.cancelled&&!questionRun.cancelRequested)
           this.host.store.put('chat-message',sourceMessage.id,{...sourceMessage,decision:{...sourceMessage.decision,answer:text,replyRunId:run.id}})
       }
-      if(!attachments.length&&!skill&&!sourceMessage?.decision&&!sourceMessage?.fileReview&&!existingFileRequest(text)&&
+      if(run.mode!=='plan'&&!attachments.length&&!skill&&!sourceMessage?.decision&&!sourceMessage?.fileReview&&!existingFileRequest(text)&&
         !this.host.store.get('project-review-input',run.id)&&!this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=?").get('workflow-decision:'+run.id))
         this.host.chatToolTurns.get(c.id)?.offer(run,sourceMessage?.runId)
       this.changed(c.id)
@@ -1235,13 +1268,13 @@ export class ChatSessions {
       const source=h.sources.get(c.sourceId),ready=this.readiness()
       if(!ready.ready||!source?.config.enabled||source.config.kind!=='local'||!source.config.allowedActors.includes(c.actor))throw new ChatError('decision_unavailable','This conversation is unavailable.')
       this.bindEntry(c)
-      const trigger=source.trigger({id:'chat-decision:'+id+':'+input.requestId,thread:'chat:'+id,scope:c.nativeId??'chat:'+id,text,addressed:true},c.actor)
+      const trigger=source.trigger({id:'chat-decision:'+id+':'+input.requestId,thread:c.discussion.slice(c.sourceId.length+1),scope:c.nativeId??'chat:'+id,text,addressed:true},c.actor)
       const admission=h.routerIngress.admitDecision(trigger)
       if(admission.state!=='accepted')throw new ChatError('decision_unavailable','This reply is not admitted by current policy.')
       const context=authorize(trigger.id)
       h.manager.sendImmediate({action:'send',ticketId:d.ticketId,questionId:d.id,decisionVersion:input.version,text,requestId:'chat-decision:'+key,revision:h.settings.current().revision},context)
       const client=this.clientContext(d.runId)
-      const run:ChatRun={permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now(),
+      const run:ChatRun={contextVersion:c.contextVersion??0,mode:c.mode??'act',permissionEpoch:this.permissionSetting(owner).epoch,decisionTicketId:d.ticketId,id:trigger.id,triggerId:trigger.id,conversationId:id,clientMessageId:input.requestId,createdAt:Date.now(),
         locale:client?.locale??(/\p{Script=Han}/u.test(text)?'zh-CN':undefined),timeZone:client?.clientTimeZone}
       h.store.put('chat-run',run.id,run)
       rememberFileHandoff(h,d.id,{ticketId:d.ticketId,conversationId:id,triggerId:trigger.id,question:d.question},text)
@@ -1455,7 +1488,7 @@ export class ChatSessions {
     return cards.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))
   }
   view(id:string,owner:string,before?:number,participant?:string,around?:string,runId?:string,decisionsFrom?:number,withPending=false){
-    const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id)
+    const c=this.get(id,owner),runs=this.rows<ChatRun>('chat-run','conversationId',id).filter(r=>(r.contextVersion??0)===(c.contextVersion??0))
     const latest=runId?runs.find(run=>run.id===runId):runs.findLast(run=>!run.feedback)
     const link=latest?.interjection
     const parent=!runId&&link&&link.state!=='queued'?runs.find(run=>run.id===link.parentId):undefined

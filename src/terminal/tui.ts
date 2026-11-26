@@ -23,8 +23,8 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
     const [current, settings] = await Promise.all([
       client.view(conversation.id, undefined, abort.signal), client.request<HostSettings>('/api/terminal/settings', undefined, { signal: abort.signal })
     ])
-    if (stopped) return
-    if (view) {
+    if (stopped || view && current.conversation.contextVersion < view.conversation.contextVersion) return
+    if (view && view.conversation.contextVersion === current.conversation.contextVersion) {
       const recent = new Set(current.messages.map(m => m.id))
       const earlier = view.messages.filter(m => !recent.has(m.id) && m.sequence < (current.messages[0]?.sequence ?? Infinity))
       current.messages = [...earlier, ...current.messages]
@@ -37,7 +37,7 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
     loadingOlder = true
     try {
       const page = await client.older(conversation.id, view.messages[0]!.sequence, abort.signal)
-      if (stopped) return
+      if (stopped || page.conversation.contextVersion !== view.conversation.contextVersion) return
       const known = new Set(view.messages.map(m => m.id))
       view = { ...view, messages: [...page.messages.filter(m => !known.has(m.id)), ...view.messages], hasMore: page.hasMore }
       screen.update(view, true)

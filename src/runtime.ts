@@ -18,7 +18,7 @@ import {isParallelRead,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
 import {checkAnswer,type AnswerCheck} from './supplied-answer.ts'
-import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,currentEvidence,evidenceHistory,evidencePlan,needsEvidenceContext,namedEvidenceGroup,policyEvidenceGroup,suppliedDelegationPlan,participantGroup,pendingParticipants,evidenceText,freshEvidence,readerPacket,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
+import {answerPacket,readEvidenceAnswer,evidenceDependencies,citedEvidence,currentEvidence,evidenceHistory,evidencePlan,needsEvidenceContext,namedEvidenceGroup,policyEvidenceGroup,suppliedDelegationPlan,participantGroup,pendingParticipants,evidenceText,freshEvidence,readerPacket,sourceBrief,storedEvidence,workerSections,type EvidencePlan} from './chat-supplied-evidence.ts'
 import {RouterHandoff,type RouterDispatch} from './router-handoff.ts'
 import {blockedByRouterRecovery} from './router-operation-recovery.ts'
 import {isRouterRead} from './backends/opencode-read-recovery.ts'
@@ -1835,7 +1835,12 @@ export class Runtime {
             // Persist the user's participation requirement before the first effect, independently of the route.
             const latest=this.store.get<ChatRun>('chat-run',triggerId)!
             const compact=plan&&group.workers.every(id=>{const w=roster.find(w=>w.id===id);const b=w&&this.config.backends[w.backend];return b&&isApiBackend(b)&&(profiled||!w?.prompt&&!w?.persona)})
-            const assignmentText=(id:string)=>plan?plan.question+'\n'+evidenceText(workerSections(plan,id)):group.briefs?.[id]
+            const assignmentText=(id:string)=>{
+              if(!plan)return group.briefs?.[id]
+              if(!profiled)return plan.question+'\n'+evidenceText(workerSections(plan,id))
+              const author=group.workers.length===1||group.fold&&id===group.workers.at(-1)
+              return sourceBrief(plan,id,author?'author':'reader')
+            }
             const bound=plan&&!compact?{...group,ordinary:true as const,briefs:Object.fromEntries(group.workers.map(id=>[id,assignmentText(id)!]))}:group
             // Ordinary briefs never create a shared-source grant, including for an older host after rollback.
             this.store.put('chat-run',triggerId,{...latest,[bound.ordinary?'namedParticipants':'suppliedEvidence']:bound})
@@ -1868,7 +1873,7 @@ export class Runtime {
           suppliedSource=id=>{
             if(!roster.some(w=>w.id===id)||plan.workers.length&&!plan.workers.includes(id)||!currentEvidence(this,chatRun,trigger.text)||this.settings.current().revision!==policyRevision)return
             const sections=workerSections(plan,id)
-            if(sections.length)return plan.question+'\n\n'+sections.map(s=>[s.heading,...s.rows].join('\n')).join('\n\n')
+            if(sections.length)return sourceBrief(plan,id)
           }
           activation={...activation,instructions:activation.instructions+'\nFor this message, if your policy and the conversation authorize fresh work on the supplied records, use worker_manage assign with includeSuppliedSource=true for each authorized recipient. The host attaches the original records in that recipient’s scope; omit the copied source from text. Retain the usual assignment if other context or separate permission is needed.',
             tools:activation.tools?.map(t=>t.name==='worker_manage'?{...t,inputSchema:{...t.inputSchema,properties:{...(t.inputSchema.properties as object),includeSuppliedSource:{type:'boolean',enum:[true],description:'Attach the current authorized source to this assignment.'}}}}:t)}
@@ -2452,7 +2457,10 @@ export class Runtime {
         }
       }
       const modelTrigger=latestSourceTrigger(inputs)??this.taskAuthority(ticket.id)?.parentTrigger??ticket.origin.triggerId
-      const read=(instructions:string,input:string,schema:Record<string,unknown>={})=>this.runModel({...standardRequest,instructions:agentOptions?.prompt||agentOptions?.persona?instructions+' Honor your configured role. If it requires additional context or actions, return NEED_CONTEXT.':instructions,input,suppliedText:true,schema,allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
+      const roleInstruction=!evidenceWorker?.profiled?'':evidenceWorker.author
+        ?'Your assignment is to answer the overall question from the evidence and any verified peer findings. Honor your configured role. Return NEED_CONTEXT if this assignment requires another action or missing authority.'
+        :'Your assignment is to check only the records supplied to you. The overall question gives the reason for selecting evidence. Other participants handle their sections and the final answer. Return the relevant rows even when answering the overall question requires additional records. Honor your configured role. Return NEED_CONTEXT if checking your own records requires another action or missing authority.'
+      const read=(instructions:string,input:string,schema:Record<string,unknown>={})=>this.runModel({...standardRequest,instructions:[roleInstruction,instructions].filter(Boolean).join('\n\n'),input,suppliedText:true,schema,allowNativeTools:false,tools:[],onTool:undefined,workerMcp:undefined,
         validateSuppliedRead:()=>{if(!canRetryEvidence())throw Error('Supplied source grant changed')},
         attachments:[],options:{...agentOptions,tools:[],toolConnections:[]},sandbox:'read-only'},modelTrigger)
       const canRetryEvidence=()=>{
@@ -2469,7 +2477,10 @@ export class Runtime {
       }else{
         const {plan,id}=evidenceWorker,packet=readerPacket(plan,id)
         result=await read(packet.instructions,packet.input,packet.schema)
-        if(!citedEvidence(plan,id,result.text)&&!(evidenceWorker.profiled&&needsEvidenceContext(result.text))&&canRetryEvidence())result=await read(packet.instructions+(packet.schema?' Use only valid row numbers.':' Use comma-separated integer IDs or *.'),packet.input,packet.schema)
+        if(!citedEvidence(plan,id,result.text)&&canRetryEvidence()){
+          const reminder=evidenceWorker.profiled&&needsEvidenceContext(result.text)?' Can you verify or select any records in your own section for the other reader? Only that scoped check is due. If you cannot perform it, return NEED_CONTEXT.':''
+          result=await read(packet.instructions+(packet.schema?' Use only valid row numbers.':' Use comma-separated integer IDs or *.')+reminder,packet.input,packet.schema)
+        }
       }
       if(evidenceWorker?.profiled&&needsEvidenceContext(result.text)&&canRetryEvidence()){
         // A tool-free read had no external effects. Continue on the same real ticket

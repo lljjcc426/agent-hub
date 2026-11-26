@@ -195,6 +195,14 @@ export function workerSections(plan:EvidencePlan,id:string){
     return owns(s.heading,id)||!plan.workers.some(w=>owns(s.heading,w))
   })
 }
+/** Keep the user's own sentences on the ticket. The reader and the final author
+ * have different completion criteria even when they see the same question. */
+export function sourceBrief(plan:EvidencePlan,id:string,role?:'reader'|'author'){
+  const action=role==='reader'?'Check the supplied section for evidence relevant to the overall question. Your deliverable is the evidence in this section. The other participants handle their sections and the overall answer.':
+    role==='author'?'Answer the overall question using your supplied section and the other readers’ verified findings.':undefined
+  const records=workerSections(plan,id).map(s=>[s.heading,...s.rows].join('\n')).join('\n\n')
+  return [action,plan.question,records].filter(Boolean).join('\n\n')
+}
 function originals(sections:Section[]){return sections.flatMap(s=>s.rows.map(row=>({heading:s.heading,row})))}
 /** Factor constant column prefixes while preserving every value, row and its order. */
 function display(section:Section){

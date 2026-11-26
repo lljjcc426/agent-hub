@@ -333,7 +333,7 @@ it('keeps the configured Router in control of an ongoing Chat and gives each pro
   const dir=mkdtempSync(join(tmpdir(),'roppo-policy-source-')),calls:ModelRequest[]=[]
   const routerPolicy='Follow the original user agreement.',routerIdentity='Router role marker.'
   const people=[{id:'east',label:'程序员1',prompt:'East role marker.'},{id:'west',label:'程序员2',prompt:'West role marker.'}]
-  let allow=true
+  let allow=true,neededScope=false
   const host=await Runtime.create(configSchema.parse({
     stateDir:join(dir,'state'),port:0,watchdog:{enabled:false},prompts:{router:routerPolicy},work:{sandboxDriver:'seatbelt',network:false,autoRecover:false},
     backends:{test:{kind:'openai-responses',model:'fixture',baseUrl:'http://127.0.0.1:1/v1'}},
@@ -344,7 +344,10 @@ it('keeps the configured Router in control of an ongoing Chat and gives each pro
     const threadId=randomUUID(),turnId=randomUUID();r.onThread?.(threadId);r.onTurn?.(turnId)
     let text=JSON.stringify({reply:'Understood.',decision:'answer'})
     if(r.instructions.includes('Decide as the configured Router'))text=JSON.stringify({route:allow?'READ':'OTHER',worker:''})
-    else if(r.suppliedText)text=r.instructions.includes('Read your source')?'Mara holds permit A.':'RESULT name=Mara'
+    else if(r.suppliedText&&r.instructions.includes('Read your source')){
+      if(!neededScope){neededScope=true;text='NEED_CONTEXT'}
+      else text=r.instructions.includes('Only that scoped check is due.')?'*':'NEED_CONTEXT'
+    }else if(r.suppliedText)text='RESULT name=Mara'
     return {text,turnId,threadId}
   }}})
   try{
@@ -358,7 +361,7 @@ it('keeps the configured Router in control of an ongoing Chat and gives each pro
     host.chat.send(chat.id,'owner',{text:input,clientMessageId:'read',locale:'zh-CN'})
     await until(()=>host.chat.view(chat.id,'owner').messages.some(m=>m.text==='RESULT name=Mara'))
     const slim=calls.filter(c=>c.suppliedText)
-    expect(slim.map(c=>c.role)).toEqual(['router','worker','worker','router'])
+    expect(slim.map(c=>c.role)).toEqual(['router','worker','worker','worker','router'])
     expect(slim.every(c=>!c.tools?.length&&!c.onTool&&c.allowNativeTools===false)).toBe(true)
     for(const read of slim.filter(c=>c.role==='router')){
       expect(read.instructions.split(routerPolicy)).toHaveLength(2)
@@ -368,8 +371,8 @@ it('keeps the configured Router in control of an ongoing Chat and gives each pro
     expect(slim.at(-1)!.input).toContain('workerReports')
     expect(slim[1]!.instructions).toContain(people[0]!.prompt)
     expect(slim[1]!.input).toContain('Mara holds permit A.');expect(slim[1]!.input).not.toContain('Permit A is valid.')
-    expect(slim[2]!.instructions).toContain(people[1]!.prompt)
-    expect(slim[2]!.input).toContain('Permit A is valid.')
+    expect(slim[3]!.instructions).toContain(people[1]!.prompt)
+    expect(slim[3]!.input).toContain('Permit A is valid.')
     for(const read of slim.filter(c=>c.role==='worker'))expect(read.input).not.toContain(seed)
     const assignments=host.store.list<{ticketId:string;workerId:string}>('worker-assignment')
     expect(assignments).toHaveLength(2)
@@ -377,6 +380,7 @@ it('keeps the configured Router in control of an ongoing Chat and gives each pro
       const ticket=host.store.tickets.get(a.ticketId)!
       expect(ticket.ended?.outcome).toBe('completed')
       const original=host.store.triggers.get(ticket.origin.triggerId)!.text
+      expect(original).toContain(a.workerId==='east'?'Your deliverable is the evidence in this section':'other readers’ verified findings')
       expect(original).not.toContain(a.workerId==='east'?'Permit A is valid.':'Mara holds permit A.')
     }
     allow=false

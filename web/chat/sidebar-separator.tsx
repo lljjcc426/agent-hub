@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, type KeyboardEvent, type PointerEvent } from 'react';
 
-type Pane = 'navigation' | 'agents' | 'panel';
+type Pane = 'navigation' | 'agents' | 'panel' | 'workbench';
 type Props = {
   pane: Pane;
   controls: string;
@@ -14,12 +14,13 @@ export function SidebarSeparator({ pane, controls, label, expandNavigation }: Pr
   const drag = useRef<{ pointer: number; x: number; width: number; moved: boolean } | null>(null);
   const property = '--' + pane + '-size';
   const key = 'roppo.layout.' + pane + '.width';
+  const onRight = pane === 'panel' || pane === 'workbench';
 
   useLayoutEffect(() => {
     const handle = ref.current!;
     const sidebar = handle.parentElement!;
     const shell = handle.closest<HTMLElement>('.chat-shell')!;
-    const region = pane === 'panel' ? sidebar.parentElement! : shell;
+    const region = onRight ? sidebar.parentElement! : shell;
     try {
       const saved = Number(localStorage.getItem(key));
       if (Number.isFinite(saved) && saved > 0) shell.style.setProperty(property, saved + 'px');
@@ -39,7 +40,7 @@ export function SidebarSeparator({ pane, controls, label, expandNavigation }: Pr
       if (drag.current) delete shell.dataset.resizing;
       drag.current = null;
     };
-  }, [key, pane, property]);
+  }, [key, onRight, property]);
 
   function resize(width: number) {
     const shell = ref.current!.closest<HTMLElement>('.chat-shell')!;
@@ -80,7 +81,7 @@ export function SidebarSeparator({ pane, controls, label, expandNavigation }: Pr
     const delta = event.clientX - start.x;
     if (!start.moved && Math.abs(delta) < 2) return;
     start.moved = true;
-    resize(start.width + (pane === 'panel' ? -delta : delta));
+    resize(start.width + (onRight ? -delta : delta));
   }
 
   function finish(event: PointerEvent<HTMLDivElement>) {
@@ -94,7 +95,7 @@ export function SidebarSeparator({ pane, controls, label, expandNavigation }: Pr
 
   function keyboard(event: KeyboardEvent<HTMLDivElement>) {
     const width = event.currentTarget.parentElement!.getBoundingClientRect().width;
-    const step = pane === 'panel' ? -16 : 16;
+    const step = onRight ? -16 : 16;
     const next = { ArrowLeft: width - step, ArrowRight: width + step, Home: 0, End: innerWidth }[event.key];
     if (next === undefined) return;
     event.preventDefault();

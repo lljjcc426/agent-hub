@@ -2,6 +2,7 @@ import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState} from 'react
 import {ChevronRight,FileCode2,FolderOpen,GitCompareArrows,Globe,Maximize2,Minimize2,PanelRightClose,Plus,Search,TerminalSquare,X} from 'lucide-react'
 import {BrowserPanel,type BrowserOpenRequest,type BrowserPageControls,type BrowserPageStrip} from './browser.tsx'
 import {browserUrl} from './browser-url.ts'
+import {SidebarSeparator} from './sidebar-separator.tsx'
 import {DetailedFile,FilePath} from './worker-file-diff.tsx'
 import type {DiffTarget,WorkerReports} from './worker-report-groups.ts'
 import {FileManager,WorkTerminal,type WorkFile} from './workbench-files.tsx'
@@ -128,6 +129,7 @@ export function ChatWorkbench({request,conversation,reports,overlay,expanded,set
         if(from&&to&&document.activeElement===from){e.preventDefault();to.focus()}
       }
     }}>
+    {open&&!expanded&&!overlay&&<SidebarSeparator pane="workbench" controls="chat-workbench" label={L('Resize workspace panel','调整工作区面板宽度')}/>}
     <div className="bench-inner">
       <header className="bench-header">
         <div className="bench-tabs" role="tablist" aria-label={L('Workspace tabs','工作区标签页')} onKeyDown={e=>{

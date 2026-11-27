@@ -1,5 +1,5 @@
 .chat-workbench {
-  --bench-width:clamp(360px,46%,860px);
+  --bench-width:clamp(360px,var(--workbench-size,min(46%,860px)),calc(100% - 360px));
   --bench-surface:var(--c-bg);
   flex:0 0 auto;position:relative;z-index:11;width:0;min-width:0;min-height:0;
   overflow:hidden;background:var(--bench-surface);color:var(--c-text);opacity:0;visibility:hidden;
@@ -7,6 +7,11 @@
 }
 .chat-workbench[data-open=true]{width:var(--bench-width);opacity:1;visibility:visible;transition-delay:0s}
 .chat-workbench[data-open=true][data-expanded=true]{width:100%}
+.conversation-body:not(.panel-overlay)>.chat-workbench[data-open=true]:not([data-expanded=true]){overflow:visible}
+.chat-workbench>.sidebar-separator{left:-5px;right:auto;width:10px}
+.chat-workbench>.sidebar-separator::after{content:"";position:absolute;inset:0 auto 0 4px;width:2px;background:var(--c-muted);opacity:0}
+.chat-workbench>.sidebar-separator:is(:hover,:focus-visible)::after,.chat-shell[data-resizing=workbench] .chat-workbench>.sidebar-separator::after{opacity:.55}
+.chat-shell[data-resizing=workbench] .chat-workbench,.chat-workbench:has(>.sidebar-separator:focus-visible){transition:none}
 .panel-overlay>.chat-workbench{position:absolute;inset:0 0 0 auto;height:100%;width:100%;--bench-width:100%;z-index:25;transform:translateX(100%);transition-property:transform,opacity,visibility}
 .panel-overlay>.chat-workbench[data-open=true]{transform:translateX(0)}
 .bench-inner{height:100%;min-width:0;display:flex;flex-direction:column;border-inline-start:1px solid var(--c-line);overflow:hidden}

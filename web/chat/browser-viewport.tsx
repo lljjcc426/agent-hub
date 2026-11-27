@@ -78,7 +78,7 @@ export function BrowserViewport({
   useEffect(()=>{
     const element=viewport.current;
     if(!element||!canResize)return;
-    let live=true,pending=false,timer:ReturnType<typeof setTimeout>;
+    let live=true,pending=false,timer:ReturnType<typeof setTimeout>|undefined;
     let appliedWidth=0,appliedHeight=0;
     const fit=async()=>{
       if(!live||pending)return;
@@ -96,7 +96,12 @@ export function BrowserViewport({
         if(live&&(element.clientWidth!==width||element.clientHeight!==height))schedule();
       }
     };
-    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>void fit(),90)};
+    const schedule=()=>{
+      if(element.closest('.chat-shell[data-resizing="workbench"]')){
+        if(timer!==undefined||pending)return;
+      }else clearTimeout(timer);
+      timer=setTimeout(()=>{timer=undefined;void fit()},90);
+    };
     const observer=new ResizeObserver(schedule);
     observer.observe(element);schedule();
     return ()=>{live=false;observer.disconnect();clearTimeout(timer)};

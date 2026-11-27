@@ -79,9 +79,9 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
     {
       name: L('Workspace', '工作区'),
       rows: [
-        row('attention', L('Work inbox','工作收件箱'), Inbox),
-        row('execution-trace', L('Task progress','任务进展'), ListChecks, h=>h==='execution-trace'||h.startsWith('execution-trace/')),
-        row('methods', L('Plans and methods','计划与方法'), BookOpen),
+        row('attention', L('Needs my attention','待我处理'), Inbox, undefined, L('Work inbox approvals replies','工作收件箱 审批 回复')),
+        row('execution-trace', L('Task progress','任务进度'), ListChecks, h=>h==='execution-trace'||h.startsWith('execution-trace/'), L('Execution trace','任务进展 执行记录')),
+        row('methods', L('Reminders and methods','提醒与方法'), BookOpen, undefined, L('Plans goals reusable methods','计划与方法 目标 常用方法')),
         row('automations', L('Automations', '自动化'), Workflow),
         row(
           'tasks/history',

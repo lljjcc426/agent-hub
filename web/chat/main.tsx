@@ -78,8 +78,8 @@ import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
-const WorkInbox=lazy(()=>import('./work-register.tsx').then(m=>({default:m.WorkInbox})));
-const TaskProgress=lazy(()=>import('./work-register.tsx').then(m=>({default:m.TaskProgress})));
+const WorkInbox=lazy(()=>import('./work-inbox.tsx').then(m=>({default:m.WorkInbox})));
+const TaskProgress=lazy(()=>import('./task-progress.tsx').then(m=>({default:m.TaskProgress})));
 const MethodLibrary=lazy(()=>import('./method-library.tsx').then(m=>({default:m.MethodLibrary})));
 const WorkerTemplates=lazy(()=>import('./worker-templates.tsx').then(m=>({default:m.WorkerTemplates})));
 import {WorkspaceTransportOwner} from './workspace-context.tsx';
@@ -909,10 +909,10 @@ function Chat(p: ChatProps) {
   const currentView=views.find(view=>view.id===pluginId);
   const pageNames: Record<string, string> = {
     general: L("General", "通用"),
-    attention: L("Work inbox","工作收件箱"),
-    methods: L("Plans and methods","计划与方法"),
+    attention: L("Needs my attention","待我处理"),
+    methods: L("Reminders and methods","提醒与方法"),
     "worker-templates": L("Worker templates","Worker 模板"),
-    "execution-trace": L("Task progress","任务进展"),
+    "execution-trace": L("Task progress","任务进度"),
     appearance: L("Appearance", "外观"),
     team: L("Agent team","Agent 团队"),
     tasks: L("Activity", "运行记录"),

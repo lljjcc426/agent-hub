@@ -1,4 +1,7 @@
 import {useEffect,useState} from 'react'
+import { Activity, Clock3, MessageCircle } from 'lucide-react'
+import { Disclosure } from '../ui'
+import { originalTaskHref, workDate, workHref } from './work-items.ts'
 import type {ProgressResponse,ProgressSnapshot} from '../../src/progress-snapshot.ts'
 import {useWorkspaceTransport} from './workspace-context.tsx'
 
@@ -28,11 +31,11 @@ function snapshotChanges(previous:ProgressSnapshot,next:ProgressSnapshot):Change
  if(old.length!==files.length||old.some((a,i)=>a.id!==files[i]?.id||a.version!==files[i]?.version||a.observedAt!==files[i]?.observedAt))changes.push({key:'artifacts'})
  return changes
 }
-export function TaskProgressSnapshot({ticketId,language}:{ticketId:string;language:Language}){
+export function TaskProgressSnapshot({ticketId,language,question,createdAt}:{ticketId:string;language:Language;question?:string;createdAt?:string}){
  const {binding,contextKey,readSignal}=useWorkspaceTransport()
  const [current,setCurrent]=useState<{context:string;ticket:string;signal:AbortSignal;value:ProgressSnapshot;changes:Change[]}|null>(null),[unavailable,setUnavailable]=useState(false)
  const L=(en:string,zh:string)=>language==='en'?en:zh
- const labels={activity:L('Execution','执行'),result:L('Saved result','已留存结果'),commit:L('Commit','提交'),push:L('Remote push','远端推送'),check:L('Integrated test','集成测试'),deployment:L('Deployment','部署'),acceptance:L('Verification record','验收记录'),artifacts:L('Fixed file versions','固定文件版本')}
+ const labels={activity:L('Execution','执行'),result:L('Task result','任务结果'),commit:L('Commit','提交'),push:L('Remote push','远端推送'),check:L('Tests','测试'),deployment:L('Deployment','部署'),acceptance:L('Verification record','验收记录'),artifacts:L('Delivered files','交付文件')}
  useEffect(()=>{
   const controller=new AbortController(),signal=AbortSignal.any([controller.signal,readSignal])
   let previous:ProgressSnapshot|undefined,busy=false
@@ -70,33 +73,37 @@ export function TaskProgressSnapshot({ticketId,language}:{ticketId:string;langua
  if(readSignal.aborted)return null
  const visible=current?.context===contextKey&&current.ticket===ticketId&&current.signal===readSignal?current:null
  const snapshot=visible?.value
- const timestamp=(at:number)=>new Date(at).toLocaleString(language)
- const stamp=(at:number)=><time dateTime={new Date(at).toISOString()}>{timestamp(at)}</time>
- if(!snapshot)return <p className="trace-muted">{unavailable?L('No evidence can be shown for this task.','当前无法显示此任务的证据。'):L('Reading saved evidence…','正在读取留存证据…')}</p>
- const names={queued:L('Queued','已排队'),waiting:L('Waiting','等待中'),stopped:L('Stopped','已停止'),ended:L('Ended','已结束'),interrupted:L('Interrupted','已中断'),uncertain:L('Needs reconciliation','待核查'),unverified:L('Unverified','未验证'),recorded:L('Recorded','有记录'),passed:L('Passed','通过'),failed:L('Failed','未通过'),insufficient:L('Insufficient evidence','证据不足'),errored:L('Check errored','检查出错'),stale:L('Outdated','已过时'),pending:L('Pending','待确认'),running:L('Running','运行中')}
+ const stamp=(at:number)=><time dateTime={new Date(at).toISOString()}>{workDate(at,language)}</time>
+ if(!snapshot)return <p role="status">{unavailable?L('Progress unavailable','暂时无法读取进度'):L('Loading progress…','正在读取进度…')}</p>
+ const names={queued:L('Queued','已排队'),waiting:L('Waiting','等待处理'),stopped:L('Stopped','已停止'),ended:L('Ended','已结束'),interrupted:L('Interrupted','已中断'),uncertain:L('Needs review','结果待核对'),unverified:L('No record','暂无记录'),recorded:L('Recorded','已记录'),passed:L('Passed','通过'),failed:L('Failed','未通过'),insufficient:L('Evidence incomplete','记录不足'),errored:L('Check failed','检查出错'),stale:L('Out of date','记录已过期'),pending:L('Pending','待确认'),running:L('In progress','执行中')}
  const describe=(row:Evidence,key:EvidenceKey)=>{
-  const state=names[row.state]
-  if(row.state==='stale'||row.state==='unverified'||key==='activity'||key==='result')return state
-  return state+(row.matchesCurrent===false?L(' (older or different revision)','（较早或不同版本）'):row.matchesCurrent===null?L(' (current revision unconfirmed)','（未确认适用当前版本）'):'')
+   if(row.state==='stale'||row.state==='unverified'||key==='activity'||key==='result')return names[row.state]
+   const version=row.matchesCurrent===false?L('earlier version','较早版本'):row.matchesCurrent===null?L('version unconfirmed','版本待核对'):''
+   return [names[row.state],version].filter(Boolean).join(' · ')
  }
- return <section aria-label={L('Task progress snapshot','任务进展快照')}>
-  <h3>{L('Evidence snapshot','证据快照')}</h3>
-  <p className="trace-muted">{L('Last changed snapshot observed at ','此快照最近更新于 ')}{stamp(snapshot.observedAt)}</p>
-  <div role="status" aria-live="polite">{visible?.changes.length?<ul key={snapshot.revision}>{visible.changes.map(change=>{
-   if(change.key==='artifacts')return <li key={change.key}>{labels.artifacts}{L(': links or recorded evidence changed','：链接或留存证据有变化')}</li>
-   const {key,before,after}=change
-   const from=describe(before,key),to=describe(after,key)
-   return <li key={key}>{labels[key]}{L(': ','：')}{from!==to?from+' → '+to:to+L(' (evidence changed)','（证据有变化）')}</li>
-  })}</ul>:null}</div>
-  <dl className="trace-facts">{fields.map(key=>{
-   const datum=snapshot.sections[key]
-   return <div key={key}><dt>{labels[key]}</dt><dd><strong>{names[datum.state]}</strong>
-    {datum.head?<span> · <code title={datum.head}>{datum.head.slice(0,12)}</code></span>:null}
-    {datum.matchesCurrent===false?<p>{L('Earlier or different revision; not current evidence.','较早或不同版本，不代表当前结果。')}</p>:datum.matchesCurrent===null&&datum.state!=='unverified'&&key!=='result'&&key!=='activity'?<p>{L('Not confirmed for the current revision.','未确认适用于当前版本。')}</p>:null}
-    {datum.observedAt===null?(datum.state!=='unverified'&&key!=='activity'?<p>{L('Evidence time unavailable','无证据时间')}</p>:null):<p>{L('Evidence recorded at ','证据记录于 ')}{stamp(datum.observedAt)}</p>}
-   </dd></div>
-  })}</dl>
-  {snapshot.sections.artifacts.length?<><h4>{labels.artifacts}</h4><ul>{snapshot.sections.artifacts.filter(a=>id(a.id)).map(a=><li key={a.id}><a href={'/configure#artifact/'+a.id} onClick={event=>{if(readSignal.aborted)event.preventDefault()}}>{L('Open fixed version ','打开固定版本 ')}{a.version}</a>{a.observedAt===null?null:<> · {stamp(a.observedAt)}</>}</li>)}</ul></>:null}
-  <p className="trace-muted">{L('A saved result, local test, or pushed commit does not verify deployment or final acceptance.','留存结果、本地测试或推送的提交，都不代表已部署或通过最终验收。')}</p>
+ const activity=snapshot.sections.activity
+ const waiting=activity.state==='waiting' && !!question
+ const Icon=waiting?MessageCircle:activity.state==='queued'?Clock3:Activity
+ const observed=fields.filter(key=>key!=='activity' && snapshot.sections[key].state!=='unverified')
+ const missing=fields.filter(key=>key!=='activity' && snapshot.sections[key].state==='unverified')
+ return <section aria-label={L('Task progress snapshot','任务进展快照')} className="progress-content">
+   <div className="progress-current"><div className="progress-current-top"><div><Icon size={21} aria-hidden="true"/><strong>{waiting?L('Waiting for your reply','等你回复'):names[activity.state]}</strong></div>
+     {waiting && <a className="rp-button" data-tone="secondary" href={originalTaskHref(ticketId)}>{L('Open task','打开原任务')}</a>}</div>
+     {waiting&&<p>{question}</p>}</div>
+   <h3>{L('Task record','进度记录')}</h3>
+   <div role="status" aria-live="polite">{visible?.changes.length ? <ul className="progress-changes">{visible.changes.map(change=>{
+     if(change.key==='artifacts')return <li key="artifacts">{L('Delivered files updated','交付文件已更新')}</li>
+     const from=describe(change.before,change.key),to=describe(change.after,change.key)
+     return <li key={change.key}>{labels[change.key]} · {from===to?to:from+' → '+to}</li>
+   })}</ul>:null}</div>
+   {(createdAt || observed.length>0) ? <ul className="progress-events">
+     {createdAt && <li><span className="progress-event-dot" aria-hidden="true"/><div><strong>{L('Task created','已创建任务')}</strong></div><time dateTime={createdAt}>{workDate(createdAt,language)}</time></li>}
+     {observed.map(key=>{
+     const datum=snapshot.sections[key]
+     return <li key={key}><span className="progress-event-dot" aria-hidden="true"/><div><strong>{labels[key]}</strong><span>{describe(datum,key)}</span>
+       {datum.head&&<code title={datum.head}>{datum.head.slice(0,12)}</code>}</div>{datum.observedAt!==null&&stamp(datum.observedAt)}</li>
+   })}</ul>:<p className="work-empty-line">{L('No results recorded yet','尚无结果记录')}</p>}
+   {snapshot.sections.artifacts.length>0 && <section><h3>{labels.artifacts}</h3><ul className="work-files">{snapshot.sections.artifacts.filter(a=>id(a.id)).map(a=><li key={a.id}><a href={workHref('artifact/'+a.id)} onClick={event=>{if(readSignal.aborted)event.preventDefault()}}>{L('Open file','打开文件')} · v{a.version}</a>{a.observedAt!==null&&stamp(a.observedAt)}</li>)}</ul></section>}
+   {missing.length>0&&<Disclosure title={L('Steps without a record','尚无记录的环节')+' ('+missing.length+')'}><ul className="progress-missing">{missing.map(key=><li key={key}>{labels[key]}</li>)}</ul></Disclosure>}
  </section>
 }

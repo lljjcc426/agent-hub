@@ -11,6 +11,7 @@ declare module "virtual:configuration-content" {
   }): {
     transport: import('./workspace-transport.ts').WorkspaceTransport;
     activate: (language: string) => void;
+    openTask: (id: string, isCurrent: () => boolean) => Promise<boolean>;
     language: (language: string) => void;
     workspace: () => Promise<void>;
   };

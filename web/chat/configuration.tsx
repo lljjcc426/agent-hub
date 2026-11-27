@@ -91,6 +91,16 @@ export function Configuration({
         setBrowserTarget(browserElement!);
         if (latest.current.visible) {
           controller!.activate(latest.current.language);
+          const task = location.hash === '#tasks/attention' && new URLSearchParams(location.search).get('focusTask');
+          if (task) {
+            const isCurrent = () => alive && latest.current.visible && location.hash === '#tasks/attention';
+            void controller!.openTask(task, isCurrent).then(opened => {
+              if (!opened || !isCurrent()) return;
+              const url = new URL(location.href);
+              url.searchParams.delete('focusTask');
+              history.replaceState(history.state, '', url);
+            });
+          }
           if (pickerRequest > pickerHandled.current) {
             pickerHandled.current = pickerRequest;
             void controller!.workspace();

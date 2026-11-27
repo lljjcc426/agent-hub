@@ -14,7 +14,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit && npm run typecheck:chat && npm run typecheck:ui",
     "check": "npm run typecheck && npm test && npm run test:tui",
-    "test:tui": "bun tests/terminal-tui.ts",
+    "test:tui": "bun tests/terminal-tui.ts && bun tests/terminal-attachments-tui.ts",
     "demo": "tsx examples/native-smoke.ts",
     "build:chat": "vite build --config web/chat/vite.config.ts",
     "dev:ui": "vite --config web/component-preview/vite.config.ts",

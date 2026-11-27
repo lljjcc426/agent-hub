@@ -45,7 +45,10 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
   }
   const send = async (text: string, files: string[] = []) => {
     screen.setLoading(true)
-    try { await client.send(conversation.id, text, [...files, ...mentionedFiles(text, options.cwd)], Intl.DateTimeFormat().resolvedOptions().locale); await refresh(); screen.latest() }
+    try {
+      await client.send(conversation.id, text, [...files, ...mentionedFiles(text, options.cwd)], Intl.DateTimeFormat().resolvedOptions().locale)
+      screen.run(refresh().then(() => { if (!stopped) screen.latest() }))
+    }
     finally { if (!stopped) screen.setLoading(false) }
   }
   const interrupt = async () => {

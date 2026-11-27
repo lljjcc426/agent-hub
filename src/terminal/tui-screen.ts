@@ -13,11 +13,13 @@ import type { TerminalSettings } from './settings.ts'
 import { ui } from './language.ts'
 import stringWidth from 'string-width'
 import { byName } from './list-order.ts'
+import { readAttachment, attachmentSize, type DraftAttachment } from './attachments.ts'
+import { chatUploadLimits } from '../execution-limits.ts'
 
 export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
 export interface TuiMenu { order?: 'name' | 'source'; cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
 export interface TuiActions {
-  send(text: string): Promise<void>
+  send(text: string, files?: string[]): Promise<void>
   command(text: string): Promise<void>
   complete(text: string): Promise<TuiItem[]>
   interrupt(): Promise<void>
@@ -47,6 +49,10 @@ export class TuiScreen {
   private header: TextRenderable
   private home: BoxRenderable
   private compose: BoxRenderable
+  private attachmentList: ScrollBoxRenderable
+  private attachButton: TextRenderable
+  private attachments: DraftAttachment[] = []
+  private sending = false
   private model: TextRenderable
   private permissions: TextRenderable
   private footer: TextRenderable
@@ -132,11 +138,15 @@ export class TuiScreen {
         { name: 'return', meta: true, action: 'newline' }, { name: 'j', ctrl: true, action: 'newline' }],
       onSubmit: () => this.submit(), onContentChange: () => this.changed()
     })
-    this.compose.add(this.draft)
+    this.attachmentList = new ScrollBoxRenderable(renderer, { id: 'draft-attachments', width: '100%', visible: false,
+      flexShrink: 0, scrollX: false, marginBottom: 1, verticalScrollbarOptions: { showArrows: false } })
+    this.compose.add(this.attachmentList); this.compose.add(this.draft)
     const meta = new BoxRenderable(renderer, { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, flexShrink: 0 })
     this.model = this.text('Router', { fg: p.accent, height: 1, flexGrow: 1, flexShrink: 1, minWidth: 0, onMouseDown: () => this.run(this.actions.command('/model')) })
     this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
-    meta.add(this.model); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
+    this.attachButton = this.text(ui('+ Attach', '+ 附件'), { id: 'attach-files', fg: p.muted, height: 1, marginRight: 2,
+      selectable: false, onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/attach')) } })
+    meta.add(this.model); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
     const footerRow = new BoxRenderable(renderer, { width: '100%', height: 1, marginTop: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between', gap: 2 })
     this.footer = this.text('', { id: 'sync-status', height: 1, fg: p.muted, flexShrink: 1, minWidth: 0, selectable: false,
       onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/open')) } })
@@ -170,6 +180,7 @@ export class TuiScreen {
     this.compose.alignSelf = 'center'
     this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? 4 : 0)) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
+    this.attachmentList.height = Math.min(this.attachments.length, Math.max(1, Math.min(3, Math.floor(this.renderer.height / 6))))
     this.footer.content = this.connected
       ? ui('Open web ↗', '打开网页版 ↗')
       : ui('Open web ↗ · reconnecting', '打开网页版 ↗ · 正在重连')
@@ -188,6 +199,7 @@ export class TuiScreen {
     this.draft.backgroundColor = p.panel; this.draft.focusedBackgroundColor = p.panel
     this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
     this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
+    this.attachButton.content = ui('+ Attach', '+ 附件'); this.attachButton.fg = p.muted; this.drawAttachments()
     this.model.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.muted; this.permissions.fg = p.muted
     this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
     this.completions.backgroundColor = p.panel
@@ -214,6 +226,30 @@ export class TuiScreen {
   settings(host: HostSettings) { this.host = host; this.permissions.content = host.approvalMode + ' · ' + ui('permissions', '权限'); this.resize() }
   connection(connected: boolean) { this.connected = connected; this.resize() }
   setLoading(value: boolean) { if (!this.closed) { this.loading = value; this.syncActivity() } }
+  attachmentFiles(): readonly DraftAttachment[] { return this.attachments }
+  async addAttachment(path: string) {
+    const file = await readAttachment(path)
+    if (this.closed) return
+    if (this.sending) throw Error(ui('Wait for the current message to finish sending.', '请等待当前消息发送完成。'))
+    if (this.attachments.some(item => item.path === file.path)) return
+    if (this.attachments.length >= chatUploadLimits.maxFiles) throw Error(ui('Attach up to 32 files.', '最多可添加 32 个附件。'))
+    this.attachments = byName([...this.attachments, file], item => item.name)
+    this.drawAttachments()
+  }
+  removeAttachment(path: string) {
+    if (this.sending) return
+    this.attachments = this.attachments.filter(file => file.path !== path); this.drawAttachments()
+  }
+  private drawAttachments() {
+    for (const child of this.attachmentList.getChildren()) child.destroyRecursively()
+    this.attachmentList.visible = this.attachments.length > 0
+    for (const file of this.attachments) this.attachmentList.add(this.text(
+      (this.sending ? '↑ ' : '× ') + file.name + ' · ' + attachmentSize(file.bytes), {
+        height: 1, fg: this.palette.accent, selectable: false,
+        onMouseDown: event => { if (event.button === 0) this.removeAttachment(file.path) }
+      }))
+    this.resize()
+  }
   notice(message: string, error = false) {
     clearTimeout(this.noticeTimer)
     this.header.content = clean(message); this.header.fg = error ? this.palette.warm : this.palette.accent
@@ -377,12 +413,18 @@ export class TuiScreen {
   }
   private dismissCompletions() { ++this.completionRevision; clearTimeout(this.completionTimer); this.completionItems = []; this.completions.visible = false }
   private submit() {
-    const text = this.draft.plainText.trim(); if (!text) return
+    const text = this.draft.plainText.trim(); if (this.sending || !text && !this.attachments.length) return
     if (this.completionItems.length) { this.chooseCompletion(this.completionIndex); return }
     this.draft.setText(''); this.dismissCompletions()
-    this.run((text.startsWith('/') && !text.includes('\n') ? this.actions.command(text) : this.actions.send(text)).catch(error => {
+    const command = text.startsWith('/') && !text.includes('\n')
+    if (!command) { this.sending = true; this.drawAttachments() }
+    this.run((command ? this.actions.command(text) : this.actions.send(text, this.attachments.map(file => file.path))).then(() => {
+      if (!command) this.attachments = []
+    }).catch(error => {
       if (!this.closed && !this.draft.plainText) this.setDraft(text)
       throw error
+    }).finally(() => {
+      if (!command) { this.sending = false; if (!this.closed) this.drawAttachments() }
     }))
   }
 
@@ -499,7 +541,7 @@ export class TuiScreen {
       }
       return
     }
-    if (key.ctrl && key.name === 'c') { consume(); if (this.overlay) this.closeModal(); else if (this.busy) this.run(this.actions.interrupt()); else if (this.draft.plainText) this.setDraft(''); else this.actions.quit(); return }
+    if (key.ctrl && key.name === 'c') { consume(); if (this.overlay) this.closeModal(); else if (this.busy) this.run(this.actions.interrupt()); else if (this.draft.plainText || this.attachments.length) { this.setDraft(''); if (!this.sending) { this.attachments = []; this.drawAttachments() } } else this.actions.quit(); return }
     if (key.name === 'escape') { consume(); if (this.overlay) this.closeModal(); else if (this.completionItems.length) this.dismissCompletions(); else this.run(this.actions.interrupt()); return }
     if (this.overlay) {
       if (this.modalItems.length && ['up', 'down', 'tab', 'return'].includes(key.name) && !key.ctrl && !key.meta) {
@@ -509,10 +551,10 @@ export class TuiScreen {
       }
       return
     }
-    if (key.ctrl && ['p', 'k', 'y', 'd'].includes(key.name)) {
+    if (key.ctrl && ['p', 'k', 'y', 'd', 'o'].includes(key.name)) {
       consume()
-      if (key.name === 'd') { if (!this.draft.plainText) this.actions.quit() }
-      else this.run(key.name === 'y' ? this.actions.review() : this.actions.command(key.name === 'p' ? '/commands' : '/history'))
+      if (key.name === 'd') { if (!this.draft.plainText && !this.attachments.length) this.actions.quit() }
+      else this.run(key.name === 'y' ? this.actions.review() : this.actions.command(key.name === 'o' ? '/attach' : key.name === 'p' ? '/commands' : '/history'))
       return
     }
     if (key.name === 'f2') { consume(); this.run(this.actions.command('/model')); return }

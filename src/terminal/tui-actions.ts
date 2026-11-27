@@ -1,5 +1,6 @@
 import { openLocalBrowser } from '../personal-launch.ts'
 import { byName } from './list-order.ts'
+import { attachmentPath } from './attachments.ts'
 import {configureConnection,SetupCancelled} from './setup.ts'
 import { randomUUID } from 'node:crypto'
 import { readdir, writeFile } from 'node:fs/promises'
@@ -18,6 +19,7 @@ import type { ModelCapabilities } from '../reasoning-effort.ts'
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
 export const personalCommands = () => byName([
+  { name: '/attach', label: ui('Attach files', '添加附件'), detail: ui('Choose local files to send · ctrl+o', '选择要发送的本机文件 · ctrl+o') },
   { name: '/connect', label: ui('Model connections', '模型连接'), detail: ui('API keys, account sign-in and connection checks', 'API 密钥、账号登录与连接检测') },
   { name: '/workers', label: ui('Workers', 'Worker 管理'), detail: ui('Create, copy, pause, resume or remove', '新增、复制、启停和删除') },
   { name: '/plugins', label: ui('Plugins', '插件'), detail: ui('Installed plugins', '已安装插件列表') },
@@ -48,6 +50,7 @@ export const personalCommands = () => byName([
 ], command => command.name)
 
 export class TuiCommands {
+  private attachmentDirectory?: string
   constructor(private client: TerminalClient, private conversation: Conversation, private screen: TuiScreen,
     private options: { cwd: string; preferences: TerminalSettings; settingsSources: string[] },
     private view: () => Snapshot, private refresh: () => Promise<void>,
@@ -71,7 +74,10 @@ export class TuiCommands {
     return byName(entries.filter(e => !e.name.startsWith('.') && e.name.toLowerCase().includes(term) && (e.isFile() || e.isDirectory())), entry => entry.name).map(entry => {
         const path = join(directory, entry.name), prefix = text.slice(0, text.lastIndexOf('@'))
         return { label: entry.name + (entry.isDirectory() ? '/' : ''), detail: directory,
-          run: () => this.screen.setDraft(prefix + '@' + (entry.isDirectory() ? '"' + path + '/' : JSON.stringify(path) + ' ')) }
+          run: async () => {
+            if (entry.isDirectory()) this.screen.setDraft(prefix + '@"' + path + '/')
+            else { await this.screen.addAttachment(path); this.screen.setDraft(prefix) }
+          } }
       })
   }
   async execute(input: string): Promise<void> {
@@ -81,6 +87,12 @@ export class TuiCommands {
   private async dispatch(input: string): Promise<void> {
     const name = input.split(/\s/)[0]
     if (name === '/exit' || name === '/quit') { this.quit(); return }
+    if (name === '/attach') {
+      const path = input.slice(name.length).trim()
+      if (path) await this.screen.addAttachment(attachmentPath(path, this.options.cwd))
+      else await this.attachFiles(this.attachmentDirectory ?? this.options.cwd)
+      return
+    }
     if (name === '/commands' || name === '/') {
       this.screen.menu({ title: ui('Commands', '命令'), items: personalCommands().map(c => ({ label: c.label, detail: c.name + ' · ' + c.detail, run: () => this.execute(c.name) })) }); return
     }
@@ -118,6 +130,7 @@ export class TuiCommands {
     if (input === '/help') {
       this.screen.document(ui('Keyboard shortcuts', '快捷键'), [
         'Enter                 Send', 'Shift+Enter / Alt+Enter / Ctrl+J   New line',
+        'Ctrl+O                Attach files',
         '/                     Commands', '@                     Attach local files',
         'Ctrl+P                Search commands', 'F2                    Models', 'Ctrl+K                Search conversation',
         'Ctrl+Y                Review pending requests', 'PageUp / PageDown     Read history', 'Ctrl+End              Back to latest',
@@ -148,6 +161,31 @@ export class TuiCommands {
     const result = await command(this.client, this.conversation.id, input)
     if (result) this.screen.document(name ?? 'Roppo', result)
     await this.refresh()
+  }
+  private async attachFiles(directory: string) {
+    const entries = await readdir(directory, { withFileTypes: true })
+    this.attachmentDirectory = directory
+    const attached = this.screen.attachmentFiles()
+    const items: TuiItem[] = [
+      { label: '../', detail: ui('Parent folder', '上一级目录'), run: () => this.attachFiles(dirname(directory)) },
+      { label: ui('File path…', '输入文件路径…'), run: () => this.screen.prompt(ui('Attach file', '添加附件'), directory + '/', async value => {
+        await this.screen.addAttachment(attachmentPath(value, this.options.cwd))
+      }) },
+      { label: ui('Home folder/', '个人目录/'), detail: homedir(), run: () => this.attachFiles(homedir()) }
+    ]
+    if (attached.length) items.push({ label: ui('Remove attachment…', '移除附件…'), run: () => this.screen.menu({
+      title: ui('Remove attachment', '移除附件'), items: attached.map(file => ({
+        label: file.name, detail: file.path, run: () => this.screen.removeAttachment(file.path)
+      }))
+    }) })
+    for (const entry of entries.filter(e => !e.name.startsWith('.') && (e.isFile() || e.isDirectory()))) {
+      const path = join(directory, entry.name)
+      items.push({ label: entry.name + (entry.isDirectory() ? '/' : ''),
+        detail: entry.isDirectory() ? ui('Folder', '文件夹') : attached.some(file => file.path === path) ? ui('Already attached', '已添加') : undefined,
+        run: () => entry.isDirectory() ? this.attachFiles(path) : this.screen.addAttachment(path) })
+    }
+    this.screen.menu({ title: ui('Attach files', '添加附件'), items,
+      detail: directory + '\n' + ui('Choose a file · /attach to add more · click × to remove', '选择文件 · /attach 可继续添加 · 点击 × 移除') })
   }
   private async compact() {
     const state = await this.client.request<{settings:{automatic:boolean;threshold:number};last:{at:number;beforeBytes:number;afterBytes:number}|null;running:boolean}>(this.path('compact'))

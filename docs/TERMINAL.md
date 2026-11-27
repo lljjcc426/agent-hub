@@ -50,12 +50,21 @@ Ctrl+Y and `/approvals` review pending permissions, Router choices, structured q
 
 `/history` searches this conversation; `/resume` and `/new` are no longer interactive navigation commands. `roppo -r` remains a script/project compatibility option. The default navigation has one continuous personal conversation and no project or Worker session tabs. `ROPPO_LEGACY_TUI=1 roppo` temporarily selects the previous renderer for troubleshooting; it uses the same host and conversation.
 
+## Attachments
+
+Click **+ Attach**, press **Ctrl+O**, or type `/attach` to browse local files. The picker supports folders, an explicit file path, A–Z sorting, mouse scrolling and keyboard selection. `/attach "path/to/file.pdf"` adds a file directly. Selecting a file from `@` suggestions also adds it to the attachment draft.
+
+Selected files appear above the input with their names and sizes. Click a file’s `×` to remove it, or open `/attach` → **Remove attachment…**. Add multiple files, then press Enter to send them with your text; an attachment-only message is also supported. Files upload when you send. Failed sends retain the text and attachments for retry. Ctrl+C clears an unsent draft and its attachments.
+
+Limits match the web workspace: up to 32 files, each at most 100 MiB. Images, PDFs, documents and other regular files use the existing conversation upload API. Sent attachments are visible in the same web conversation. The unsent local file selection belongs to this terminal window. `--file` and manually typed `@"path"` references remain supported.
+
 ## Settings and session controls
 
 Type a slash command to open a searchable picker. Arrow keys move, Enter selects, and Esc returns to your draft. The following commands work against the running host:
 
 | Command | Behavior and scope |
 | --- | --- |
+| `/attach [path]` | Add local files to the message; browse, type a path, or remove pending attachments |
 | `/settings`, `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
 | `/theme` | System, dark, light or monochrome screen colors |
 | `/connect` | Add an API/OAuth connection, test it, then use it for Router or save it to the connection library |

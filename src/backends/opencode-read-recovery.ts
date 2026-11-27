@@ -2,7 +2,7 @@ import type {PermissionAction} from '../chat-permissions.ts'
 import type {WorkerAttempt,WorkerEventReceipt} from '../async-worker-inbox.ts'
 import {browserToolSchema} from '../browser-contract.ts'
 import {browserReceiptId} from '../browser-manager.ts'
-import {isParallelRead} from '../tool-dispatch.ts'
+import {isParallelRead,toolDescriptionName} from '../tool-dispatch.ts'
 import {createHash} from 'node:crypto'
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync,realpathSync,statSync} from 'node:fs'
 import {join} from 'node:path'
@@ -64,7 +64,7 @@ export function isRouterRead(name:string,args:unknown){
   case 'router_goal':return action==='list'||action==='inspect'
   case 'router_journal':return action==='read'
   case 'workspace_browser':return action==='snapshot'
-  case 'chat_opening':case 'superagent_status':return true
+  case 'chat_opening':case 'superagent_status':case toolDescriptionName:return true
   default:return false
  }
 }
@@ -468,7 +468,7 @@ function accountedWorkerTurn(store:Pick<ThreadStore,'get'>,stateDir:string,run:R
     if(result){
      if(record.state!=='complete'||record.result?.success!==result.success||
        record.result.permission==='pending'||record.result.permission==='uncertain')return
-     if(turn===last){
+     if(turn===last&&call.name!==toolDescriptionName){
       const args=checkpoint?call.args as Record<string,unknown>|null:null
       calls.push({tool:call.name,effectId,success:result.success,
        ...(checkpoint?{callId:call.id}:{}),
@@ -536,7 +536,7 @@ export function workerCheckpointReady(store:Pick<Store,'get'|'db'>,stateDir:stri
 // Old Code Mode cells only stored their outer receipt. Reject transfer if
 // any potentially effectful child is not independently present in the journal.
 function inputEffectKey(name:string,action?:string){
- if(['superagent_status','superagent_read','code_mode','chat_artifact_find'].includes(name)||
+ if(['superagent_status','superagent_read','code_mode','chat_artifact_find',toolDescriptionName].includes(name)||
     name==='superagent_desktop'&&action==='get_window_state')return
  return name==='superagent_desktop'?name+':'+action:name
 }
@@ -685,7 +685,7 @@ function stoppedWorkerTool(store:Pick<Store,'get'|'db'>,stateDir:string,run:Run,
     const id=stableDigest([thread.id,turn.id,call.id]),owned=remaining.delete(id)
     const receipt=store.get<PluginToolEffect>('backend-plugin-tool',id)
     if(!owned&&!receipt&&turn===last&&!call.result&&
-      (call.name==='superagent_read'&&readSchema.safeParse(call.args).success||
+      (call.name===toolDescriptionName||call.name==='superagent_read'&&readSchema.safeParse(call.args).success||
        call.name==='chat_artifact_find'&&findChatArtifactInput.safeParse(call.args).success))continue
     if(!owned||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return
     if(id===callback.id)continue
@@ -781,9 +781,9 @@ export function proveInterruptedOpenCodeRead(store:Pick<ThreadStore,'get'>,state
     if(!effects.delete(id)||!receipt||receipt.fingerprint!==stableDigest([call.name,call.args]))return
     const read=call.name==='superagent_read'?readSchema.safeParse(call.args):undefined
     const githubResource=read?.success&&read.data.resource.startsWith('github/')
-    if(!githubResource&&!(read?.success&&read.data.resource==='catalog')&&call.name!=='superagent_status'&&
+    if(!githubResource&&!(read?.success&&read.data.resource==='catalog')&&call.name!=='superagent_status'&&call.name!==toolDescriptionName&&
      !(call.name==='github_read'&&githubReadSchema.safeParse(call.args).success))return
-    if(turn===last&&call.name!=='superagent_status')nativeRead=true
+    if(turn===last&&call.name!=='superagent_status'&&call.name!==toolDescriptionName)nativeRead=true
     if(receipt.state==='complete'&&call.result&&receipt.result?.success===call.result.success)continue
     if(turn!==last||!githubResource&&call.name!=='github_read'||call.result||receipt.result!==undefined||
      receipt.state!=='running'||receipt.failure?.operation!=='tool'||receipt.failure.reason!=='exception')return
@@ -837,7 +837,7 @@ export function proveInterruptedArtifactRead(store:Pick<ThreadStore,'get'>,state
     }
     const receiptId=stableDigest([thread.id,turn.id,call.id])
     const receipt=store.get<ArtifactReadProof['receipt']>('backend-plugin-tool',receiptId)
-    const scopedRead=call.name==='superagent_status'
+    const scopedRead=call.name==='superagent_status'||call.name===toolDescriptionName
      ||call.name==='superagent_read'&&readSchema.safeParse(call.args).success
      ||call.name==='chat_artifact_find'&&findChatArtifactInput.safeParse(call.args).success
     if(turn===last&&proof&&!receipt&&!call.result&&scopedRead&&!remaining.has(receiptId))continue

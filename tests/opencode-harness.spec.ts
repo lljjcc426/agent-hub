@@ -97,6 +97,84 @@ it.skipIf(!bundledCLI)('delivers a successful plain-text OpenCode reply to Chat 
  }
 },45000)
 
+it.skipIf(!bundledCLI)('reads a Router tool definition through bundled OpenCode and executes it by its original name',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'harness-progressive-tools-'))
+ let steps=0,total=0,fixtureError:unknown
+ const upstream=createServer(async(req,res)=>{
+  if(req.method==='GET'&&req.url==='/v1/models'){
+   res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({data:[{id:'sample',limit:{context:65536,output:4096}}]}))
+   return
+  }
+  try{
+   const chunks=[]
+   for await(const chunk of req)chunks.push(chunk)
+   const body=JSON.parse(Buffer.concat(chunks).toString()),id=++total
+   const tool=body.tools?.find((item:any)=>item.name==='roppo_worker_manage')
+   const call=(name:string,args:object)=>({type:'function_call',id:'fc_'+name,call_id:'call_'+name,name,arguments:JSON.stringify(args),status:'completed'})
+   const reply='{"reply":"The Worker list was read."}'
+   let output:any[]=[{type:'message',id:'msg_'+id,role:'assistant',status:'completed',content:[{type:'output_text',text:reply,annotations:[]}]}]
+   if(tool){
+    expect(tool.parameters?.properties).not.toHaveProperty('action')
+    expect(tool.strict).toBe(false)
+    expect(body.tools.some((item:any)=>item.name==='roppo_tool_describe')).toBe(true)
+    if(++steps===1){
+     expect(body.tools.some((item:any)=>item.name==='roppo_chat_opening')).toBe(true)
+     output=[call('roppo_chat_opening',{text:'I will read the Worker list.'}),call('roppo_tool_describe',{name:'roppo_worker_manage'})]
+    }
+    else if(steps===2){
+     const description=JSON.stringify(body.input)
+     expect(description).toContain('Mutations require the latest revision and a stable requestId')
+     expect(description).toContain('workspaceReviewed')
+     output=[call('roppo_worker_manage',{action:'list'})]
+    }
+   }
+   const response={id:'resp_'+id,object:'response',model:'sample',created_at:1,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}
+   res.writeHead(200,{'content-type':'text/event-stream'})
+   const send=(type:string,data:object)=>res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n')
+   send('response.created',{response:{...response,status:'in_progress',output:[]}})
+   for(const [output_index,item] of output.entries()){
+    if(item.type==='function_call'){
+     send('response.output_item.added',{output_index,item:{...item,arguments:'',status:'in_progress'}})
+     send('response.function_call_arguments.delta',{output_index,item_id:item.id,delta:item.arguments})
+     send('response.function_call_arguments.done',{output_index,item_id:item.id,arguments:item.arguments})
+    }else{
+     send('response.output_item.added',{output_index,item:{...item,status:'in_progress',content:[]}})
+     send('response.output_text.delta',{output_index,item_id:item.id,content_index:0,delta:reply})
+    }
+    send('response.output_item.done',{output_index,item})
+   }
+   send('response.completed',{response});res.end()
+  }catch(error){fixtureError=error;res.writeHead(400).end()}
+ })
+ await new Promise<void>(ok=>upstream.listen(0,'127.0.0.1',ok))
+ const baseUrl='http://127.0.0.1:'+(upstream.address() as {port:number}).port+'/v1'
+ let host:Runtime|undefined
+ try{
+  const runtime=host=await Runtime.create(configSchema.parse({
+   stateDir:join(root,'state'),work:{sandboxDriver:process.platform==='darwin'?'seatbelt':'bubblewrap'},
+   backends:{api:{kind:'openai-responses',model:'sample',baseUrl,outputFormat:'prompt',compaction:{discover:true}}},
+   execution:{backend:'api',router:{mode:'host',backend:'api'},management:{enabled:true}},
+   sources:[{id:'local',kind:'local',cwd:root,allowedActors:['owner']}],
+  }))
+  const chat=runtime.chat.create('owner'),{runId}=runtime.chat.send(chat.id,'owner',{text:'List the available Workers.',clientMessageId:randomUUID(),openingLocale:'en'})
+  await vi.waitFor(async()=>{
+   await runtime.tick()
+   const job=runtime.store.db.prepare('select state from jobs where id=?').get('router:'+runId)
+   expect(['done','failed']).toContain(job?.state)
+  },{timeout:14000,interval:50})
+  expect(fixtureError).toBeUndefined()
+  expect(runtime.store.get('router-error','router:'+runId)).toBeUndefined()
+  expect(steps).toBe(3)
+  expect(runtime.activity.list().filter(call=>call.name==='worker_manage'&&call.state==='completed')).toHaveLength(1)
+  expect(runtime.chat.view(chat.id,'owner').messages.some(message=>message.status==='complete'&&message.text==='The Worker list was read.')).toBe(true)
+ }finally{
+  await host?.close()
+  upstream.closeAllConnections()
+  await new Promise<void>(ok=>upstream.close(()=>ok()))
+  rmSync(root,{recursive:true,force:true})
+ }
+},25000)
+
 it('transports mixed MCP images and gives malformed images a non-fatal tool result',async()=>{
  const fatal=vi.fn(),invoke=vi.fn(async(name:string)=>{
   if(name==='read')return {success:true,contentItems:[

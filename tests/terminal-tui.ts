@@ -80,7 +80,8 @@ try {
   const openEffort=()=>screen.effortSlider('Router · Reasoning effort',['low','medium','high','xhigh'],'medium',async value=>{savedEfforts.push(value)},'high')
   openEffort(); await capture('effort-slider')
   const track=test.renderer.root.findDescendantById('effort-slider')!
-  await test.mockMouse.drag(track.x,track.y,track.x+track.width-1,track.y)
+  assert.equal(track.height,5,'pixel tide has five character rows')
+  await test.mockMouse.drag(track.x,track.y+2,track.x+track.width-1,track.y+2)
   await test.renderOnce()
   const effortValue=()=> (test.renderer.root.findDescendantById('effort-value') as TextRenderable).content.chunks.map(chunk=>chunk.text).join('')
   assert.equal(effortValue(),'xhigh')
@@ -105,6 +106,24 @@ try {
   test.mockInput.pressKey('ARROW_RIGHT');test.mockInput.pressKey('ESCAPE');await test.renderOnce()
   assert.equal(savedEfforts.length,2,'Escape discards the preview')
   test.resize(120,34);await test.renderOnce()
+
+  screen.preferences({theme:'dark',motion:'full',animation:false})
+  openEffort();await test.renderOnce()
+  const animatedTrack=test.renderer.root.findDescendantById('effort-slider') as TextRenderable
+  const still=animatedTrack.content.chunks.map(chunk=>chunk.text).join('')
+  await new Promise(resolve=>setTimeout(resolve,250));await test.renderOnce()
+  const moving=animatedTrack.content.chunks.map(chunk=>chunk.text).join('')
+  assert.notEqual(moving,still,'open effort slider advances the pixel sweep')
+  assert.match(moving,/[░▒▓]/)
+  screen.preferences({theme:'light',motion:'reduced',animation:false});await test.renderOnce()
+  const reducedFrame=animatedTrack.content.chunks.map(chunk=>chunk.text).join('')
+  assert.doesNotMatch(reducedFrame,/[░▒▓]/,'reduced motion keeps the track static')
+  test.resize(48,16);await test.renderOnce()
+  assert.equal(animatedTrack.height,3,'short terminals use a compact tide')
+  const compactConfirm=test.renderer.root.findDescendantById('effort-confirm')!
+  assert.ok(compactConfirm.y<16,'save action remains visible in a short terminal')
+  screen.closeModal();test.resize(120,34)
+  screen.preferences({theme:'dark',motion:'reduced',animation:true});await test.renderOnce()
 
   await test.mockInput.pasteBracketedText('中文草稿 👩‍💻\n/permissions full')
   assert.equal(sent.length, 0, 'pasted commands are draft text')

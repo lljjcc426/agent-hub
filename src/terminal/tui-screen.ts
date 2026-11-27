@@ -15,6 +15,7 @@ import stringWidth from 'string-width'
 import { byName } from './list-order.ts'
 import { readAttachment, attachmentSize, type DraftAttachment } from './attachments.ts'
 import { chatUploadLimits } from '../execution-limits.ts'
+import { effortTideColors, effortTideFrame } from './effort-tide.ts'
 
 export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
 export interface TuiMenu { order?: 'name' | 'source'; cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
@@ -70,6 +71,7 @@ export class TuiScreen {
   private modalRows?: ScrollBoxRenderable
   private modalCancel?: () => void
   private modalRedraw?: () => void
+  private modalPulse?: ReturnType<typeof setInterval>
   private modalMenu?: TuiMenu
   private modalItems: TuiItem[] = []
   private modalIndex = 0
@@ -475,11 +477,13 @@ export class TuiScreen {
     const panel=this.modal(title)
     let selected=levels.includes(current??'')?current:null
     let index=Math.max(0,levels.indexOf(selected??defaultEffort??''))
-    let columns=1
+    let columns=1, rows=5
+    const started=Date.now()
+    let tones:RGBA[]=[]
     const value=this.text('',{id:'effort-value',height:1,fg:this.palette.accent})
     const choose=(next:number)=>{index=Math.max(0,Math.min(levels.length-1,next));selected=levels[index]!;draw()}
     const submit=()=>{this.closeModal(false);this.run(save(selected))}
-    const track=this.text('',{id:'effort-slider',height:1,marginTop:1,selectable:false,
+    const track=this.text('',{id:'effort-slider',height:5,marginTop:1,selectable:false,
       onMouseDown:event=>{if(event.button===0){event.preventDefault();choose(Math.round((event.x-track.x)/(columns-1)*(levels.length-1)));track.focus()}},
       onMouseDrag:event=>{event.preventDefault();choose(Math.round((event.x-track.x)/(columns-1)*(levels.length-1)))},
       onKeyDown:key=>{
@@ -490,25 +494,46 @@ export class TuiScreen {
         else choose(key.name==='home'?0:key.name==='end'?levels.length-1:index+(['right','up'].includes(key.name)?1:-1))
       }
     })
-    const range=this.text('',{height:1,fg:this.palette.muted})
+    const range=this.text('',{id:'effort-levels',height:1,fg:this.palette.muted,selectable:false,
+      onMouseDown:event=>{if(event.button===0){choose(Math.round((event.x-range.x)/(columns-1)*(levels.length-1)));track.focus()}}
+    })
+    const paint=()=>{
+      const frame=effortTideFrame(columns,rows,levels.length,index,Date.now()-started,this.prefs.motion!=='reduced')
+      track.content=new StyledText(frame.flatMap((row,y)=>[
+        ...row.map(cell=>({__isChunk:true as const,text:cell.text,fg:cell.tone<0?RGBA.fromHex(this.palette.muted):tones[cell.tone]!})),
+        ...(y<rows-1?[{__isChunk:true as const,text:'\n'}]:[])
+      ]))
+    }
     const draw=()=>{
       columns=Math.max(2,Math.min(74,this.renderer.width-8))
-      track.width=columns
+      rows=this.renderer.height>=20?5:this.renderer.height>=16?3:1
+      track.width=columns;track.height=rows;range.width=columns
+      tones=effortTideColors(levels[index]!,this.prefs.theme==='mono'?'mono':this.palette===light?'light':'dark').map(color=>RGBA.fromHex(color))
+      value.fg=tones[0]!;confirm.fg=tones[0]!
       value.content=selected??ui('Model default','模型默认')+(defaultEffort?' · '+defaultEffort:'')
-      const knob=Math.round(index/Math.max(1,levels.length-1)*(columns-1))
-      const stops=new Set(levels.map((_,i)=>Math.round(i/Math.max(1,levels.length-1)*(columns-1))))
-      track.content=new StyledText(Array.from({length:columns},(_,x)=>({__isChunk:true as const,
-        text:x===knob?'●':stops.has(x)?'◆':'━',fg:RGBA.fromHex(x<=knob?this.palette.accent:this.palette.muted)})))
-      range.content=levels[0]+'  →  '+levels.at(-1)
+      const labels=Array<string>(columns).fill(' ')
+      let end=-1
+      levels.forEach((level,i)=>{
+        const x=Math.max(0,Math.min(columns-level.length,Math.round(i/Math.max(1,levels.length-1)*(columns-1)-level.length/2)))
+        if(x<=end||i<levels.length-1&&x+level.length>=columns-levels.at(-1)!.length-1)return
+        for(let j=0;j<level.length;j++)labels[x+j]=level[j]!
+        end=x+level.length
+      })
+      range.content=labels.join('');help.visible=this.renderer.height>=16
+      if(this.prefs.motion==='reduced'){clearInterval(this.modalPulse);this.modalPulse=undefined}
+      else if(!this.modalPulse)this.modalPulse=setInterval(paint,50)
+      paint()
     }
     panel.add(value);panel.add(track);panel.add(range)
     const actions=new BoxRenderable(this.renderer,{flexDirection:'row',gap:3,marginTop:1})
     actions.add(this.text(ui('Default (D)','默认 (D)'),{id:'effort-default',height:1,selectable:false,onMouseDown:event=>{
       if(event.button===0){selected=null;index=Math.max(0,levels.indexOf(defaultEffort??''));draw();track.focus()}
     }}))
-    actions.add(this.text(ui('Confirm ↵','确认 ↵'),{id:'effort-confirm',fg:this.palette.accent,height:1,selectable:false,onMouseDown:event=>{if(event.button===0)submit()}}))
+    const confirm=this.text(ui('Confirm ↵','确认 ↵'),{id:'effort-confirm',fg:this.palette.accent,height:1,selectable:false,onMouseDown:event=>{if(event.button===0)submit()}})
+    actions.add(confirm)
     panel.add(actions)
-    panel.add(this.text(ui('drag / ← → adjust · enter save · esc cancel','拖动 / ← → 调节 · enter 保存 · esc 取消'),{fg:this.palette.muted,marginTop:1,wrapMode:'word'}))
+    const help=this.text(ui('drag / ← → adjust · enter save · esc cancel','拖动 / ← → 调节 · enter 保存 · esc 取消'),{fg:this.palette.muted,marginTop:1,wrapMode:'word'})
+    panel.add(help)
     this.modalRedraw=draw;track.focusable=true;draw();track.focus()
   }
   private filterMenu() {
@@ -598,6 +623,7 @@ export class TuiScreen {
   closeModal(cancelled = true) {
     const cancel = this.modalCancel; this.modalCancel = undefined
     this.modalRedraw = undefined
+    clearInterval(this.modalPulse);this.modalPulse=undefined
     this.overlay?.destroyRecursively(); this.overlay = undefined; this.modalSearch = undefined
     this.modalPanel = undefined; this.modalRows = undefined; this.modalMenu = undefined; this.modalItems = []; this.draft?.focus()
     if (cancelled) cancel?.()
@@ -648,6 +674,7 @@ export class TuiScreen {
     }
   }
   close() {
+    clearInterval(this.modalPulse);this.modalPulse=undefined
     this.closed = true; clearInterval(this.startupPulse); this.startupLayer?.destroyRecursively(); clearInterval(this.companionPulse); clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
     this.renderer.keyInput.off('keypress', this.key); this.renderer.off('resize', this.resize); this.renderer.off('theme_mode', this.themeChanged)
     this.overlay?.destroyRecursively(); this.frame.destroyRecursively(); this.style.destroy()

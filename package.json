@@ -8,6 +8,7 @@
     "node": ">=22.19"
   },
   "scripts": {
+    "setup:terminal-font": "node bin/install-terminal-font.mjs",
     "start": "tsx src/cli.ts",
     "verify-recovery-package": "node --import tsx/esm src/recovery-package-cli.ts",
     "test": "vitest run",

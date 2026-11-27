@@ -58,3 +58,13 @@
 macOS Terminal 截图中每四排点之间的整行间隙属于终端盲文字形与行高的组合效果，本次算法修正不消除该间隙，也没有修改用户终端字体或替换为实心像素。
 
 本次只修改 `src/terminal/companion.ts`（采样绘制）、`tests/terminal-companion.spec.ts`（漏点回归与原轮廓检查）和本文。没有删除文件。类型检查、点阵测试和原生 TUI 测试通过。
+
+## macOS 横向间隙的字体适配
+
+后续通过 CoreText 确认：Menlo 不含 Braille 字符，系统会回退到 Apple Braille，四排圆点的高度与正文行高不一致。为此提供独立的 Roppo Mono 字体：保留 JetBrains Mono 的普通字形和指标，补入覆盖全行高度的 256 个圆点字形。角色仍使用原有点阵、三行布局和动画。
+
+运行 `npm run setup:terminal-font` 安装，再打开 `~/.roppo/terminal/Roppo.terminal`，在新窗口运行 `roppo`。已有窗口需要选择新字体才会生效；该安装不会自动更改默认终端配置。
+
+CoreText 验证所有点阵字符均由新字体直接绘制，没有字体回退；三行满点阵得到连续的十二排圆点，2× 渲染的相邻排中心距离为 7.91–8.27 像素，原来的两处大间隙不再出现。这个验证覆盖系统字体渲染；Terminal.app 的实际窗口仍需选用新配置后确认。
+
+本次新增 `assets/terminal/` 下的字体、OFL 授权、独立 Terminal 配置与使用说明，新增 `tools/fonts/build-roppo-mono.py`（字体构建源代码）及 `bin/install-terminal-font.mjs`（本机安装），修改 `package.json`（安装命令）、`docs/TERMINAL.md` 和本文。没有删除项目文件，也没有修改角色绘制代码。

@@ -12,6 +12,12 @@ npm link
 roppo --version
 ```
 
+On macOS Terminal, if the dotted companion has two horizontal gaps, install the
+included font/profile with `npm run setup:terminal-font`, open
+`~/.roppo/terminal/Roppo.terminal`, and run `roppo` in that window. This profile
+uses Roppo Mono to keep dot spacing consistent across text rows. Existing
+Terminal profiles retain their fonts. See [font setup](../assets/terminal/README.md).
+
 For a new installation, run `roppo`. The terminal starts the local service when needed, asks you to create a local account, and walks through a model connection, connection check and save. Passwords and API keys are hidden. Save the displayed account recovery code privately. `roppo init` reruns this setup without entering the conversation. API setup supports OpenAI, Anthropic and compatible Chat Completions/Responses/Messages endpoints. ChatGPT OAuth uses the existing provider sign-in link in your browser; account selection, background-use consent and model selection stay in the terminal. Existing local Codex connections can be reused. A fresh setup creates one initial Worker and enables personal memory. Existing Workers retain their settings. For an existing instance, run `roppo login`. To select a specific local instance, run `roppo login --host http://127.0.0.1:4337`. Match the code printed in the terminal with the browser and click **Connect terminal**. The CLI remembers the selected host. `roppo logout` revokes this terminal credential.
 
 The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It uses the URL in that file. `--host` and `ROPPO_HOST` take precedence. Credentials are stored per host in private files under `~/.roppo/terminal`. Set `ROPPO_CLI_HOME` to use a separate terminal profile and `ROPPO_HOME` to select the personal service directory (default `~/.agent-hub`). The automatically started service writes logs under that directory’s `logs/terminal-service.log` and continues after the terminal exits; OS login startup remains a separate host setting.

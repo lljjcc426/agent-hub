@@ -55,13 +55,12 @@ export class AppleTerminalOutput extends Writable {
         /^\x1b\[(?:\?[\d;]*\$p|\?u|>[\d;]*q)$/.test(sequence) ||
         sequence.startsWith('\x1b]66;')
       if (!unsupported) output += sequence
-      // Terminal.app 470.2 shifts the saved main-screen cursor down by the
-      // added rows when an alternate screen grows. Its contents stay put.
-      // Restore our measured position for growth; leave narrowing/reflow to
-      // the terminal because the shell's original lines may have wrapped.
+      // Restore the shell's measured position within the resized viewport.
       if (sequence === '\x1b[?1049l' && this.origin &&
-        this.rows > this.initialRows && this.columns >= this.initialColumns) {
-        output += `\x1b[${this.origin.row};${this.origin.column}H`
+        (this.rows !== this.initialRows || this.columns !== this.initialColumns)) {
+        const row = Math.min(this.origin.row, this.rows)
+        const column = Math.min(this.origin.column, this.columns)
+        output += `\x1b[${row};${column}H`
       }
       offset = end
     }

@@ -35,14 +35,14 @@ test('growing Apple Terminal restores the measured shell cursor, not its shifted
   expect(output).toBe('\x1b[?1049h\x1b[?1049l\x1b[6;1H')
 })
 
-test('narrowing preserves the terminal cursor adjustment for reflowed shell lines', async () => {
+test.each([[6, 6], [55, 30]])('shrinking restores shell row %i to visible row %i', async (originalRow, row) => {
   let output = ''
   const sink = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done() } }),
-    { rows: 30, columns: 120 })
+    { rows: 60, columns: 207 })
   const filtered = new AppleTerminalOutput(sink as NodeJS.WriteStream)
-  filtered.rememberCursor(Buffer.from('\x1b[6;1R'))
-  sink.rows = 60; sink.columns = 80
+  filtered.rememberCursor(Buffer.from(`\x1b[${originalRow};1R`))
+  sink.rows = 30; sink.columns = 120
   filtered.end('\x1b[?1049l')
   await once(filtered, 'finish')
-  expect(output).toBe('\x1b[?1049l')
+  expect(output).toBe(`\x1b[?1049l\x1b[${row};1H`)
 })

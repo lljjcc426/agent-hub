@@ -54,7 +54,7 @@ def check(mode):
                 output += chunk
             elif child.poll() is not None:
                 break
-            if mode == 'grow /exit' and not cursor_reported and b'\x1b[6n' in output:
+            if mode in ['grow /exit', 'resize /exit'] and not cursor_reported and b'\x1b[6n' in output:
                 os.write(master, b'\x1b[6;1R')
                 cursor_reported = True
             last_row = b'\x1b[60;1H' if mode == 'grow /exit' else b'\x1b[24;1H'
@@ -80,7 +80,7 @@ def check(mode):
         active, after = active.split(LEAVE)
         assert printable(before) == b'SHELL_BEFORE\r\n', (mode, before)
         assert printable(after) == b'SHELL_RETURN raw=false\r\n', (mode, after)
-        if mode == 'grow /exit':
+        if mode in ['grow /exit', 'resize /exit']:
             assert after.startswith(b'\x1b[6;1H'), 'Restore the real shell cursor before returning to the shell'
         # Do not merely hide these in another buffer: never send them to Apple Terminal.
         assert b'+q4d73' not in output and b'Gi=31337' not in output, mode

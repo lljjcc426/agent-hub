@@ -52,9 +52,9 @@ Ctrl+Y and `/approvals` review pending permissions, Router choices, structured q
 
 ## Attachments
 
-Click **+ Attach**, press **Ctrl+O**, or type `/attach` to browse local files. The picker supports folders, an explicit file path, A–Z sorting, mouse scrolling and keyboard selection. `/attach "path/to/file.pdf"` adds a file directly. Selecting a file from `@` suggestions also adds it to the attachment draft.
+Click **+ Attach**, press **Ctrl+O**, or type `/attach` to open the system file chooser on macOS or Windows. Browse any accessible directory and select multiple files at once. The picker starts in the current directory, then remembers the last selected folder for this CLI session. Cancelling preserves your text and existing attachments. Other platforms use the in-terminal browser; `/attach --browse` opens that browser explicitly, with A–Z sorting, mouse scrolling and keyboard selection. `/attach "path/to/file.pdf"` adds a file directly. Selecting a file from `@` suggestions also adds it to the attachment draft.
 
-Selected files appear above the input with their names and sizes. Click a file’s `×` to remove it, or open `/attach` → **Remove attachment…**. Add multiple files, then press Enter to send them with your text; an attachment-only message is also supported. Files upload when you send. Failed sends retain the text and attachments for retry. Ctrl+C clears an unsent draft and its attachments.
+Selected files appear above the input with their names and sizes. Click a file’s `×` to remove it, or open `/attach --browse` → **Remove attachment…**. Add multiple files, then press Enter to send them with your text; an attachment-only message is also supported. Files upload when you send. Failed sends retain the text and attachments for retry. Ctrl+C clears an unsent draft and its attachments.
 
 Limits match the web workspace: up to 32 files, each at most 100 MiB. Images, PDFs, documents and other regular files use the existing conversation upload API. Sent attachments are visible in the same web conversation. The unsent local file selection belongs to this terminal window. `--file` and manually typed `@"path"` references remain supported.
 
@@ -64,7 +64,7 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 
 | Command | Behavior and scope |
 | --- | --- |
-| `/attach [path]` | Add local files to the message; browse, type a path, or remove pending attachments |
+| `/attach [path \| --browse]` | Open the system file chooser, attach a path directly, or use the terminal browser |
 | `/settings`, `/config` | Terminal preference picker; `/config key=value [user\|project\|local]` saves a value |
 | `/theme` | System, dark, light or monochrome screen colors |
 | `/connect` | Add an API/OAuth connection, test it, then use it for Router or save it to the connection library |
@@ -198,3 +198,9 @@ The interactive screen follows OpenCode's input, searchable overlays, Markdown a
 - [OpenTUI runtime support](https://opentui.com/docs/getting-started/runtime-support/)
 
 The interactive renderer runs on the bundled Bun because current OpenTUI requires Bun 1.3.14+ or Node 26.4+ with experimental FFI. Print mode and the service continue to support Node 22.19+.
+
+### System file chooser implementation
+
+`src/terminal/file-picker.ts` launches the platform helper without a shell. `file-picker-macos.js` uses macOS Standard Additions; `file-picker-windows.ps1` uses the Windows Forms file dialog with multiple selection enabled. Paths are passed as arguments or environment values, never interpolated into executable code. `tui-actions.ts` connects the chooser to the attachment draft and falls back to the terminal browser when unavailable. The attachment TUI test covers multi-selection, cancellation, retained drafts, and remembered directories.
+
+Platform references: [Apple file chooser](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/PromptforaFileorFolder.html), [Windows file dialog](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/controls/openfiledialog-component-overview-windows-forms).

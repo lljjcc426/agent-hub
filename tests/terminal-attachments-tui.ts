@@ -23,7 +23,11 @@ const screen = new TuiScreen(test.renderer, { theme: 'dark', animation: false },
   command: input => commands.execute(input), complete: input => commands.complete(input),
   interrupt: async () => {}, older: async () => {}, review: async () => {}, quit: () => {}
 })
-commands = new TuiCommands({} as TerminalClient, view.conversation, screen, { cwd: dir, preferences: {}, settingsSources: [] }, () => view, async () => {}, () => {}, async () => {})
+let nativeSelection: string[] | null = null
+const pickerDirectories: string[] = []
+commands = new TuiCommands({} as TerminalClient, view.conversation, screen, { cwd: dir, preferences: {}, settingsSources: [] }, () => view, async () => {}, () => {}, async () => {}, async directory => {
+  pickerDirectories.push(directory); return nativeSelection
+})
 const settle = async () => { await new Promise(resolve => setTimeout(resolve, 100)); await test.renderOnce() }
 const clickText = async (text: string) => {
   const lines = test.captureCharFrame().split('\n'), y = lines.findIndex(line => line.includes(text))
@@ -79,5 +83,17 @@ try {
   assert.equal(screen.attachmentFiles().length, 7, 'attachment list scrolls and removes by mouse')
   test.mockInput.pressKey('c', { ctrl: true }); await settle()
   assert.equal(screen.attachmentFiles().length, 0, 'Ctrl+C clears the unsent attachment draft')
+  nativeSelection = [alpha, beta]
+  screen.setDraft('Keep my text')
+  await commands.execute('/attach'); await settle()
+  assert.deepEqual(screen.attachmentFiles().map(file => file.path), [alpha, beta], 'native picker supports multiple files')
+  assert.equal(screen.draft.plainText, 'Keep my text')
+  nativeSelection = []
+  test.mockInput.pressKey('o', { ctrl: true }); await settle()
+  assert.equal(pickerDirectories.at(-1), dir, 'native picker remembers the selected directory')
+  assert.equal(screen.attachmentFiles().length, 2, 'cancel preserves selected attachments')
+  assert.equal(screen.draft.plainText, 'Keep my text', 'cancel preserves draft')
+  await commands.execute('/attach --browse'); await settle()
+  assert.match(test.captureCharFrame(), /Attach files/, 'explicit terminal browser remains available')
   console.log('Attachment TUI passed: file picker, folders, @, dedupe, removal, failure recovery, send-only files, scroll and resize')
 } finally { screen.close(); await test.dispose(); rmSync(dir, { recursive: true, force: true }) }

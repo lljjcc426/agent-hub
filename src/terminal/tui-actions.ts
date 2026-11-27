@@ -1,6 +1,7 @@
 import { openLocalBrowser } from '../personal-launch.ts'
 import { byName } from './list-order.ts'
 import { attachmentPath } from './attachments.ts'
+import { pickNativeFiles } from './file-picker.ts'
 import {configureConnection,SetupCancelled} from './setup.ts'
 import { randomUUID } from 'node:crypto'
 import { readdir, writeFile } from 'node:fs/promises'
@@ -51,10 +52,12 @@ export const personalCommands = () => byName([
 
 export class TuiCommands {
   private attachmentDirectory?: string
+  private choosingFiles = false
   constructor(private client: TerminalClient, private conversation: Conversation, private screen: TuiScreen,
     private options: { cwd: string; preferences: TerminalSettings; settingsSources: string[] },
     private view: () => Snapshot, private refresh: () => Promise<void>,
-    private quit: (next?: Conversation) => void, private older: () => Promise<void>) {}
+    private quit: (next?: Conversation) => void, private older: () => Promise<void>,
+    private pickFiles = pickNativeFiles) {}
   private path(suffix: string) { return '/api/chat/conversations/' + this.conversation.id + '/' + suffix }
   private async change(path: string, body: unknown, patch = false) {
     await this.client.request(path, body, patch ? { method: 'PATCH' } : {}); await this.refresh()
@@ -89,8 +92,9 @@ export class TuiCommands {
     if (name === '/exit' || name === '/quit') { this.quit(); return }
     if (name === '/attach') {
       const path = input.slice(name.length).trim()
-      if (path) await this.screen.addAttachment(attachmentPath(path, this.options.cwd))
-      else await this.attachFiles(this.attachmentDirectory ?? this.options.cwd)
+      if (path === '--browse') await this.attachFiles(this.attachmentDirectory ?? this.options.cwd)
+      else if (path) await this.screen.addAttachment(attachmentPath(path, this.options.cwd))
+      else await this.chooseFiles()
       return
     }
     if (name === '/commands' || name === '/') {
@@ -161,6 +165,20 @@ export class TuiCommands {
     const result = await command(this.client, this.conversation.id, input)
     if (result) this.screen.document(name ?? 'Roppo', result)
     await this.refresh()
+  }
+  private async chooseFiles() {
+    if (this.choosingFiles) return
+    this.choosingFiles = true
+    const directory = this.attachmentDirectory ?? this.options.cwd
+    try {
+      const files = await this.pickFiles(directory)
+      if (files === null) { await this.attachFiles(directory); return }
+      for (const file of files) await this.screen.addAttachment(file)
+      if (files[0]) this.attachmentDirectory = dirname(files[0])
+    } catch (error) {
+      this.screen.notice(ui('Could not attach files: ', '无法添加附件：') + (error as Error).message, true)
+      await this.attachFiles(directory)
+    } finally { this.choosingFiles = false }
   }
   private async attachFiles(directory: string) {
     const entries = await readdir(directory, { withFileTypes: true })

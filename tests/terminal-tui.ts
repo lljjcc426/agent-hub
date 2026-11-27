@@ -36,6 +36,10 @@ try {
   assert.match(home, /Commands · ctrl\+p/)
   assert.equal(screen.transcript.scrollHeight, 0)
   assert.match(home, /Ready when you are/)
+  const wordmark=test.renderer.root.findDescendantById('header-wordmark')!
+  const companionArt=test.renderer.root.findDescendantById('header-companion')!
+  assert.equal(companionArt.y,wordmark.y,'companion and wordmark share the top row')
+  assert.equal(companionArt.x+companionArt.width/2,test.renderer.width/2,'companion stays centered')
   assert.equal(home.split('\n').filter(line=>/[\u2800-\u28ff]/.test(line)).length,companionRows,'enlarged companion fits all its text rows')
   assert.deepEqual(entryPixels(greetingDuration,true),drawCompanion('idle',0),'startup settles to the same enlarged silhouette')
   const composerY=screen.draft.y

@@ -47,6 +47,7 @@ export class TuiScreen {
   private startupLayer?: BoxRenderable
   private startupPulse?: ReturnType<typeof setInterval>
   private header: TextRenderable
+  private topArea: BoxRenderable
   private home: BoxRenderable
   private compose: BoxRenderable
   private attachmentList: ScrollBoxRenderable
@@ -102,12 +103,14 @@ export class TuiScreen {
     }, renderer.nativeScene)
     this.frame = new BoxRenderable(renderer, { width: '100%', height: '100%', flexDirection: 'column', paddingX: 2, paddingY: 1, backgroundColor: p.bg })
     renderer.root.add(this.frame)
-    this.header = this.text('', { height: 2, flexShrink: 0, fg: p.fg })
-    this.frame.add(this.header)
+    this.topArea = new BoxRenderable(renderer, {width:'100%',height:companionRows+1,flexShrink:0})
+    this.frame.add(this.topArea)
+    this.header = this.text('', { id:'header-wordmark',position:'absolute',left:0,top:0,width:19,height:2,flexShrink:0,fg:p.fg })
+    this.topArea.add(this.header)
     this.companionBox = new BoxRenderable(renderer, {height:companionRows+1,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
-    this.companionArt = this.text('', {width:companionWidth,height:companionRows,selectable:false})
+    this.companionArt = this.text('', {id:'header-companion',width:companionWidth,height:companionRows,selectable:false})
     this.companionLabel = this.text('', {width:32,height:1,fg:p.muted,selectable:false})
-    this.companionBox.add(this.companionArt);this.companionBox.add(this.companionLabel);this.frame.add(this.companionBox)
+    this.companionBox.add(this.companionArt);this.companionBox.add(this.companionLabel);this.topArea.add(this.companionBox)
     this.home = new BoxRenderable(renderer, { flexGrow: 1, minHeight: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 1, paddingBottom: 2 })
     this.home.add(this.text('█▀▀▄ █▀▀█ █▀▀█ █▀▀█ █▀▀█\n█▄▄▀ █  █ █▄▄█ █▄▄█ █  █\n█  █ ▀▀▀▀ █    █    ▀▀▀▀'))
     this.home.add(this.text(ui('A little more room for your life.', '给生活留一点空间。'), { fg: p.muted }))
@@ -180,10 +183,16 @@ export class TuiScreen {
       this.header.fg = this.palette.fg
     }
     this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+this.header.height+companionRows
+    // Stack only when the centered character/status would collide with the wordmark or a notice.
+    this.header.width = this.noticeTimer ? '100%' : 19
+    const companionOffset = this.renderer.width < 76 || this.noticeTimer ? this.header.height : 0
+    const topHeight = this.companionBox.visible ? companionRows+1+companionOffset : this.header.height
+    this.companionBox.marginTop = companionOffset
+    this.topArea.height = topHeight
     this.companionLabel.width = Math.min(32,this.renderer.width-4)
     this.compose.width = this.home.visible ? Math.min(78, this.renderer.width - (narrow ? 2 : 6)) : '100%'
     this.compose.alignSelf = 'center'
-    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 17 - this.header.height - (this.companionBox.visible ? companionRows+1 : 0)) / 2)) : 0
+    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 17 - topHeight) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.attachmentList.height = Math.min(this.attachments.length, Math.max(1, Math.min(3, Math.floor(this.renderer.height / 6))))
     this.footer.content = this.connected
@@ -259,6 +268,7 @@ export class TuiScreen {
     clearTimeout(this.noticeTimer)
     this.header.content = clean(message); this.header.fg = error ? this.palette.warm : this.palette.accent
     this.noticeTimer = setTimeout(() => { this.noticeTimer = undefined; if (!this.closed) this.resize() }, error ? 8000 : 3500)
+    this.resize()
   }
   setDraft(value: string) { this.draft.setText(value); this.draft.gotoBufferEnd(); this.draft.focus() }
   latest() { this.transcript.scrollTo(Infinity); this.jump.visible = false; this.draft.focus() }

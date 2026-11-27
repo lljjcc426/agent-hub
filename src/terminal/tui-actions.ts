@@ -1,3 +1,4 @@
+import { openLocalBrowser } from '../personal-launch.ts'
 import { byName } from './list-order.ts'
 import {configureConnection,SetupCancelled} from './setup.ts'
 import { randomUUID } from 'node:crypto'
@@ -94,6 +95,13 @@ export class TuiCommands {
     if (name === '/clear') { this.clearConversation(); return }
     if (name === '/plan') { this.planMode(); return }
     if (['/new', '/resume'].includes(name!)) { this.screen.notice(ui('Roppo uses one personal conversation. Use /history to search it.', 'Roppo 使用一段个人对话，可用 /history 搜索。')); return }
+    if (input === '/open') {
+      const url = this.client.link(this.conversation.id)
+      const result = await openLocalBrowser(url)
+      if (result.opened) this.screen.notice(ui('Opened this conversation in your browser.', '已在浏览器打开当前对话。'))
+      else this.screen.document(ui('Open web', '打开网页版'), url)
+      return
+    }
     if (input === '/history') { this.history(); return }
     if (input === '/files') { this.files(); return }
     if (input === '/memory') { await this.memory(); return }

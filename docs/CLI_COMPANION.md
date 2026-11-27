@@ -8,7 +8,7 @@
 
 - 直接复用 `web/chat/companion-state.ts` 的真实活动状态和状态文字。
 - 轮廓取自原有 `src/ui/assets/agents/roppo-body.webp` 的透明度采样。终端以 Unicode Braille 点阵重绘，无新增图片依赖，也不要求终端支持图片协议。
-- 参考 `roppo-character.tsx`、`companion.css` 和 `companion-scene.tsx`：1.18 秒入场招手、4.8 秒呼吸、5.8 秒眨眼周期、思考探头、敲键盘、查阅、完成摆动和 6 秒交接。因终端点阵分辨率有限，曲线、渐变和亚像素位移做了离散化近似。
+- 参考 `roppo-character.tsx`、`companion.css` 和 `companion-scene.tsx`：4.8 秒呼吸、5.8 秒眨眼周期、思考探头、敲键盘、查阅、完成摆动和 6 秒交接。因终端点阵分辨率有限，曲线、渐变和亚像素位移做了离散化近似。
 - 活跃状态切换沿用 1.4 秒稳定时间。首次载入不重放历史交接；关闭时的新交接不会在重新开启后补播。
 - 网页代码和原贴图没有修改。
 
@@ -28,3 +28,25 @@
 | `docs/TERMINAL.md`、本文（新增） | 使用方法、复现范围和逐文件说明 |
 
 没有删除项目文件。验证包括宿主 TypeScript 检查、38 项 CLI 测试、OpenTUI 原生渲染测试和已安装 CLI 的真实终端显示检查。
+
+## 启动过场与网页入口更新
+
+每次重新打开交互 CLI，首次读到会话后播放 2 秒全屏像素潮汐，角色从左往右走过、不招手；接着在顶部播放 1.4 秒探头、眨眼和挥手。按键、粘贴、点击或打开菜单可以跳过，输入不会丢失。关闭 `/animation`、减少动效或短窗口时跳过；刷新、调整窗口和重新启用开关不补播。
+
+顶部移除 `/ personal`。底栏左侧 `Open web ↗` 打开同一段网页版对话，右侧 `Commands · ctrl+p` 打开可搜索的命令面板；中间空白不响应点击。预览的滑杆按钮属于预览工具，实际 CLI 没有该按钮。
+
+网页与 CLI 共用同一本机服务和账号的数据。配置修改增加独立事件通知，保证网页修改模型后，空闲 CLI 也会更新；聊天事件编号保持原协议。测试使用两个入口验证模型和消息一致，没有修改用户现有模型或消息。
+
+本次文件变更：
+
+- `src/terminal/startup.ts`：新增终端全屏潮汐、行走和顶部探头动作绘制。
+- `src/terminal/companion.ts`：复用角色轮廓，将启动招手移交给完整启动序列。
+- `src/terminal/tui-screen.ts`：启动生命周期、跳过与清理，精简标题，拆分底栏点击区域。
+- `src/terminal/tui-actions.ts`：网页版入口打开当前对话，成功后只给轻提示。
+- `src/server.ts`、`src/terminal/client.ts`：配置变更通知与终端刷新。
+- `tests/terminal-tui.ts`：原生渲染验证两段动画、每次启动、输入/鼠标跳过、窗口变化和底栏点击区域。
+- `tests/terminal.spec.ts`：验证浏览器与 CLI 共享消息和配置，以及空闲时接收模型更新。
+- `tests/terminal-tui-actions.spec.ts`：验证网页版入口使用当前对话地址。
+- `docs/TERMINAL.md`、本文：更新使用方法与文件变更说明。
+
+没有删除项目文件。

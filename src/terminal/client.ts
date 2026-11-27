@@ -193,9 +193,9 @@ export class TerminalClient {
               )
               return
             }
-            if (!frame.includes('event: change')) continue
+            if (!frame.includes('event: change') && !frame.includes('event: settings')) continue
             await changed()
-            revision = /^id: (.+)$/m.exec(frame)?.[1] ?? ''
+            revision = /^id: (.+)$/m.exec(frame)?.[1] ?? revision
           }
         }
       } catch (error) {

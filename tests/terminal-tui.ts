@@ -30,6 +30,8 @@ try {
   screen.update(view)
   const home = await capture('home')
   assert.match(home, /Ask Roppo anything/)
+  assert.doesNotMatch(home, /personal/i)
+  assert.match(home, /Commands · ctrl\+p/)
   assert.equal(screen.transcript.scrollHeight, 0)
   assert.match(home, /Ready when you are/)
   const composerY=screen.draft.y
@@ -43,6 +45,16 @@ try {
 
   test.mockInput.pressKey('\x1b[5~'); await test.renderOnce()
   assert.equal(test.captureCharFrame(), home, 'empty page must not scroll')
+
+  const statusNode = test.renderer.root.findDescendantById('sync-status')!
+  const commandNode = test.renderer.root.findDescendantById('command-shortcut')!
+  const commandCount = commands.length
+  await test.mockMouse.click(statusNode.x + 1, statusNode.y)
+  assert.equal(commands.at(-1), '/open', 'web label opens the current conversation in the browser')
+  await test.mockMouse.click(Math.floor((statusNode.x + statusNode.width + commandNode.x) / 2), statusNode.y)
+  assert.equal(commands.length, commandCount + 1, 'footer whitespace has no action')
+  await test.mockMouse.click(commandNode.x + 1, commandNode.y)
+  assert.equal(commands.at(-1), '/commands', 'only the Commands shortcut opens the palette')
 
   await test.mockInput.pasteBracketedText('中文草稿 👩‍💻\n/permissions full')
   assert.equal(sent.length, 0, 'pasted commands are draft text')
@@ -175,3 +187,58 @@ try {
 } finally {
   screen.close(); await test.dispose()
 }
+
+// Native frames verify the real curtain, its handoff to the top slot, and a fresh launch.
+const realNow = Date.now
+let now = 10000
+Date.now = () => now
+try {
+  for (const launch of [0, 1, 2]) {
+    const preview = await createTestRenderer({ width: 100, height: 30, useMouse: true })
+    const entry = new TuiScreen(preview.renderer, { theme: 'dark', motion: 'full' }, {
+      send: async () => {}, command: async () => {}, complete: async () => [], interrupt: async () => {}, older: async () => {}, review: async () => {}, quit: () => {}
+    })
+    const start = now
+    const advance = async (ms: number, name: string) => {
+      now = start + ms; await new Promise(resolve => setTimeout(resolve, 100)); await preview.renderOnce()
+      if (process.env.ROPPO_TUI_CAPTURES) {
+        writeFileSync(process.env.ROPPO_TUI_CAPTURES + '/' + name + '.txt', preview.captureCharFrame())
+        writeFileSync(process.env.ROPPO_TUI_CAPTURES + '/' + name + '.json', JSON.stringify(preview.captureSpans()))
+      }
+      return preview.captureCharFrame()
+    }
+    try {
+      entry.update(view); await preview.renderOnce()
+      assert.ok(preview.renderer.root.findDescendantById('startup-tide'), 'each launch creates its startup curtain')
+      if (launch > 0) {
+        if (launch === 2) await preview.mockMouse.click(50, 15)
+        else preview.mockInput.pressKey('a'); await preview.renderOnce()
+        assert.equal(entry.draft.plainText, launch === 1 ? 'a' : '', 'skipping does not swallow the first typed character')
+        assert.equal(preview.renderer.root.findDescendantById('startup-tide'), undefined)
+        entry.update(view); await advance(5000, 'startup-skipped')
+        assert.equal(preview.renderer.root.findDescendantById('startup-tide'), undefined)
+        continue
+      }
+      const initial = preview.captureCharFrame()
+      const middle = await advance(1000, 'startup-tide')
+      assert.notEqual(middle, initial)
+      assert.match(middle, /roppo/, 'the left side reveals the live interface')
+      entry.update(view)
+      preview.resize(60, 20); entry.preferences({theme:'light',motion:'full'})
+      await advance(1400, 'startup-small')
+      preview.resize(100, 30); entry.preferences({theme:'dark',motion:'full'})
+      const greeting = await advance(2400, 'startup-greeting')
+      assert.equal(preview.renderer.root.findDescendantById('startup-tide'), undefined)
+      assert.match(greeting, /Hello again/)
+      assert.match(greeting, /Ask Roppo anything/)
+      const settled = await advance(3500, 'startup-finished')
+      assert.match(settled, /Ready when you are/)
+      assert.doesNotMatch(settled, /personal/i)
+      entry.preferences({theme:'dark',motion:'full',animation:false})
+      entry.preferences({theme:'dark',motion:'full',animation:true}); entry.update(view)
+      await advance(5000, 'startup-not-repeated')
+      assert.equal(preview.renderer.root.findDescendantById('startup-tide'), undefined, 'updates and toggles do not replay startup')
+    } finally { entry.close(); await preview.dispose() }
+  }
+} finally { Date.now = realNow }
+console.log('Startup checks passed: tide, greeting, relaunch, typing skip, resize and footer click targets')

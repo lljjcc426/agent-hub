@@ -4,7 +4,7 @@ import {ui} from './language.ts'
 
 // Alpha silhouette sampled at 12×12 from src/ui/assets/agents/roppo-body.webp.
 // Braille cells hold 2×4 dots, keeping the web's small character at 6 columns × 3 rows.
-const body=[
+export const companionBody=[
  '............','.....##.....','...######...','..########..',
  '..########..','..########..','..#######...','..#######...',
  '..########..','..###.####..','...#...##...','............'
@@ -23,7 +23,7 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
    p==='reviewing'?.08*Math.sin(seconds*Math.PI*2/3.6):p==='completed'?.12*Math.sin(seconds*Math.PI*2/2.2):0
   const rise=wave?-Math.sin(Math.PI*Math.min(1,time/1180))*.8:p==='idle'?-.65*Math.sin(seconds*Math.PI*2/4.8):p==='working'?.4*Math.sin(seconds*Math.PI*2/1.3):0
   const point=(px:number,py:number,value:number)=>dot(x+6+(px-6)*Math.cos(angle)-(py-10)*Math.sin(angle),10+(px-6)*Math.sin(angle)+(py-10)*Math.cos(angle)+rise,value)
-  body.forEach((row,y)=>Array.from(row).forEach((v,i)=>{if(v==='#')point(i,y,color)}))
+  companionBody.forEach((row,y)=>Array.from(row).forEach((v,i)=>{if(v==='#')point(i,y,color)}))
   const blink=seconds%5.8>2.44&&seconds%5.8<2.67
   for(const eye of [6,8]){
    if(p==='completed'||wave){point(eye,3,0);point(eye-1,4,0)}
@@ -61,8 +61,7 @@ export class TerminalCompanion {
  private status:CompanionStatus={phase:'idle',label:''}
  private celebrateUntil=0
  private phaseStart=0
- private arrived:number
- constructor(now=Date.now()){this.arrived=now;this.phaseStart=now}
+ constructor(now=Date.now()){this.phaseStart=now}
  update(view:Snapshot|undefined,connected:boolean,loading:boolean,enabled:boolean,now=Date.now()){
   if(view){
    const next={id:view.conversation.id,sequence:view.conversation.sequence}
@@ -93,9 +92,8 @@ export class TerminalCompanion {
   if(event&&!this.eventStart)this.eventStart=now
   if(event&&now-this.eventStart>=6000){this.holder=event.to;this.queue.shift();this.eventStart=0;return this.frame(now,reduced)}
   const phase=this.status.phase==='completed'&&now>=this.celebrateUntil?'idle':this.status.phase
-  const greeting=!reduced&&now-this.arrived<1180
   const label=event?event.from.label+ui(' → ',' → ')+event.to.label:this.status.label
-  return {phase,label,pixels:drawCompanion(phase,reduced?0:now-this.phaseStart,greeting,event?{progress:(now-this.eventStart)/6000,worker:event.from.kind==='worker'}:undefined,this.holder?.kind==='worker')}
+  return {phase,label,pixels:drawCompanion(phase,reduced?0:now-this.phaseStart,false,event?{progress:(now-this.eventStart)/6000,worker:event.from.kind==='worker'}:undefined,this.holder?.kind==='worker')}
  }
 }
 

@@ -432,6 +432,24 @@ it('pairs the actual executable, binds projects, waits for its Worker, resumes a
     process.env.ROPPO_CLI_HOME = home
     const client = new TerminalClient(host.url)
     const conversation = (await client.view(run.conversationId)).conversation
+    const browserView = await (await fetch(host.url + '/api/chat/conversations/' + conversation.id, { headers: { cookie } })).json()
+    expect(browserView.messages.map((m: any) => m.id)).toEqual((await client.view(conversation.id)).messages.map(m => m.id))
+    const webSettings = async () => (await (await fetch(host.url + '/settings', { headers: { cookie } })).json()).current
+    expect((await webSettings()).config.execution.router.model).toBe('fixture-model')
+    let observedModel = ''
+    const settingsAbort = new AbortController()
+    const watching = client.watch(conversation.id, settingsAbort.signal, async () => {
+      observedModel = (await client.request<any>('/api/terminal/settings')).model ?? ''
+    }, () => {})
+    try {
+      await expect.poll(() => observedModel).toBe('fixture-model')
+      const current = await webSettings()
+      expect((await post('/settings', { revision: current.revision, patch: { execution: { ...current.config.execution, router: { ...current.config.execution.router, model: 'web-selected-model' } } } }, { cookie })).status).toBe(200)
+      await expect.poll(() => observedModel).toBe('web-selected-model')
+      const changed = await webSettings()
+      expect((await post('/settings', { revision: changed.revision, patch: { execution: current.config.execution } }, { cookie })).status).toBe(200)
+      await expect.poll(() => observedModel).toBe('fixture-model')
+    } finally { settingsAbort.abort(); await watching }
     const preferences = loadTerminalSettings(project).settings
     const control = (input: string) => controlCommand(client, conversation, input, project, preferences, [])
     expect((await control('/status'))?.text).toContain('fixture-model')

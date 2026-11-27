@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest'
+import * as browser from '../src/personal-launch.ts'
+import { expect, it, vi } from 'vitest'
 import { TuiCommands, personalCommands } from '../src/terminal/tui-actions.ts'
 import type { TuiMenu, TuiScreen } from '../src/terminal/tui-screen.ts'
 import type { TerminalClient, Snapshot } from '../src/terminal/client.ts'
@@ -12,7 +13,7 @@ function fixture() {
     { id: 'one', label: 'Research', backend: 'codex', model: 'worker-model', effort: 'high' },
     { id: 'two', label: 'Writing', backend: 'codex', model: 'writer-model' }
   ] }
-  const client = { request: async (path: string, body?: any) => {
+  const client = { link: (id: string) => 'http://127.0.0.1:4319/chat#conversation/' + id, request: async (path: string, body?: any) => {
     requests.push({ path, body })
     if (path === '/api/terminal/settings') return settings
     if (path.startsWith('/api/terminal/models')) return { models: ['router-model', 'worker-model'], reasoning: { efforts: ['low', 'high'] } }
@@ -75,4 +76,14 @@ it('offers explicit context compaction and shared automatic threshold settings',
  expect(f.requests.filter(r=>r.body?.action==='settings').at(-1)?.body.settings.threshold).toBe(0.7)
  await f.commands.execute('/compact');await f.choose('Compact now')
  expect(f.requests.at(-1)).toMatchObject({path:'/api/chat/conversations/chat/compact',body:{action:'compact'}})
+})
+
+it('opens the current shared conversation in the browser', async () => {
+  const open = vi.spyOn(browser, 'openLocalBrowser').mockResolvedValue({opened:true})
+  try {
+    const f = fixture(); await f.commands.execute('/open')
+    expect(open).toHaveBeenCalledWith('http://127.0.0.1:4319/chat#conversation/chat')
+    expect(f.notice()).toBe('Opened this conversation in your browser.')
+    expect(f.requests).toEqual([])
+  } finally { open.mockRestore() }
 })

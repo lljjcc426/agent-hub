@@ -925,7 +925,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         if(action==='events'&&req.method==='GET'){
           runtime.chat.revision(id,owner)
           res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});res.flushHeaders()
-          let last=String(req.headers['last-event-id']??''),heartbeat=0
+          let last=String(req.headers['last-event-id']??''),heartbeat=0,settingsRevision=runtime.settings.current().revision
           const update=()=>{
             if(res.writableEnded||res.destroyed)return
             if(res.writableLength>131072){res.end();return}
@@ -934,6 +934,8 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
               const revision=String(runtime.chat.revision(id,owner))
               if(revision!==last){last=revision;res.write('id: '+revision+'\nevent: change\ndata: '+JSON.stringify({revision})+'\n\n')}
               else if(++heartbeat%20===0)res.write(': keepalive\n\n')
+              const currentSettings=runtime.settings.current().revision
+              if(currentSettings!==settingsRevision){settingsRevision=currentSettings;res.write('event: settings\ndata: '+JSON.stringify({revision:settingsRevision})+'\n\n')}
             }catch(error){if(error instanceof ChatError&&error.code==='conversation_reset')res.write('event: reset\ndata: {}\n\n');res.end()}
           }
           const unsubscribe=runtime.chat.subscribe(id,owner,update)

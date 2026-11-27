@@ -1,3 +1,4 @@
+import { entryPixels, paintStartupTide, tideDuration, startupDuration } from './startup.ts'
 import {TerminalCompanion,brailleCells,companionWidth} from './companion.ts'
 import {
   BoxRenderable, TextRenderable, TextareaRenderable, InputRenderable, ScrollBoxRenderable,
@@ -39,12 +40,17 @@ export class TuiScreen {
   private companionArt: TextRenderable
   private companionLabel: TextRenderable
   private companionPulse?: ReturnType<typeof setInterval>
+  private startupAt?: number
+  private startupFinished = false
+  private startupLayer?: BoxRenderable
+  private startupPulse?: ReturnType<typeof setInterval>
   private header: TextRenderable
   private home: BoxRenderable
   private compose: BoxRenderable
   private model: TextRenderable
   private permissions: TextRenderable
   private footer: TextRenderable
+  private commandShortcut: TextRenderable
   private activity: TextRenderable
   private jump: TextRenderable
   private pending: TextRenderable
@@ -90,7 +96,7 @@ export class TuiScreen {
     }, renderer.nativeScene)
     this.frame = new BoxRenderable(renderer, { width: '100%', height: '100%', flexDirection: 'column', paddingX: 2, paddingY: 1, backgroundColor: p.bg })
     renderer.root.add(this.frame)
-    this.header = this.text('roppo / personal', { height: 1, flexShrink: 0, fg: p.muted })
+    this.header = this.text('roppo', { height: 1, flexShrink: 0, fg: p.muted })
     this.frame.add(this.header)
     this.companionBox = new BoxRenderable(renderer, {height:4,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
     this.companionArt = this.text('', {width:companionWidth,height:3,selectable:false})
@@ -131,9 +137,12 @@ export class TuiScreen {
     this.model = this.text('Router', { fg: p.accent, height: 1, flexGrow: 1, flexShrink: 1, minWidth: 0, onMouseDown: () => this.run(this.actions.command('/model')) })
     this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
     meta.add(this.model); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
-    this.footer = this.text('', { height: 1, fg: p.muted, marginTop: 1, flexShrink: 0,
-      onMouseDown: () => this.run(this.actions.command('/commands')) })
-    this.frame.add(this.footer)
+    const footerRow = new BoxRenderable(renderer, { width: '100%', height: 1, marginTop: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between', gap: 2 })
+    this.footer = this.text('', { id: 'sync-status', height: 1, fg: p.muted, flexShrink: 1, minWidth: 0, selectable: false,
+      onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/open')) } })
+    this.commandShortcut = this.text('', { id: 'command-shortcut', height: 1, fg: p.muted, selectable: false,
+      onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/commands')) } })
+    footerRow.add(this.footer); footerRow.add(this.commandShortcut); this.frame.add(footerRow)
     renderer.keyInput.on('keypress', this.key)
     renderer.on('resize', this.resize)
     renderer.on('theme_mode', this.themeChanged)
@@ -162,8 +171,10 @@ export class TuiScreen {
     this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? 4 : 0)) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.footer.content = this.connected
-      ? ui(narrow ? 'Personal · ctrl+p commands' : 'Personal · synced with web                  enter send · ctrl+p commands', narrow ? '个人对话 · ctrl+p 命令' : '个人对话 · 与网页同步                  enter 发送 · ctrl+p 命令')
-      : ui('Reconnecting to local service…', '正在重新连接本机服务…')
+      ? ui('Open web ↗', '打开网页版 ↗')
+      : ui('Open web ↗ · reconnecting', '打开网页版 ↗ · 正在重连')
+    this.footer.visible = this.renderer.width >= 46
+    this.commandShortcut.content = ui('Commands · ctrl+p', '命令 · ctrl+p')
     if (this.host) this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
     this.syncCompanion()
     this.sizeCompletions()
@@ -177,7 +188,7 @@ export class TuiScreen {
     this.draft.backgroundColor = p.panel; this.draft.focusedBackgroundColor = p.panel
     this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
     this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
-    this.model.fg = p.accent; this.footer.fg = p.muted; this.header.fg = p.muted; this.permissions.fg = p.muted
+    this.model.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.muted; this.permissions.fg = p.muted
     this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
     this.completions.backgroundColor = p.panel
     this.style.registerStyle('default', { fg: p.fg })
@@ -206,7 +217,7 @@ export class TuiScreen {
   notice(message: string, error = false) {
     clearTimeout(this.noticeTimer)
     this.header.content = clean(message); this.header.fg = error ? this.palette.warm : this.palette.accent
-    this.noticeTimer = setTimeout(() => { if (!this.closed) { this.header.content = 'roppo / personal'; this.header.fg = this.palette.muted } }, error ? 8000 : 3500)
+    this.noticeTimer = setTimeout(() => { if (!this.closed) { this.header.content = 'roppo'; this.header.fg = this.palette.muted } }, error ? 8000 : 3500)
   }
   setDraft(value: string) { this.draft.setText(value); this.draft.gotoBufferEnd(); this.draft.focus() }
   latest() { this.transcript.scrollTo(Infinity); this.jump.visible = false; this.draft.focus() }
@@ -265,6 +276,7 @@ export class TuiScreen {
     this.busy = !!(view.run && ['queued', 'running', 'cancel_requested'].includes(view.run.state)) || view.tasks.some(t => ['running', 'queued'].includes(t.state))
     if (view.run?.state === 'waiting' || requests) this.busy = false
     this.syncActivity(); this.resize()
+    if (this.startupAt === undefined && !this.startupFinished) this.startStartup()
   }
 
   private syncActivity() {
@@ -278,6 +290,7 @@ export class TuiScreen {
     if (working) this.paintActivity()
   }
   private syncCompanion() {
+    if (this.startupAt !== undefined && (!this.companionBox.visible || this.prefs.motion === 'reduced' || !this.connected)) this.finishStartup()
     this.companion.update(this.view,this.connected,this.loading,this.companionBox.visible)
     const moving=this.companionBox.visible && this.prefs.motion !== 'reduced' && this.connected
     if(moving&&!this.companionPulse)this.companionPulse=setInterval(()=>this.paintCompanion(),100)
@@ -285,7 +298,10 @@ export class TuiScreen {
     if(this.companionBox.visible)this.paintCompanion()
   }
   private paintCompanion() {
-    const frame=this.companion.frame(Date.now(),this.prefs.motion==='reduced')
+    const elapsed = this.startupAt === undefined ? undefined : Date.now() - this.startupAt
+    const frame = elapsed !== undefined && elapsed < startupDuration
+      ? { pixels: elapsed < tideDuration ? Array.from({length:12},()=>Array<number>(companionWidth*2).fill(0)) : entryPixels(elapsed-tideDuration,true), label: elapsed < tideDuration ? '' : ui('Hello again.', '又见面了。') }
+      : this.companion.frame(Date.now(),this.prefs.motion==='reduced')
     const colors=[this.palette.bg,this.palette.fg,this.palette.muted,this.palette.warm,this.palette.accent].map(c=>RGBA.fromHex(c))
     this.companionArt.content=new StyledText(brailleCells(frame.pixels).flatMap((row,index)=>[
       ...row.map(cell=>({__isChunk:true as const,text:cell.text,fg:colors[cell.color]})),
@@ -296,6 +312,31 @@ export class TuiScreen {
     this.companionLabel.content=' '.repeat(Math.max(0,Math.floor((width-stringWidth(label))/2)))+label
     this.companionLabel.fg=this.palette.muted
   }
+  private startStartup() {
+    if (this.prefs.animation === false || this.prefs.motion === 'reduced' || !this.companionBox.visible || this.overlay || this.draft.plainText) {
+      this.startupFinished = true; return
+    }
+    this.startupAt = Date.now()
+    this.startupLayer = new BoxRenderable(this.renderer, { id: 'startup-tide', position: 'absolute', left: 0, top: 0,
+      width: '100%', height: '100%', zIndex: 10,
+      renderAfter: buffer => paintStartupTide(buffer, this.renderer.width, this.renderer.height, Date.now() - this.startupAt!, this.palette),
+      onMouseDown: () => this.finishStartup(), onMouseScroll: () => this.finishStartup() })
+    this.renderer.root.add(this.startupLayer)
+    this.paintCompanion()
+    this.startupPulse = setInterval(() => {
+      const elapsed = Date.now() - this.startupAt!
+      if (elapsed >= startupDuration) { this.finishStartup(); return }
+      if (elapsed >= tideDuration) { this.startupLayer?.destroyRecursively(); this.startupLayer = undefined }
+      else this.startupLayer?.requestRender()
+      this.paintCompanion()
+    }, 80)
+  }
+  private finishStartup() {
+    this.startupFinished = true; this.startupAt = undefined
+    clearInterval(this.startupPulse); this.startupPulse = undefined
+    this.startupLayer?.destroyRecursively(); this.startupLayer = undefined
+    if (this.companionBox.visible) this.paintCompanion()
+  }
   private paintActivity() {
     const seconds = Math.floor((Date.now() - this.started) / 1000), head = Math.floor((Date.now() - this.started) / 125) % 12
     const bar = this.prefs.motion === 'reduced' ? '········' : Array.from({ length: 8 }, (_, i) => i <= head && i > head - 3 ? '■' : '⬝').join('')
@@ -304,6 +345,7 @@ export class TuiScreen {
     this.activity.content = `${bar}  ${label}  ${seconds}s  · esc ${ui('interrupt', '中断')}`
   }
   private changed() {
+    if (this.draft?.plainText && !this.startupFinished) this.finishStartup()
     this.resize()
     clearTimeout(this.completionTimer)
     const revision = ++this.completionRevision
@@ -383,6 +425,7 @@ export class TuiScreen {
     this.closeModal(false); this.run(Promise.resolve(item.run()))
   }
   private modal(title: string) {
+    if (!this.startupFinished) this.finishStartup()
     this.closeModal(); this.dismissCompletions(); this.draft.blur()
     const p = this.palette
     this.overlay = new BoxRenderable(this.renderer, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%',
@@ -446,6 +489,7 @@ export class TuiScreen {
     if (cancelled) cancel?.()
   }
   private key = (key: KeyEvent) => {
+    if (!this.startupFinished) this.finishStartup()
     const consume = () => { key.preventDefault(); key.stopPropagation() }
     if (key.ctrl && key.shift && key.name === 'c') {
       consume(); const text = this.renderer.getSelection()?.getSelectedText()
@@ -490,7 +534,7 @@ export class TuiScreen {
     }
   }
   close() {
-    this.closed = true; clearInterval(this.companionPulse); clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
+    this.closed = true; clearInterval(this.startupPulse); this.startupLayer?.destroyRecursively(); clearInterval(this.companionPulse); clearInterval(this.pulse); clearTimeout(this.noticeTimer); clearTimeout(this.completionTimer)
     this.renderer.keyInput.off('keypress', this.key); this.renderer.off('resize', this.resize); this.renderer.off('theme_mode', this.themeChanged)
     this.overlay?.destroyRecursively(); this.frame.destroyRecursively(); this.style.destroy()
   }

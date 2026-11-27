@@ -1,3 +1,4 @@
+import { byName } from './list-order.ts'
 import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { execFile } from 'node:child_process'
@@ -35,7 +36,7 @@ export async function projectFiles(cwd: string): Promise<string[]> {
         timeout: 7000
       }
     )
-    return [...new Set(stdout.split('\0').filter(Boolean))].sort()
+    return byName([...new Set(stdout.split('\0').filter(Boolean))], name => name)
   } catch {
     // Outside a Git project, offer regular files without following directory symlinks.
     const dirs = [''],
@@ -54,11 +55,11 @@ export async function projectFiles(cwd: string): Promise<string[]> {
         else if (entry.isFile()) files.push(path)
       }
     }
-    return files.sort()
+    return byName(files, name => name)
   }
 }
 
-export function suggestions(
+function candidates(
   line: string,
   cursor: number,
   tasks: Snapshot['tasks'],
@@ -75,7 +76,7 @@ export function suggestions(
       ? [exact]
       : list
           .filter((c) => c.name.includes(q) || c.description.toLowerCase().includes(q))
-          .sort((a, b) => Number(b.name.startsWith('/' + q)) - Number(a.name.startsWith('/' + q)))
+
     return {
       kind: 'commands',
       title: ui('Commands', '命令'),
@@ -103,15 +104,7 @@ export function suggestions(
           .toLowerCase()
         return words.every((w) => haystack.includes(w))
       })
-      .sort((a, b) => {
-        const left = a.sourceGroup ?? a.source,
-          right = b.sourceGroup ?? b.source
-        return (
-          Number(right === 'Roppo') - Number(left === 'Roppo') ||
-          left.localeCompare(right) ||
-          a.name.localeCompare(b.name)
-        )
-      })
+
     return {
       kind: 'capabilities',
       title: ui('Capabilities', '能力库'),
@@ -230,14 +223,7 @@ export function suggestions(
     const matches = files.filter(
       (f) => !/[\x00-\x1f\x7f]/.test(f) && f.toLowerCase().includes(term)
     )
-    matches.sort(
-      (a, b) =>
-        Number(!a.split('/').at(-1)!.toLowerCase().startsWith(term)) -
-          Number(!b.split('/').at(-1)!.toLowerCase().startsWith(term)) ||
-        a.length - b.length ||
-        a.localeCompare(b)
-    )
-    for (const path of matches.slice(0, 80)) {
+    for (const path of matches) {
       items.push({
         label: path,
         detail: '',
@@ -258,4 +244,10 @@ export function suggestions(
       ? ui('No matching files', '没有匹配的文件')
       : ui('Finding project files…', '正在查找项目文件…')
   }
+}
+
+export function suggestions(...args: Parameters<typeof candidates>): Suggestions | undefined {
+  const result = candidates(...args)
+  if (result) result.items = byName(result.items, item => item.label)
+  return result
 }

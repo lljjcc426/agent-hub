@@ -1,3 +1,4 @@
+import { byName } from './list-order.ts'
 import {messageCharacters} from '../execution-limits.ts'
 import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
@@ -118,6 +119,7 @@ export class TerminalEditor extends EventEmitter {
           this.view,
           this.library
         )
+    if (next && this.choices && next.title !== ui('Search history', '搜索输入历史')) next.items = byName(next.items, item => item.label)
     const previous = this.menu?.items[this.menu.selected]?.value
     this.menu = next
       ? {

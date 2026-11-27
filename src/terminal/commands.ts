@@ -1,3 +1,4 @@
+import { byName } from './list-order.ts'
 import { ui } from './language.ts'
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -7,7 +8,7 @@ import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalClient, CliError, type Snapshot } from './client.ts'
 
 export const commands = (advanced = false) =>
-  [
+  byName([
     { name: '/config', usage: '', description: ui('Terminal settings', '终端设置') },
     { name: '/model', usage: '', description: ui('Choose a Router or Worker model', '选择 Router 或 Worker 模型') },
     { name: '/effort', usage: '', description: ui('Choose reasoning effort', '选择思考强度') },
@@ -81,7 +82,7 @@ export const commands = (advanced = false) =>
       usage: '',
       description: ui('Leave the session running', '退出终端，后台继续运行')
     }
-  ].filter(c => advanced || !['/tasks', '/diff', '/approve', '/decline', '/answer'].includes(c.name))
+  ].filter(c => advanced || !['/tasks', '/diff', '/approve', '/decline', '/answer'].includes(c.name)), command => command.name)
 
 const commandHelp = () =>
   commands()
@@ -193,7 +194,7 @@ export async function command(client: TerminalClient, id: string, input: string)
         [source, item.kind, item.status, item.version].filter(Boolean).join(' · '),
         item.description,
         ...(item.facts ?? []),
-        ...(item.tools ?? []).map(
+        ...byName(item.tools ?? [], tool => tool.name).map(
           (t) => '  ' + t.name + (t.description ? ' — ' + t.description : '')
         ),
         ...(item.steps ?? []),
@@ -206,7 +207,7 @@ export async function command(client: TerminalClient, id: string, input: string)
     }
     const query = args.join(' ').toLowerCase()
     const groups = new Map<string, string[]>()
-    for (const item of library.items) {
+    for (const item of byName(library.items, item => item.name)) {
       const source = item.sourceGroup ?? item.source
       const line = item.kind + '  ' + item.name + '  [' + item.status + ']'
       if (!(source + ' ' + line).toLowerCase().includes(query)) continue
@@ -214,9 +215,7 @@ export async function command(client: TerminalClient, id: string, input: string)
       entries.push(line)
       groups.set(source, entries)
     }
-    const names = [...groups.keys()].sort(
-      (a, b) => Number(b === 'Roppo') - Number(a === 'Roppo') || a.localeCompare(b)
-    )
+    const names = byName([...groups.keys()], name => name)
     return (
       [
         ...names.map((n) => n + '\n  ' + groups.get(n)!.join('\n  ')),

@@ -1,3 +1,4 @@
+import {byName} from './list-order.ts'
 import {createInterface} from 'node:readline/promises'
 import {Writable} from 'node:stream'
 import {spawn} from 'node:child_process'
@@ -32,8 +33,9 @@ export function terminalSetupUI():SetupUI {
   }catch(error){if(abort.signal.aborted)throw new SetupCancelled();throw error}finally{rl.close();output.end()}
  }
  return {text,note:message=>process.stderr.write(clean(message)+'\n'),choose:async(message,choices)=>{
-  process.stderr.write('\n'+clean(message)+'\n'+choices.map((choice,i)=>'  '+(i+1)+'. '+clean(choice)).join('\n')+'\n')
-  for(;;){const input=await text(ui('Choose a number','选择编号'),{initial:'1'}),index=Number(input)-1;if(Number.isInteger(index)&&index>=0&&index<choices.length)return index;process.stderr.write(ui('Choose one of the numbers above.\n','请输入上面的编号。\n'))}
+  const ordered=byName(choices.map((label,index)=>({label,index})),choice=>choice.label)
+  process.stderr.write('\n'+clean(message)+'\n'+ordered.map((choice,i)=>'  '+(i+1)+'. '+clean(choice.label)).join('\n')+'\n')
+  for(;;){const input=await text(ui('Choose a number','选择编号'),{initial:'1'}),index=Number(input)-1;if(Number.isInteger(index)&&index>=0&&index<ordered.length)return ordered[index]!.index;process.stderr.write(ui('Choose one of the numbers above.\n','请输入上面的编号。\n'))}
  }}
 }
 export async function setupClient(host:string|undefined,dialog:SetupUI){

@@ -11,9 +11,10 @@ import type { HostSettings } from './host-settings.ts'
 import type { TerminalSettings } from './settings.ts'
 import { ui } from './language.ts'
 import stringWidth from 'string-width'
+import { byName } from './list-order.ts'
 
 export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
-export interface TuiMenu { cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
+export interface TuiMenu { order?: 'name' | 'source'; cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
 export interface TuiActions {
   send(text: string): Promise<void>
   command(text: string): Promise<void>
@@ -48,11 +49,11 @@ export class TuiScreen {
   private jump: TextRenderable
   private pending: TextRenderable
   private requestCards = new Map<string, { box: BoxRenderable; value: string }>()
-  private completions: BoxRenderable
+  private completions: ScrollBoxRenderable
   private overlay?: BoxRenderable
   private modalPanel?: BoxRenderable
   private modalSearch?: InputRenderable
-  private modalRows?: BoxRenderable
+  private modalRows?: ScrollBoxRenderable
   private modalCancel?: () => void
   private modalMenu?: TuiMenu
   private modalItems: TuiItem[] = []
@@ -113,7 +114,7 @@ export class TuiScreen {
     this.frame.add(this.pending)
     this.activity = this.text('', { height: 1, visible: false, fg: p.accent, marginTop: 1, flexShrink: 0 })
     this.frame.add(this.activity)
-    this.completions = new BoxRenderable(renderer, { visible: false, flexShrink: 0, backgroundColor: p.panel, flexDirection: 'column' })
+    this.completions = new ScrollBoxRenderable(renderer, { id: 'command-completions', visible: false, flexShrink: 0, width: '100%', scrollX: false, backgroundColor: p.panel, verticalScrollbarOptions: { showArrows: false } })
     this.frame.add(this.completions)
     this.compose = new BoxRenderable(renderer, { width: '100%', border: ['left'], borderColor: p.accent,
       backgroundColor: p.panel, paddingX: 1, paddingY: 1, flexShrink: 0, marginTop: 1 })
@@ -165,7 +166,8 @@ export class TuiScreen {
       : ui('Reconnecting to local service…', '正在重新连接本机服务…')
     if (this.host) this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
     this.syncCompanion()
-    if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu() }
+    this.sizeCompletions()
+    if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu(false) }
   }
 
   preferences(prefs: TerminalSettings) {
@@ -308,20 +310,24 @@ export class TuiScreen {
     this.completionTimer = setTimeout(() => this.run((async () => {
       const items = await this.actions.complete(this.draft.plainText)
       if (this.closed || revision !== this.completionRevision || this.overlay) return
-      this.completionItems = items; this.completionIndex = 0; this.drawCompletions()
+      this.completionItems = byName(items, item => item.label); this.completionIndex = 0; this.drawCompletions()
     })()), 80)
   }
   private drawCompletions() {
     for (const child of this.completions.getChildren()) child.destroyRecursively()
     this.completions.visible = this.completionItems.length > 0
-    const capacity = Math.max(2, Math.min(7, this.renderer.height - 14)), start = Math.max(0, this.completionIndex - capacity + 1)
-    this.completionItems.slice(start, start + capacity).forEach((item, offset) => {
-      const index = start + offset
+    this.sizeCompletions()
+    this.completionItems.forEach((item, index) => {
       this.completions.add(this.text((index === this.completionIndex ? '▎ ' : '  ') + item.label + '  ' + (item.detail ?? ''), {
         height: 1, paddingX: 1, bg: index === this.completionIndex ? this.palette.selected : this.palette.panel,
-        onMouseDown: () => this.chooseCompletion(index)
+        selectable: false, onMouseDown: event => { if (event.button === 0) this.chooseCompletion(index) }
       }))
     })
+    const selected = this.completions.getChildren()[this.completionIndex]
+    if (selected) this.completions.scrollChildIntoView(selected)
+  }
+  private sizeCompletions() {
+    this.completions.height = Math.min(this.completionItems.length, Math.max(2, Math.min(7, this.renderer.height - 14)))
   }
   private chooseCompletion(index: number) {
     const item = this.completionItems[index]; this.dismissCompletions()
@@ -340,14 +346,14 @@ export class TuiScreen {
 
   menu(menu: TuiMenu) {
     const panel = this.modal(menu.title)
-    this.modalMenu = menu; this.modalCancel = menu.cancel; this.modalIndex = 0
+    this.modalMenu = { ...menu, items: menu.order === 'source' ? menu.items : byName(menu.items, item => item.label) }; this.modalCancel = menu.cancel; this.modalIndex = 0
     this.modalSearch = new InputRenderable(this.renderer, { width: '100%', placeholder: ui('Search…', '搜索…'),
       backgroundColor: this.palette.panel, focusedBackgroundColor: this.palette.panel, textColor: this.palette.fg, focusedTextColor: this.palette.fg })
     this.modalSearch.on('input', () => { this.modalIndex = 0; this.filterMenu() })
     panel.add(this.modalSearch)
-    this.modalRows = new BoxRenderable(this.renderer, { width: '100%', marginTop: 1, flexShrink: 0 })
+    this.modalRows = new ScrollBoxRenderable(this.renderer, { id: 'menu-items', width: '100%', marginTop: 1, minHeight: 1, flexShrink: 1, scrollX: false, verticalScrollbarOptions: { showArrows: false } })
     panel.add(this.modalRows)
-    panel.add(this.text(menu.detail ?? ui('↑↓ select · enter choose · esc back', '↑↓ 选择 · enter 确认 · esc 返回'), { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
+    panel.add(this.text(menu.detail ?? ui('scroll to browse · click to choose · ↑↓ enter · esc back', '滚轮浏览 · 点击选择 · ↑↓ enter · esc 返回'), { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
     this.filterMenu(); this.modalSearch.focus()
   }
   private filterMenu() {
@@ -355,20 +361,22 @@ export class TuiScreen {
     this.modalItems = this.modalMenu?.items.filter(i => (i.label + ' ' + (i.detail ?? '') + ' ' + (i.search ?? '')).toLowerCase().includes(query)) ?? []
     this.drawMenu()
   }
-  private drawMenu() {
+  private drawMenu(revealSelection = true) {
     if (!this.modalRows) return
     for (const child of this.modalRows.getChildren()) child.destroyRecursively()
-    const capacity = Math.max(2, Math.min(10, Math.floor((this.renderer.height - 9) / 2))), start = Math.max(0, this.modalIndex - capacity + 1)
+    const lines = this.modalItems.reduce((total, item) => total + (item.detail ? 2 : 1), 0)
+    this.modalRows.height = Math.max(1, Math.min(lines, 20, this.renderer.height - 11))
     if (!this.modalItems.length) this.modalRows.add(this.text(ui('No matching items', '没有匹配项'), { fg: this.palette.muted }))
-    this.modalItems.slice(start, start + capacity).forEach((item, offset) => {
-      const index = start + offset
-      const row = new BoxRenderable(this.renderer, { width: '100%', height: item.detail ? 2 : 1,
+    this.modalItems.forEach((item, index) => {
+      const row = new BoxRenderable(this.renderer, { width: '100%', height: item.detail ? 2 : 1, flexShrink: 0,
         backgroundColor: index === this.modalIndex ? this.palette.selected : this.palette.panel,
-        paddingLeft: 1, onMouseDown: () => this.chooseMenu(index) })
-      row.add(this.text((index === this.modalIndex ? '▎ ' : '  ') + item.label, { height: 1 }))
-      if (item.detail) row.add(this.text('  ' + item.detail, { fg: this.palette.muted, height: 1 }))
+        paddingLeft: 1, onMouseDown: event => { if (event.button === 0) this.chooseMenu(index) } })
+      row.add(this.text((index === this.modalIndex ? '▎ ' : '  ') + item.label, { height: 1, selectable: false }))
+      if (item.detail) row.add(this.text('  ' + item.detail, { fg: this.palette.muted, height: 1, selectable: false }))
       this.modalRows!.add(row)
     })
+    const selected = this.modalRows.getChildren()[this.modalIndex]
+    if (selected && revealSelection) this.modalRows.scrollChildIntoView(selected)
   }
   private chooseMenu(index: number) {
     const item = this.modalItems[index]; if (!item) return
@@ -395,8 +403,8 @@ export class TuiScreen {
     const scroll = new ScrollBoxRenderable(this.renderer, { height: Math.max(3, Math.min(lines, this.renderer.height - 10, 18)), minHeight: 1, flexShrink: 1, width: '100%', scrollX: false })
     scroll.add(this.text(content, { width: '100%', wrapMode: 'word', selectable: true })); panel.add(scroll)
     if (actions.length) {
-      this.modalMenu = { title, items: actions }; this.modalItems = actions; this.modalIndex = 0
-      this.modalRows = new BoxRenderable(this.renderer, { marginTop: 1, width: '100%', flexShrink: 0 })
+      this.modalItems = byName(actions, item => item.label); this.modalMenu = { title, items: this.modalItems }; this.modalIndex = 0
+      this.modalRows = new ScrollBoxRenderable(this.renderer, { id: 'menu-items', marginTop: 1, width: '100%', minHeight: 1, flexShrink: 1, scrollX: false, verticalScrollbarOptions: { showArrows: false } })
       panel.add(this.modalRows); this.drawMenu()
       panel.add(this.text(ui('tab actions · enter choose', 'tab 切换操作 · enter 确认'), { fg: this.palette.muted }))
     }

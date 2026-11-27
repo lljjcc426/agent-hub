@@ -1,3 +1,4 @@
+import { byName } from './list-order.ts'
 import {configureConnection,SetupCancelled} from './setup.ts'
 import { randomUUID } from 'node:crypto'
 import { readdir, writeFile } from 'node:fs/promises'
@@ -15,7 +16,7 @@ import type { HostSettings } from './host-settings.ts'
 import type { ModelCapabilities } from '../reasoning-effort.ts'
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
-export const personalCommands = () => [
+export const personalCommands = () => byName([
   { name: '/connect', label: ui('Model connections', '模型连接'), detail: ui('API keys, account sign-in and connection checks', 'API 密钥、账号登录与连接检测') },
   { name: '/workers', label: ui('Workers', 'Worker 管理'), detail: ui('Create, copy, pause, resume or remove', '新增、复制、启停和删除') },
   { name: '/plugins', label: ui('Plugins', '插件'), detail: ui('Installed plugins', '已安装插件列表') },
@@ -43,7 +44,7 @@ export const personalCommands = () => [
   { name: '/tasks', label: ui('Execution details', '执行详情'), detail: ui('Inspect internal collaboration', '查看内部协作') },
   { name: '/help', label: ui('Help', '帮助'), detail: ui('Keys and commands', '按键和命令') },
   { name: '/exit', label: ui('Exit', '退出'), detail: ui('Keep the local service running', '保持本机服务运行') }
-]
+], command => command.name)
 
 export class TuiCommands {
   constructor(private client: TerminalClient, private conversation: Conversation, private screen: TuiScreen,
@@ -66,8 +67,7 @@ export class TuiCommands {
     const directory = fragment.endsWith('/') || !fragment ? expanded : dirname(expanded)
     const term = fragment.endsWith('/') ? '' : basename(fragment).toLowerCase()
     const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
-    return entries.filter(e => !e.name.startsWith('.') && e.name.toLowerCase().includes(term) && (e.isFile() || e.isDirectory()))
-      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name)).slice(0, 80).map(entry => {
+    return byName(entries.filter(e => !e.name.startsWith('.') && e.name.toLowerCase().includes(term) && (e.isFile() || e.isDirectory())), entry => entry.name).map(entry => {
         const path = join(directory, entry.name), prefix = text.slice(0, text.lastIndexOf('@'))
         return { label: entry.name + (entry.isDirectory() ? '/' : ''), detail: directory,
           run: () => this.screen.setDraft(prefix + '@' + (entry.isDirectory() ? '"' + path + '/' : JSON.stringify(path) + ' ')) }
@@ -189,7 +189,7 @@ export class TuiCommands {
     const items = library.items.filter(item => item.kind === kind && item.status !== 'candidate')
     this.screen.menu({ title: name, detail: ui('Installed/configured items. Ask Router to install, update or remove capabilities.', '已有条目；安装、更新或删除可在对话中交给 Router 处理。'), items: [
       { label: ui('Ask Router to manage…', '让 Router 管理…'), run: () => this.screen.setDraft(ui('Help me manage ', '帮我管理 ') + name.slice(1) + ': ') },
-      ...items.map(item => ({ label: item.name, detail: [item.status, item.version, item.sourceGroup ?? item.source].filter(Boolean).join(' · '), run: () => this.screen.document(item.name, [item.description, ...(item.facts ?? []), ...(item.tools ?? []).map(tool => tool.name + (tool.description ? ' · ' + tool.description : ''))].filter(Boolean).join('\n'), [
+      ...items.map(item => ({ label: item.name, detail: [item.status, item.version, item.sourceGroup ?? item.source].filter(Boolean).join(' · '), run: () => this.screen.document(item.name, [item.description, ...(item.facts ?? []), ...byName(item.tools ?? [], tool => tool.name).map(tool => tool.name + (tool.description ? ' · ' + tool.description : ''))].filter(Boolean).join('\n'), [
         { label: ui('Ask Router about this item', '让 Router 处理此项'), run: () => this.screen.setDraft(ui('Help me manage ', '帮我管理 ') + kind + ' “' + item.name + '” (' + item.source + '): ') }
       ]) }))
     ] })
@@ -290,7 +290,7 @@ export class TuiCommands {
     ] })
   }
   private history() {
-    this.screen.menu({ title: ui('Search this conversation', '搜索此对话'), items: [
+    this.screen.menu({ title: ui('Search this conversation', '搜索此对话'), order: 'source', items: [
       { label: ui('Load earlier messages', '加载更早消息'), run: async () => { await this.older(); this.history() } },
       ...this.view().messages.filter(publicMessage).map(m => ({ label: m.text.replace(/\s+/g, ' ').slice(0, 160),
         search: m.text, detail: m.role === 'user' ? ui('You', '你') : 'Roppo', run: () => this.screen.transcript.scrollChildIntoView('message-' + m.id, { align: 'start' }) }))

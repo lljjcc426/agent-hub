@@ -82,7 +82,9 @@ it('keeps split bracketed paste, Unicode edits and multiline history as one subm
 })
 it('selects commands, preserves the draft on failure and restores failed submissions', async () => {
   const { editor, input, lines } = fixture()
-  input.write('/di')
+  input.write('/d')
+  expect(editor.menu!.items.map(item => item.label).filter(label => label.startsWith('/d'))).toEqual(['/decline', '/diff'])
+  input.write('if')
   expect(editor.menu!.items[0]!.label).toBe('/diff')
   input.write('\t')
   expect(editor.line).toBe('/diff')
@@ -134,7 +136,7 @@ it('binds a selected Router answer to the original question and ignores closed q
     view: async () => view,
     request: async (...args: unknown[]) => sent.push(args)
   } as unknown as TerminalClient
-  await command(client, 'chat', choice.items[1]!.value)
+  await command(client, 'chat', choice.items.find(item => item.label === 'Markdown')!.value)
   expect(sent).toEqual([
     [
       '/api/chat/conversations/chat/decisions',
@@ -143,13 +145,13 @@ it('binds a selected Router answer to the original question and ignores closed q
   ])
   await expect(command(client, 'chat', '/choose old 1')).rejects.toThrow('no longer available')
 })
-it('orders capabilities by source and inspects the selected item by stable ID', async () => {
+it('orders capabilities by name and inspects the selected item by stable ID', async () => {
   const library = {
     items: [
-      { id: 'codex/toolkit', name: 'Toolkit', kind: 'mcp', source: 'Codex', status: 'cli' },
+      { id: 'codex/toolkit', name: 'A toolkit', kind: 'mcp', source: 'Codex', status: 'cli' },
       {
         id: 'host/toolkit',
-        name: 'Toolkit',
+        name: 'Z toolkit',
         kind: 'tool',
         source: 'Roppo',
         status: 'builtin',
@@ -161,9 +163,9 @@ it('orders capabilities by source and inspects the selected item by stable ID', 
   } as const
   const snapshot = { ...library, items: [...library.items], warnings: [] }
   const menu = suggestions('/tools toolkit', 14, [], undefined, undefined, snapshot)!
-  expect(menu.items.map((c) => c.detail)).toEqual(['Roppo · tool', 'Codex · mcp'])
+  expect(menu.items.map((c) => c.detail)).toEqual(['Codex · mcp', 'Roppo · tool'])
   const client = { request: async () => snapshot } as unknown as TerminalClient
-  expect(await command(client, 'chat', menu.items[0]!.value)).toContain('Workspace tools')
+  expect(await command(client, 'chat', menu.items[1]!.value)).toContain('Workspace tools')
 })
 it('interrupts a live run before exiting, and restores drafts after menus and history search', async () => {
   const { editor, input, lines } = fixture()

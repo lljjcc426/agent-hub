@@ -3,24 +3,46 @@ import type {Snapshot} from './client.ts'
 import {ui} from './language.ts'
 
 // Alpha silhouette sampled at 12×12 from src/ui/assets/agents/roppo-body.webp.
-// Braille cells hold 2×4 dots; the shared output transform broadens this silhouette.
+// Braille cells hold 2×4 dots; scale the original silhouette equally on both axes.
 export const companionBody=[
- '............','.....##.....','...######...','..########..',
+ '............','....####....','...######...','..########..',
  '..########..','..########..','..#######...','..#######...',
  '..########..','..###.####..','...#...##...','............'
 ]
 export type CompanionFrame={pixels:number[][];label:string;phase:CompanionPhase}
 type Handoff=Snapshot['handoffs'][number]
 const smooth=(t:number)=>{const x=Math.max(0,Math.min(1,t));return x*x*(3-2*x)}
-export const companionWidth=16
-/** Keep round dots on the grid, with a broader body and a small upward stretch. */
-export function fitCompanionProportions(pixels:number[][]):number[][]{
- return pixels.map((row,y)=>row.map((_,x)=>pixels[Math.round(10+(y-10)/1.1)]![Math.round(16+(x-16)/1.5)]!))
+export const companionSourceWidth=16
+export const companionScale=1.2
+export const companionWidth=Math.ceil(companionSourceWidth*companionScale)
+export const companionRows=Math.ceil(companionBody.length*companionScale/4)
+/** Center the uniformly enlarged frame in whole Braille cells, including blank padding. */
+export function scaleCompanion(pixels:number[][]):number[][]{
+ const left=(companionWidth*2-pixels[0]!.length*companionScale)/2
+ const top=(companionRows*4-pixels.length*companionScale)/2
+ return Array.from({length:companionRows*4},(_,y)=>Array.from({length:companionWidth*2},(_,x)=>
+  pixels[Math.floor((y+.5-top)/companionScale)]?.[Math.floor((x+.5-left)/companionScale)]??0))
+}
+/** Rasterize both eyes after body scaling so rounding cannot make one eye larger. */
+export function paintCompanionEyes(pixels:number[][],x:number,y:number,closed:boolean,angle=0){
+ const left=(companionWidth*2-companionSourceWidth*2*companionScale)/2
+ const top=(companionRows*4-companionBody.length*companionScale)/2
+ const cos=Math.cos(angle),sin=Math.sin(angle)
+ const centerX=Math.round(left+(x+.5)*companionScale-.5)
+ const centerY=Math.round(top+(y+.5)*companionScale-.5)
+ for(const offset of [-2,1]){
+  const ex=centerX+Math.round(offset*cos),ey=centerY+Math.round(offset*sin)
+  for(let i=0;i<2;i++){
+   const px=ex+(closed?i:0),py=ey+(closed?0:i)
+   if(pixels[py]?.[px]!==undefined)pixels[py]![px]=0
+  }
+ }
 }
 export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,handoff?:{progress:number;worker:boolean},worker=false):number[][]{
- const pixels=Array.from({length:12},()=>Array<number>(companionWidth*2).fill(0))
+ const pixels=Array.from({length:12},()=>Array<number>(companionSourceWidth*2).fill(0))
  const dot=(x:number,y:number,color=1)=>{x=Math.round(x);y=Math.round(y);if(pixels[y]?.[x]!==undefined)pixels[y]![x]=color}
  const rect=(x:number,y:number,w:number,h:number,color:number)=>{for(let j=0;j<h;j++)for(let i=0;i<w;i++)dot(x+i,y+j,color)}
+ const eyes:{x:number;y:number;closed:boolean;angle:number}[]=[]
  const character=(x:number,p:CompanionPhase,color=1,wave=false)=>{
   const seconds=time/1000
   const angle=p==='thinking'?-.12*Math.sin(Math.PI*smooth((seconds%4)/4)):
@@ -28,11 +50,6 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
   const rise=wave?-Math.sin(Math.PI*Math.min(1,time/1180))*.8:p==='idle'?-.65*Math.sin(seconds*Math.PI*2/4.8):p==='working'?.4*Math.sin(seconds*Math.PI*2/1.3):0
   const mask=companionBody.map(row=>Array.from(row,value=>value==='#'))
   const blink=seconds%5.8>2.44&&seconds%5.8<2.67
-  for(const eye of [6,8]){
-   if(p==='completed'||wave){mask[3]![eye]=false;mask[4]![eye-1]=false}
-   else if(!blink&&p!=='offline'){mask[4]![eye]=false;if(p==='failed')mask[5]![eye+Math.round(Math.sin(seconds*2.4))]=false}
-   else mask[5]![eye]=false
-  }
   // Sample each destination dot back into the original silhouette. Forward rounding
   // can merge adjacent dots and leave a hole when the character tilts.
   const cos=Math.cos(angle),sin=Math.sin(angle)
@@ -41,6 +58,8 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
    const sourceX=Math.round(6+dx*cos+dy*sin),sourceY=Math.round(10-dx*sin+dy*cos)
    if(mask[sourceY]?.[sourceX])dot(px,py,color)
   }
+  // Face center follows the same rotation as the body; eyelids share one shape.
+  eyes.push({x:x+6+.5*cos+6*sin,y:10+rise+.5*sin-6*cos,closed:blink||p==='completed'||p==='offline'||wave,angle})
   if(wave){const y=4+Math.sin(seconds*18)*1.6;dot(x+11,y,color);dot(x+12,y+1,color)}
   if(p==='thinking')for(let i=0;i<3;i++)dot(x+11+i*2,2+(Math.sin(seconds*Math.PI*2/1.8-i*.6)>.5?-1:0),3)
   if(p==='working'){
@@ -59,7 +78,9 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
   character(10+receiver-camera,'idle',handoff.worker?1:4)
   if(t<.9){const x=10+(sender+10)*(1-pass)+(receiver-1)*pass-camera;rect(x,7-Math.sin(Math.PI*pass),3,3,3)}
  }else character(10,phase,worker?4:1,greeting)
- return fitCompanionProportions(pixels)
+ const scaled=scaleCompanion(pixels)
+ for(const eye of eyes)paintCompanionEyes(scaled,eye.x,eye.y,eye.closed,eye.angle)
+ return scaled
 }
 /** Web phase selection and gesture durations, with terminal-owned playback and no history replay. */
 export class TerminalCompanion {
@@ -110,7 +131,7 @@ export class TerminalCompanion {
 
 export function brailleCells(pixels:number[][]){
  const bits=[[1,8],[2,16],[4,32],[64,128]]
- return Array.from({length:3},(_,row)=>Array.from({length:companionWidth},(_,col)=>{
+ return Array.from({length:companionRows},(_,row)=>Array.from({length:companionWidth},(_,col)=>{
   let value=0,color=1
   for(let y=0;y<4;y++)for(let x=0;x<2;x++){const pixel=pixels[row*4+y]![col*2+x]!;if(pixel){value|=bits[y]![x]!;color=Math.max(color,pixel)}}
   return {text:value?String.fromCodePoint(0x2800+value):' ',color}

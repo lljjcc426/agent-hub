@@ -6,6 +6,8 @@ import { createTestRenderer } from '@opentui/core/testing'
 import { TuiScreen, type TuiItem } from '../src/terminal/tui-screen.ts'
 import type { Snapshot } from '../src/terminal/client.ts'
 import { configureLanguage } from '../src/terminal/language.ts'
+import { drawCompanion, companionRows } from '../src/terminal/companion.ts'
+import { entryPixels, greetingDuration } from '../src/terminal/startup.ts'
 
 configureLanguage('en')
 const test = await createTestRenderer({ width: 120, height: 34, kittyKeyboard: true, useMouse: true })
@@ -34,6 +36,8 @@ try {
   assert.match(home, /Commands · ctrl\+p/)
   assert.equal(screen.transcript.scrollHeight, 0)
   assert.match(home, /Ready when you are/)
+  assert.equal(home.split('\n').filter(line=>/[\u2800-\u28ff]/.test(line)).length,companionRows,'enlarged companion fits all its text rows')
+  assert.deepEqual(entryPixels(greetingDuration,true),drawCompanion('idle',0),'startup settles to the same enlarged silhouette')
   const composerY=screen.draft.y
   screen.preferences({theme:'dark',motion:'reduced',animation:false})
   const hidden=await capture('companion-off')

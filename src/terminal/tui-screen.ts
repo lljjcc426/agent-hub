@@ -1,5 +1,5 @@
 import { entryPixels, paintStartupTide, tideDuration, startupDuration } from './startup.ts'
-import {TerminalCompanion,brailleCells,companionWidth} from './companion.ts'
+import {TerminalCompanion,brailleCells,companionWidth,companionRows} from './companion.ts'
 import {
   BoxRenderable, TextRenderable, TextareaRenderable, InputRenderable, ScrollBoxRenderable,
   MarkdownRenderable, SyntaxStyle, StyledText, RGBA, type CliRenderer, type KeyEvent
@@ -104,8 +104,8 @@ export class TuiScreen {
     renderer.root.add(this.frame)
     this.header = this.text('roppo', { height: 1, flexShrink: 0, fg: p.muted })
     this.frame.add(this.header)
-    this.companionBox = new BoxRenderable(renderer, {height:4,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
-    this.companionArt = this.text('', {width:companionWidth,height:3,selectable:false})
+    this.companionBox = new BoxRenderable(renderer, {height:companionRows+1,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
+    this.companionArt = this.text('', {width:companionWidth,height:companionRows,selectable:false})
     this.companionLabel = this.text('', {width:32,height:1,fg:p.muted,selectable:false})
     this.companionBox.add(this.companionArt);this.companionBox.add(this.companionLabel);this.frame.add(this.companionBox)
     this.home = new BoxRenderable(renderer, { flexGrow: 1, minHeight: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 1, paddingBottom: 2 })
@@ -174,11 +174,11 @@ export class TuiScreen {
   private resize = () => {
     const narrow = this.renderer.width < 65
     this.frame.paddingX = narrow ? 1 : 3
-    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 18
+    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 15+companionRows
     this.companionLabel.width = Math.min(32,this.renderer.width-4)
     this.compose.width = this.home.visible ? Math.min(78, this.renderer.width - (narrow ? 2 : 6)) : '100%'
     this.compose.alignSelf = 'center'
-    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? 4 : 0)) / 2)) : 0
+    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? companionRows+1 : 0)) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.attachmentList.height = Math.min(this.attachments.length, Math.max(1, Math.min(3, Math.floor(this.renderer.height / 6))))
     this.footer.content = this.connected
@@ -336,12 +336,12 @@ export class TuiScreen {
   private paintCompanion() {
     const elapsed = this.startupAt === undefined ? undefined : Date.now() - this.startupAt
     const frame = elapsed !== undefined && elapsed < startupDuration
-      ? { pixels: elapsed < tideDuration ? Array.from({length:12},()=>Array<number>(companionWidth*2).fill(0)) : entryPixels(elapsed-tideDuration,true), label: elapsed < tideDuration ? '' : ui('Hello again.', '又见面了。') }
+      ? { pixels: elapsed < tideDuration ? Array.from({length:companionRows*4},()=>Array<number>(companionWidth*2).fill(0)) : entryPixels(elapsed-tideDuration,true), label: elapsed < tideDuration ? '' : ui('Hello again.', '又见面了。') }
       : this.companion.frame(Date.now(),this.prefs.motion==='reduced')
     const colors=[this.palette.bg,this.palette.fg,this.palette.muted,this.palette.warm,this.palette.accent].map(c=>RGBA.fromHex(c))
     this.companionArt.content=new StyledText(brailleCells(frame.pixels).flatMap((row,index)=>[
       ...row.map(cell=>({__isChunk:true as const,text:cell.text,fg:colors[cell.color]})),
-      ...(index<2?[{__isChunk:true as const,text:'\n'}]:[])
+      ...(index<companionRows-1?[{__isChunk:true as const,text:'\n'}]:[])
     ]))
     let label=clean(frame.label),width=Math.min(32,this.renderer.width-4)
     while(stringWidth(label)>width-1)label=label.slice(0,-1)

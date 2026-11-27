@@ -28,16 +28,29 @@ it('settles completed history to idle and keeps reduced motion frames still',()=
  expect(companion.frame(11500).phase).toBe('idle')
 })
 
-it('broadens the dot silhouette without reintroducing holes in tilted frames',()=>{
+it('uniformly enlarges the original dots without reintroducing holes in tilted frames',()=>{
  for(const [phase,time] of [['completed',1600],['thinking',1900]] as const){
   const pixels=drawCompanion(phase,time)
-  expect(pixels[6]![10]).toBe(1)
+  expect(pixels[8]![15]).toBe(1)
   expect(brailleCells(pixels).flat().every(cell=>cell.text===' '||/^[\u2800-\u28ff]$/.test(cell.text))).toBe(true)
  }
  const idle=drawCompanion('idle',0)
  const dots=idle.flatMap((row,y)=>row.flatMap((value,x)=>value?[{x,y}]:[]))
- expect(Math.max(...dots.map(p=>p.x))-Math.min(...dots.map(p=>p.x))+1).toBe(12)
- expect(Math.max(...dots.map(p=>p.y))-Math.min(...dots.map(p=>p.y))+1).toBe(11)
- expect(idle[3]![16]).toBe(0)
- expect(idle[3]![19]).toBe(0)
+ expect(Math.max(...dots.map(p=>p.x))-Math.min(...dots.map(p=>p.x))+1).toBe(10)
+ expect(Math.max(...dots.map(p=>p.y))-Math.min(...dots.map(p=>p.y))+1).toBe(12)
+ expect(idle[6]![19]).toBe(0)
+ expect(idle[6]![22]).toBe(0)
+})
+
+it('keeps two equal eyes with a visible bridge and intact face borders',()=>{
+ const open=drawCompanion('idle',0),closed=drawCompanion('completed',0)
+ for(const x of [19,22]){
+  expect([open[6]![x],open[7]![x]]).toEqual([0,0])
+  expect([open[6]![x-1],open[6]![x+1]]).toEqual([1,1])
+  expect(closed[6]!.slice(x,x+2)).toEqual([0,0])
+  expect(closed[5]!.slice(x,x+2)).toEqual([1,1])
+  expect(closed[7]!.slice(x,x+2)).toEqual([1,1])
+ }
+ expect(closed[6]![21]).toBe(1)
+ expect(closed[6]![24]).toBe(1)
 })

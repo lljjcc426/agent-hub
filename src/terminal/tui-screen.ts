@@ -102,7 +102,7 @@ export class TuiScreen {
     }, renderer.nativeScene)
     this.frame = new BoxRenderable(renderer, { width: '100%', height: '100%', flexDirection: 'column', paddingX: 2, paddingY: 1, backgroundColor: p.bg })
     renderer.root.add(this.frame)
-    this.header = this.text('roppo', { height: 1, flexShrink: 0, fg: p.muted })
+    this.header = this.text('', { height: 2, flexShrink: 0, fg: p.fg })
     this.frame.add(this.header)
     this.companionBox = new BoxRenderable(renderer, {height:companionRows+1,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
     this.companionArt = this.text('', {width:companionWidth,height:companionRows,selectable:false})
@@ -174,11 +174,16 @@ export class TuiScreen {
   private resize = () => {
     const narrow = this.renderer.width < 65
     this.frame.paddingX = narrow ? 1 : 3
-    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 15+companionRows
+    this.header.height = this.renderer.height >= 20 && this.renderer.width >= 24 ? 2 : 1
+    if (!this.noticeTimer) {
+      this.header.content = this.header.height === 2 ? '█▀█ █▀█ █▀█ █▀█ █▀█\n█▀▄ █▄█ █▀▀ █▀▀ █▄█' : 'roppo'
+      this.header.fg = this.palette.fg
+    }
+    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+this.header.height+companionRows
     this.companionLabel.width = Math.min(32,this.renderer.width-4)
     this.compose.width = this.home.visible ? Math.min(78, this.renderer.width - (narrow ? 2 : 6)) : '100%'
     this.compose.alignSelf = 'center'
-    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 18 - (this.companionBox.visible ? companionRows+1 : 0)) / 2)) : 0
+    this.compose.marginBottom = this.home.visible ? Math.max(0, Math.floor((this.renderer.height - 17 - this.header.height - (this.companionBox.visible ? companionRows+1 : 0)) / 2)) : 0
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.attachmentList.height = Math.min(this.attachments.length, Math.max(1, Math.min(3, Math.floor(this.renderer.height / 6))))
     this.footer.content = this.connected
@@ -200,7 +205,7 @@ export class TuiScreen {
     this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
     this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
     this.attachButton.content = ui('+ Attach', '+ 附件'); this.attachButton.fg = p.muted; this.drawAttachments()
-    this.model.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.muted; this.permissions.fg = p.muted
+    this.model.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.fg; this.permissions.fg = p.muted
     this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
     this.completions.backgroundColor = p.panel
     this.style.registerStyle('default', { fg: p.fg })
@@ -253,7 +258,7 @@ export class TuiScreen {
   notice(message: string, error = false) {
     clearTimeout(this.noticeTimer)
     this.header.content = clean(message); this.header.fg = error ? this.palette.warm : this.palette.accent
-    this.noticeTimer = setTimeout(() => { if (!this.closed) { this.header.content = 'roppo'; this.header.fg = this.palette.muted } }, error ? 8000 : 3500)
+    this.noticeTimer = setTimeout(() => { this.noticeTimer = undefined; if (!this.closed) this.resize() }, error ? 8000 : 3500)
   }
   setDraft(value: string) { this.draft.setText(value); this.draft.gotoBufferEnd(); this.draft.focus() }
   latest() { this.transcript.scrollTo(Infinity); this.jump.visible = false; this.draft.focus() }

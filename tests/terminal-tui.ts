@@ -226,7 +226,7 @@ try {
       const initial = preview.captureCharFrame()
       const middle = await advance(1000, 'startup-tide')
       assert.notEqual(middle, initial)
-      assert.match(middle, /roppo/, 'the left side reveals the live interface')
+      assert.match(middle, /█▀█ █▀█/, 'the left side reveals the larger header wordmark')
       entry.update(view)
       preview.resize(60, 20); entry.preferences({theme:'light',motion:'full'})
       await advance(1400, 'startup-small')

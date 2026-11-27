@@ -85,3 +85,9 @@ CoreText 验证所有点阵字符均由新字体直接绘制，没有字体回�
 双眼改为在身体缩放完成后绘制，避免取整把一只眼复制成更大的缺口。睁眼为两条等大的短竖线，眨眼及完成表情为两条等长的短横线，保持眼间的点阵分隔；面部位置随身体倾斜移动。启动动画复用同一绘制方式。
 
 本次修改 `src/terminal/companion.ts`（统一缩放、双眼）、`src/terminal/startup.ts`（启动比例与双眼）、`src/terminal/tui-screen.ts`（四行布局）、`tests/terminal-companion.spec.ts` 和 `tests/terminal-tui.ts`（尺寸、双眼与启动一致性验证）、`docs/TERMINAL.md` 和本文。没有删除文件。
+
+## 左上角字标
+
+左上角单行灰色 `roppo` 改成两行、19 列的亮色像素字标，提高标题辨识度。窗口低于 20 行或窄于 24 列时使用单行标题，保留输入空间。通知结束后恢复当前尺寸的字标。
+
+修改 `src/terminal/tui-screen.ts`（标题、通知恢复与布局）、`tests/terminal-tui.ts`（启动露出字标检查）和本文。没有删除文件。

@@ -30,11 +30,11 @@
 .management-content .operator-workspace .memory-settings .memory-toggle{display:flex;align-items:center;gap:12px;margin:0;cursor:pointer;white-space:nowrap}
 .management-content .operator-workspace .memory-settings .memory-toggle input{appearance:none;position:relative;flex:none;width:38px;height:22px;margin:0;border:1px solid var(--c-line);border-radius:12px;background:var(--c-hover,#e5e5e5);cursor:pointer;transition:background-color 150ms}
 .management-content .operator-workspace .memory-settings .memory-toggle input:before{content:'';position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:var(--c-bg);box-shadow:0 1px 2px #0002;transition:transform 150ms}
-.management-content .operator-workspace .memory-settings .memory-toggle input:checked{background:var(--c-text);border-color:var(--c-text)}
+.management-content .operator-workspace .memory-settings .memory-toggle input:checked{background:var(--rp-line-strong);border-color:var(--rp-line-strong)}
 .management-content .operator-workspace .memory-settings .memory-toggle input:checked:before{transform:translateX(16px)}
 .memory-file-tabs{display:flex;gap:28px;border-bottom:1px solid var(--c-line);overflow-x:auto;scrollbar-width:thin;position:relative}
 .management-content .operator-workspace .memory-settings .memory-file-tabs button{padding:0 2px 14px;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--c-muted);font:inherit;white-space:nowrap;cursor:pointer}
-.management-content .operator-workspace .memory-settings .memory-file-tabs button[aria-selected=true]{border-bottom-color:var(--c-text);color:var(--c-text);font-weight:600}
+.management-content .operator-workspace .memory-settings .memory-file-tabs button[aria-selected=true]{border-bottom-color:var(--c-line);color:var(--c-text);font-weight:600}
 .management-content .operator-workspace .memory-settings .memory-file-tabs[data-tab-motion=ready] button[aria-selected=true]{border-bottom-color:transparent}
 .management-content .operator-workspace .memory-settings .memory-file-hint{margin:16px 0 28px;color:var(--c-muted);font:inherit}
 .memory-reader{display:grid;grid-template-columns:minmax(240px,.95fr) minmax(0,1.85fr);gap:30px;min-height:360px}

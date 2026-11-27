@@ -16,3 +16,5 @@ export function setWorkerDiffPreference(enabled:boolean) {
   write(key,enabled?'on':'off')
   window.dispatchEvent(new Event(change))
 }
+
+export const toggleWorkerDiffPreference=()=>setWorkerDiffPreference(!current())

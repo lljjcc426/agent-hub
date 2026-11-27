@@ -3,7 +3,7 @@ import { smartPunctuation } from '../chat/smart-punctuation.ts'
 import { modifierEnterLabel, sendModifier, type SendShortcut } from '../chat/send-shortcut.ts'
 import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowUp, Box, ClipboardList, LoaderCircle, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
-import { ApprovalOptions, WorkerDiffOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
+import { ApprovalOptions, approvalLabel, commands, matchingCommands, CommandList, ContextOverview, UsageRing, windowReadout,
   type ChatCommand, type Localize, type Mode } from '../chat/composer-commands.tsx'
 import { RouterModelOptions, type ModelConnectionStore } from '../chat/router-model.tsx'
 import type { CurrentContext } from '../chat/context-card.tsx'
@@ -11,10 +11,10 @@ import type { ChatSkill, ChatSkillCatalog, ChatSkillRef } from '../../src/chat-s
 import { ReferencePicker, type LoadReferences } from '../chat/reference-picker.tsx'
 import type { ChatQuoteView } from '../../src/chat-interactions.ts'
 import { finishLayerExit } from './overlays.tsx'
-import {setWorkerDiffPreference} from '../chat/worker-diff-preference.ts'
+import {setWorkerDiffPreference,toggleWorkerDiffPreference} from '../chat/worker-diff-preference.ts'
 import '../chat/composer-controls.css'
 
-type Subpage = Exclude<ChatCommand, 'attach' | 'commits' | 'plan'>
+type Subpage = Exclude<ChatCommand, 'attach' | 'commits' | 'plan' | 'diff'>
 type Source = Exclude<Subpage, 'ref'> | 'slash' | 'plus'
 type Menu = { source: Source; page: Subpage | 'commands'; query: string }
 
@@ -139,6 +139,9 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
     } else if (command === 'commits') {
       close(false)
       onCommitTrail?.(opener.current)
+    } else if (command === 'diff') {
+      toggleWorkerDiffPreference()
+      close()
     } else if (command === 'plan') {
       onPlanDraft?.(true)
       close()
@@ -173,7 +176,7 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
       return
     }
     const target = event.target as Element
-    if (page !== 'commands' && page !== 'permissions' && page !== 'diff' && page !== 'ref' && !(page === 'model' && target.closest('[role=menu]'))) return
+    if (page !== 'commands' && page !== 'permissions' && page !== 'ref' && !(page === 'model' && target.closest('[role=menu]'))) return
     if (page === 'ref' && target.matches('input')) return
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role^=menuitem]:not(:disabled)'))
@@ -377,14 +380,13 @@ export function ChatComposer({ L, visible, sending, mode, usage, router, model, 
         role={page === 'model' || page === 'context' || page === 'ref' ? 'dialog' : undefined}
         aria-label={page === 'model' ? L('Chat model','对话模型') : title} onKeyDown={moveInMenu}>
         <div ref={paletteBody} className="palette-body"><div key={page} className="palette-page" data-page={page}>
-          {(page === 'permissions' || page === 'context' || page === 'diff' || page === 'ref') && <div className="palette-heading">
+          {(page === 'permissions' || page === 'context' || page === 'ref') && <div className="palette-heading">
             {nested && <button type="button" aria-label={L('Back to chat actions','返回对话操作')} onClick={back}><ArrowLeft size={16}/></button>}
             <strong>{page === 'permissions' ? L('How should Roppo ask for approval?', 'Roppo 应如何请求批准？') : title}</strong>
           </div>}
           {page === 'commands' && <CommandList items={items} skills={skillItems} empty={empty} slash={slashList} listId={listId} active={active}
             uploadDisabled={uploadDisabled} mode={mode} L={L} onHighlight={highlightAt} onChoose={choose} onSkill={selectSkill}/>}
           {page === 'permissions' && <ApprovalOptions mode={mode} L={L} onSave={saveMode} onClose={finish}/>}
-          {page === 'diff' && <WorkerDiffOptions L={L} onClose={finish}/>}
           {page === 'model' && <RouterModelOptions store={modelStore} L={L} model={model} backend={modelBackend} onSaved={onModelSaved}
             onSaving={active => setModelWrites(count => count + (active ? 1 : -1))} onClose={finish} onBack={nested ? back : undefined}/>}
           {page === 'context' && onContext && <ContextOverview readout={readout} L={L} onDetails={() => { close(false); onContext() }}/>}

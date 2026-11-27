@@ -120,6 +120,9 @@
 .composer-skill button:hover { background: var(--c-hover); color: var(--c-text); }
 .message-skill { margin-bottom: 3px; font-weight: 560; }
 .composer-palette .palette-row:is(:hover, :focus-visible, [aria-selected=true]) { background: var(--rp-soft); outline: 0; }
+.composer-palette .palette-row[aria-checked=true] { background: var(--rp-soft); color: var(--rp-ink); }
+.composer-palette .palette-row:focus-visible { box-shadow: inset 0 0 0 1px var(--rp-line-strong); }
+.composer-palette:focus-visible { outline: none; }
 .composer-palette .palette-row:disabled { opacity: .5; cursor: default; }
 .palette-heading { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; margin-bottom: 4px; }
 .palette-heading strong { font-weight: 600; }

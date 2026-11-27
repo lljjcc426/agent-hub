@@ -65,7 +65,8 @@
   color: var(--rp-ink);
   text-align: start;
 }
-.rv-thinking-head:hover { background: var(--rp-soft); }
+div.rv-thinking-head { cursor: default; }
+button.rv-thinking-head:hover { background: var(--rp-soft); }
 .rv-thinking-head .rv-chevron { color: var(--rp-muted); opacity: .55; transition: opacity 160ms, transform 260ms var(--rp-ease); }
 .rv-thinking-head:is(:hover, :focus-visible) .rv-chevron { opacity: 1; }
 .rv-thinking-label { animation: rv-reasoning-enter 420ms var(--rp-ease) both; }

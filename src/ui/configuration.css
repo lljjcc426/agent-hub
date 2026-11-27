@@ -581,8 +581,8 @@ textarea {
   transition: transform var(--motion);
 }
 .switch:checked {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--surface-selected);
+  border-color: var(--border-strong);
 }
 .switch:checked:after {
   transform: translateX(16px);
@@ -995,9 +995,9 @@ pre {
   font-weight: 650;
 }
 .step-link[aria-current] .step-number {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-action);
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
+  color: var(--ink);
 }
 .step-link.past .step-number {
   border-color: var(--tint);

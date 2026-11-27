@@ -232,7 +232,7 @@ function BrowserPageTabs({session, viewportId, editable, operation, L}: {
   );
 }
 
-export type BrowserOpenRequest = {id?: string; takeover?: boolean};
+export type BrowserOpenRequest = {id?: string; takeover?: boolean; url?: string};
 type BrowserPanelProps = {
   L: L;
   conversationId?: string;
@@ -241,14 +241,16 @@ type BrowserPanelProps = {
   onRequestHandled?: () => void;
   createConversation?: () => Promise<void>;
   settingsOnly?: boolean;
+  embedded?: boolean;
+  openInWorkbench?: (request:BrowserOpenRequest)=>void;
   profileDialogTarget?: HTMLElement | null;
 };
 
 export function BrowserPanel({L, conversationId='', routerLabel, requestedSession, onRequestHandled, createConversation,
-  settingsOnly=false, profileDialogTarget}: BrowserPanelProps) {
+  settingsOnly=false, embedded=false, openInWorkbench, profileDialogTarget}: BrowserPanelProps) {
   const client = browserClient;
-  const [popupOpen, setPopupOpen] = useState(false),
-    [popupContent, setPopupContent] = useState(false),
+  const [popupOpen, setPopupOpen] = useState(embedded),
+    [popupContent, setPopupContent] = useState(embedded),
     [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
     [connected, setConnected] = useState(false),
@@ -460,11 +462,12 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     if(!captured?.controlledByYou)return Promise.resolve();
     return request('/sessions/'+captured.id+'/input',{client,epoch:captured.epoch,event});
   };
-  const openDefault=()=>act(async()=>{
+  const openDefault=(url?:string)=>act(async()=>{
     await returning.current?.done;
     if(viewLease.current && !viewLease.current.workspace)await returnControl(viewLease.current);
     await viewportDrain.current();
     const value=await request<Session>('/open',{client,conversationId});receiveControl(value);setSelected(value.id);
+    if(url && value.controlledByYou && active.current)update(await request<Session>('/sessions/'+value.id+'/action',{client,epoch:value.epoch,operation:{action:'navigate',url}}));
   });
   const showBrowser = () => {
     popupOpenRef.current = true;
@@ -472,6 +475,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     setPopupOpen(true);
   };
   const openFromGallery = () => {
+    if(openInWorkbench){openInWorkbench({});return}
     if (!conversationId) {
       if (createConversation) void act(createConversation);
       return;
@@ -485,7 +489,8 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     handledSession.current=requestedSession;
     onRequestHandled?.();
     if (!requestedSession.id) {
-      openFromGallery();
+      showBrowser();
+      void openDefault(requestedSession.url);
       return;
     }
     const id = requestedSession.id;
@@ -962,6 +967,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     </aside>
   );
   if (settingsOnly) return content;
+  if (embedded) return <div className="bench-browser roppo-ui">{browserTabs && <div className="bench-browser-tabs">{browserTabs}</div>}{content}</div>;
   return (
     <section className="team-browsers" aria-label={L("Browsers", "浏览器")}>
       <div className="team-browser-heading">
@@ -976,7 +982,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       {!popupContent && errorNotice}
       {data?.sessions.map(s => <BrowserPreview key={s.id} id={s.id} title={labelFor(s)} revision={s.revision}
         label={L('View browser', '查看浏览器') + ' · ' + labelFor(s)} enabled={!popupContent}
-        open={() => { setError(''); setSelected(s.id); showBrowser(); }}/>)}
+        open={() => {if(openInWorkbench){openInWorkbench({id:s.id});return} setError(''); setSelected(s.id); showBrowser(); }}/>)}
       <Dialog open={popupOpen} className={"roppo-ui browser-fullscreen"+(browserTabs?" has-browser-page":"")}
         title={L("Browser", "浏览器")} headerContent={browserTabs}
         closeLabel={L("Close browser view", "关闭浏览器视图")} onClose={() => {

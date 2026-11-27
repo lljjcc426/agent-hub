@@ -74,8 +74,8 @@
 .team-tab-content>p {font-size:13px;color:var(--team-muted)}
 .team-tabs {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));position:relative;border-bottom:1px solid var(--team-line)}
 .team-tabs button {display:flex;min-height:40px;gap:5px;align-items:center;justify-content:center;color:var(--team-muted);font-size:13px}
-.team-tabs button[aria-selected=true] {color:var(--team-action);font-weight:650}
-.team-tabs::after {position:absolute;content:"";width:33.333%;height:2px;bottom:-1px;background:var(--team-action);transition:transform .22s var(--team-ease)}
+.team-tabs button[aria-selected=true] {color:var(--team-ink);font-weight:650;background:var(--team-fill);border-radius:7px}
+.team-tabs::after {position:absolute;content:"";width:33.333%;height:2px;bottom:-1px;background:var(--team-line);transition:transform .22s var(--team-ease)}
 .team-tabs[data-tab=agents]::after {transform:translateX(100%)}
 .team-tabs[data-tab=schedules]::after {transform:translateX(200%)}
 .team-tab-content {min-height:0;overflow:auto;overscroll-behavior:contain;flex:1;padding-bottom:max(18px,env(safe-area-inset-bottom));animation:team-content-in .22s var(--team-ease)}

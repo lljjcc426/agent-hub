@@ -5,9 +5,9 @@ import {CompanionScene} from './companion-scene.tsx'
 import type {Handoff,Speaker} from './use-handoff.ts'
 export {RoppoCharacter} from './roppo-character.tsx'
 
-export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish,visible}:{
+export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish,visible,panelOpen}:{
  actor:Speaker; event?:Handoff; onFinish:(id:string)=>void
- status:CompanionStatus; onOpen:()=>void; L:(en:string,zh:string)=>string; visible:boolean
+ status:CompanionStatus; onOpen:()=>void; L:(en:string,zh:string)=>string; visible:boolean; panelOpen?:boolean
 }){
  const [displayed,setDisplayed]=useState(current);
  const changedAt=useRef(0);
@@ -58,7 +58,7 @@ export function ChatCompanion({status:current,onOpen,L,actor,event,onFinish,visi
  }, [visible])
  return <div ref={capsule} className="chat-float chat-float-center" data-expanded={event ? true : undefined}>
   <button type="button" className="chat-companion" data-handoff={event?.id} onClick={onOpen}
-   data-phase={status.phase} title={caption} aria-label={L('View current activity','查看当前任务进展')}>
+   data-phase={status.phase} aria-expanded={panelOpen} aria-controls="session-panel" title={caption+' · '+L('Session panel','会话面板')} aria-label={L('View current activity','查看当前任务进展')}>
    <CompanionScene actor={actor} phase={phase} paused={hidden} event={event} onFinish={onFinish}/>
    <span className="companion-copy"><span className="companion-label" role="status" aria-live="polite" aria-atomic="true">{caption}</span></span>
    <span aria-hidden="true" className="companion-ruler"><span ref={measure}>{status.label}</span></span>

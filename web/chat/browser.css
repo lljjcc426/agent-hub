@@ -668,7 +668,7 @@
   color:var(--c-muted); border:1px solid transparent; border-radius:8px;
 }
 .browser-page-tab:hover { background:var(--c-hover); color:var(--c-text); }
-.browser-page-tab[data-active] { background:var(--c-bg); color:var(--c-text); border-color:var(--c-line); }
+.browser-page-tab[data-active] { background:var(--c-soft); color:var(--c-text); border-color:var(--c-line); }
 .browser-page-tab > [role=tab] {
   display:flex; align-items:center; gap:6px; min-width:0; padding:6px 8px; min-height:34px; font-size:13px;
 }

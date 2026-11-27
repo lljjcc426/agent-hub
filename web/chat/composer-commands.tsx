@@ -1,5 +1,4 @@
-import { ArrowUpRight, Box, Check, ChevronRight, CircleGauge, ClipboardList, Eye, EyeOff, GitCommitHorizontal, GitCompareArrows, Hand, Paperclip, Quote, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
-import {setWorkerDiffPreference,useWorkerDiffPreference} from './worker-diff-preference.ts'
+import { ArrowUpRight, Box, Check, ChevronRight, CircleGauge, ClipboardList, GitCommitHorizontal, GitCompareArrows, Hand, Paperclip, Quote, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { ChatSpace } from './chat-settings.tsx'
 import type { CurrentContext } from './context-card.tsx'
@@ -12,7 +11,7 @@ export const commands = [
   { id: 'permissions', title: (L: Localize) => L('Approval policy', '审批策略'), Icon: ShieldCheck },
   { id: 'context', title: (L: Localize) => L('Context usage', '上下文用量'), Icon: CircleGauge },
   { id: 'commits', title: (L: Localize) => L('Commit trail', '提交轨迹'), Icon: GitCommitHorizontal },
-  { id: 'diff', title: (L: Localize) => L('Worker file changes', 'Worker 文件改动'), Icon: GitCompareArrows },
+  { id: 'diff', title: (L: Localize) => L('File changes', '文件改动'), Icon: GitCompareArrows },
   { id: 'ref', title: (L: Localize) => L('Reference a message', '引用消息'), Icon: Quote },
   { id: 'plan', title: (L: Localize) => L('Plan before executing', '先规划再执行'), Icon: ClipboardList },
 ] as const
@@ -53,7 +52,7 @@ export function CommandList({ items, skills, empty, active, slash, listId, uploa
         onClick={() => onChoose(id)}>
         <Icon size={16}/><span>{title(L)}</span>
         {slash ? <small>/{id}</small> : id === 'permissions' && mode && <small data-mode={mode}>{approvalLabel(mode, L)}</small>}
-        {id !== 'attach' && id !== 'commits' && id !== 'plan' && <ChevronRight size={13} className="palette-trailing"/>}
+        {id !== 'attach' && id !== 'commits' && id !== 'plan' && id !== 'diff' && <ChevronRight size={13} className="palette-trailing"/>}
       </button>
     ))}
     {!!skills.length && <div role="group" aria-label={L('Skills','技能')}>
@@ -75,21 +74,6 @@ export function CommandList({ items, skills, empty, active, slash, listId, uploa
       })}
     </div>}
     {empty && <div className="palette-empty" role="status">{empty}</div>}
-  </div>
-}
-
-export function WorkerDiffOptions({L,onClose}:{L:Localize;onClose:()=>void}) {
-  const enabled=useWorkerDiffPreference()
-  return <div role="menu" aria-label={L('Worker file changes','Worker 文件改动')}>
-    {[true,false].map(next=>{
-      const Icon=next?Eye:EyeOff
-      const label=next?L('On','开启'):L('Off','关闭')
-      return <button key={String(next)} type="button" className="palette-row policy-option"
-        role="menuitemradio" aria-label={label} aria-checked={next===enabled}
-        onClick={()=>{setWorkerDiffPreference(next);onClose()}}>
-        <Icon size={17}/><span><strong>{label}</strong></span>{next===enabled&&<Check size={15}/>}
-      </button>
-    })}
   </div>
 }
 

@@ -34,7 +34,7 @@
 .rp-weekdays { display:flex; flex-wrap:wrap; gap:4px; border:0; padding:0; margin:0; }
 .rp-weekdays legend { padding:0 0 4px; font-size:13px; }
 .rp-weekdays button { padding:5px 8px; min-height:32px; background:var(--rp-soft); color:var(--rp-ink); border:0; border-radius:8px; cursor:pointer; transition:background .16s ease,color .16s ease; }
-.rp-weekdays button[aria-pressed=true] { background:var(--rp-action); color:var(--rp-on-action); }
+.rp-weekdays button[aria-pressed=true] { background:var(--rp-selected); color:var(--rp-ink); }
 .rp-schedule-save { justify-content:space-between; align-items:flex-end; }
 .rp-schedule-save button { flex:none; }
 .rp-schedule-card [role=alert] { margin:6px 0 0; font-size:13px; }

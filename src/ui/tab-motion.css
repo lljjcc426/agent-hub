@@ -2,7 +2,7 @@
 [data-tab-motion=ready] { position: relative; }
 .tab-motion-indicator {
   position: absolute; display: block; pointer-events: none; z-index: 1;
-  background: var(--c-text, var(--ink, #171717)); border-radius: 1px;
+  background: var(--c-line, var(--border-subtle, #dedede)); border-radius: 1px;
   transform-origin: left top; opacity: 1;
 }
 .tab-motion-pill {

@@ -1,37 +1,11 @@
 import {useEffect,useId,useMemo,useRef,useState} from 'react'
-import {AlignJustify,ChevronDown,Columns2,ExternalLink,FileCode2,GitCompareArrows,WrapText} from 'lucide-react'
-import type {ChatMessage,WorkerFilePatch} from '../../src/chat.ts'
+import {AlignJustify,ChevronDown,Columns2,ExternalLink,FolderOpen,History,FileCode2,GitCompareArrows,WrapText} from 'lucide-react'
+import type {WorkerFilePatch} from '../../src/chat.ts'
 import type {Localize} from './composer-commands.tsx'
-import {Dialog} from '../ui/overlays.tsx'
+import type {ChangedFile,DiffTarget,WorkerReports} from './worker-report-groups.ts'
 import {useWorkerDiffPreference} from './worker-diff-preference.ts'
 import {parseHunks,type PatchHunk} from '../../src/worker-patch.ts'
 import './worker-file-diff.css'
-
-type Report={conversationId:string;messageId:string;workerId:string;label:string;files:WorkerFilePatch[]}
-export type WorkerReports=Report[]
-
-// A Router reply can cite a particular Worker receipt when the current view hides it.
-export function reportsForTranscript(messages:ChatMessage[], visible:ChatMessage[]) {
-  const visibleIds=new Set(visible.map(m=>m.id))
-  const sources=new Map<string,{report:Report;runId:string}>()
-  const reports=new Map<string,WorkerReports>()
-  for(const message of messages) {
-    if(message.speaker?.kind!=='worker' || !message.fileChanges?.length) continue
-    const report={conversationId:message.conversationId,messageId:message.id,workerId:message.speaker.id,label:message.speaker.label,files:message.fileChanges}
-    sources.set(message.id,{report,runId:message.runId})
-    if(visibleIds.has(message.id)) reports.set(message.id,[report])
-  }
-  for(const message of visible) {
-    if(message.speaker?.kind!=='router' || !message.fileChangeSources) continue
-    const cited:Report[]=[]
-    for(const id of new Set(message.fileChangeSources)) {
-      const source=sources.get(id)
-      if(source?.runId===message.runId && !visibleIds.has(id)) cited.push(source.report)
-    }
-    if(cited.length) reports.set(message.id,cited)
-  }
-  return reports
-}
 
 type DiffLine={sign:string;text:string;old?:number;next?:number}
 function numbered(hunk:PatchHunk):DiffLine[] {
@@ -78,7 +52,7 @@ function InlineFile({file,first,inspect,L}:{file:WorkerFilePatch;first:boolean;i
   const openLabel=L('Open full diff for ','查看完整差异 · ')+file.path
   return <div className="worker-patch">
     <div className="patch-inline-head">
-      <button type="button" className="patch-file-link" aria-haspopup="dialog" aria-label={openLabel} title={openLabel} onClick={inspect}>
+      <button type="button" className="patch-file-link" aria-label={openLabel} title={openLabel} onClick={inspect}>
         <FileCode2 size={15}/><span className="worker-patch-name" dir="ltr">{file.path}</span><ExternalLink size={12} className="patch-open-icon"/></button>
       <Counts file={file} L={L}/>
       <button type="button" className="patch-disclose" onClick={()=>setExpanded(!expanded)} aria-controls={id} aria-expanded={expanded}
@@ -114,7 +88,7 @@ function FullPatch({raw,split,wrap,L}:{raw:string;split:boolean;wrap:boolean;L:L
     if(!more.current)return
     const observer=new IntersectionObserver(entries=>{
       if(entries.some(entry=>entry.isIntersecting))setLimit(n=>n+600)
-    },{root:more.current.closest('.rp-dialog-body'),rootMargin:'160px'})
+    },{root:more.current.closest('.bench-diffs'),rootMargin:'160px'})
     observer.observe(more.current)
     return ()=>observer.disconnect()
   },[limit,rows.length])
@@ -131,83 +105,112 @@ function FullPatch({raw,split,wrap,L}:{raw:string;split:boolean;wrap:boolean;L:L
       {L('Show more lines','显示更多行')} · {limit} / {rows.length}</button>}
   </div>
 }
-function DrawerFile({file,conversationId,selected,L}:{file:WorkerFilePatch;conversationId:string;selected:boolean;L:Localize}){
-  const [expanded,setExpanded]=useState(selected),[wrap,setWrap]=useState(true),[split,setSplit]=useState(false)
-  const [raw,setRaw]=useState<string>(),[failed,setFailed]=useState(false),[retry,setRetry]=useState(0),[openError,setOpenError]=useState(false)
-  const bodyId=useId(),row=useRef<HTMLElement>(null)
-  const href=file.id?'/api/chat/conversations/'+encodeURIComponent(conversationId)+'/patches/'+encodeURIComponent(file.id):undefined
-  const localMac=!!href&&['127.0.0.1','localhost','[::1]'].includes(window.location.hostname)&&/Mac/.test(navigator.platform)
-  useEffect(()=>{if(selected)row.current?.scrollIntoView({block:'nearest'})},[selected])
+export function FilePath({path}:{path:string}){
+  const end=path.lastIndexOf('/')+1
+  return <span className="bench-path" dir="ltr" title={path}>
+    {end>0&&<span className="bench-path-dir" dir="rtl"><bdi dir="ltr">{path.slice(0,end)}</bdi></span>}
+    <span className="bench-path-name">{path.slice(end)}</span>
+  </span>
+}
+
+function PatchVersion({file,conversationId,expanded,split,wrap,L}:{
+  file:WorkerFilePatch;conversationId:string;expanded:boolean;split:boolean;wrap:boolean;L:Localize
+}){
+  const [raw,setRaw]=useState<string>(),[failed,setFailed]=useState(false),[retry,setRetry]=useState(0)
+  const href=file.id?patchUrl(conversationId,file.id):undefined
   useEffect(()=>{
-    if(!expanded||raw!==undefined)return
-    if(!href){setRaw(fallbackPatch(file));return}
+    if(!expanded||raw!==undefined||!href)return
     const controller=new AbortController()
     setFailed(false)
     fetch(href,{signal:controller.signal}).then(async res=>{
       if(!res.ok)throw Error()
-      const text=await res.text()
-      if(!controller.signal.aborted)setRaw(text)
+      const value=await res.text()
+      if(!controller.signal.aborted)setRaw(value)
     }).catch(()=>{if(!controller.signal.aborted)setFailed(true)})
     return ()=>controller.abort()
-  },[file,href,expanded,retry,raw])
+  },[expanded,href,retry,raw])
+  const value=href?raw:fallbackPatch(file)
+  if(value!==undefined)return <FullPatch raw={value} split={split} wrap={wrap} L={L}/>
+  return expanded?<p className="patch-hint" role={failed?'alert':'status'}>{failed?<>{L('Diff unavailable','未能读取差异')} <button onClick={()=>setRetry(n=>n+1)}>{L('Retry','重试')}</button></>:L('Loading diff…','正在读取差异…')}</p>:null
+}
+
+const patchUrl=(conversation:string,id:string)=>'/api/chat/conversations/'+encodeURIComponent(conversation)+'/patches/'+encodeURIComponent(id)
+
+export function DetailedFile({change,conversationId,initial,focus,openFile,L}:{
+  change:ChangedFile;conversationId:string;initial:boolean;focus?:number;openFile:(path:string)=>void;L:Localize
+}){
+  const [expanded,setExpanded]=useState(initial),[wrap,setWrap]=useState(true),[split,setSplit]=useState(false)
+  const [picked,setPicked]=useState<number>(),[error,setError]=useState('')
+  const version=Math.min(picked??Infinity,change.versions.length-1),file=change.versions[version]!
+  const id=useId(),row=useRef<HTMLElement>(null)
+  useEffect(()=>{
+    if(focus===undefined)return
+    setExpanded(true)
+    row.current?.scrollIntoView({block:'nearest'})
+  },[focus])
   const openWith=async(action:string)=>{
-    setOpenError(false)
-    if(action==='textedit'&&href){
-      try{if(!(await fetch(href+'/open',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).ok)throw Error()}
-      catch{setOpenError(true)}
+    setError('')
+    if(action==='files'){openFile(file.path);return}
+    const href=file.id?patchUrl(conversationId,file.id):undefined
+    if(action==='finder'||action==='textedit'){
+      try{
+        const url=action==='finder'?'/api/chat/conversations/'+encodeURIComponent(conversationId)+'/workbench/reveal':href+'/open'
+        const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(action==='finder'?{path:file.path}:{})})
+        if(!res.ok)throw Error()
+      }catch{setError(L('Could not open this file.','未能打开此文件。'))}
       return
     }
-    const link=document.createElement('a'),url=href??URL.createObjectURL(new Blob([raw??fallbackPatch(file)],{type:'text/plain;charset=utf-8'}))
+    const url=href??URL.createObjectURL(new Blob([fallbackPatch(file)],{type:'text/plain;charset=utf-8'}))
+    const link=document.createElement('a')
     link.href=url+(href&&action==='download'?'?download=1':'')
     if(action==='download')link.download=(file.path.split('/').pop()??'changes')+'.patch'
     else {link.target='_blank';link.rel='noopener noreferrer'}
     link.click()
-    if(!href)window.setTimeout(()=>URL.revokeObjectURL(url),60_000)
+    if(!href)window.setTimeout(()=>URL.revokeObjectURL(url),60000)
   }
-  return <section className="patch-drawer-file" ref={row}>
+  const localMac=['localhost','127.0.0.1','[::1]'].includes(location.hostname)&&/Mac/.test(navigator.platform)
+  const label=L('Open with','打开方式')
+  return <section className="patch-drawer-file" ref={row} data-file={file.path}>
     <div className="patch-drawer-head">
-      <button type="button" className="patch-drawer-title" aria-expanded={expanded} aria-controls={bodyId} onClick={()=>setExpanded(!expanded)}>
-        <ChevronDown size={15}/><FileCode2 size={16}/><span dir="ltr">{file.path}</span><Counts file={file} L={L}/></button>
+      <button type="button" className="patch-drawer-title" aria-expanded={expanded} aria-controls={id} title={file.path} onClick={()=>setExpanded(!expanded)}>
+        <ChevronDown size={13}/><FileCode2 size={15} className="bench-file-icon"/><FilePath path={file.path}/></button>
+      <Counts file={file} L={L}/>
       <div className="patch-controls">
-        <label className="patch-open-select"><ExternalLink size={13}/><span>{L('Open with','打开方式')}</span><ChevronDown size={12}/>
-          <select aria-label={L('Open with','打开方式')+' · '+file.path} value="" onChange={e=>{void openWith(e.currentTarget.value)}}>
-            <option value="" disabled>{L('Open with','打开方式')}</option>
-            <option value="browser">{L('Open patch in a new tab','在新标签页打开补丁')}</option>
-            {localMac&&<option value="textedit">{L('Open patch in TextEdit','用文本编辑打开补丁')}</option>}
+        {change.versions.length>1&&<label className="patch-open-select patch-versions" title={L('Change history','改动历史')}>
+          <History size={14}/><small>{version+1}/{change.versions.length}</small>
+          <select aria-label={L('Change history','改动历史')+' · '+file.path} value={version}
+            onChange={e=>setPicked(Number(e.target.value)===change.versions.length-1?undefined:Number(e.target.value))}>
+            {change.versions.map((v,i)=><option key={v.id??i} value={i}>{L('Change '+(i+1),'第 '+(i+1)+' 次改动')}</option>)}</select>
+        </label>}
+        <label className="patch-open-select" title={label}><FolderOpen size={15}/>
+          <select aria-label={label+' · '+file.path} value="" onChange={e=>void openWith(e.target.value)}>
+            <option disabled value="">{label}</option><option value="files">{L('Show in file manager','在文件管理器中显示')}</option>
+            {localMac&&<option value="finder">{L('Reveal in Finder','在 Finder 中显示')}</option>}
+            <option value="browser">{L('Open patch in new tab','在新标签页打开补丁')}</option>
+            {localMac&&file.id&&<option value="textedit">{L('Open patch in TextEdit','用文本编辑打开补丁')}</option>}
             <option value="download">{L('Download .patch','下载 .patch')}</option>
           </select></label>
-        <button className="patch-wrap" type="button" aria-pressed={wrap} onClick={()=>setWrap(!wrap)} title={L('Wrap lines','自动换行')}><WrapText size={14}/>{L('Wrap lines','自动换行')}</button>
-        <div className="patch-view" role="group" aria-label={L('Diff view','差异视图')}>
-          <button type="button" aria-pressed={!split} onClick={()=>setSplit(false)}><AlignJustify size={13}/>{L('Unified','统一')}</button>
-          <button type="button" aria-pressed={split} onClick={()=>setSplit(true)}><Columns2 size={13}/>{L('Split','并排')}</button>
-        </div>
+        <button type="button" className="patch-wrap" aria-label={L('Wrap lines','自动换行')} aria-pressed={wrap} title={L('Wrap lines','自动换行')} onClick={()=>setWrap(!wrap)}><WrapText size={15}/></button>
+        <button type="button" className="patch-view-toggle" aria-label={L('Split diff','并排差异')} aria-pressed={split} title={split?L('Switch to unified diff','切换为统一视图'):L('Switch to split diff','切换为并排视图')} onClick={()=>setSplit(!split)}>
+          {split?<Columns2 size={15}/>:<AlignJustify size={15}/>}</button>
       </div>
     </div>
-    {openError&&<p className="patch-hint" role="alert">{L('TextEdit could not open the patch.','文本编辑未能打开补丁。')}</p>}
-    <div className="patch-fold" data-open={expanded} inert={!expanded} id={bodyId}><div>
-      {raw!==undefined?<FullPatch raw={raw} split={split} wrap={wrap} L={L}/>:failed?<p className="patch-hint" role="alert">{L('Diff unavailable','未能读取差异')} <button type="button" onClick={()=>setRetry(n=>n+1)}>{L('Retry','重试')}</button></p>:
-        expanded&&<p className="patch-hint" role="status">{L('Loading diff…','正在读取差异…')}</p>}
+    {error&&<p className="patch-hint" role="alert">{error}</p>}
+    <div className="patch-fold" id={id} data-open={expanded} inert={!expanded}><div>
+      <PatchVersion key={file.id??version} file={file} conversationId={conversationId} expanded={expanded} split={split} wrap={wrap} L={L}/>
     </div></div>
   </section>
 }
 
-export function WorkerFileDiff({reports,openAgent,L}:{reports:WorkerReports;openAgent:(id:string)=>void;L:Localize}) {
-  const enabled=useWorkerDiffPreference(),[selection,setSelection]=useState<{report:Report;file:number}>(),[open,setOpen]=useState(false)
+export function WorkerFileDiff({reports,openAgent,inspect,L}:{reports:WorkerReports;openAgent:(id:string)=>void;inspect:(target:DiffTarget)=>void;L:Localize}) {
+  const enabled=useWorkerDiffPreference()
   return <div className="worker-diff-reveal" data-enabled={enabled} inert={!enabled} aria-hidden={!enabled}>
-    <div className="worker-diff-clip">
-      {reports.map((report,r)=><section key={report.messageId} className="worker-file-diff transcript-card" aria-label={report.label+' · '+L('File changes','文件改动')}>
-        <header><GitCompareArrows size={15} aria-hidden="true"/><strong>{L('File changes','文件改动')}</strong>
-          <button type="button" className="worker-diff-author" onClick={()=>openAgent(report.workerId)}>{report.label}</button>
-          <span>{L(report.files.length+' files',report.files.length+' 个文件')}</span></header>
-        {report.files.map((file,i)=><InlineFile key={file.id??file.path} file={file} first={r===0&&i===0} L={L}
-          inspect={()=>{setSelection({report,file:i});setOpen(true)}}/>)}
-      </section>)}
-    </div>
-    {selection&&<Dialog open={open&&enabled} onClose={()=>setOpen(false)} onAfterClose={()=>setSelection(undefined)}
-      title={L('File changes','文件改动')+' · '+selection.report.label} closeLabel={L('Close diff','关闭差异面板')}
-      placement="side" className="patch-drawer" headerContent={<div className="patch-drawer-heading"><GitCompareArrows size={18}/>
-        <strong>{L('File changes','文件改动')}</strong><span>{selection.report.label}</span></div>}>
-      {selection.report.files.map((file,i)=><DrawerFile key={selection.report.messageId+':'+i} file={file} conversationId={selection.report.conversationId} selected={i===selection.file} L={L}/>)}
-    </Dialog>}
+    <div className="worker-diff-clip">{reports.map(report=><section key={report.messageId} className="worker-file-diff transcript-card" aria-label={report.label+' · '+L('File changes','文件改动')}>
+      <header><GitCompareArrows size={15} aria-hidden="true"/><strong>{L('File changes','文件改动')}</strong>
+        <button type="button" className="worker-diff-author" onClick={()=>openAgent(report.workerId)}>{report.label}</button>
+        <span>{L(report.files.length+' files',report.files.length+' 个文件')}</span></header>
+      {report.files.map((change,i)=><InlineFile key={change.path} file={change.versions.at(-1)!} first={i===0} L={L}
+        inspect={()=>inspect({group:report.messageId,path:change.path})}/>)}
+    </section>)}</div>
   </div>
 }

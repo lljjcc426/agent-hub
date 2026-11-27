@@ -49,7 +49,7 @@
 .automation-objective{font-size:14px;line-height:1.8;margin:24px 0 32px;white-space:pre-wrap;overflow-wrap:anywhere;max-width:72ch}
 .automation-tabs{display:flex;gap:28px;border-bottom:1px solid var(--c-line);margin-bottom:24px}
 .automation-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:0 0 14px;color:var(--c-muted);font-size:var(--roppo-font-control)}
-.automation-tabs button[aria-current]{color:var(--c-text);border-bottom-color:var(--c-text);font-weight:550}
+.automation-tabs button[aria-current]{color:var(--c-text);border-bottom-color:var(--c-line);font-weight:550}
 .automation-record{padding:20px 0;border-bottom:1px solid var(--c-line);font-size:14px}
 .automation-record-title{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .automation-record-title strong{font-weight:550;overflow-wrap:anywhere}

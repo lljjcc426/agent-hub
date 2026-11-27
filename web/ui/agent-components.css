@@ -96,7 +96,7 @@
 .rp-time-strip button { position:relative; min-width:12px; height:18px; padding:6px 0; border:0; background:transparent; cursor:pointer; transition:flex-grow .22s linear; }
 .rp-time-strip button::after { content:""; display:block; height:5px; border-radius:4px; background:var(--rp-line); }
 .rp-time-strip [data-state="done"]::after { background:var(--rp-muted); }
-.rp-time-strip [data-state="current"]::after,.rp-time-strip [aria-pressed="true"]::after { background:var(--rp-ink); }
+.rp-time-strip [data-state="current"]::after,.rp-time-strip [aria-pressed="true"]::after { background:var(--rp-line-strong); }
 .rp-monitor .rp-card-foot { padding-top:0; }
 .rp-run-log li,.rp-checkpoints li { display:flex; gap:7px; align-items:center; justify-content:space-between; padding:4px 0; font-size:12px; }
 .rp-checkpoints { position:relative; display:grid; gap:12px; padding-left:7px; }

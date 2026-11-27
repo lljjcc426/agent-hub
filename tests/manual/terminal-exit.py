@@ -16,7 +16,8 @@ import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-ENTER, LEAVE = b'\x1b[?1049h', b'\x1b[?1049l'
+ENTER = b'\x1b7\x1b[?1047h\x1b[2J\x1b[H'
+LEAVE = b'\x1b[?1047l\x1b8'
 
 
 def check(mode):
@@ -59,6 +60,9 @@ def check(mode):
         assert after == b'SHELL_RETURN raw=false\r\n', (mode, after)
         # The screenshot's stray text comes from these two native probes.
         assert b'+q4d73' in active and b'Gi=31337' in active, mode
+        assert active.count(b'\x1b[?1049h') == active.count(b'\x1b[?1049l') == 1, mode
+        assert b'\n' not in active, (mode, 'startup scrolled probes into terminal history')
+        assert active.index(b'Gi=31337') < active.index(b'\x1b[?1049h'), mode
         assert b'\x1b[?1000l' in active and b'\x1b[?2004l' in active, mode
         assert termios.tcgetattr(slave) == original, mode
         print(f'PASS {mode}: shell buffer isolated, input and mouse modes restored')

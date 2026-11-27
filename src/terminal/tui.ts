@@ -11,12 +11,13 @@ import type { TerminalSettings } from './settings.ts'
 export async function interactiveTui(client: TerminalClient, conversation: Conversation, options: {
   cwd: string; preferences: TerminalSettings; settingsSources: string[]; prompt: string; files: string[]
 }): Promise<Conversation | undefined> {
-  // OpenTUI probes terminal capabilities before it switches screens. Own the buffer
-  // here so unsupported probes cannot print onto the shell screen (Apple Terminal).
-  await new Promise<void>(resolve => process.stdout.write('\x1b[?1049h', () => resolve()))
+  // Isolate OpenTUI's pre-setup probes, saving the shell cursor in the main buffer.
+  // Keep its alternate-screen mode: main-screen setup emits rows of newlines,
+  // which push unsupported probes into Apple Terminal's scrollback.
+  await new Promise<void>(resolve => process.stdout.write('\x1b7\x1b[?1047h\x1b[2J\x1b[H', () => resolve()))
   let terminal: CliRenderer | undefined
   try {
-    const renderer = terminal = await createCliRenderer({ screenMode: 'main-screen', exitOnCtrlC: false,
+    const renderer = terminal = await createCliRenderer({ screenMode: 'alternate-screen', exitOnCtrlC: false,
       useMouse: true, targetFps: 30, maxFps: 30, consoleMode: 'disabled', openConsoleOnError: false })
     const abort = new AbortController()
     let view: Snapshot, next: Conversation | undefined, stopped = false, loadingOlder = false
@@ -88,6 +89,6 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
   } finally {
     terminal?.destroy()
     await terminal?.closed
-    process.stdout.write('\x1b[?1049l')
+    process.stdout.write('\x1b[?1047l\x1b8')
   }
 }

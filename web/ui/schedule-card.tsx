@@ -21,7 +21,8 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
   const date = (at: number) => scheduleDate(at, timing.timezone, lang)
   const ended = active ? plan.nextAt == null : (timing.endAt && Date.parse(timing.endAt) <= Date.now()) ||
     (timing.kind === 'once' && Date.parse(timing.startAt) <= Date.now())
-  const next = ended ? L('Ended', '已结束') : !active ? L('Paused', '已暂停') : date(plan.nextAt!)
+  const next = plan.closed==='promoted' ? L('Converted to a goal', '已转为目标') : plan.closed==='cancelled' ? L('Cancelled', '已取消') :
+    ended ? L('Ended', '已结束') : !active ? L('Paused', '已暂停') : date(plan.nextAt!)
   const verbs = { queued: L('Queued','排队中'), running: L('Running','运行中'), waiting: L('Waiting','等待中'),
     completed: L('Completed','已完成'), failed: L('Failed','失败'), cancelled: L('Cancelled','已取消'), skipped: L('Skipped','已跳过') }
   const edit = () => { setError(''); setEditing({revision:plan.revision,timing:plan.timing}) }
@@ -58,7 +59,7 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
     <header><button type="button" className="rp-schedule-open" onClick={edit} aria-haspopup="dialog">
       <CalendarClock size={18}/><strong>{plan.name}</strong><ChevronRight size={14}/>
     </button>
-    {!ended && <IconButton label={toggle} disabled={busy} onClick={()=>void change(plan.revision,{active:!active})}>
+    {!plan.closed && !ended && <IconButton label={toggle} disabled={busy} onClick={()=>void change(plan.revision,{active:!active})}>
       {active ? <Pause size={14}/> : <Play size={14}/>}</IconButton>}</header>
     <div className="rp-schedule-meta"><span>{scheduleCadence(timing,lang,L)}</span><span>{timing.timezone}</span></div>
     <div className="rp-schedule-next"><span>{L('Next run','下次执行')}</span><strong>{next}</strong></div>
@@ -71,8 +72,8 @@ export function ScheduleCard<File extends { id: string; name: string }>({ plan, 
         <dl><dt>{L('Next run','下次执行')}</dt><dd>{next}</dd>
           <dt>{L('Last run','上次执行')}</dt><dd>{lastRun ? verbs[lastRun.state]+' · '+date(lastRun.at) : L('Has not run yet','尚未执行')}</dd>
           <dt>{L('Last delivery','上次交付')}</dt><dd>{lastResult ? <><time dateTime={new Date(lastResult.at).toISOString()}>{date(lastResult.at)}</time>{links(false)}</> : L('No delivery yet','暂无交付')}</dd></dl>
-        <ScheduleEditor key={editing.revision} timing={editing.timing} active={active} L={L} lang={lang} busy={busy}
-          stale={editing.revision!==plan.revision} reload={edit} save={t=>change(editing.revision,{timing:t})}/>
+        {!plan.closed && <ScheduleEditor key={editing.revision} timing={editing.timing} active={active} L={L} lang={lang} busy={busy}
+          stale={editing.revision!==plan.revision} reload={edit} save={t=>change(editing.revision,{timing:t})}/>}
         {error && editing.revision === plan.revision && <p role="alert">{error}</p>}
       </div>}
     </Dialog>

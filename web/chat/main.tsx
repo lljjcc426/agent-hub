@@ -78,6 +78,11 @@ import {lazy,Suspense} from "react";
 const PluginMarketplace=lazy(()=>import("./plugin-marketplace.tsx").then(m=>({default:m.PluginMarketplace})));
 const ConnectorsWorkspace=lazy(()=>import("./connectors.tsx").then(m=>({default:m.ConnectorsWorkspace})));
 const AutomationWorkspace=lazy(()=>import("./automations.tsx").then(m=>({default:m.AutomationWorkspace})));
+const WorkInbox=lazy(()=>import('./work-inbox.tsx').then(m=>({default:m.WorkInbox})));
+const TaskProgress=lazy(()=>import('./task-progress.tsx').then(m=>({default:m.TaskProgress})));
+const MethodLibrary=lazy(()=>import('./method-library.tsx').then(m=>({default:m.MethodLibrary})));
+const WorkerTemplates=lazy(()=>import('./worker-templates.tsx').then(m=>({default:m.WorkerTemplates})));
+import {WorkspaceTransportOwner} from './workspace-context.tsx';
 const UsageStatisticsPage = lazy(() => import("./usage-statistics.tsx").then(module => ({default: module.UsageStatisticsPage})));
 const CommitTrailPanel=lazy(()=>import("./commit-trail-panel.tsx"));
 const TaskDetail=lazy(()=>import("./task-detail.tsx").then(m=>({default:m.TaskDetail})));
@@ -896,11 +901,12 @@ function Chat(p: ChatProps) {
   const hash = route.split("#")[1] || "general";
   const general = configuring && hash === "general";
   const appearance = configuring && hash === "appearance";
+  const workView = configuring && (hash === 'attention' || hash === 'worker-templates' || hash === 'methods' || hash === 'execution-trace' || hash.startsWith('execution-trace/'));
   const workspaceIndex = configuring && hash === "workspace";
   const workspacePage = workspaceGroups(L).flatMap(group => group.items).find(item => hash === item.hash);
   const automationRoute=configuring&&hash==='automations';
   const marketRoute=configuring&&(hash==='integrations'||hash.startsWith('integrations/'));
-  const connectorsRoute=configuring&&hash==='connectors';
+  const connectorsRoute=configuring&&(hash==='connectors'||hash==='connectors/access');
   const usageStatisticsRoute = configuring && hash === 'tasks/statistics';
   const marketTools=hash==='integrations/tools';
   const views=useWorkspaceViews();
@@ -908,13 +914,16 @@ function Chat(p: ChatProps) {
   const currentView=views.find(view=>view.id===pluginId);
   const pageNames: Record<string, string> = {
     general: L("General", "通用"),
+    attention: L("Needs my attention","待我处理"),
+    methods: L("Reminders and methods","提醒与方法"),
+    "worker-templates": L("Worker templates","Worker 模板"),
+    "execution-trace": L("Task progress","任务进度"),
     appearance: L("Appearance", "外观"),
     team: L("Agent team","Agent 团队"),
     tasks: L("Activity", "运行记录"),
     "tasks/active": L("Activity", "运行记录"),
     "tasks/history": L("Activity", "运行记录"),
     "tasks/statistics": L("Usage statistics", "使用统计"),
-    attention: L("Activity", "运行记录"),
     "advanced/memory": L("Memory","记忆"),
     "advanced/chat": L("Conversations and context", "对话与上下文"),
     "advanced/configuration": L("Run settings","运行配置"),
@@ -1622,15 +1631,18 @@ function Chat(p: ChatProps) {
               progressMode={p.progressMode} onProgressModeChange={p.saveProgressMode}
               sendShortcut={p.sendShortcut} onSendShortcutChange={p.saveSendShortcut}
               onPersonalize={p.openPersonalization?()=>p.openPersonalization?.('edit'):undefined}/>:null}
+            {workView && <div className="general-scroll roppo-ui"><Suspense fallback={<p role="status">{L('Loading…','正在读取…')}</p>}><WorkspaceTransportOwner language={lang}>
+              {hash==='attention'?<WorkInbox language={lang} L={L}/>:hash==='methods'?<MethodLibrary language={lang} L={L}/>:hash==='worker-templates'?<WorkerTemplates language={lang}/>:<TaskProgress key={hash} language={lang} L={L} requested={hash.split('/')[1]??''}/>}
+            </WorkspaceTransportOwner></Suspense></div>}
             {appearance && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading appearance…", "正在读取外观设置…")}</div>}><AppearanceSettings L={L}/></Suspense>}
             {marketRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading plugins…","正在加载插件…")}</div>}><PluginMarketplace route={hash} language={lang}/></Suspense>:null}
-            {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace language={lang}/></Suspense>:null}
+            {connectorsRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading connectors…","正在读取连接器…")}</div>}><ConnectorsWorkspace key={hash} language={lang} initialTab={hash==='connectors/access'?'connected':'available'}/></Suspense>:null}
             {automationRoute?<Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading automations…","正在加载自动化…")}</div>}><AutomationWorkspace language={lang}/></Suspense>:null}
             {usageStatisticsRoute && <Suspense fallback={<div className="workspace-view-placeholder" role="status">{L("Loading usage statistics…", "正在读取使用统计…")}</div>}>
               <UsageStatisticsPage language={lang}/>
             </Suspense>}
             <Configuration
-              visible={configuring&&!general&&!appearance&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!usageStatisticsRoute&&!pluginId&&(!marketRoute||marketTools)}
+              visible={configuring&&!workView&&!general&&!appearance&&!workspaceIndex&&!automationRoute&&!connectorsRoute&&!usageStatisticsRoute&&!pluginId&&(!marketRoute||marketTools)}
               route={route}
               language={lang}
               pickerRequest={pickerRequest}

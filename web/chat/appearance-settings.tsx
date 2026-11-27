@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronRight, Copy, Download } from 'lucide-react';
 import { Button, CheckField, ChoiceGroup, IconButton, InputControl } from '../ui/controls.tsx';
 import { Dialog, DisclosureRoot, DisclosureSummary, Popover, Toast } from '../ui/overlays.tsx';
@@ -10,6 +10,7 @@ import {
   useAppearance,
   useAppearanceMode,
 } from './appearance-store.ts';
+import { useAppearanceSkinManager } from './appearance-skins.tsx';
 import './appearance-settings.css';
 
 type Labels = (english: string, chinese: string) => string;
@@ -52,9 +53,9 @@ function fromHSV({ h, s, v }: HSV) {
   return '#' + rgb.map(n => Math.round((n + m) * 255).toString(16).padStart(2, '0')).join('');
 }
 
-function SettingRow({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
+function SettingRow({ label, children }: { label: string; children: ReactNode }) {
   return <div className="appearance-row">
-    <div className="appearance-label"><span>{label}</span>{help && <small>{help}</small>}</div>
+    <div className="appearance-label"><span>{label}</span></div>
     <div className="appearance-control">{children}</div>
   </div>;
 }
@@ -236,7 +237,7 @@ export function AppearanceSettings({ L }: { L: Labels }) {
   const [error, setError] = useState('');
   const importInvoker = useRef<HTMLButtonElement | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const importHelp = useId();
+  const skins = useAppearanceSkinManager(L);
   const importInput = useRef<HTMLInputElement>(null);
   useEffect(() => { if (importMode) importInput.current?.focus(); }, [importMode]);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
@@ -295,10 +296,10 @@ export function AppearanceSettings({ L }: { L: Labels }) {
   return <div className="general-scroll roppo-ui appearance-page">
     <article className="general appearance-settings">
       <h1>{L('Appearance', '外观')}</h1>
-      <p className="appearance-intro">{L('Choose the colors and fonts you see in the app.', '选择应用使用的颜色与字体。')}</p>
+      {skins.controls}
       <section className="appearance-section">
-        <h2>{L('Visual style', '视觉风格')}</h2>
-        <SettingRow label={L('Color mode', '模式')} help={L('Use light or dark colors, or follow your system setting.', '使用浅色、深色，或跟随系统设置。')}>
+        <div className="appearance-visual-heading"><h2>{L('Visual style', '视觉风格')}</h2>{skins.resetButton}</div>
+        <SettingRow label={L('Color mode', '模式')}>
           <div className="appearance-mode">
             <ChoiceGroup label={L('Color mode', '模式')} appearance="tiles" value={settings.mode} onChange={mode => setAppearance(previous => ({ ...previous, mode }))}
               choices={[
@@ -314,14 +315,14 @@ export function AppearanceSettings({ L }: { L: Labels }) {
           const profile = settings.profiles[mode];
           const modeName = mode === 'light' ? L('Light theme', '浅色主题') : L('Dark theme', '深色主题');
           return <div className="appearance-profile" key={mode} data-profile={mode}>
-            <SettingRow label={settings.separate ? modeName : L('Theme', '主题')} help={L('Start with a preset, then adjust colors and fonts.', '先选择预设，再调整颜色与字体。')}>
+            <SettingRow label={settings.separate ? modeName : L('Theme', '主题')}>
               <IconButton label={mode === 'light' ? L('Import light theme', '导入浅色主题') : L('Import dark theme', '导入深色主题')} data-testid={'import-' + mode}
                 onClick={event => { importInvoker.current = event.currentTarget; setImportText(''); setImportMode(mode); }}><Download size={18} /></IconButton>
               <IconButton label={mode === 'light' ? L('Copy light theme', '复制浅色主题') : L('Copy dark theme', '复制深色主题')} data-testid={'copy-' + mode}
                 onClick={() => void copyTheme(mode)}><Copy size={18} /></IconButton>
               <ThemePicker mode={mode} profile={profile} L={L} onSelect={id => selectPreset(mode, id)} />
             </SettingRow>
-            <SettingRow label={L('Accent', '强调色')} help={L('The color for highlights and selected controls.', '高亮和选中控件使用的颜色。')}>
+            <SettingRow label={L('Accent', '强调色')}>
               <MenuPopover label={modeName + L(' accent', '强调色')} trigger={<>
                 {profile.accentName !== 'custom' && <span aria-hidden="true" className="appearance-color-dot" style={{ backgroundColor: profile.accent }} />}
                 <span>{accentNames[profile.accentName] ?? accentNames.custom}</span><ChevronDown size={15} />
@@ -337,10 +338,10 @@ export function AppearanceSettings({ L }: { L: Labels }) {
               </MenuPopover>
               {profile.accentName === 'custom' && <ColorField label={modeName + L(' accent', '强调色')} value={profile.accent} L={L} testId={'hex-' + mode + '-accent'} onChange={color => selectAccent(mode, 'custom', color)} />}
             </SettingRow>
-            <SettingRow label={L('Background', '背景')} help={L('The color behind app content.', '应用内容后方的颜色。')}>
+            <SettingRow label={L('Background', '背景')}>
               <ColorField label={modeName + L(' background', '背景')} value={profile.background} L={L} testId={'hex-' + mode + '-background'} onChange={background => updateProfile(mode, { background, preset: 'custom', accentName: 'custom' })} />
             </SettingRow>
-            <SettingRow label={L('Foreground', '前景')} help={L('The main text color.', '主要文字的颜色。')}>
+            <SettingRow label={L('Foreground', '前景')}>
               <ColorField label={modeName + L(' foreground', '前景')} value={profile.foreground} L={L} testId={'hex-' + mode + '-foreground'} onChange={foreground => updateProfile(mode, { foreground, preset: 'custom', accentName: 'custom' })} />
             </SettingRow>
           </div>;
@@ -349,38 +350,37 @@ export function AppearanceSettings({ L }: { L: Labels }) {
       <DisclosureRoot className="rp-disclosure appearance-advanced" data-testid="advanced" onToggle={event => setAdvanced(event.currentTarget.open)}>
         <DisclosureSummary>{L('Advanced', '高级')}<ChevronDown size={16} /></DisclosureSummary>
         <div className="rp-disclosure-clip" inert={!advanced} aria-hidden={!advanced}><div>
-          <SettingRow label={L('UI font size', '界面字号')} help={L('Adjust the base size used for the Roppo interface.', '调整 Roppo 界面的基础字号。')}>
+          <SettingRow label={L('UI font size', '界面字号')}>
             <NumberField value={settings.uiSize} min={12} max={20} label={L('UI font size', '界面字号')} testId="ui-size" onChange={uiSize => setAppearance(previous => ({ ...previous, uiSize }))} />
           </SettingRow>
-          <SettingRow label={L('Content font size', '内容字号')} help={L('Adjust the text size used in conversations.', '调整对话正文使用的字号。')}>
+          <SettingRow label={L('Content font size', '内容字号')}>
             <NumberField value={settings.contentSize} min={12} max={24} label={L('Content font size', '内容字号')} testId="content-size" onChange={contentSize => setAppearance(previous => ({ ...previous, contentSize }))} />
           </SettingRow>
-          <SettingRow label={L('Code font size', '代码字号')} help={L('Adjust the size used for code and diffs.', '调整代码和差异视图使用的字号。')}>
+          <SettingRow label={L('Code font size', '代码字号')}>
             <NumberField value={settings.codeSize} min={11} max={22} label={L('Code font size', '代码字号')} testId="code-size" onChange={codeSize => setAppearance(previous => ({ ...previous, codeSize }))} />
           </SettingRow>
-          <SettingRow label={L('Reduce motion', '减少动态效果')} help={L('Reduce animations or match your system setting. Turning this off still respects your system’s reduced-motion preference.', '减少动画效果，或匹配系统设置。关闭额外的动效限制时，仍遵循系统设置。')}>
+          <SettingRow label={L('Reduce motion', '减少动态效果')}>
             <ChoiceGroup label={L('Reduce motion', '减少动态效果')} value={settings.motion} onChange={motion => setAppearance(previous => ({ ...previous, motion }))}
               choices={[{ value: 'system', label: L('System', '系统') }, { value: 'on', label: L('On', '开启') }, { value: 'off', label: L('Off', '关闭') }]} />
           </SettingRow>
-          <SettingRow label={L('Separate light and dark modes', '分别设置浅色和深色模式')} help={L('Choose themes and colors for light and dark modes separately.', '分别选择浅色和深色模式的主题与颜色。')}>
+          <SettingRow label={L('Separate light and dark modes', '分别设置浅色和深色模式')}>
             <CheckField appearance="switch" hideLabel label={L('Separate light and dark modes', '分别设置浅色和深色模式')} data-testid="separate-modes" checked={settings.separate} onChange={event => setAppearance(previous => ({ ...previous, separate: event.target.checked }))} />
           </SettingRow>
           <div className="appearance-contrast-group">
-            {settings.separate && <div className="appearance-contrast-heading">{L('Contrast', '对比度')}<small>{L('Adjust how strongly text and controls stand out from the background.', '调整文字和控件从背景中突出的程度。')}</small></div>}
-            {modes.map(mode => <SettingRow key={mode} label={settings.separate ? mode === 'light' ? L('Light theme', '浅色主题') : L('Dark theme', '深色主题') : L('Contrast', '对比度')}
-              help={settings.separate ? undefined : L('Adjust how strongly text and controls stand out from the background.', '调整文字和控件从背景中突出的程度。')}>
+            {settings.separate && <div className="appearance-contrast-heading">{L('Contrast', '对比度')}</div>}
+            {modes.map(mode => <SettingRow key={mode} label={settings.separate ? mode === 'light' ? L('Light theme', '浅色主题') : L('Dark theme', '深色主题') : L('Contrast', '对比度')}>
               <div className="appearance-slider"><input type="range" min="0" max="100" step="1" value={settings.profiles[mode].contrast} data-testid={'contrast-' + mode}
                 aria-label={mode === 'light' ? L('Light theme contrast', '浅色主题对比度') : L('Dark theme contrast', '深色主题对比度')} onChange={event => updateProfile(mode, { contrast: Number(event.target.value) })} />
                 <output>{settings.profiles[mode].contrast}</output></div>
             </SettingRow>)}
           </div>
-          <SettingRow label={L('Smart punctuation', '智能标点')} help={L('Format quotes, dashes, ellipses and arrows as you type.', '在输入时自动设置引号、破折号、省略号和箭头的格式。')}>
+          <SettingRow label={L('Smart punctuation', '智能标点')}>
             <CheckField appearance="switch" hideLabel label={L('Smart punctuation', '智能标点')} checked={settings.smart} onChange={event => setAppearance(previous => ({ ...previous, smart: event.target.checked }))} />
           </SettingRow>
-          <SettingRow label={L('Full-width conversations', '对话全宽显示')} help={L('Show conversations at full width. Only affects your view.', '以全宽显示对话，仅影响你的视图。')}>
+          <SettingRow label={L('Full-width conversations', '对话全宽显示')}>
             <CheckField appearance="switch" hideLabel label={L('Full-width conversations', '对话全宽显示')} checked={settings.fullWidth} onChange={event => setAppearance(previous => ({ ...previous, fullWidth: event.target.checked }))} />
           </SettingRow>
-          <SettingRow label={L('Diff indicators', '差异标记')} help={L('Show changes with colors or +/− indicators.', '使用颜色或 +/− 标记显示更改。')}>
+          <SettingRow label={L('Diff indicators', '差异标记')}>
             <ChoiceGroup label={L('Diff indicators', '差异标记')} value={settings.diff} onChange={diff => setAppearance(previous => ({ ...previous, diff }))}
               choices={[{ value: 'color', label: L('Color', '颜色') }, { value: 'sign', label: '+/−' }]} />
           </SettingRow>
@@ -391,14 +391,12 @@ export function AppearanceSettings({ L }: { L: Labels }) {
     <Dialog open={importMode !== null} title={L('Import theme', '导入主题')} closeLabel={L('Close dialog', '关闭对话框')}
       onClose={() => setImportMode(null)} onAfterClose={() => importInvoker.current?.focus({ preventScroll: true })}
       footer={<><Button onClick={() => setImportMode(null)}>{L('Cancel', '取消')}</Button><Button tone="primary" disabled={!canImport} data-testid="import-submit" onClick={applyImport}>{L('Import', '导入')}</Button></>}>
-      <p id={importHelp} className="appearance-import-help">{importMode === 'dark'
-        ? L('Apply a Roppo theme string to your dark theme.', '将 Roppo 主题字符串应用于深色主题。')
-        : L('Apply a Roppo theme string to your light theme.', '将 Roppo 主题字符串应用于浅色主题。')}</p>
       <form onSubmit={event => { event.preventDefault(); applyImport(); }}>
-        <InputControl ref={importInput} type="text" className="appearance-import-input" data-testid="import-input" aria-label={L('Theme string', '主题字符串')} aria-describedby={importHelp}
+        <InputControl ref={importInput} type="text" className="appearance-import-input" data-testid="import-input" aria-label={L('Theme string', '主题字符串')}
           value={importText} onChange={event => setImportText(event.target.value)} placeholder={'roppo-theme-v1:{"mode":"' + (importMode ?? currentMode) + '","colors":{…}}'} spellCheck={false} autoComplete="off" />
       </form>
     </Dialog>
     <Toast message={message} />
+    {skins.overlays}
   </div>;
 }

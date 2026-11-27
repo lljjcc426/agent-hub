@@ -106,9 +106,12 @@ function opTaskTable(tasks) {
       ]
     }))
 }
-async function openOperatorTask(id){
+async function openOperatorTask(id,isCurrent=()=>true){
   operator.focus=document.activeElement?.id||''
-  await entryRun('work-detail',async()=>{operator.drawer=await api('/entry-workspace/task/'+encodeURIComponent(id));operator.answers={}})
+  await entryRun('work-detail',async()=>{
+    const task=await api('/entry-workspace/task/'+encodeURIComponent(id))
+    if(isCurrent()){operator.drawer=task;operator.answers={}}
+  })
 }
 function closeOperatorTask(){
   operator.drawer=null

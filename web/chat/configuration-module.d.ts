@@ -9,7 +9,9 @@ declare module "virtual:configuration-content" {
     reasoningOverride: typeof import("../../src/agent-options.ts").reasoningOverride;
     settings: (state: import("./settings-editor.tsx").SettingsEditorState) => void;
   }): {
+    transport: import('./workspace-transport.ts').WorkspaceTransport;
     activate: (language: string) => void;
+    openTask: (id: string, isCurrent: () => boolean) => Promise<boolean>;
     language: (language: string) => void;
     workspace: () => Promise<void>;
   };

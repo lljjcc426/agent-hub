@@ -1,3 +1,4 @@
+import {acceptedExampleMethod} from '../examples/fixtures/accepted-method-source.ts'
 import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
@@ -34,7 +35,7 @@ async function fixture(mode:'goal'|'ordinary'|'scheduled'='goal'){
  if(mode==='ordinary')ticketId=(await host.manager.call({action:'assign',id:'one',revision:host.settings.current().revision,requestId:'ordinary',text:'[Bug] Review the local issue'},{discussion:'local:topic',trigger:original,scoped:context})).ticketId
  else{
   if(mode==='scheduled'){
-   const skill={id:'view-local-method',version:1};host.store.put('skill-version',stableDigest([skill.id,skill.version]),{...skill,scopeId:'team',entryId:context.route.entryId,goalId:'local-seed',acceptanceId:'local-seed',template})
+   const skill=await acceptedExampleMethod(host,context,template)
    const plan=host.proactive.command({action:'schedule.put',scopeId:'team',operationId:'plan',expectedRevision:0,schedule:{id:'daily',name:'View check',triggerId:original.id,prompt:'Inspect the local view',skill,mode:'standalone',notification:'silent',timing:{kind:'once',startAt:new Date(Date.now()+60_000).toISOString(),timezone:'UTC'}}}) as {revision:number}
    const run=host.proactive.command({action:'schedule.run',scopeId:'team',operationId:'launch',expectedRevision:plan.revision,id:'daily'}) as ScheduledRun
    host.proactive.runSkill(run.id);goal=host.goals.get(host.store.get<{goalId:string}>('router-schedule-run',run.id)!.goalId)!;derivedTriggerId=run.triggerId!

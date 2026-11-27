@@ -2492,7 +2492,7 @@ export class Runtime {
                 this.store.enqueue('router:result:'+message.id,'router',{discussion:question.discussion,triggerId:question.triggerId,messageId:message.id})
             }else if(!message.inquiryId&&delegated?.mode==='host'&&delegated.parentTrigger&&!this.store.get('router-cancelled',delegated.parentTrigger)&&(this.store.get('chat-result-review',message.id)||this.store.get<any>('router-report-read',delegated.discussion+':'+message.ticketId)?.at!==(ticket||undefined)?.assignments.at(-1)?.report?.at))this.store.enqueue('router:result:'+message.id,'router',{discussion:delegated.discussion,triggerId:delegated.parentTrigger,messageId:message.id,...(workerEvent?{workerEvent}:{})})
           }
-          this.chat.deliveredClarification(message);if(!this.store.get('chat-result-review',message.id))this.chat.deliveredWorker(message);this.store.delivered(message.id)
+          this.chat.deliveredNotice(message);if(!this.store.get('chat-result-review',message.id))this.chat.deliveredWorker(message);this.store.delivered(message.id)
         });blocked.delete(channel)}catch{this.store.audit({type:'router.inbox-retry',id:message.id})}
         continue
       }
@@ -2501,7 +2501,7 @@ export class Runtime {
       let receipt:unknown,externalDelivered=false
       try {
         if(source.config.kind==='delegation')await this.delegation.deliver(message);else {receipt=await source.deliver(message);externalDelivered=true}
-        this.store.atomic(()=>{retainDeliveryReceipt(this.store,message,receipt,deliveryRevision,deliveryFingerprint);this.chat.deliveredClarification(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
+        this.store.atomic(()=>{retainDeliveryReceipt(this.store,message,receipt,deliveryRevision,deliveryFingerprint);this.chat.deliveredNotice(message);this.chat.deliveredWorker(message);this.store.delivered(message.id)});blocked.delete(channel) }
       catch (error) { const uncertain=externalDelivered||error instanceof UncertainDelivery;this.store.deliveryFailed(message.id, message.attempts + 1, String(error).slice(0,300), uncertain);if(!uncertain&&message.attempts+1>=3)blocked.delete(channel);else blocked.add(channel) }
     }
   }

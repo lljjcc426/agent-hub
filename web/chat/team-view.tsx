@@ -48,6 +48,20 @@ interface TeamOverviewProps {
   locateMessage: (id: string) => void
   changeSchedule: (id: string, revision: number, change: ScheduleEdit) => Promise<void>
 }
+export function SessionSchedules({heartbeat,snapshot,lang,L,changeSchedule,locateMessage,openFile}:
+  Pick<TeamOverviewProps,'heartbeat'|'snapshot'|'lang'|'L'|'changeSchedule'|'locateMessage'|'openFile'>){
+  return <>
+    <div className="roppo-ui rp-schedule-stack">
+      {heartbeat}
+      {snapshot?.schedules?.map(plan=><ScheduleCard key={plan.id} plan={plan} lang={lang} L={L}
+        onChange={(revision,patch)=>changeSchedule(plan.id,revision,patch)}
+        onMessage={locateMessage} onFile={openFile}/>)}
+    </div>
+    {snapshot && !snapshot.schedulingAvailable &&
+      <p>{L('Conversation schedules are unavailable on this deployment', '当前部署的会话定时任务不可用')}</p>}
+  </>
+}
+
 export function TeamOverview({
   active,
   cards,
@@ -79,8 +93,7 @@ export function TeamOverview({
   }, [active, focusOnOpen])
   const titles = { activity: L('Overview', '概览'), agents: 'Agents', schedules: L('Schedules', '定时') }
   const activities = snapshot ? taskActivities(snapshot) : []
-  const files = snapshot?.deliveries ?? [],
-    plans = snapshot?.schedules ?? []
+  const files = snapshot?.deliveries ?? []
   return (
     <>
       <div className="team-drawer-head">
@@ -180,14 +193,7 @@ export function TeamOverview({
         ) : (
           <>
             <h3>{L('Scheduled tasks', '定时任务')}</h3>
-            <div className="roppo-ui rp-schedule-stack">
-              {heartbeat}
-              {plans.map(p => <ScheduleCard key={p.id} plan={p} lang={lang} L={L}
-                onChange={(revision,patch)=>changeSchedule(p.id,revision,patch)}
-                onMessage={locateMessage} onFile={openFile}/>)}
-            </div>
-            {snapshot && !snapshot.schedulingAvailable &&
-              <p>{L('Conversation schedules are unavailable on this deployment', '当前部署的会话定时任务不可用')}</p>}
+            <SessionSchedules {...{heartbeat,snapshot,lang,L,changeSchedule,locateMessage,openFile}}/>
           </>
         )}
       </div>

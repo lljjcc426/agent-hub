@@ -3,6 +3,7 @@
  * Run npm run build:chat, then tsx examples/studio-preview.ts [private directory].
  * Open the address in that directory's url.txt. It signs into this preview workspace.
  */
+import {workbenchFixture} from './workbench-fixture.ts'
 import {desktopChatFixture} from './chat-fixture-model.ts'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -19,6 +20,7 @@ import { serve } from '../src/server.ts';
 process.umask(0o077);
 const root = resolve(process.argv[2] ?? '.local/studio'),
   port = Number(process.env.ROPPO_PREVIEW_PORT ?? 4426);
+const workbenchPreview=process.env.ROPPO_WORKBENCH_PREVIEW==='1';
 const workspace = join(root, 'workspace');
 mkdirSync(workspace, { recursive: true });
 const privateFile = join(root, 'entry.json');
@@ -34,6 +36,7 @@ const base = 'http://localhost:' + port;
 const reasoningPreview = process.env.ROPPO_REASONING_PREVIEW === '1';
 const config = configSchema.parse({
   stateDir: join(root, 'state'),
+  ...(workbenchPreview&&process.env.ROPPO_PREVIEW_CHROMIUM?{browser:{executablePath:process.env.ROPPO_PREVIEW_CHROMIUM}}:{}),
   port,
   work: { sandboxDriver: 'disabled', network: false },
   backends: {
@@ -58,9 +61,9 @@ const config = configSchema.parse({
     router: { mode: 'host', backend: 'studio', model: 'studio-local', label: 'Roppo', ...(reasoningPreview ? {effort:'high'} : {}) },
     management: { enabled: true, maxWorkers: 6 },
     workers: [
-      { id: 'editor', label: '文档助手', backend: 'studio', model: 'studio-local' },
+      { id: 'editor', label: workbenchPreview?'开发 Worker':'文档助手', backend: 'studio', model: 'studio-local' },
       { id: 'research', label: '资料助手', backend: 'studio', model: 'studio-local' },
-      { id: 'review', label: '检查助手', backend: 'studio', model: 'studio-local' },
+      { id: 'review', label: workbenchPreview?'测试 Worker':'检查助手', backend: 'studio', model: 'studio-local' },
     ],
   },
   sources: [
@@ -195,6 +198,13 @@ async function signin(setup = false) {
   if (!response.ok) throw Error('Preview sign-in failed: ' + response.status);
   return response.headers.get('set-cookie')!;
 }
+// Multiple preview windows can open together. Queue their local account sign-ins.
+let loginQueue:Promise<unknown>=Promise.resolve();
+function previewSignin(){
+  const next=loginQueue.then(()=>signin());
+  loginQueue=next.catch(()=>{});
+  return next;
+}
 const isNew = !((await (await fetch(base + '/account/status')).json()) as { configured: boolean }).configured;
 const cookie = await signin(isNew);
 if (isNew) {
@@ -207,8 +217,9 @@ if (isNew) {
 }
 const account=await (await fetch(base+'/account/status',{headers:{cookie:cookie.split(';')[0]!}})).json()
 const owner=account.user.id
+const workbench=workbenchPreview?workbenchFixture(runtime,owner,workspace,base):undefined;
 let sample=runtime.store.get<{chatId:string}>('preview-sample','review')
-if(!sample){
+if(!sample&&!workbench){
  const chat=runtime.chat.create(owner)
  const sent=runtime.chat.send(chat.id,owner,{clientMessageId:randomUUID(),text:'请整理发布说明，并和我确认语言。'})
  const trigger=runtime.store.triggers.get(sent.runId)!,discussion='local:chat:'+chat.id,scoped=runtime.scopes.context(trigger,discussion)!
@@ -228,12 +239,30 @@ if (!normal || host.server.listenerCount('request') !== 1) throw Error('Unexpect
 host.server.removeListener('request', normal);
 host.server.on('request', (req, res) => {
   if (req.headers.host === new URL(base).host) {
+    if(workbench){
+      const path=req.url?.split('?')[0],match=/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/workbench\/(files|demo|reveal)$/.exec(path??'');
+      if(match){void workbench.handle(req,res,match[1]!,match[2]!).catch(error=>{console.error('Preview request failed',error instanceof Error?error.message:'unknown');if(!res.headersSent)res.writeHead(500);res.end()});return}
+      if(req.method==='GET'&&path==='/workbench-example'){
+        const result=req.url?.includes('result');
+        const title=result?'组合表情验证':'摘要工具';
+        res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"});
+        res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>${title} · Roppo</title><style>
+          *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.65 system-ui;color:#333;background:#fafafa}
+          main{width:min(100%,520px);padding:30px}h1{font-size:24px;font-weight:600}p,dt{color:#676767}a{color:#354e69;text-underline-offset:4px}
+          dl{display:grid;gap:8px}dl div{padding:12px 16px;background:#fff;border:1px solid #dedede;border-radius:10px}dt{font-size:13px}dd{margin:2px 0 0}
+          @media(min-width:760px){dl{grid-template-columns:1fr 1fr}}
+          </style><main><h1>${title}</h1>${result
+            ?'<p>保留前两个可见字符</p><dl><div><dt>输入</dt><dd>A👩‍💻B</dd></div><div><dt>输出</dt><dd>A👩‍💻</dd></div></dl><a href="/workbench-example">返回摘要工具</a>'
+            :'<p>按用户可见的字符截断文本，保留完整的组合表情。</p><a href="/workbench-example?result" target="_blank" rel="noopener">在新标签页查看组合表情示例</a>'}</main></html>`);return
+      }
+    }
     if (req.url?.split('?')[0] === login.path && req.method === 'GET') {
-      void signin()
+      void previewSignin()
         .then((session) => {
           res.writeHead(303, {
             'set-cookie': session,
-            location: req.url?.endsWith('?memory')?'/configure#advanced/memory':req.url?.endsWith('?receipts')?'/configure#connections':'/chat#conversation/'+sample!.chatId,
+            location: workbench?'/chat#conversation/'+workbench.newDemo().chatId:req.url?.endsWith('?memory')?'/configure#advanced/memory':req.url?.endsWith('?receipts')?'/configure#connections':'/chat#conversation/'+sample!.chatId,
             'referrer-policy': 'no-referrer',
             'cache-control': 'no-store',
           });

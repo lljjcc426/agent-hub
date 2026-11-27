@@ -241,9 +241,12 @@ export function ThinkingState({
   }, [scrollable, defaultExpanded])
   const id = useId()
   const label = { running: L('Thinking', '正在思考'), done: L('Thought for', '已思考'), failed: L('Interrupted', '思考已中断'), recorded: L('Activity', '处理记录') }[state]
+  const visibleSteps = steps.filter(step => step.label?.trim() || step.content || step.detail?.trim() || step.sources?.length)
+  const hasDetails = visibleSteps.length > 0
+  const Header = hasDetails ? 'button' : 'div'
   const list = (
     <ol className="rv-thinking-steps" aria-live="polite" aria-relevant="additions">
-      {steps.map((step) => {
+      {visibleSteps.map((step) => {
         const active = state === 'running' && step.state === 'working'
         const search = step.kind === 'search' || !!step.sources?.length
         const failed = step.state === 'failed' || step.state === 'interrupted'
@@ -269,8 +272,8 @@ export function ThinkingState({
   )
   return (
     <section className="rv-thinking" aria-label={L("Thinking status", "思考状态")} data-state={state}>
-      <button type="button" className="rv-thinking-head" aria-expanded={expanded} aria-controls={id}
-        onClick={() => { toggled.current = true; setExpanded((open) => !open) }}>
+      <Header className="rv-thinking-head" {...(hasDetails ? {type:'button' as const, 'aria-expanded':expanded, 'aria-controls':id,
+        onClick:() => { toggled.current = true; setExpanded(open => !open) }} : {})}>
         <span className="rv-thinking-mark" aria-hidden="true">
           <span className="rv-thought-pulse"><i /><i /><i /></span>
         </span>
@@ -278,11 +281,11 @@ export function ThinkingState({
           <span className={state === 'running' ? 'rv-thinking-sheen' : undefined}>{label}</span>
         </span>
         <ThinkingClock L={L} elapsedMs={elapsedMs} liveSince={liveSince} />
-        <ChevronDown className="rv-chevron" size={13} aria-hidden="true" />
-      </button>
-      <RunFold id={id} open={expanded}>
+        {hasDetails && <ChevronDown className="rv-chevron" size={13} aria-hidden="true" />}
+      </Header>
+      {hasDetails && <RunFold id={id} open={expanded}>
         {scrollable ? <ThinkingViewport open={expanded} L={L}>{list}</ThinkingViewport> : list}
-      </RunFold>
+      </RunFold>}
     </section>
   )
 }

@@ -141,7 +141,7 @@ export async function browserRequest(
         }
       };
       const nextFrame = () => push();
-      const unsubscribe = await manager.subscribe(user, id, nextFrame);
+      const unsubscribe = await manager.subscribe(user, id, nextFrame,clientId);
       if (res.destroyed) {
         unsubscribe();
         return;
@@ -202,7 +202,8 @@ export async function browserRequest(
         return;
       }
       if(action==='viewport'){
-        const input=lease.extend({width:z.number().int().min(320).max(3840),height:z.number().int().min(200).max(2160)}).strict().parse(raw);
+        const input=lease.extend({width:z.number().int().positive().max(8192),height:z.number().int().positive().max(8192)})
+          .strict().refine(size=>size.width*size.height<=16_777_216).parse(raw);
         send(await manager.resize(user,id,input.client,input.epoch,input.width,input.height));return;
       }
       if(action==='selection'){

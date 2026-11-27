@@ -36,14 +36,6 @@
 .patch-hint {display:block;margin:0;padding:12px;color:var(--c-muted);font-size:12px}
 .patch-hint button,.patch-more {color:var(--c-text);text-decoration:underline;text-underline-offset:3px}
 .transcript .worker-diff-standalone .worker-file-diff {margin-block:0}
-.rp-dialog.patch-drawer[data-placement=side] {width:min(880px,calc(100% - 24px));max-width:calc(100% - 24px);overflow:hidden}
-.rp-dialog.patch-drawer>section {padding:0;height:100%;min-height:0;display:flex;flex-direction:column}
-.rp-dialog.patch-drawer>section>header {flex:none;min-height:58px;padding:10px 16px;border-bottom:1px solid var(--c-line)}
-.patch-drawer-heading {display:flex;align-items:center;gap:9px;min-width:0}
-.patch-drawer-heading>strong {font-size:var(--roppo-font-control,15px)}
-.patch-drawer-heading>svg,.patch-drawer-heading>span {color:var(--c-muted)}
-.patch-drawer-heading>span {font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rp-dialog.patch-drawer .rp-dialog-body {min-height:0;overflow:auto;overscroll-behavior:contain;scroll-padding:12px;margin:0;padding:16px;display:flex;flex-direction:column;gap:12px}
 .patch-drawer-file {flex:none;min-width:0;border:1px solid var(--c-line);border-radius:12px;overflow:hidden;background:var(--c-bg)}
 .patch-drawer-head {padding:6px 10px 8px;background:color-mix(in srgb,var(--c-soft) 60%,var(--c-bg))}
 .patch-drawer-title {width:100%;min-height:32px;text-align:start;padding:4px;font-weight:550!important}
@@ -53,10 +45,7 @@
 .patch-controls button[aria-pressed=true] {color:var(--c-text)}
 .patch-open-select {position:relative}
 .patch-open-select select {position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
-.patch-open-select:focus-within,.patch-drawer button:focus-visible,.patch-inline-head button:focus-visible {outline:2px solid var(--c-muted);outline-offset:-2px}
-.patch-view {display:inline-flex;border:1px solid var(--c-line);border-radius:7px;background:var(--c-soft);padding:2px;margin-inline-start:auto}
-.patch-view button {min-height:24px;padding:3px 8px;border-radius:4px}
-.patch-view button[aria-pressed=true] {background:var(--c-bg);box-shadow:0 1px 3px #0002}
+.patch-open-select:focus-within,.patch-inline-head button:focus-visible {outline:2px solid var(--c-muted);outline-offset:-2px}
 .patch-wrap[aria-pressed=true] {background:var(--c-soft);box-shadow:inset 0 0 0 1px var(--c-line)}
 .patch-code-scroll {width:100%;overflow:auto;overscroll-behavior-inline:contain}
 .patch-code-table {min-width:100%}
@@ -76,12 +65,8 @@
 .patch-metadata {margin:0;padding:12px;font-size:12px;overflow:auto}
 .patch-metadata[data-wrap=true] {white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:600px) {
-  .rp-dialog.patch-drawer[data-placement=side] {inset:0;margin:0;width:100%;max-width:100%;height:100dvh;border-radius:0;border:0}
-  .rp-dialog.patch-drawer .rp-dialog-body {padding:10px;gap:9px}
-  .rp-dialog.patch-drawer>section>header {padding-inline:12px}
   .patch-controls {gap:3px}
   .patch-controls button,.patch-open-select {min-height:36px}
-  .patch-view button {padding-inline:5px}
   .patch-full-body .worker-patch-line {grid-template-columns:3.5ch 3.5ch 1.5ch minmax(0,1fr)}
   .patch-side {grid-template-columns:2.7ch 1.2ch minmax(0,1fr);padding-inline:2px}
   .patch-disclose,.patch-file-link,.patch-drawer-title {min-height:44px}

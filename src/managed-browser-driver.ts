@@ -12,11 +12,16 @@ import {inputMessages,type BrowserInput} from './browser-input.ts'
 import {prepareChromium,prepareScreencastEncoder} from './browser-runtime.ts'
 
 type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
+type ViewportSize = {width:number;height:number}
+type PageDisplay = {pending:Promise<void>;size?:ViewportSize}
 type View = {
   context: BrowserContext
+  external: boolean
   close: () => Promise<void>
   tabs: Map<string,Page>
   active?: string
+  viewport?: ViewportSize
+  displays: WeakMap<Page,PageDisplay>
   nextTab: number
   changed: Set<()=>void>
   cdps: Map<Page,Promise<CDPSession>>
@@ -27,8 +32,9 @@ const viewport={width:1200,height:800}
 const previousChrome='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const browserProfileMarker='.roppo-browser-runtime'
 const asTab=(index:number)=>'t'+index
-const detailDelayMs=180
-const detailPixels={width:2880,height:1800}
+const streamScale=2
+const streamPixels={width:2880,height:1800}
+const streamQuality=93
 
 async function actionPoint(view:View,page:Page,control:Locator,signal?:AbortSignal){
   if(!view.changed.size)return
@@ -63,7 +69,8 @@ export class ManagedBrowserDriver implements BrowserDriver {
     const legacy=process.platform==='darwin'&&session?.persistent&&!existsSync(join(session.directory,browserProfileMarker))&&
       existsSync(join(session.directory,'Local State'))&&existsSync(previousChrome)
     const executablePath=await prepareChromium(this.settings.executablePath??(legacy?previousChrome:undefined))
-    return {executablePath,headless:true,env:getDefaultEnvironment(),timeout:this.settings.timeoutMs}
+    // The screencast reads the native compositor, independently of the page's emulated CSS viewport.
+    return {executablePath,headless:true,args:['--force-device-scale-factor='+streamScale],env:getDefaultEnvironment(),timeout:this.settings.timeoutMs}
   }
 
   private browser() {
@@ -101,7 +108,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
       if(persistent&&!legacyProfile)await writeFile(join(session.directory,browserProfileMarker),'roppo\n',{mode:0o600})
       context.setDefaultTimeout(this.settings.timeoutMs)
       context.setDefaultNavigationTimeout(this.settings.timeoutMs)
-      const view:View={context,close,tabs:new Map(),nextTab:0,changed:new Set(),cdps:new Map(),downloads:new WeakMap(),buttons:0}
+      const view:View={context,external:!!session.cdpPort,close,tabs:new Map(),nextTab:0,changed:new Set(),cdps:new Map(),displays:new WeakMap(),downloads:new WeakMap(),buttons:0}
       const add=(page:Page)=>{
         const id=asTab(++view.nextTab)
         view.tabs.set(id,page)
@@ -112,6 +119,12 @@ export class ManagedBrowserDriver implements BrowserDriver {
           if(view.active===id){view.active=view.tabs.keys().next().value;for(const changed of view.changed)changed()}
         })
         if(!view.active){view.active=id;for(const changed of view.changed)changed()}
+        page.on('popup',popup=>{
+          if(view.active!==id)return
+          const next=[...view.tabs].find(([,item])=>item===popup)?.[0]
+          if(next)this.select(view,next)
+        })
+        if(view.viewport)void this.fitPage(view,page,view.viewport).catch(()=>{})
       }
       for(const page of context.pages())add(page)
       context.on('page',add)
@@ -176,13 +189,17 @@ export class ManagedBrowserDriver implements BrowserDriver {
       }
       if(arg==='new'){
         const page=await view.context.newPage()
+        if(view.viewport)await this.fitPage(view,page,view.viewport)
         const id=[...view.tabs].find(([,item])=>item===page)?.[0]
         if(id)this.select(view,id)
         if(value&&value!=='about:blank')await page.goto(value,{waitUntil:'domcontentloaded',signal})
       }else if(arg==='close'){
         if(view.tabs.size===1)await view.context.newPage()
         await this.page(view,value).close()
-      }else this.select(view,arg!)
+      }else{
+        if(view.viewport)await this.fitPage(view,this.page(view,arg),view.viewport)
+        this.select(view,arg!)
+      }
       return {}
     }
     const page=this.page(view)
@@ -219,10 +236,51 @@ export class ManagedBrowserDriver implements BrowserDriver {
       case 'forward':await page.goForward({waitUntil:'domcontentloaded',signal});return {}
       case 'reload':await page.reload({waitUntil:'domcontentloaded',signal});return {}
       case 'screenshot':await page.screenshot({path:arg,type:'png',fullPage:value==='--full',signal});return {}
-      case 'set':await page.setViewportSize({width:Number(value),height:Number(extra)});return {}
+      case 'set':{
+        const size={width:Number(value),height:Number(extra)}
+        const before=view.displays.get(page)?.size
+        view.viewport=size
+        await Promise.all([...view.tabs.values()].map(tab=>this.fitPage(view,tab,size)))
+        // Static pages may never invalidate a frame after Chromium drops an in-flight resize.
+        if(before?.width!==size.width||before.height!==size.height)
+          for(const changed of view.changed)changed()
+        return {}
+      }
       case 'upload':await page.locator(arg!).setInputFiles(value!,{signal});return {}
       default:throw new BrowserError('browser_action','Unsupported managed browser operation.',400)
     }
+  }
+
+  private displayOperation<T>(view:View,page:Page,work:(state:PageDisplay)=>Promise<T>){
+    const state=view.displays.get(page)??{pending:Promise.resolve()}
+    view.displays.set(page,state)
+    const next=state.pending.then(()=>work(state))
+    state.pending=next.then(()=>{},()=>{})
+    return next
+  }
+
+  private fitPage(view:View,page:Page,size:ViewportSize){
+    return this.displayOperation(view,page,async state=>{
+      if(page.isClosed()||(state.size?.width===size.width&&state.size.height===size.height))return
+      try{
+        const deviceScaleFactor=await page.evaluate(()=>devicePixelRatio)
+        await page.setViewportSize(size)
+        // Keep Chromium's capture surface aligned with the page, excluding window chrome.
+        const channel=await this.channel(view,page)
+        if(!view.external){
+          const {windowId}=await channel.send('Browser.getWindowForTarget')
+          await channel.send('Browser.setContentsSize',{windowId,...size}).catch(error=>{
+            // Older user-configured Chromium builds only support the emulated surface below.
+            if(!(error instanceof Error&&/wasn't found|method not found/i.test(error.message)))throw error
+          })
+        }
+        await channel.send('Emulation.setDeviceMetricsOverride',{
+          ...size,screenWidth:size.width,screenHeight:size.height,mobile:false,deviceScaleFactor,dontSetVisibleSize:true,
+        })
+        await channel.send('Emulation.setVisibleSize',size)
+        state.size=size
+      }catch(error){if(!page.isClosed())throw error}
+    })
   }
 
   async evaluate(session:DriverSession,expression:string,signal?:AbortSignal){
@@ -252,16 +310,15 @@ export class ManagedBrowserDriver implements BrowserDriver {
     return channel
   }
 
-  private async detailedFrame(view:View,page:Page) {
+  private async initialFrame(view:View,page:Page) {
     const channel=await this.channel(view,page)
     const {width,height,x,y,dpr,pinch}=await page.evaluate(()=>({
       width:innerWidth,height:innerHeight,x:scrollX,y:scrollY,dpr:devicePixelRatio,pinch:visualViewport?.scale??1,
     }))
     if(![width,height,dpr].every(value=>Number.isFinite(value)&&value>0)||pinch!==1)return
-    const scale=Math.min(2/dpr,detailPixels.width/(width*dpr),detailPixels.height/(height*dpr))
-    if(scale<=0||scale*dpr<=1.05)return
+    const scale=Math.min(view.external?dpr:streamScale,streamPixels.width/width,streamPixels.height/height)/dpr
     const {data}=await channel.send('Page.captureScreenshot',{
-      format:'jpeg',quality:93,captureBeyondViewport:false,clip:{x,y,width,height,scale},
+      format:'jpeg',quality:streamQuality,captureBeyondViewport:false,clip:{x,y,width,height,scale},
     })
     return {data,width,height}
   }
@@ -270,54 +327,60 @@ export class ManagedBrowserDriver implements BrowserDriver {
     const view=await this.ready(session)
     let sequence=0, generation=0
     let stop:Awaited<ReturnType<Screencast['start']>>|undefined
-    let clearDetail: (()=>void)|undefined
+    let initialTimer:ReturnType<typeof setTimeout>|undefined
     let queue=Promise.resolve()
     const switchPage=()=>{
       const target=++generation
-      clearDetail?.()
+      clearTimeout(initialTimer)
       queue=queue.catch(()=>{}).then(async()=>{
         await stop?.dispose().catch(()=>{})
         stop=undefined
         if(target!==generation||!view.active)return
         const tab=view.active,page=this.page(view,tab)
-        let timer:ReturnType<typeof setTimeout>|undefined
-        let preview:{bytes:Buffer;width:number;height:number}|undefined
-        let capturing=false
-        clearDetail=()=>clearTimeout(timer)
-        const scheduleDetail=()=>{
-          clearTimeout(timer)
-          timer=setTimeout(async()=>{
-            timer=undefined
-            if(target!==generation||capturing)return
-            capturing=true
-            const basedOn=preview
-            try{
-              const frame=await this.detailedFrame(view,page)
-              if(target===generation&&basedOn===preview&&frame)
-                callback({...frame,tab,detail:true,seq:++sequence,at:Date.now()})
-            }catch{/* A transient capture failure leaves the live stream available. */}
-            finally{
-              capturing=false
-              if(target===generation&&basedOn!==preview&&!timer)scheduleDetail()
-            }
-          },detailDelayMs)
-          timer.unref()
-        }
+        const initialSize=view.viewport??page.viewportSize()
+        if(!view.external&&initialSize&&!view.displays.get(page)?.size)
+          await this.fitPage(view,page,initialSize)
+        if(target!==generation)return
+        let previous:{bytes:Buffer;width:number;height:number}|undefined
+        let lastSurfaceCorrection=0
         const emit=(bytes:Buffer,width:number,height:number)=>{
           if(target!==generation)return
-          if(preview?.width===width&&preview.height===height&&preview.bytes.equals(bytes))return
-          preview={bytes,width,height}
-          callback({data:bytes.toString('base64'),width,height,tab,seq:++sequence,at:Date.now()})
-          scheduleDetail()
+          if(previous?.width===width&&previous.height===height&&previous.bytes.equals(bytes))return
+          clearTimeout(initialTimer)
+          previous={bytes,width,height}
+          callback({data:bytes.toString('base64'),width,height,tab,detail:true,seq:++sequence,at:Date.now()})
         }
-        // A blank or static tab may not produce a damage frame immediately.
-        const size=page.viewportSize()??await page.evaluate(()=>({width:innerWidth,height:innerHeight}))
-        emit(await page.screenshot({type:'jpeg',quality:75,scale:'css'}),size.width,size.height)
-        if(target!==generation)return
-        stop=await page.screencast.start({quality:80,size:{width:1920,height:1200},onFrame:frame=>{
+        stop=await page.screencast.start({quality:streamQuality,size:streamPixels,onFrame:frame=>{
+          if(target!==generation)return
+          const fitted=view.displays.get(page)?.size
+          if(fitted&&(frame.viewportWidth!==fitted.width||frame.viewportHeight!==fitted.height)){
+            // A native window resize can finish after emulation and reset the compositor to its
+            // platform minimum width. Reapply the CSS-sized surface before accepting more frames.
+            if(Date.now()-lastSurfaceCorrection>150){
+              lastSurfaceCorrection=Date.now()
+              void this.displayOperation(view,page,async state=>{
+                if(target===generation&&state.size===fitted)
+                  await (await this.channel(view,page)).send('Emulation.setVisibleSize',fitted)
+              }).catch(()=>{})
+            }
+            return
+          }
           emit(frame.data,frame.viewportWidth,frame.viewportHeight)
         }})
-        if(target===generation)status?.(true)
+        if(target!==generation)return
+        status?.(true)
+        if(!previous){
+          // Blank, background or static tabs may not paint on subscribe. Seed only an empty stream.
+          initialTimer=setTimeout(()=>{
+            if(target!==generation||previous)return
+            void this.displayOperation(view,page,async()=>{
+              if(target!==generation||previous)return
+              const frame=await this.initialFrame(view,page)
+              if(frame&&!previous)emit(Buffer.from(frame.data,'base64'),frame.width,frame.height)
+            }).catch(()=>{/* The native stream can still paint after a transient snapshot failure. */})
+          },160)
+          initialTimer.unref()
+        }
       })
       return queue
     }
@@ -328,7 +391,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
     return ()=>{
       view.changed.delete(refresh)
       generation++
-      clearDetail?.()
+      clearTimeout(initialTimer)
       void queue.catch(()=>{}).then(()=>stop?.dispose()).catch(()=>{})
       status?.(false)
     }

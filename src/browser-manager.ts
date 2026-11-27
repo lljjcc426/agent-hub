@@ -45,6 +45,7 @@ interface Session extends DriverSession {
   epoch: number;
   revision: number;
   client?: string;
+  lastController?: string;
   leaseUntil: number;
   ended: boolean;
   maxTabs: number;
@@ -57,7 +58,7 @@ interface Session extends DriverSession {
   url: string;
   title: string;
   updatedAt: number;
-  watchers: Set<() => void>;
+  watchers: Map<() => void,string|undefined>;
   ready: boolean;
   initialization?: Promise<void>;
   queue: Promise<unknown>;
@@ -316,6 +317,12 @@ export class BrowserManager {
     s.queue = next.catch(() => {});
     return next;
   }
+  private ownsDisplay(s:Session,client?:string){
+    if(!client||s.control==='human'||s.control==='handoff')return false;
+    const screens=[...s.watchers.values()].filter((id):id is string=>!!id);
+    const primary=s.lastController&&screens.includes(s.lastController)?s.lastController:screens[0];
+    return client===primary;
+  }
   private view(s: Session, client?: string) {
     return {
       id: s.id,
@@ -329,6 +336,7 @@ export class BrowserManager {
       epoch: s.epoch,
       revision: s.revision,
       controlledByYou: s.control === "human" && s.client === client,
+      displayOwnedByYou: this.ownsDisplay(s,client),
       ended: s.ended,
       handoffReason: s.handoffReason,
       ticketId: s.owner?.ticketId,
@@ -576,7 +584,7 @@ export class BrowserManager {
       url: "about:blank",
       title: "",
       updatedAt: Date.now(),
-      watchers: new Set(),
+      watchers: new Map(),
       ready: false,
       queue: Promise.resolve(),
       controller: new AbortController(),
@@ -695,7 +703,7 @@ export class BrowserManager {
   private receiveFrame(s: Session, frame: BrowserFrame) {
     if (s.closing) return;
     s.frame = { ...frame, seq: (s.frame?.seq ?? 0) + 1 };
-    for (const notify of s.watchers) notify();
+    for (const notify of s.watchers.keys()) notify();
   }
   async openPersonal(user: string, profileId: string, client: string, conversationId?: string) {
     const s = await this.openPersonalSession(user, profileId);
@@ -837,6 +845,7 @@ export class BrowserManager {
       if(s.closing||s.epoch!==epoch)throw new BrowserError("browser_control_changed","Browser control changed.");
       s.control = "human";
       s.client = client;
+      s.lastController = client;
       s.leaseUntil = Date.now() + 90000;
       s.revision++;
       s.updatedAt = Date.now();
@@ -907,11 +916,11 @@ export class BrowserManager {
       `The user returned browser ${browserId}. Continue the same task autonomously. Read a fresh browser snapshot first; previous element references have expired.`);
     allowNewTaskInputs(this.host.store,ticketId,task.inputs.map(i=>i.id));
   }
-  async subscribe(user: string, id: string, onFrame?: () => void) {
+  async subscribe(user: string, id: string, onFrame?: () => void, displayClient?:string) {
     await this.restoreWorkspace(user, id);
     const s = this.session(id, user);
     const notify = () => onFrame?.();
-    s.watchers.add(notify);
+    s.watchers.set(notify,displayClient);
     try {
       await this.enqueue(s, () => this.ensureFrames(s));
     } catch (error) {
@@ -1003,9 +1012,15 @@ export class BrowserManager {
     });
   }
   async resize(user:string,id:string,client:string,epoch:number,width:number,height:number) {
-    const s=this.session(id,user);this.human(s,client,epoch);
-    return this.enqueue(s,async()=>{
+    const s=this.session(id,user);
+    const check=()=>{
+      // While the assistant has input, only a connected foreground view may size the shared page.
+      if(s.epoch===epoch && this.ownsDisplay(s,client))return;
       this.human(s,client,epoch);
+    };
+    check();
+    return this.enqueue(s,async()=>{
+      check();
       await this.driverFor(s).run(s,['set','viewport',String(width),String(height)],s.controller.signal);
       s.revision++;
       return this.view(s,client);
@@ -1126,7 +1141,7 @@ export class BrowserManager {
           s.activity={action:input.action as BrowserActivity['action'],tab,at:Date.now(),seq:(s.activity?.seq??0)+1,
             ...(positioned?{point:{x:point.x,y:point.y}}:{})}
           s.activityEpoch=epoch
-          for(const notify of s.watchers)notify()
+          for(const notify of s.watchers.keys())notify()
         }
       }
     }

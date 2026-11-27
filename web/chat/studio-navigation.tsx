@@ -48,7 +48,7 @@ function sections(L: L, views: { id: string; label: string }[], query: string) {
   return [
     { name: L('Preferences', '偏好'), rows: [
       row('general', L('General', '通用'), SlidersHorizontal, hash => hash === 'general' || hash === 'advanced/chat',
-        L('Send message keyboard shortcut Enter Chat display Detailed Simple Task progress reporting Worker file changes diff', '发送消息 快捷键 回车 Enter 对话显示 详细 简洁 任务进度汇报 Worker 文件改动 差异 diff')),
+        L('Send message keyboard shortcut Enter Chat display Detailed Simple Task progress reporting File changes diff', '发送消息 快捷键 回车 Enter 对话显示 详细 简洁 任务进度汇报 文件改动 差异 diff')),
       row('appearance', L('Appearance', '外观'), Sun, undefined, L('Theme colors fonts motion', '主题 颜色 字体 动效')),
       row('advanced/memory', L('Memory', '记忆'), Brain),
       ...(query ? [row('advanced/chat', L('Conversations and context', '对话与上下文'), MessagesSquare, undefined,
@@ -294,7 +294,7 @@ export function General({
     }
   }
   const workerDiff=useWorkerDiffPreference();
-  const diffLabel=L('Worker file changes','Worker 文件改动');
+  const diffLabel=L('File changes','文件改动');
   async function changeDetailMode(value: ChatSpace['detailMode']) {
     if (saving || detailMode === value) return;
     setSaving(true);

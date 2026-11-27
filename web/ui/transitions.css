@@ -32,7 +32,7 @@
 .rp-sidebar-nav > .rp-selection-indicator { border-radius: 9px; background: var(--rp-selected); box-shadow: none; }
 .rp-sidebar-nav:has(.rp-selection-indicator[data-ready]) .rp-nav-link[aria-current] { background: transparent; }
 .rp-choices[data-appearance="segments"]:has(.rp-selection-indicator[data-ready]) .rp-choice-content { background: transparent; box-shadow: none; }
-.rp-choices[data-appearance="tiles"] .rp-selection-indicator { z-index: 1; border: 1.5px solid var(--rp-ink); border-radius: var(--rp-corner-object); background: transparent; box-shadow: none; }
+.rp-choices[data-appearance="tiles"] .rp-selection-indicator { z-index: 1; border: 1.5px solid var(--rp-line-strong); border-radius: var(--rp-corner-object); background: transparent; box-shadow: none; }
 .rp-choices[data-appearance="tiles"]:has(.rp-selection-indicator[data-ready]) input:checked + .rp-choice-content { border-color: transparent; box-shadow: none; }
 .rp-choice-tick svg, .rp-check-glyph svg { transform: scale(.55); opacity: 0; transition: transform .22s var(--rp-settle), opacity .16s; }
 .rp-choice input:checked + span .rp-choice-tick svg, .rp-check input:checked + .rp-check-glyph svg { transform: scale(1); opacity: 1; }

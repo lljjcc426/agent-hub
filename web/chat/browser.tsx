@@ -1,6 +1,6 @@
 import { Dialog, DisclosureRoot, DisclosureSummary } from '../ui/overlays.tsx'
 import { Button as FormButton, CheckField, InputControl, SelectField } from '../ui/controls.tsx'
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import {
   Globe,
@@ -232,7 +232,9 @@ function BrowserPageTabs({session, viewportId, editable, operation, L}: {
   );
 }
 
-export type BrowserOpenRequest = {id?: string; takeover?: boolean};
+export type BrowserOpenRequest = {id?: string; takeover?: boolean; url?: string; newPage?:boolean; initialUrl?:string};
+export type BrowserPageStrip = {id:string;pages:Session['tabs'];editable:boolean;busy:boolean};
+export type BrowserPageControls = {select:(tab:string)=>void;close:(tab:string)=>void};
 type BrowserPanelProps = {
   L: L;
   conversationId?: string;
@@ -241,14 +243,20 @@ type BrowserPanelProps = {
   onRequestHandled?: () => void;
   createConversation?: () => Promise<void>;
   settingsOnly?: boolean;
+  embedded?: boolean;
+  visible?: boolean;
+  pageControls?:Ref<BrowserPageControls>;
+  onPages?:(strip:BrowserPageStrip)=>void;
+  onLastPageClosed?:()=>void;
+  openInWorkbench?: (request:BrowserOpenRequest)=>void;
   profileDialogTarget?: HTMLElement | null;
 };
 
 export function BrowserPanel({L, conversationId='', routerLabel, requestedSession, onRequestHandled, createConversation,
-  settingsOnly=false, profileDialogTarget}: BrowserPanelProps) {
+  settingsOnly=false, embedded=false, visible=true, pageControls,onPages,onLastPageClosed,openInWorkbench, profileDialogTarget}: BrowserPanelProps) {
   const client = browserClient;
-  const [popupOpen, setPopupOpen] = useState(false),
-    [popupContent, setPopupContent] = useState(false),
+  const [popupOpen, setPopupOpen] = useState(embedded),
+    [popupContent, setPopupContent] = useState(embedded),
     [data, setData] = useState<State | null>(null),
     [selected, setSelected] = useState(()=>{try{return sessionStorage.getItem('roppo.browser.selected.'+conversationId)||''}catch{return ''}}),
     [connected, setConnected] = useState(false),
@@ -261,6 +269,9 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     [shareWithWorkers, setShareWithWorkers] = useState<boolean>();
   const profileFormId = useId();
   const sharingHelpId = useId();
+  const addressInput=useRef<HTMLInputElement>(null);
+  const focusBlankAddress=useRef(false);
+  const pendingPage=useRef<{session:string;url:string;newPage:boolean}>(undefined);
   const editedProfile = data?.profiles.find(p => p.id === profileId);
   const sharing = shareWithWorkers ?? editedProfile?.shareWithWorkers;
   const hasLegacyGrants = sharing === undefined &&
@@ -272,7 +283,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     [username, setUsername] = useState(""),
     [password, setPassword] = useState("");
   useEffect(()=>{if(selected)try{sessionStorage.setItem('roppo.browser.selected.'+conversationId,selected)}catch{}},[selected,conversationId]);
-  const active = useRef(true),
+  const active = useRef(true), acting = useRef(false),
     sessionRef = useRef<Session | undefined>(undefined),
     loading = useRef(false),
     viewportDrain = useRef<()=>Promise<unknown>>(async()=>{}),
@@ -280,6 +291,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     triggerRef = useRef<HTMLElement | null>(null);
   const session = data?.sessions.find((s) => s.id === selected),
     controlled = !!session?.controlledByYou && connected;
+  const selectedPage=session&&activePage(session);
   const popupOpenRef = useRef(false);
   const viewLease = useRef<Session | undefined>(undefined);
   const returning = useRef<{id:string;epoch:number;done:Promise<void>}|undefined>(undefined);
@@ -296,7 +308,10 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     try {
       const next = await request<State>("?client=" + client + (conversationId ? "&conversation=" + conversationId : ""));
       if (active.current) {
-        setData(next);
+        setData(old=>old?{...next,sessions:next.sessions.map(item=>{
+          const prior=old.sessions.find(s=>s.id===item.id)
+          return prior&&(prior.epoch>item.epoch||(prior.epoch===item.epoch&&prior.revision>item.revision))?prior:item
+        })}:next);
         if (next.sessions.some(s=>s.workspace))
           setError(previous=>["browser_workspace_offline","browser_missing"].includes(previous) ? "" : previous);
       }
@@ -313,7 +328,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
           ? {
               ...old,
               sessions: old.sessions.some((s) => s.id === value.id)
-                ? old.sessions.map((s) => (s.id === value.id && value.epoch >= s.epoch ? value : s))
+                ? old.sessions.map((s) => (s.id === value.id && (value.epoch>s.epoch||(value.epoch===s.epoch&&value.revision>=s.revision)) ? value : s))
                 : [...old.sessions, value],
             }
           : old,
@@ -348,6 +363,8 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     if (!active.current || !popupOpenRef.current) void returnControl(value).catch(fail);
   };
   const act = async (fn: () => Promise<unknown>) => {
+    if(acting.current)return;
+    acting.current=true;
     setBusy(true);
     setError("");
     try {
@@ -356,6 +373,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     } catch (e) {
       fail(e);
     } finally {
+      acting.current=false;
       if (active.current) setBusy(false);
     }
   };
@@ -386,10 +404,18 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
   }, [data, selected]);
   useEffect(() => {
     setAddress(session?.url === "about:blank" ? "" : (session?.url ?? ""));
-  }, [session?.url, selected]);
+  }, [session?.url, selected, selectedPage?.id]);
+  useEffect(()=>{
+    if(!visible||pendingPage.current?.session!==selected)pendingPage.current=undefined;
+  },[visible,selected]);
+  useEffect(()=>{
+    if(!embedded||!visible||!focusBlankAddress.current||!controlled||busy)return;
+    focusBlankAddress.current=false;
+    if(session?.url==='about:blank')addressInput.current?.focus();
+  },[embedded,visible,controlled,busy,session?.url]);
   useEffect(() => {
     setConnected(false);
-    if (!popupOpen || !selected || settingsOnly) return;
+    if (!popupOpen || !visible || !selected || settingsOnly) return;
     let current=true;
     let inspecting = false;
     const inspect = async () => {
@@ -409,12 +435,12 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       }
     };
     void inspect();
-    const timer = setInterval(() => void inspect(), 5000);
+    const timer = setInterval(() => void inspect(), embedded?1500:5000);
     return () => {
       current = false;
       clearInterval(timer);
     };
-  }, [selected, settingsOnly, popupOpen]);
+  }, [selected, settingsOnly, popupOpen,visible,embedded]);
   useEffect(() => {
     if (!popupOpen || !session?.controlledByYou) return;
     const timer = setInterval(
@@ -435,6 +461,9 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     dialogRef.current?.showModal();
     return () => triggerRef.current?.focus();
   }, [dialog]);
+  const sendAction=(s:Session,operation:Partial<BrowserAction>)=>request<Session>("/sessions/"+s.id+"/action",{
+    client,epoch:s.epoch,operation,
+  });
   const operation = (operation: Partial<BrowserAction>) =>
     act(async () => {
       const s = sessionRef.current;
@@ -442,29 +471,79 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       await viewportDrain.current();
       if (s.id !== sessionRef.current?.id || s.epoch !== sessionRef.current.epoch)
         throw Error('browser_control_changed');
-      update(
-        await request<Session>("/sessions/" + s.id + "/action", {
-          client,
-          epoch: s.epoch,
-          operation: {
-            ...operation,
-            ...(["click", "fill", "press"].includes(operation.action ?? "")
-              ? { revision: s.revision }
-              : {}),
-          },
-        }),
-      );
+      update(await sendAction(s,{
+        ...operation,
+        ...(["click", "fill", "press"].includes(operation.action ?? "") ? {revision:s.revision} : {}),
+      }));
     });
   const input = (event: BrowserInput) => {
     const captured=session;
     if(!captured?.controlledByYou)return Promise.resolve();
     return request('/sessions/'+captured.id+'/input',{client,epoch:captured.epoch,event});
   };
-  const openDefault=()=>act(async()=>{
+  useEffect(()=>{
+    if(session&&onPages)onPages({id:session.id,pages:session.tabs,editable:session.controlledByYou&&!busy,busy});
+  },[session?.id,session?.tabs,session?.controlledByYou,busy,onPages]);
+  const lastPageClosed=useRef(onLastPageClosed);
+  lastPageClosed.current=onLastPageClosed;
+  useImperativeHandle(pageControls,()=>({
+    select(tab){if(session?.controlledByYou&&!busy)void operation({action:'select_tab',tab})},
+    close(tab){
+      if(!session||busy)return;
+      if(!session.controlledByYou){if(session.tabs.length===1)lastPageClosed.current?.();return}
+      void act(async()=>{
+        await viewportDrain.current();
+        const current=await request<Session>('/sessions/'+session.id+'?client='+client);
+        if(current.epoch!==session.epoch||!current.controlledByYou)throw Error('browser_control_changed');
+        if(!current.tabs.some(page=>page.id===tab)){update(current);return}
+        const last=current.tabs.length===1;
+        // A shared workspace always keeps a live page. Retire the closing document and its history.
+        const blank=last&&current.workspace?activePage(await sendAction(current,{action:'new_tab',url:'about:blank'}))?.id:undefined;
+        let remaining=await sendAction(current,{action:'close_tab',tab});
+        // A native popup can open between the last inspection and the close.
+        if(blank&&remaining.tabs.length>1&&remaining.tabs.some(p=>p.id===blank&&p.url==='about:blank'))
+          remaining=await sendAction(current,{action:'close_tab',tab:blank});
+        update(remaining);
+        if(!last||remaining.tabs.length!==1||remaining.url!=='about:blank'||(blank&&remaining.tabs[0]?.id!==blank))return;
+        await returnControl(remaining);
+        if(active.current)lastPageClosed.current?.();
+      });
+    },
+  }));
+  const openDefault=(url?:string,newPage=false,initialUrl?:string)=>act(async()=>{
     await returning.current?.done;
-    if(viewLease.current && !viewLease.current.workspace)await returnControl(viewLease.current);
+    const current=newPage?sessionRef.current:undefined;
+    if(!current && viewLease.current && !viewLease.current.workspace)await returnControl(viewLease.current);
     await viewportDrain.current();
-    const value=await request<Session>('/open',{client,conversationId});receiveControl(value);setSelected(value.id);
+    const value=current??await request<Session>('/open',{client,conversationId});receiveControl(value);setSelected(value.id);
+    if(!active.current)return;
+    const blank=value.tabs.length===1&&value.tabs[0]?.url==='about:blank';
+    const target=url??(!newPage&&blank?initialUrl:undefined);
+    if(!newPage&&!target)return;
+    if(!value.controlledByYou){
+      if(newPage||url){
+        pendingPage.current={session:value.id,url:target??'about:blank',newPage:newPage||!blank};
+        throw Error('browser_control_required');
+      }
+      return;
+    }
+    const opened=await sendAction(value,{action:newPage||!blank?'new_tab':'navigate',url:target??'about:blank'});
+    focusBlankAddress.current=newPage&&opened.url==='about:blank';
+    update(opened);
+  });
+  const takeControl=()=>act(async()=>{
+    if(!session)return;
+    const held=await request<Session>('/sessions/'+session.id+'/takeover',{client,force:session.control==='human'});
+    receiveControl(held);
+    const pending=pendingPage.current;
+    pendingPage.current=undefined;
+    if(!active.current||!popupOpenRef.current||pending?.session!==held.id)return;
+    // Recheck after handoff. Another window may have navigated the original blank page.
+    const fresh=await request<Session>('/sessions/'+held.id+'?client='+client);
+    const add=pending.newPage||fresh.tabs.length!==1||fresh.url!=='about:blank';
+    const opened=await sendAction(held,{action:add?'new_tab':'navigate',url:pending.url});
+    focusBlankAddress.current=opened.url==='about:blank';
+    update(opened);
   });
   const showBrowser = () => {
     popupOpenRef.current = true;
@@ -472,6 +551,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     setPopupOpen(true);
   };
   const openFromGallery = () => {
+    if(openInWorkbench){openInWorkbench({});return}
     if (!conversationId) {
       if (createConversation) void act(createConversation);
       return;
@@ -485,7 +565,8 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     handledSession.current=requestedSession;
     onRequestHandled?.();
     if (!requestedSession.id) {
-      openFromGallery();
+      showBrowser();
+      void openDefault(requestedSession.url,requestedSession.newPage,requestedSession.initialUrl);
       return;
     }
     const id = requestedSession.id;
@@ -538,7 +619,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
   const viewportId = useId();
   const errorNotice = error && !dialog && <div className="browser-error" role="alert">
     <span>{messages[error] ? L(...messages[error]!) : L("Unable to complete this operation.", "未能完成此操作。")}</span>
-    <Button label={L("Dismiss error", "关闭提示")} onClick={() => setError("")}><X size={14} /></Button>
+    <Button label={L("Dismiss error", "关闭提示")} onClick={() => {pendingPage.current=undefined;setError("")}}><X size={14} /></Button>
   </div>;
   const profileEditor = (
     <Dialog
@@ -615,7 +696,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       </form>
     </Dialog>
   );
-  const browserTabs = session && popupContent ? <>
+  const browserTabs = session && popupContent && !embedded ? <>
     <BrowserPageTabs session={session} viewportId={viewportId} L={L}
       editable={!!session.controlledByYou && !busy && popupOpen} operation={operation}/>
     <SelectField aria-label={L('Browser session','浏览器会话')} value={selected} disabled={busy} onChange={e=>{
@@ -679,13 +760,14 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
                 <RotateCw size={15} />
               </Button>
               <InputControl
+                ref={addressInput}
                 aria-label={L("Website address", "网站地址")}
                 placeholder={L("Enter a website", "输入网址")}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 disabled={!controlled || busy}
               />
-              {!session.workspace && <Button
+              {!embedded && !session.workspace && <Button
                 label={L("Close this browser", "关闭此浏览器")}
                 onClick={() =>
                   void act(async () => {
@@ -705,6 +787,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
               </Button>}
             </form>
             <div className="browser-control">
+              {!embedded&&<>
               <Button label={data?.workspace ? L('Workspace browser','工作区浏览器') : L('Personal browser','个人浏览器')} onClick={()=>void openDefault()} disabled={busy}><Globe size={16}/></Button>
               <a className="icon-button" href="/configure#advanced/browser" aria-label={L('Browser settings','浏览器设置')} title={L('Browser settings','浏览器设置')}><Settings2 size={16}/></a>
               {(!session.workspace || session.profileId) && <BrowserFiles key={session.id} id={session.id} client={client} epoch={session.epoch} controlled={controlled} L={L} onError={fail} onUploaded={()=>void refresh()}/>}
@@ -728,7 +811,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
                       : session.ended
                         ? L("Task ended", "任务已结束")
                         : L("Waiting for takeover", "等待接管")}
-              </span>
+              </span></>}
               {session.controlledByYou ? (
                 <button
                   className="browser-primary"
@@ -736,7 +819,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
                   onClick={() => void act(() => returnControl(session))}
                 >
                   <Play size={14} />
-                  {session.workspace ? L("Return to assistant","交还助手") : session.personal || session.ended
+                  {embedded||session.workspace ? L("Return to assistant","交还助手") : session.personal || session.ended
                     ? L("Release control", "结束操作")
                     : L("Continue task", "继续任务")}
                 </button>
@@ -744,31 +827,25 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
                 <button
                   className="browser-primary"
                   disabled={busy || session.control === "handoff"}
-                  onClick={() =>
-                    void act(async () =>
-                      receiveControl(
-                        await request<Session>(
-                          "/sessions/" + session.id + "/takeover",
-                          { client, force: session.control === "human" },
-                        ),
-                      ),
-                    )
-                  }
+                  onClick={()=>void takeControl()}
+                  title={session.control==='human'?L('Take over in this window','转移控制到此窗口'):undefined}
                 >
                   <Hand size={14} />
-                  {session.control === "human"
+                  {!embedded&&session.control === "human"
                     ? L("Take over here", "转移控制到此窗口")
                     : L("Take control", "接管")}
                 </button>
               )}
             </div>
           </div>
-          <BrowserViewport key={session.id} panelId={viewportId} tabId={browserPageId(viewportId, activePage(session)?.id)}
-            id={session.id} pageId={activePage(session)?.id} epoch={session.epoch} controlled={!!session.controlledByYou}
+          {visible&&<BrowserViewport key={session.id} panelId={viewportId} tabId={embedded?undefined:browserPageId(viewportId,selectedPage?.id)}
+            id={session.id} pageId={selectedPage?.id} epoch={session.epoch} controlled={!!session.controlledByYou}
             agentControlled={session.control==="router" || session.control==="worker"}
+            displayClient={embedded?client:undefined}
+            resize={embedded&&(session.controlledByYou||session.displayOwnedByYou)?(width,height)=>request('/sessions/'+session.id+'/viewport',{client,epoch:session.epoch,width,height}):undefined}
             accepting={popupOpen && !busy} input={input} drainRef={viewportDrain}
             selection={()=>request<{text:string}>('/sessions/'+session.id+'/selection',{client,epoch:session.epoch})}
-            onConnected={setConnected} onError={fail} L={L}/>
+            onConnected={setConnected} onError={fail} L={L}/>}
         </>
       ) : (
         <div className="browser-empty">
@@ -780,7 +857,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
             onClick={()=>void openDefault()}
           >
             <Plus size={16} />
-            {data?.workspace ? L("Open workspace browser","打开工作区浏览器") : L("Open browser", "打开浏览器")}
+            {!embedded&&data?.workspace ? L("Open workspace browser","打开工作区浏览器") : L("Open browser", "打开浏览器")}
           </button>
           {!data && <LoaderCircle size={18} className="spin" />}
         </div>
@@ -962,6 +1039,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
     </aside>
   );
   if (settingsOnly) return content;
+  if (embedded) return <div className="bench-browser roppo-ui">{content}</div>;
   return (
     <section className="team-browsers" aria-label={L("Browsers", "浏览器")}>
       <div className="team-browser-heading">
@@ -976,7 +1054,7 @@ export function BrowserPanel({L, conversationId='', routerLabel, requestedSessio
       {!popupContent && errorNotice}
       {data?.sessions.map(s => <BrowserPreview key={s.id} id={s.id} title={labelFor(s)} revision={s.revision}
         label={L('View browser', '查看浏览器') + ' · ' + labelFor(s)} enabled={!popupContent}
-        open={() => { setError(''); setSelected(s.id); showBrowser(); }}/>)}
+        open={() => {if(openInWorkbench){openInWorkbench({id:s.id});return} setError(''); setSelected(s.id); showBrowser(); }}/>)}
       <Dialog open={popupOpen} className={"roppo-ui browser-fullscreen"+(browserTabs?" has-browser-page":"")}
         title={L("Browser", "浏览器")} headerContent={browserTabs}
         closeLabel={L("Close browser view", "关闭浏览器视图")} onClose={() => {

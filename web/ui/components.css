@@ -48,17 +48,18 @@
 .rp-choice input:focus-visible + .rp-choice-content, .rp-check input:focus-visible + .rp-check-glyph { outline: 2px solid var(--rp-focus); outline-offset: 2px; }
 .rp-choices[data-appearance="tiles"] { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); width: 100%; padding: 0; gap: 10px; background: transparent; }
 .rp-choices[data-appearance="tiles"] .rp-choice-content { height: 100%; padding: 15px; align-items: stretch; flex-direction: column; justify-content: start; border: 1px solid var(--rp-line); border-radius: var(--rp-corner-object); background: var(--rp-panel); }
-.rp-choices[data-appearance="tiles"] input:checked + .rp-choice-content { border-color: var(--rp-ink); background: var(--rp-soft); box-shadow: inset 0 0 0 .5px var(--rp-ink); }
+.rp-choices[data-appearance="tiles"] input:checked + .rp-choice-content { border-color: var(--rp-line-strong); background: var(--rp-soft); box-shadow: none; }
 .rp-choice-tick, .rp-check-glyph {
   display: inline-flex; flex: none; align-items: center; justify-content: center; width: 17px; height: 17px;
   border: 1px solid var(--rp-line-strong); border-radius: 5px; background: var(--rp-panel); color: transparent;
 }
-.rp-choice input:checked + span .rp-choice-tick, .rp-check input:checked + .rp-check-glyph { background: var(--rp-action); color: var(--rp-on-action); border-color: var(--rp-action); }
+.rp-choice input:checked + span .rp-choice-tick, .rp-check input:checked + .rp-check-glyph { background: var(--rp-selected); color: var(--rp-ink); border-color: var(--rp-line-strong); }
 .rp-choice:has(input:disabled), .rp-check:has(input:disabled) { opacity: .48; cursor: not-allowed; }
 .rp-check { display: inline-flex; align-items: center; gap: 9px; min-height: 33px; }
 .rp-check[data-appearance="switch"] .rp-check-glyph { width: 33px; height: 20px; border: 0; border-radius: 8px; background: var(--rp-line-strong); justify-content: flex-start; padding: 3px; transition: background .18s; }
 .rp-check[data-appearance="switch"] .rp-check-glyph::before { content: ""; width: 14px; height: 14px; border-radius: 5px; background: var(--rp-panel); box-shadow: 0 1px 2px #0002; transition: transform .22s var(--rp-ease); }
-.rp-check[data-appearance="switch"] input:checked + .rp-check-glyph::before { transform: translateX(13px); background: var(--rp-on-action); }
+.rp-check[data-appearance="switch"] input:checked + .rp-check-glyph { background: color-mix(in srgb,var(--rp-muted) 65%,var(--rp-panel)); }
+.rp-check[data-appearance="switch"] input:checked + .rp-check-glyph::before { transform: translateX(13px); background: var(--rp-panel); }
 
 /* Shell */
 .rp-brand { display: inline-flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 720; letter-spacing: -.06em; color: var(--rp-ink); }

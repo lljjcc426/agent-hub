@@ -21,6 +21,8 @@ type Props = {
   controlled: boolean;
   agentControlled: boolean;
   accepting: boolean;
+  displayClient?:string;
+  resize?: (width:number,height:number)=>Promise<unknown>;
   input: (event: BrowserInput) => Promise<unknown>;
   selection: () => Promise<{ text: string }>;
   drainRef: { current: () => Promise<unknown> };
@@ -37,6 +39,8 @@ export function BrowserViewport({
   controlled,
   agentControlled,
   accepting,
+  displayClient,
+  resize,
   input,
   selection,
   drainRef,
@@ -68,8 +72,40 @@ export function BrowserViewport({
     clearTimeout(activityTimeout.current)
     activityTimeout.current=setTimeout(()=>setActivity(undefined),1450)
   },[])
-  const callbacks = useRef({ input, selection, onConnected, onError });
-  callbacks.current = { input, selection, onConnected, onError };
+  const callbacks = useRef({ input, selection, resize,onConnected, onError });
+  callbacks.current = { input, selection, resize,onConnected, onError };
+  const canResize=!!resize;
+  useEffect(()=>{
+    const element=viewport.current;
+    if(!element||!canResize)return;
+    let live=true,pending=false,timer:ReturnType<typeof setTimeout>|undefined;
+    let appliedWidth=0,appliedHeight=0;
+    const fit=async()=>{
+      if(!live||pending)return;
+      const width=element.clientWidth,height=element.clientHeight;
+      if(!width||!height||(width===appliedWidth&&height===appliedHeight))return;
+      pending=true;
+      try{
+        await callbacks.current.resize?.(width,height);
+        appliedWidth=width;appliedHeight=height;
+      }catch(error){
+        if(live&&!(error instanceof Error&&['browser_control_required','browser_control_changed','browser_missing'].includes(error.message)))
+          callbacks.current.onError(error);
+      }finally{
+        pending=false;
+        if(live&&(element.clientWidth!==width||element.clientHeight!==height))schedule();
+      }
+    };
+    const schedule=()=>{
+      if(element.closest('.chat-shell[data-resizing="workbench"]')){
+        if(timer!==undefined||pending)return;
+      }else clearTimeout(timer);
+      timer=setTimeout(()=>{timer=undefined;void fit()},90);
+    };
+    const observer=new ResizeObserver(schedule);
+    observer.observe(element);schedule();
+    return ()=>{live=false;observer.disconnect();clearTimeout(timer)};
+  },[id,epoch,pageId,canResize]);
   const [state, setState] = useState<
       "connecting" | "connected" | "disconnected"
     >("connecting"),
@@ -91,7 +127,7 @@ export function BrowserViewport({
     setActivity(undefined)
     setState("connecting");
     callbacks.current.onConnected(false);
-    const source = new EventSource("/api/browser/sessions/" + id + "/stream");
+    const source = new EventSource("/api/browser/sessions/" + id + "/stream"+(displayClient?'?client='+encodeURIComponent(displayClient):''));
     source.addEventListener("frame", (event) => {
       const f:BrowserFrame = JSON.parse((event as MessageEvent).data);
       frame.current = {width:f.width,height:f.height,tab:f.tab};
@@ -126,7 +162,7 @@ export function BrowserViewport({
     });
     source.onerror = disconnected;
     return () => source.close();
-  }, [id, attempt,showActivity]);
+  }, [id, attempt,showActivity,displayClient]);
   const report = (error: unknown) => {
     if (!(error instanceof DOMException && error.name === "AbortError"))
       callbacks.current.onError(error);

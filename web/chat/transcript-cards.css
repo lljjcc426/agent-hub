@@ -95,9 +95,9 @@
 .transcript .workflow-plan li { min-height: 38px; padding: 4px 0; gap: 8px; }
 .transcript .workflow-plan .rp-step-name { line-height: 1.4; }
 .transcript .chat-thinking-activity .rv-thinking { padding: 0; }
-.transcript .rv-thinking-head[aria-expanded="false"] { border-radius: calc(var(--chat-card-radius) - 1px); }
+.transcript .rv-thinking-head:not([aria-expanded="true"]) { border-radius: calc(var(--chat-card-radius) - 1px); }
 .transcript .rv-thinking-head[aria-expanded="true"] { box-shadow: inset 0 -1px var(--c-line); }
-.transcript .chat-thinking-activity .rv-thinking-head:hover { background: var(--c-hover); }
+.transcript .chat-thinking-activity button.rv-thinking-head:hover { background: var(--c-hover); }
 .transcript .rv-thinking-head .rv-thinking-mark { width: 16px; }
 .transcript .chat-thinking-activity .rv-thinking-steps { padding: 6px var(--chat-card-inset) 8px; }
 .transcript .worker-file-diff { margin-block-start: var(--chat-card-gap); }

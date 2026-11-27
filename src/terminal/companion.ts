@@ -22,13 +22,20 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
   const angle=p==='thinking'?-.12*Math.sin(Math.PI*smooth((seconds%4)/4)):
    p==='reviewing'?.08*Math.sin(seconds*Math.PI*2/3.6):p==='completed'?.12*Math.sin(seconds*Math.PI*2/2.2):0
   const rise=wave?-Math.sin(Math.PI*Math.min(1,time/1180))*.8:p==='idle'?-.65*Math.sin(seconds*Math.PI*2/4.8):p==='working'?.4*Math.sin(seconds*Math.PI*2/1.3):0
-  const point=(px:number,py:number,value:number)=>dot(x+6+(px-6)*Math.cos(angle)-(py-10)*Math.sin(angle),10+(px-6)*Math.sin(angle)+(py-10)*Math.cos(angle)+rise,value)
-  companionBody.forEach((row,y)=>Array.from(row).forEach((v,i)=>{if(v==='#')point(i,y,color)}))
+  const mask=companionBody.map(row=>Array.from(row,value=>value==='#'))
   const blink=seconds%5.8>2.44&&seconds%5.8<2.67
   for(const eye of [6,8]){
-   if(p==='completed'||wave){point(eye,3,0);point(eye-1,4,0)}
-   else if(!blink&&p!=='offline'){point(eye,4,0);if(p==='failed')point(eye+Math.round(Math.sin(seconds*2.4)),5,0)}
-   else point(eye,5,0)
+   if(p==='completed'||wave){mask[3]![eye]=false;mask[4]![eye-1]=false}
+   else if(!blink&&p!=='offline'){mask[4]![eye]=false;if(p==='failed')mask[5]![eye+Math.round(Math.sin(seconds*2.4))]=false}
+   else mask[5]![eye]=false
+  }
+  // Sample each destination dot back into the original silhouette. Forward rounding
+  // can merge adjacent dots and leave a hole when the character tilts.
+  const cos=Math.cos(angle),sin=Math.sin(angle)
+  for(let py=0;py<pixels.length;py++)for(let px=Math.max(0,Math.floor(x)-2);px<Math.min(pixels[py]!.length,Math.ceil(x)+14);px++){
+   const dx=px-x-6,dy=py-10-rise
+   const sourceX=Math.round(6+dx*cos+dy*sin),sourceY=Math.round(10-dx*sin+dy*cos)
+   if(mask[sourceY]?.[sourceX])dot(px,py,color)
   }
   if(wave){const y=4+Math.sin(seconds*18)*1.6;dot(x+11,y,color);dot(x+12,y+1,color)}
   if(p==='thinking')for(let i=0;i<3;i++)dot(x+11+i*2,2+(Math.sin(seconds*Math.PI*2/1.8-i*.6)>.5?-1:0),3)

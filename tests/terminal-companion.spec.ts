@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest'
-import {TerminalCompanion} from '../src/terminal/companion.ts'
+import {TerminalCompanion,drawCompanion,brailleCells} from '../src/terminal/companion.ts'
 import type {Snapshot} from '../src/terminal/client.ts'
 const snapshot=():Snapshot=>({conversation:{id:'personal',sequence:10},run:{id:'turn',state:'completed'},messages:[],workers:[],tasks:[],calls:[],browsers:[],handoffs:[]} as unknown as Snapshot)
 it('does not replay old handoffs, plays new exchanges, and drops hidden exchanges',()=>{
@@ -26,4 +26,16 @@ it('settles completed history to idle and keeps reduced motion frames still',()=
  view.run!.state='completed';companion.update(view,true,false,true,9000)
  expect(companion.frame(9000).phase).toBe('completed')
  expect(companion.frame(11500).phase).toBe('idle')
+})
+
+it('keeps the original dot silhouette and fills holes introduced by tilted forward rounding',()=>{
+ for(const [phase,time] of [['completed',1600],['thinking',1900]] as const){
+  const pixels=drawCompanion(phase,time)
+  expect(pixels[6]![12]).toBe(1)
+  expect(brailleCells(pixels).flat().every(cell=>cell.text===' '||/^[\u2800-\u28ff]$/.test(cell.text))).toBe(true)
+ }
+ const idle=drawCompanion('idle',0)
+ expect(idle[1]!.slice(10,22)).toEqual([0,0,0,0,0,1,1,0,0,0,0,0])
+ expect(idle[4]![16]).toBe(0)
+ expect(idle[4]![18]).toBe(0)
 })

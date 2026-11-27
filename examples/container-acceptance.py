@@ -62,7 +62,12 @@ def api(route, body=None, authorized=True, origin=None):
         return error.code, json.load(error)
 
 try:
-    run(['./deployment/compose.sh', 'up'], name='up')
+    try:
+        run(['./deployment/compose.sh', 'up'], name='up')
+    except RuntimeError as error:
+        logs = compose('logs', '--no-color', '--tail', '40', 'roppo', check=False)
+        startup = re.sub(r'#pair=[A-Za-z0-9_-]+', '#pair=REDACTED', logs.stdout)
+        raise RuntimeError(f'{error}\n{startup.rstrip()}') from None
     cid = compose('ps', '-q', 'roppo').stdout.strip()
     info = json.loads(run(['docker', 'inspect', cid]).stdout)[0]
     assert info['Config']['User'] == '1000:1000' and info['HostConfig']['ReadonlyRootfs']

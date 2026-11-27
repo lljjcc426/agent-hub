@@ -32,7 +32,7 @@ test('growing Apple Terminal restores the measured shell cursor, not its shifted
   sink.rows = 60; sink.columns = 207
   filtered.end('\x1b[?1049l')
   await once(filtered, 'finish')
-  expect(output).toBe('\x1b[?1049h\x1b[?1049l\x1b[6;1H')
+  expect(output).toBe('\x1b[H\x1b[24L\x1b[30;1H\x1b[?1049h\x1b[?1049l\x1b[H\x1b[24M\x1b[6;1H')
 })
 
 test.each([[6, 6], [55, 30]])('shrinking restores shell row %i to visible row %i', async (originalRow, row) => {

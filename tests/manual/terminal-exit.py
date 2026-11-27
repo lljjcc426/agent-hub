@@ -81,7 +81,9 @@ def check(mode):
         assert printable(before) == b'SHELL_BEFORE\r\n', (mode, before)
         assert printable(after) == b'SHELL_RETURN raw=false\r\n', (mode, after)
         if mode in ['grow /exit', 'resize /exit']:
-            assert after.startswith(b'\x1b[6;1H'), 'Restore the real shell cursor before returning to the shell'
+            assert b'\x1b[H\x1b[24L' in before, 'Preserve shell rows before switching buffers'
+            remaining = 24 if mode == 'grow /exit' else 18
+            assert after.startswith(f'\x1b[H\x1b[{remaining}M\x1b[6;1H'.encode()), 'Restore the real shell cursor before returning to the shell'
         # Do not merely hide these in another buffer: never send them to Apple Terminal.
         assert b'+q4d73' not in output and b'Gi=31337' not in output, mode
         assert b'\x1bP' not in output and b'\x1b_' not in output and b'$p' not in output, mode

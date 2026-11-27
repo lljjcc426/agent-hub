@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { Bell, CalendarDays, Check, Copy, Flag } from 'lucide-react'
 import { Button, Dialog, EmptyState } from '../ui'
+import { scheduleCadence } from '../ui/schedule-editor.tsx'
+import type { ChatSchedule } from '../../src/chat-schedules.ts'
 import { ReminderEditor } from './reminder-editor.tsx'
 import type { WorkPageProps } from './work-items.ts'
 
 export type Plan = { id: string; title: string; kind: string; nextAt?: number; state: string; promoteText?: string }
+export type PlanSchedule = Pick<ChatSchedule,'id'|'timing'>
 
-export function PlanList({ plans, goals, scope, saved, L, language }: WorkPageProps & { plans: Plan[]; goals: boolean; scope: string; saved: () => void }) {
+export function PlanList({ plans, schedules, goals, scope, saved, L, language }: WorkPageProps & { plans: Plan[]; schedules: PlanSchedule[]; goals: boolean; scope: string; saved: () => void }) {
   const [promote, setPromote] = useState<Plan | null>(null)
   const [copyResult, setCopyResult] = useState('')
   const status: Record<string,string> = {
@@ -17,6 +20,7 @@ export function PlanList({ plans, goals, scope, saved, L, language }: WorkPagePr
     needs_input:L('Waiting for input','等待回复'), waiting:L('Waiting','等待中'), pending:L('Pending','等待处理'), stopped:L('Stopped','已停止'),
   }
   const reminders = plans.filter(plan => plan.kind !== 'goal')
+  const timings = new Map(schedules.map(s => [s.id,s.timing]))
   const groups = goals
     ? [{ title:L('Active goals','正在跟进'), rows:plans.filter(p=>p.kind==='goal' && !['completed','cancelled'].includes(p.state)) },
        { title:L('Past goals','已结束'), rows:plans.filter(p=>p.kind==='goal' && ['completed','cancelled'].includes(p.state)) }]
@@ -30,11 +34,19 @@ export function PlanList({ plans, goals, scope, saved, L, language }: WorkPagePr
       {!group.rows.length && <EmptyState icon={<Bell size={24}/>}>{L('No upcoming reminders','还没有安排提醒')}</EmptyState>}
       <ul className="work-rows">{group.rows.map(plan=>{
         const date=plan.nextAt===undefined?null:new Date(plan.nextAt)
+        const timing=timings.get(plan.id), timeZone=timing?.timezone
+        const year=date?.toLocaleDateString(language,{year:'numeric',timeZone})
+        const detail=[
+          year && year!==new Date().toLocaleDateString(language,{year:'numeric',timeZone}) && year,
+          date && (!timing || timing.kind==='once' || timing.kind==='interval') && date.toLocaleTimeString(language,{hour:'2-digit',minute:'2-digit',timeZone}),
+          timing && scheduleCadence(timing,language,L),
+          timeZone,
+          !date && (status[plan.state]??plan.state),
+        ].filter(Boolean).join(' · ')
         return <li className="plan-row" key={plan.id}>
-          {date?<time className="plan-date" dateTime={date.toISOString()} aria-label={date.toLocaleDateString(language,{dateStyle:'long'})}><span>{date.toLocaleDateString(language,{month:'short'})}</span><strong>{date.toLocaleDateString(language,{day:'numeric'}).replace(/日$/,'')}</strong></time>
+          {date?<time className="plan-date" dateTime={date.toISOString()} aria-label={date.toLocaleDateString(language,{dateStyle:'long',timeZone})}><span>{date.toLocaleDateString(language,{month:'short',timeZone})}</span><strong>{date.toLocaleDateString(language,{day:'numeric',timeZone}).replace(/日$/,'')}</strong></time>
             :<span className="work-item-icon">{goals?(plan.state==='completed'?<Check size={21}/>:<Flag size={20}/>):<CalendarDays size={20}/>}</span>}
-          <div className="work-item-copy"><strong>{plan.title}</strong>{goals ? <span>{status[plan.state]??plan.state}</span> :
-            <span>{date && date.getFullYear()!==new Date().getFullYear() && date.getFullYear()+' · '}{date && date.toLocaleTimeString(language,{hour:'2-digit',minute:'2-digit'})}{date?' · ':''}{plan.kind==='commitment'?L('Every day','每天'):L('Once','仅一次')}{!date?' · '+(status[plan.state]??plan.state):''}</span>}</div>
+          <div className="work-item-copy"><strong>{plan.title}</strong><span>{goals ? status[plan.state]??plan.state : detail}</span></div>
           {plan.promoteText && <Button onClick={()=>{setCopyResult('');setPromote(plan)}}>{L('Turn into a goal','转为目标')}</Button>}
         </li>
       })}</ul></section>)}

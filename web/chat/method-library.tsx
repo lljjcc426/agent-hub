@@ -1,5 +1,5 @@
 import { BookOpen, ChevronRight } from 'lucide-react'
-import { PlanList, type Plan } from './plan-list.tsx'
+import { PlanList, type Plan, type PlanSchedule } from './plan-list.tsx'
 import { useState } from 'react'
 import { Button, ChoiceGroup, Dialog, Disclosure, EmptyState, SelectField, TextAreaField } from '../ui'
 import { useWorkspaceTransport } from './workspace-context.tsx'
@@ -16,7 +16,7 @@ type Detail = {template:{title:string;objective:string;nodes:Step[]};inspection:
 const ref = ({id,version}:Ref) => ({id,version})
 
 function ScopedMethods({scope,L,language}:{scope:string;L:Labels;language:'en'|'zh-CN'}) {
-  const catalog = useWorkspaceRead<{skills:Method[];commitments:Plan[]}>('/router-proactive/state?scopeId='+encodeURIComponent(scope))
+  const catalog = useWorkspaceRead<{skills:Method[];commitments:Plan[];schedules:PlanSchedule[]}>('/router-proactive/state?scopeId='+encodeURIComponent(scope))
   const { binding, readSignal } = useWorkspaceTransport()
   const [dialog, setDialog] = useState<{item:Method;detail:Detail}|null>(null)
   const [editing, setEditing] = useState(false), [step,setStep] = useState(''), [text,setText] = useState('')
@@ -65,7 +65,7 @@ function ScopedMethods({scope,L,language}:{scope:string;L:Labels;language:'en'|'
     ]} value={tab} onChange={setTab}/></div>
     {catalog.error ? <p role="alert">{L('Could not read this workspace.','暂时无法读取这个范围。')} <Button onClick={catalog.refresh}>{L('Retry','重试')}</Button></p>
       : !catalog.data ? <p role="status">{L('Loading…','正在读取…')}</p>
-      : tab!=='methods' ? <PlanList key={tab} scope={scope} goals={tab==='goals'} plans={catalog.data.commitments} L={L} language={language} saved={catalog.refresh}/>
+      : tab!=='methods' ? <PlanList key={tab} scope={scope} goals={tab==='goals'} plans={catalog.data.commitments} schedules={catalog.data.schedules} L={L} language={language} saved={catalog.refresh}/>
       : <section className="work-block"><h2>{L('Saved methods','已保存的方法')}</h2>
         {families.size ? <ul className="work-rows">{Array.from(families.entries()).map(([key,versions])=>{
           const latest=versions.filter(m=>!m.overlay).sort((a,b)=>Number(b.state==='active')-Number(a.state==='active')||b.version-a.version)[0] ?? versions[0]

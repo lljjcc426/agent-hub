@@ -1961,6 +1961,35 @@ it('scopes schedules, commands and reminder delivery to the original private Cha
 })
 
 
+it.each(['once','daily'] as const)('edits a %s lightweight reminder from its own Chat card',kind=>{
+  const {h,calls}=fixture()
+  h.scopes.command({action:'scope.put',operationId:'seed',expectedRevision:0,scope:{id:'local',tenantId:'local',name:'Local',managers:[JSON.stringify(['local','operator'])],sourceIds:['local'],workerIds:[],backendIds:['codex']}})
+  const chat=h.chat.create('owner'),other=h.chat.create('owner')
+  const startAt=new Date(Date.now()+3600000).toISOString(),timezone='Asia/Shanghai',name='Review report',time='09:00'
+  const text=kind==='once'?`/remind ${startAt} ${timezone} ${name}`:`/commit-daily ${startAt} ${timezone} ${time} ${name}`
+  const {runId}=send(h,chat.id,text),context=h.scopes.context(h.store.triggers.get(runId)!,'local:chat:'+chat.id)!
+  const spec={id:'review',triggerId:runId,name,timezone,startAt},auth={scopeId:context.route.scopeId,operationId:randomUUID(),expectedRevision:0}
+  h.proactive.command(kind==='once'?{...auth,action:'reminder.put',reminder:spec}:{...auth,action:'commitment.put',commitment:{...spec,time}},context)
+
+  const pause={id:spec.id,active:false,expectedRevision:1,operationId:randomUUID()}
+  expect(()=>h.proactive.command({...auth,action:'schedule.pause',id:spec.id,expectedRevision:1},context)).toThrow(kind==='once'?'Use the reminder action':'Use the commitment action')
+  expect(()=>h.chat.changeSchedule(other.id,'owner',pause)).toThrow('unavailable')
+  expect(()=>h.chat.changeSchedule(chat.id,'another-owner',pause)).toThrow()
+  expect(h.chat.changeSchedule(chat.id,'owner',pause).schedules[0]).toMatchObject({active:false,revision:2})
+  expect(h.chat.changeSchedule(chat.id,'owner',pause).schedules[0]!.revision).toBe(2)
+  const timing={kind:'weekly' as const,weekdays:[1,5],time:'10:30',timezone,startAt}
+  const edit={id:spec.id,timing,expectedRevision:2,operationId:randomUUID()}
+  expect(()=>h.chat.changeSchedule(chat.id,'owner',{...edit,expectedRevision:1})).toThrow('Revision conflict')
+  expect(h.chat.changeSchedule(chat.id,'owner',edit).schedules[0]).toMatchObject({active:false,revision:3,timing,nextAt:undefined})
+  const resumed=h.chat.changeSchedule(chat.id,'owner',{id:spec.id,active:true,expectedRevision:3,operationId:randomUUID()}).schedules[0]!
+  expect(resumed).toMatchObject({active:true,revision:4,timing})
+  expect(resumed.nextAt).toBeGreaterThan(Date.now())
+  const cancel=send(h,chat.id,'/cancel-commitment '+spec.id)
+  h.proactive.command({scopeId:context.route.scopeId,action:'schedule.cancel',id:spec.id,expectedRevision:4,operationId:randomUUID()},h.scopes.context(h.store.triggers.get(cancel.runId)!,context.route.discussion))
+  expect(h.chat.view(chat.id,'owner').schedules[0]).toMatchObject({active:false,closed:'cancelled'})
+  expect(calls).toHaveLength(0)
+})
+
 it('gives a Worker text file a download receipt and reuses it on retry',async()=>{
   const f=fixture(async r=>{
     if(r.role==='router'){

@@ -5,6 +5,7 @@ import type {Delivery} from './store.ts'
 import type {Runtime} from './runtime.ts'
 import type {Trigger,Mandate} from './vendor/dsh-core/index.ts'
 import type {ScopeContext} from './router-scope.ts'
+import type {ChatScheduleChange} from './chat-schedules.ts'
 import type {RouterAdmission} from './router-ingress.ts'
 import type {ContextManifest} from './router-memory.ts'
 import type {ToolSpec} from './model.ts'
@@ -20,7 +21,7 @@ const dutySchema=z.object({id,name:id,entryIds:z.array(id).min(1),instruction:z.
 const settingsSchema=z.object({quietHours:quietHoursSchema.nullable().optional(),enabled:z.boolean(),debounceMs:z.number().int().min(0).max(30000).default(1500),maxWaitMs:z.number().int().min(1).max(60000).default(5000),cooldownMs:z.number().int().min(0).max(3600000).default(60000)}).strict().refine(x=>x.maxWaitMs>=x.debounceMs,'maxWaitMs must cover debounceMs')
 const reminderSchema=z.object({id,name:id,triggerId:id,timezone:z.string(),startAt:z.string()}).strict()
 const commitmentSchema=reminderSchema.extend({time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)}).strict()
-const isDailyCommitment=(plan:{reminder?:true;timing:Timing})=>plan.reminder===true&&plan.timing.kind==='daily'
+const isRecurringReminder=(plan:{reminder?:true;timing:Timing})=>plan.reminder===true&&plan.timing.kind!=='once'
 const scheduleSchema=z.object({id,name:id,triggerId:id,skill:skillRefSchema.optional(),prompt:z.string().min(1).max(16000),timing:timingSchema,mode:z.enum(['standalone','continue']),ticketId:id.optional(),notification:z.enum(['always','findings','silent']).default('findings'),active:z.boolean().default(true)}).strict().refine(x=>x.mode!=='continue'||!!x.ticketId,'Continuation requires ticketId')
 export const proactiveCommandSchema=z.object({action:z.enum(['list','settings.put','duty.put','schedule.put','schedule.retime','schedule.pause','schedule.resume','schedule.run','schedule.cancel','reminder.put','commitment.put','run.cancel']),scopeId:id,operationId:id.optional(),expectedRevision:z.number().int().min(0).optional(),id:id.optional(),settings:settingsSchema.optional(),duty:dutySchema.optional(),schedule:scheduleSchema.optional(),reminder:reminderSchema.optional(),commitment:commitmentSchema.optional(),timing:timingSchema.optional()}).strict()
 type Command=z.infer<typeof proactiveCommandSchema>
@@ -171,21 +172,28 @@ export class RouterProactive {
   if(context.route.scopeId!==scopeId||!context.trigger.human||m.strength!=='explicit'||!this.host.scopes.canManage(context))throw Error('An explicit human scope manager is required')
  }
  command(value:unknown,context?:ScopeContext){
+  return this.execute(value,context,context?.trigger.text.trim())
+ }
+ editChatSchedule(input:ChatScheduleChange,context:ScopeContext){
+  // The card supplies the edit. Its creation message still identifies the owner and conversation.
+  const change='timing' in input?{action:'schedule.retime',timing:input.timing}:{action:input.active?'schedule.resume':'schedule.pause'}
+  return this.execute({...change,scopeId:context.route.scopeId,id:input.id,expectedRevision:input.expectedRevision,operationId:input.operationId},context)
+ }
+ private execute(value:unknown,context?:ScopeContext,commandText?:string){
   const x=proactiveCommandSchema.parse(value)
   if(context){this.host.scopes.assertCurrent(context);if(context.route.scopeId!==x.scopeId)throw Error('Outside Router scope')}
   if(x.action==='list')return this.snapshot(x.scopeId,context)
   this.requireManager(x.scopeId,context)
-  const commandText=context?.trigger.text.trim()
   if(commandText?.startsWith('/remind ')&&x.action!=='reminder.put')throw Error('Use the reminder action for this request')
   if(commandText?.startsWith('/commit-daily ')&&x.action!=='commitment.put')throw Error('Use the commitment action for this request')
-  const dailyControl=commandText?.match(/^\/(pause|resume|cancel)-commitment /)?.[1]
-  if(dailyControl){
+  const control=commandText?.match(/^\/(pause|resume|cancel)-commitment /)?.[1]
+  if(control){
    const plan=this.host.store.get<Schedule>('router-schedule',stableDigest([x.scopeId,x.id??'']))
-   if(x.action!=='schedule.'+dailyControl||!plan||!isDailyCommitment(plan)||commandText!=='/'+dailyControl+'-commitment '+encodeURIComponent(plan.id))throw Error('Use the exact command for an existing daily commitment')
+   if(x.action!=='schedule.'+control||!plan||!isRecurringReminder(plan)||commandText!=='/'+control+'-commitment '+encodeURIComponent(plan.id))throw Error('Use the exact command for an existing recurring commitment')
   }
   if(context&&x.action==='run.cancel'){
    const run=this.host.store.get<ScheduledRun>('router-schedule-run',x.id??'')
-   if(run&&run.scopeId===x.scopeId&&isDailyCommitment(run.spec))throw Error('Use the commitment control command for daily notices')
+   if(run&&run.scopeId===x.scopeId&&isRecurringReminder(run.spec))throw Error('Use the commitment control command for recurring notices')
   }
   if(!x.operationId||x.expectedRevision===undefined)throw Error('Mutation requires operationId and expectedRevision')
   const key=stableDigest([x.scopeId,context?.actor??'operator',context?.route.entryId??'operator',x.operationId])
@@ -202,12 +210,12 @@ export class RouterProactive {
    }
    const fingerprint=stableDigest(x)
    if(old){if(old.fingerprint!==fingerprint)throw Error('operationId reused with different content');return old.result}
-   const result=this.apply(x,context)
+   const result=this.apply(x,context,commandText)
    this.host.store.put('proactive-receipt',key,{fingerprint,scopeId:x.scopeId,result});this.host.store.audit({type:'router.proactive.command',action:x.action,scopeId:x.scopeId,operationId:x.operationId});return result
   })
  }
  private revision(actual:number,expected:number|undefined){if(actual!==expected)throw Error('Revision conflict; refresh before retrying')}
- private apply(x:Command,context?:ScopeContext):unknown{
+ private apply(x:Command,context?:ScopeContext,commandText?:string):unknown{
   const store=this.host.store
   if(x.action==='settings.put'){
    if(!x.settings)throw Error('settings required');const previous=this.controls(x.scopeId);this.revision(previous.revision,x.expectedRevision)
@@ -222,8 +230,8 @@ export class RouterProactive {
   if(x.action==='run.cancel'){
    const run=store.get<ScheduledRun>('router-schedule-run',x.id??'');if(!run||run.scopeId!==x.scopeId)throw Error('Unknown run');this.revision(run.revision,x.expectedRevision)
    this.checkControlEntry(run.spec.entryId,context)
-   if(run.spec.reminder)this.checkPlanOwner(run.spec,context)
-   if(isDailyCommitment(run.spec)){
+   if(run.spec.reminder){
+    this.checkPlanOwner(run.spec,context)
     // A deterministic notice did not spawn Router work. Never abort a live,
     // unrelated Router turn that happens to share its original discussion.
     const messageId='schedule-reminder:'+run.id
@@ -266,11 +274,11 @@ export class RouterProactive {
    if(!anchor?.channel)throw Error('The authorized conversation has no reply channel')
    if(context&&(context.trigger.id!==triggerId||context.trigger.text.trim()!=='/commit-daily '+startAt+' '+timezone+' '+time+' '+name))throw Error('Use /commit-daily <ISO time with offset> <IANA zone> <HH:mm local> <text>, or create it in the management panel')
    const timing=timingSchema.parse({kind:'daily',timezone,startAt,time}),key=stableDigest([x.scopeId,id])
-   const same=(p:Schedule)=>isDailyCommitment(p)&&p.triggerId===triggerId&&p.name===name&&stableDigest(p.timing)===stableDigest(timing)
+   const same=(p:Schedule)=>p.reminder&&p.triggerId===triggerId&&p.name===name&&stableDigest(p.timing)===stableDigest(timing)
    const existing=store.get<Schedule>('router-schedule',key)
    if(existing){this.checkControlEntry(existing.entryId,context);this.checkPlanOwner(existing,context);if(same(existing))return existing;throw Error('Commitment ID already exists')}
    if(context){
-    const previous=store.list<Schedule>('router-schedule').find(p=>p.scopeId===x.scopeId&&p.triggerId===triggerId&&isDailyCommitment(p))
+    const previous=store.list<Schedule>('router-schedule').find(p=>p.scopeId===x.scopeId&&p.triggerId===triggerId&&p.reminder)
     if(previous){if(same(previous))return previous;throw Error('This authorization already created a different commitment')}
    }
    const plan=this.apply({...x,action:'schedule.put',commitment:undefined,schedule:{id,name,triggerId,prompt:name,timing,mode:'standalone',notification:'always',active:true}},context) as Schedule
@@ -286,16 +294,16 @@ export class RouterProactive {
   this.revision(old?.revision??0,x.expectedRevision)
   if(old?.promotion)throw Error('The commitment was promoted; manage the goal instead')
   if(old?.cancelledAt)throw Error('The commitment is cancelled; create a new one')
-  if(old?.reminder&&(x.action==='schedule.put'||x.action==='schedule.run'||!isDailyCommitment(old)&&x.action==='schedule.resume'&&store.list<ScheduledRun>('router-schedule-run').some(r=>r.scopeId===old.scopeId&&r.scheduleId===old.id)))throw Error('A lightweight reminder or commitment cannot be edited or run manually; cancel and create a new one')
-  if(old&&isDailyCommitment(old)&&context){
+  if(old?.reminder&&(x.action==='schedule.put'||x.action==='schedule.run'))throw Error('A lightweight reminder or commitment cannot be replaced or run manually')
+  if(old&&isRecurringReminder(old)&&commandText!==undefined){
    const verb=x.action==='schedule.pause'?'pause':x.action==='schedule.resume'?'resume':x.action==='schedule.cancel'?'cancel':undefined
-   if(verb&&context.trigger.text.trim()!=='/'+verb+'-commitment '+encodeURIComponent(old.id))throw Error('Use the exact commitment control command in the original conversation')
+   if(verb&&commandText!=='/'+verb+'-commitment '+encodeURIComponent(old.id))throw Error('Use the exact commitment control command in the original conversation')
   }
   if(x.action==='schedule.cancel'){
    if(!old)throw Error('Unknown schedule')
    this.checkPlanOwner(old,context)
    // Cancel each settled/active receipt and withdraw queued notifications using the existing run control.
-   for(const run of store.list<ScheduledRun>('router-schedule-run'))if(run.scopeId===old.scopeId&&run.scheduleId===old.id&&(this.unsettled(run)||this.pendingNotifications(run)||isDailyCommitment(old)&&store.outbox.status('schedule-reminder:'+run.id)==='pending')){
+   for(const run of store.list<ScheduledRun>('router-schedule-run'))if(run.scopeId===old.scopeId&&run.scheduleId===old.id&&(this.unsettled(run)||this.pendingNotifications(run)||old.reminder&&store.outbox.status('schedule-reminder:'+run.id)==='pending')){
     this.apply({...x,action:'run.cancel',id:run.id,expectedRevision:run.revision},context)
    }
    store.requireWorkflowCommitmentsSchema()
@@ -324,6 +332,7 @@ export class RouterProactive {
    this.validatePlan(old)
    const nextAt=nextTime(x.timing,this.now())
    if(nextAt===undefined)throw Error('No future occurrence in the selected time range')
+   if(old.reminder)this.withdrawPendingReminders(old,x,context)
    const next={...old,timing:x.timing,nextAt:old.active?nextAt:undefined,revision:old.revision+1}
    store.put('router-schedule',key,next);return next
   }
@@ -331,16 +340,22 @@ export class RouterProactive {
   if(!['schedule.pause','schedule.resume'].includes(x.action))throw Error('Unknown action')
   const active=x.action==='schedule.resume'
   if(active)this.validatePlan(old)
-  const daily=isDailyCommitment(old)
-  if(daily&&old.active===active)return old
-  if(daily&&!active){
-   for(const run of store.list<ScheduledRun>('router-schedule-run'))if(run.scopeId===old.scopeId&&run.scheduleId===old.id&&store.outbox.status('schedule-reminder:'+run.id)==='pending'){
+  if(active&&old.reminder&&old.timing.kind==='once'){
+   const at=Date.parse(old.timing.startAt)
+   if(store.list<ScheduledRun>('router-schedule-run').some(r=>r.scopeId===old.scopeId&&r.scheduleId===old.id&&r.spec.timing.kind==='once'&&r.scheduledAt===at))throw Error('This one-time reminder has already run')
+  }
+  if(old.reminder&&old.active===active)return old
+  if(old.reminder&&!active)this.withdrawPendingReminders(old,x,context)
+  const next={...old,active,revision:old.revision+1,...(active?{nextAt:nextTime(old.timing,this.now()+(old.reminder?1:0))}:old.reminder?{nextAt:undefined}:{})}
+  if(active&&next.nextAt===undefined)throw Error('Schedule has no future occurrence')
+  store.put('router-schedule',key,next);return next
+ }
+ private withdrawPendingReminders(plan:Schedule,x:Command,context?:ScopeContext){
+  for(const run of this.host.store.list<ScheduledRun>('router-schedule-run')){
+   if(run.scopeId===plan.scopeId&&run.scheduleId===plan.id&&this.host.store.outbox.status('schedule-reminder:'+run.id)==='pending'){
     this.apply({...x,action:'run.cancel',id:run.id,expectedRevision:run.revision},context)
    }
   }
-  const next={...old,active,revision:old.revision+1,...(active?{nextAt:nextTime(old.timing,this.now()+(daily?1:0))}:daily?{nextAt:undefined}:{})}
-  if(active&&next.nextAt===undefined)throw Error('Schedule has no future occurrence')
-  store.put('router-schedule',key,next);return next
  }
  private checkControlEntry(entryId:string,context?:ScopeContext){
   const e=this.host.scopes.binding(entryId)
@@ -381,7 +396,7 @@ export class RouterProactive {
   const run=this.runForTrigger(id);if(!run)return
   if(run.spec.reminder){
    const plan=this.host.store.get<Schedule>('router-schedule',stableDigest([run.scopeId,run.scheduleId]))
-   if(!plan?.reminder||plan.cancelledAt||plan.promotion||isDailyCommitment(plan)&&(!plan.active||plan.revision!==run.spec.revision))throw Error('Reminder or commitment is no longer authorized')
+   if(!plan?.reminder||plan.cancelledAt||plan.promotion||!plan.active||plan.revision!==run.spec.revision)throw Error('Reminder or commitment is no longer authorized')
    this.validatePlan(plan)
   }
   if(['cancelled','skipped','failed'].includes(run.state))throw Error('Scheduled run is no longer authorized')
@@ -460,7 +475,7 @@ export class RouterProactive {
   for(const row of this.dueSchedules.all(now)){
    const p=JSON.parse(String(row.body)) as Schedule
    store.atomic(()=>{
-    if(isDailyCommitment(p)){
+    if(isRecurringReminder(p)){
      try{this.validatePlan(p)}catch{
       store.put('router-schedule',stableDigest([p.scopeId,p.id]),{...p,active:false,nextAt:undefined,revision:p.revision+1})
       store.audit({type:'router.commitment.authority_unavailable',scopeId:p.scopeId,planId:p.id})
@@ -480,7 +495,7 @@ export class RouterProactive {
   const store=this.host.store,id=stableDigest([p.scopeId,p.id,p.revision,scheduledAt,suffix]),previous=store.get<ScheduledRun>('router-schedule-run',id);if(previous)return previous
   const run:ScheduledRun={id,scheduleId:p.id,scopeId:p.scopeId,revision:p.revision,scheduledAt,createdAt:this.now(),firstDueAt,triggerKind:suffix.startsWith('manual:')?'manual':'scheduled',spec:p,state:'queued',taskIds:[],delivery:'none'}
   const skip=(reason:string)=>{run.state='skipped';run.reason=reason;run.finishedAt=this.now();store.put('router-schedule-run',id,run);return run}
-  if(store.list<ScheduledRun>('router-schedule-run').some(r=>r.scopeId===p.scopeId&&r.scheduleId===p.id&&(this.unsettled(r)||isDailyCommitment(p)&&store.outbox.status('schedule-reminder:'+r.id)==='pending')))return skip(isDailyCommitment(p)?'Previous run or delivery is still unsettled':'Previous run is still active')
+  if(store.list<ScheduledRun>('router-schedule-run').some(r=>r.scopeId===p.scopeId&&r.scheduleId===p.id&&(this.unsettled(r)||p.reminder&&store.outbox.status('schedule-reminder:'+r.id)==='pending')))return skip(p.reminder?'Previous run or delivery is still unsettled':'Previous run is still active')
   if(p.timing.endAt&&this.now()>Date.parse(p.timing.endAt))return skip('Schedule end time passed')
   try{
    const {trigger:anchor,mandate,context}=this.validatePlan(p)

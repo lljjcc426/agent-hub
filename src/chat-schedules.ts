@@ -13,11 +13,13 @@ export const chatScheduleChange = z.union([
   command.extend({ active: z.boolean() }).strict(),
   command.extend({ timing: timingInputSchema }).strict(),
 ])
+export type ChatScheduleChange = z.infer<typeof chatScheduleChange>
 export type ScheduleEdit = { active: boolean } | { timing: z.infer<typeof timingInputSchema> }
 type Plan = ReturnType<RouterProactive['chatSchedules']>[number]
 type RunInfo = { id: string; state: ScheduledRun['state']; at: number }
 export type ChatSchedule<File = ChatDelivery> = Pick<Plan, 'id'|'name'|'prompt'|'timing'|'active'|'revision'> & {
   nextAt?: number
+  closed?: 'cancelled' | 'promoted'
   lastRun: RunInfo | null
   lastResult: { at: number; messageId: string; text: string; files: File[] } | null
 }
@@ -41,7 +43,7 @@ export function chatScheduleCards(db: DatabaseSync, conversation: string, plans:
   const messages = db.prepare(`SELECT m.id, json_extract(m.body,'$.text') AS text, ${published} AS at,
     json_extract(m.body,'$.deliveries') AS files FROM records m WHERE ${outputs} AND json_extract(m.body,'$.runId')=?
     ORDER BY at DESC,json_extract(m.body,'$.sequence') DESC`)
-  return plans.map(({id, name, prompt, timing, active, nextAt, revision, scopeId, entryId}) => {
+  return plans.map(({id, name, prompt, timing, active, nextAt, revision, scopeId, entryId, cancelledAt, promotion}) => {
     const args = [scopeId, entryId, id, conversation]
     const lastRun = latestRun.get(...args) as RunInfo | undefined
     const receipt = lastRun && lastOutput.get(conversation, ...args)
@@ -49,7 +51,8 @@ export function chatScheduleCards(db: DatabaseSync, conversation: string, plans:
     const message = rows.find(row => String(row.id).startsWith('reply:')) ?? rows[0]
     const files = rows.flatMap(row => row.files ? JSON.parse(String(row.files)) as ChatDelivery[] : [])
     return {
-      id, name, prompt, timing, active, revision, nextAt: active ? nextAt : undefined, lastRun: lastRun ?? null,
+      id, name, prompt, timing, active, revision, nextAt: active ? nextAt : undefined,
+      closed: promotion ? 'promoted' : cancelledAt!==undefined ? 'cancelled' : undefined, lastRun: lastRun ?? null,
       lastResult: message ? { at: Number(rows[0]!.at), messageId: String(message.id), text: String(message.text).slice(0,240), files } : null,
     }
   })

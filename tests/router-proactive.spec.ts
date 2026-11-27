@@ -57,6 +57,53 @@ function fixture(custom?:(r:ModelRequest,input:any)=>Promise<any>){
 const batches=(h:Runtime)=>h.store.list<MessageBatch>('router-batch')
 const runs=(h:Runtime)=>h.store.list<ScheduledRun>('router-schedule-run')
 
+it.each(['once','daily'] as const)('delivers a due %s notice into the originating Chat and its schedule card once',async kind=>{
+ const f=fixture(),chat=f.h.chat.create('owner'),other=f.h.chat.create('other')
+ const name='Stand up',startAt=new Date(f.now()+60000).toISOString(),timezone='UTC',time='00:01'
+ const text=kind==='once'?`/remind ${startAt} ${timezone} ${name}`:`/commit-daily ${startAt} ${timezone} ${time} ${name}`
+ const input=f.h.chat.send(chat.id,'owner',{clientMessageId:'00000000-0000-4000-8000-000000000001',text})
+ const c=f.context({triggerId:input.runId}),spec={id:'notice',triggerId:input.runId,name,timezone,startAt}
+ f.h.proactive.command({scopeId:c.route.scopeId,operationId:'create',expectedRevision:0,...(kind==='once'?{action:'reminder.put',reminder:spec}:{action:'commitment.put',commitment:{...spec,time}})},c)
+ f.advance(60000);f.h.proactive.tick();await f.h.flush()
+ const run=runs(f.h)[0]!,deliveryId='schedule-reminder:'+run.id
+ expect(f.h.store.outbox.status(deliveryId)).toBe('sent')
+ await f.h.flush()
+ const view=f.h.chat.view(chat.id,'owner')
+ expect(view.messages.filter(m=>m.text===name)).toHaveLength(1)
+ expect(view.schedules[0]?.lastResult).toMatchObject({text:name,messageId:'reply:'+deliveryId})
+ expect(f.h.chat.view(other.id,'other').messages).toEqual([])
+ expect(f.calls).toHaveLength(0)
+})
+
+it('withdraws pending notices when a reminder is moved or paused and uses only the new cadence',()=>{
+ const f=fixture(),id='notice',zone='UTC',startAt=new Date(f.now()+60000).toISOString()
+ const anchor=f.receive('/remind '+startAt+' '+zone+' Stand up')
+ f.command('reminder.put',{reminder:{id,name:'Stand up',triggerId:anchor.triggerId,timezone:zone,startAt}})
+ f.advance(60000);f.h.proactive.tick()
+ const original=runs(f.h)[0]!,message=(r:ScheduledRun)=>'schedule-reminder:'+r.id
+ expect(f.h.store.outbox.status(message(original))).toBe('pending')
+ expect(()=>f.command('schedule.resume',{id},1)).toThrow('already run')
+
+ const interval={kind:'interval',timezone:zone,startAt:new Date(f.now()+60000).toISOString(),intervalSeconds:60}
+ f.command('schedule.retime',{id,timing:interval},1)
+ expect(f.h.store.outbox.status(message(original))).toBe('dropped')
+ expect(runs(f.h)[0]!.state).toBe('cancelled')
+ f.advance(60000);f.h.proactive.tick()
+ const next=runs(f.h).find(r=>r.id!==original.id)!
+ expect(f.h.store.outbox.status(message(next))).toBe('pending')
+ f.advance(60000);f.h.proactive.tick()
+ expect(runs(f.h).filter(r=>r.state==='skipped')).toHaveLength(1)
+ f.command('schedule.pause',{id},2)
+ expect(f.h.store.outbox.status(message(next))).toBe('dropped')
+ f.advance(3600000);f.h.proactive.tick()
+ expect(runs(f.h)).toHaveLength(3)
+ f.command('schedule.resume',{id},3)
+ f.advance(60000);f.h.proactive.tick()
+ const pending=f.h.store.deliveries().filter(d=>d.id.startsWith('schedule-reminder:')&&d.status==='pending')
+ expect(pending.map(d=>d.text)).toEqual(['Stand up'])
+ expect(f.calls).toHaveLength(0)
+})
+
 it('persists the next valid weekly occurrence and repairs legacy DST gaps without replay or resuming paused plans',async()=>{
  const f=fixture();f.advance(Date.parse('2026-03-01T07:30:00Z')-f.now())
  const anchor=f.receive('Authorize weekly check');await until(f.h,()=>f.calls.length===1)

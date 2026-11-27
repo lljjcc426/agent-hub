@@ -1,3 +1,4 @@
+import type { Theme } from './settings.ts'
 import { ui } from './language.ts'
 import { basename } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -55,26 +56,16 @@ export function draftLines(text: string, cursor: number, cells: number) {
   return { lines, caret }
 }
 
-// Paired half-block rows keep the workspace R mark and wordmark aligned in terminal cells.
-const wordmark = [
-  ['▄██████▄ ', '        ', '        '],
-  ['▀▀▀▀▀▀███', '  ▄▄▄▄  ', '▄▄▄▄▄▄  '],
-  ['    ▄▄███', '▄██▀▀██▄', '██▀▀▀██▄'],
-  ['███▀▀█▀▀ ', '██    ██', '██    ██'],
-  ['███  ▀██▄', '▀██▄▄██▀', '██▄▄▄██▀'],
-  ['▀▀▀   ▀▀▀', '  ▀▀▀▀  ', '██▀▀▀▀  '],
-  ['         ', '        ', '██      ']
-] as const
 type Tone = 'title' | 'quiet' | 'accent' | 'success' | 'attention' | 'error' | 'rule' | 'selected'
 const codes: Record<Tone, string> = {
   title: '1',
-  quiet: '39',
-  accent: '36',
+  quiet: '90',
+  accent: '38;5;173',
   success: '32',
   attention: '33',
   error: '31',
   rule: '90',
-  selected: '1;36'
+  selected: '1;38;5;173'
 }
 const runLabels = (): Record<string, string> => ({
   queued: ui('Queued', '排队中'),
@@ -91,14 +82,16 @@ export class TerminalLayout {
   private draft?: { text: string; cursor: number; value: ReturnType<typeof draftLines> }
   constructor(
     columns: number,
-    readonly colors: boolean
+    readonly colors: boolean,
+    readonly theme: Theme = 'dark'
   ) {
     const pad = columns >= 80 ? 3 : 1
     this.width = Math.max(8, columns - 2 * pad - 1)
     this.margin = ' '.repeat(pad)
   }
   ink(text: string, tone: Tone) {
-    return this.colors ? '\x1b[' + codes[tone] + 'm' + text + '\x1b[0m' : text
+    const code = this.theme === 'light' && (tone === 'accent' || tone === 'selected') ? '38;5;130' : codes[tone]
+    return this.colors ? '\x1b[' + code + 'm' + text + '\x1b[0m' : text
   }
   private inline(text: string) {
     return text.replace(/\*\*([^*\n]+)\*\*|`([^`\n]+)`/g, (_m, strong?: string, code?: string) =>
@@ -117,13 +110,9 @@ export class TerminalLayout {
         readiness.routerLabel ||
         'Router'
     )
-    const workers = readiness.workers.filter(
-      (w) => !['paused', 'retiring'].includes(w.state)
-    ).length
     const router = oneLine(readiness.routerLabel || '')
     const team = [
-      ...new Set([router, model].filter(Boolean)),
-      workers + ui(workers === 1 ? ' worker' : ' workers', ' 位 Worker')
+      ...new Set([router, model].filter(Boolean))
     ].join('  ·  ')
     return { project, team }
   }
@@ -144,27 +133,22 @@ export class TerminalLayout {
   }
   welcome(view: Snapshot, rows: number) {
     const { project, team } = this.context(view)
-    const centered = (value: string) =>
-      this.margin +
-      ' '.repeat(Math.max(0, Math.floor((this.width - stringWidth(value)) / 2))) +
-      value
-    const wide = this.width >= 54 && rows >= 22
-    const lines: string[] = Array.from(
-      { length: Math.max(0, Math.min(7, Math.floor((rows - (wide ? 15 : 9)) / 3))) },
-      () => ''
-    )
-    if (wide) {
-      for (const [r, o, p] of wordmark)
-        lines.push(
-          centered(this.ink(r, 'accent') + ' ' + this.ink([o, p, p, o].join(' '), 'title'))
-        )
-    } else lines.push(centered(this.ink('Roppo CLI', 'title')))
-    lines.push(
+    const width = Math.min(this.width, 94)
+    const content = [
+      this.ink('Roppo CLI', 'accent') + '  ' + this.ink('v' + version, 'quiet'),
       '',
-      centered(this.ink(fit(project, this.width), 'title')),
-      centered(this.ink(fit(team, this.width), 'quiet'))
-    )
-    return lines
+      this.ink(ui('Welcome back', '欢迎回来'), 'title'),
+      fit(team, width - 4),
+      fit(view.conversation.project || ui('Personal chat · shared with the web workspace', '个人对话 · 与网页端同步'), width - 4),
+      '',
+      ui('/help commands  ·  /config settings  ·  /files your files', '/help 命令  ·  /config 设置  ·  /files 你的文件')
+    ]
+    if (rows < 20) return this.header(view)
+    return ['', this.margin + this.ink('╭' + '─'.repeat(width - 2) + '╮', 'rule'),
+      ...content.map(line => {
+        const value = stringWidth(line) > width - 4 ? fit(clean(line), width - 4) : line
+        return this.margin + this.ink('│', 'rule') + ' ' + value + ' '.repeat(Math.max(0, width - 3 - stringWidth(value))) + this.ink('│', 'rule')
+      }), this.margin + this.ink('╰' + '─'.repeat(width - 2) + '╯', 'rule')]
   }
   menuLines(menu: Menu, limit: number) {
     const count = menu.items.length
@@ -297,9 +281,23 @@ export class TerminalLayout {
       (title ? this.ink('  ·  ', 'quiet') + title : '')
     )
   }
-  workStatus(view: Snapshot) {
+  workStatus(view: Snapshot, details = false) {
     const state = view.run?.state
     if (state === 'cancel_requested') return runLabels()[state]!
+    if (!details) {
+      if (view.approvals.some(a => isApprovalPending(a))) return ui('Your permission is needed', '需要你的授权')
+      if (state === 'waiting') return runLabels()[state]!
+      if (view.messages.some(m => m.runId === view.run?.id && !m.recipient && m.speaker?.kind !== 'worker' && m.status === 'streaming'))
+        return ui('Writing reply', '正在回复')
+      const router = view.calls.findLast(c => c.runId === view.run?.id && c.kind === 'router' && c.state === 'running')
+      if (router?.status?.label) return router.status.label
+      const working = state === 'running' || state === 'queued' || view.tasks.some(t => ['running', 'queued'].includes(t.state))
+      if (working) {
+        const step = view.publicPlans?.filter(p => p.runId === view.run?.id).flatMap(p => p.steps).find(s => s.state === 'running')
+        return step?.title ?? ui('Working on your request', '正在处理你的请求')
+      }
+      return state ? (runLabels()[state] ?? state) : ui('Ready', '就绪')
+    }
     const tasks = view.tasks.filter((t) => t.state === 'running' || t.state === 'queued')
     const calls = view.calls.filter(
       (c) =>
@@ -395,6 +393,9 @@ export class TerminalLayout {
       now?: number
       picker?: boolean
       history?: boolean
+      sending?: boolean
+      loading?: boolean
+      motion?: 'full' | 'reduced'
     } = {}
   ) {
     const lines: string[] = []
@@ -404,20 +405,21 @@ export class TerminalLayout {
       view?.tasks.filter((t) => ['queued', 'running', 'waiting'].includes(t.state)) ?? []
     const calls = view?.calls ?? []
     const live = state === 'running' || state === 'queued' || state === 'cancel_requested'
-    const busy = live || tasks.some((t) => t.state === 'running' || t.state === 'queued')
+    const waiting = state === 'waiting' || view?.approvals.some(a => isApprovalPending(a, now))
+    const busy = options.sending || options.loading || !waiting && (live || tasks.some((t) => t.state === 'running' || t.state === 'queued'))
     const showWork = maxRows >= 10 && !options.picker
-    if (showWork && view && (state || tasks.length)) {
-      const label = this.workStatus(view)
+    if (showWork && view && (options.sending || options.loading || state || tasks.length)) {
+      const label = options.sending ? ui('Sending message', '正在发送消息') : options.loading ? ui('Loading', '正在加载') : this.workStatus(view, expanded)
       const elapsed = Math.max(0, Math.floor((now - (view.run?.createdAt ?? now)) / 1000))
       const time =
         elapsed >= 60
           ? Math.floor(elapsed / 60) + ui('m ', ' 分 ') + (elapsed % 60) + ui('s', ' 秒')
           : elapsed + ui('s', ' 秒')
       const glyph = busy
-        ? ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
+        ? options.motion === 'reduced' ? '·' : ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
         : state === 'failed'
           ? '×'
-          : state === 'waiting'
+          : waiting
             ? '?'
             : '✓'
       const status = oneLine(label)
@@ -425,18 +427,18 @@ export class TerminalLayout {
         ? 'accent'
         : state === 'failed'
           ? 'error'
-          : state === 'waiting'
+          : waiting
             ? 'attention'
             : 'quiet'
       lines.push(
         '',
         this.margin +
           this.ink(
-            glyph + ' ' + fit(status + (busy && view.run ? '  ·  ' + time : ''), this.width - 3),
+            glyph + ' ' + fit(status + (busy && view.run && !options.sending && !options.loading ? '  ·  ' + time : ''), this.width - 3),
             tone
           )
       )
-      if (!menu || maxRows >= 22) {
+      if (expanded && (!menu || maxRows >= 22)) {
         for (const t of tasks.slice(0, maxRows >= 18 ? 3 : 1)) lines.push(this.task(t, view))
         const visibleCalls = expanded
           ? calls.filter((c) => c.kind === 'tool' && c.runId === view.run?.id).slice(-4)
@@ -467,7 +469,7 @@ export class TerminalLayout {
       lines.push(...this.menuLines(menu, Math.max(1, maxRows - lines.length - 6)))
     const fieldWidth = Math.max(1, this.width - 7)
     const rim = this.ink('─'.repeat(Math.max(0, this.width - 2)), 'rule')
-    lines.push(this.margin + this.ink('╭', 'rule') + rim + this.ink('╮', 'rule'))
+    lines.push(this.margin + this.ink('─', 'rule') + rim + this.ink('─', 'rule'))
     if (this.draft?.text !== text || this.draft.cursor !== cursor) {
       this.draft = { text, cursor, value: draftLines(text, cursor, fieldWidth) }
     }
@@ -476,25 +478,25 @@ export class TerminalLayout {
     const start = Math.max(0, caret.row - limit + 1)
     const row = lines.length + caret.row - start
     for (const [i, line] of draft.slice(start, start + limit).entries()) {
-      const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '› ') : '  '
+      const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '❯ ') : '  '
       const hint = options.picker
-        ? ui('Search conversations…', '搜索项目会话…')
+        ? ui('Search…', '搜索…')
         : ui('Message Roppo…', '给 Roppo 发消息…')
       const content =
         line || (!text && !continuation ? ' ' + this.ink(fit(hint, fieldWidth - 1), 'quiet') : '')
       const pad = Math.max(0, this.width - 6 - stringWidth(content))
       lines.push(
         this.margin +
-          this.ink('│', 'rule') +
+          ' ' +
           ' ' +
           this.ink(marker, 'accent') +
           content +
           ' '.repeat(pad) +
           ' ' +
-          this.ink('│', 'rule')
+          ' '
       )
     }
-    lines.push(this.margin + this.ink('╰', 'rule') + rim + this.ink('╯', 'rule'))
+    lines.push(this.margin + this.ink('─', 'rule') + rim + this.ink('─', 'rule'))
     const pending = view?.messages.some(
       (m) =>
         m.decision &&
@@ -506,14 +508,18 @@ export class TerminalLayout {
     const needsApproval = view?.approvals.some((a) => isApprovalPending(a, now))
     const actions = menu
       ? options.picker
-        ? ui('↑↓ select    Enter resume', '↑↓ 选择    Enter 继续')
+        ? ui('↑↓ select    Enter choose', '↑↓ 选择    Enter 确认')
         : ui('↑↓ select    Enter choose', '↑↓ 选择    Enter 确认')
       : pending
         ? ui('/choose answer question', '/choose 回答问题')
         : needsApproval
           ? ui('/approvals review request', '/approvals 查看请求')
+          : options.loading
+            ? ui('Loading command…', '正在加载命令…')
+          : options.sending
+            ? ui('Sending…', '正在发送…')
           : busy
-            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('/stop task', '/stop 停止任务')) +
+            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('Background activity', '后台处理中')) +
               ui('    Ctrl+O activity', '    Ctrl+O 查看活动')
             : this.width < 40
               ? ui('/help   @ files', '/help   @ 文件')

@@ -1,27 +1,41 @@
+import { byName } from './list-order.ts'
 import { ui } from './language.ts'
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { openLocalBrowser } from '../personal-launch.ts'
+import { publicMessage } from './conversation.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { TerminalClient, CliError, type Snapshot } from './client.ts'
 
-export const commands = () =>
-  [
-    { name: '/tasks', usage: '', description: ui('Inspect Worker tasks', '查看 Worker 任务') },
+export const commands = (advanced = false) =>
+  byName([
+    { name: '/config', usage: '', description: ui('Terminal settings', '终端设置') },
+    { name: '/model', usage: '', description: ui('Choose a Router or Worker model', '选择 Router 或 Worker 模型') },
+    { name: '/effort', usage: '', description: ui('Choose reasoning effort', '选择思考强度') },
+    { name: '/permissions', usage: '', description: ui('Shared account permissions', '账号共享权限') },
+    { name: '/animation', usage: '', description: ui('Toggle the top companion animation', '开关顶部角色动效') },
+    { name: '/theme', usage: '', description: ui('Choose a terminal theme', '选择终端主题') },
+    { name: '/status', usage: '', description: ui('Connection, session and settings', '连接、会话和设置状态') },
+    { name: '/context', usage: '', description: ui('Measured context usage', '实测上下文用量') },
+    { name: '/compact', usage: '[now | auto on/off | threshold PERCENT]', description: ui('Compact context or configure automatic compaction', '压缩上下文或配置自动压缩') },
+    { name: '/clear', usage: '', description: ui('Confirm clearing conversation and working context', '确认后清理对话和工作上下文') },
+    { name: '/rename', usage: '', description: ui('Choose and rename a Worker', '选择并重命名 Worker') },
+    { name: '/files', usage: '', description: ui('Files shared in this conversation', '查看对话中的文件') },
+    { name: '/tasks', usage: '', description: ui('Inspect internal tasks', '查看内部任务') },
     {
       name: '/diff',
-      usage: 'TICKET',
-      description: ui('Review changes for a task', '查看任务的文件改动')
+      usage: '',
+      description: ui('Choose a Worker and review changes', '选择 Worker 查看文件改动')
     },
     {
       name: '/approvals',
-      usage: 'TICKET',
-      description: ui('Inspect pending requests and their scope', '查看待审批请求及范围')
+      usage: '',
+      description: ui('Review actions awaiting your permission', '查看需要你授权的操作')
     },
     {
       name: '/plan',
       usage: '',
-      description: ui('Read the current execution plan', '查看当前执行计划')
+      description: ui('Clarify requirements and prepare a plan', '澄清需求并制定计划')
     },
     {
       name: '/choose',
@@ -40,8 +54,8 @@ export const commands = () =>
     },
     {
       name: '/stop',
-      usage: '[TICKET]',
-      description: ui('Stop the current run or a Worker task', '停止本轮运行或 Worker 任务')
+      usage: '',
+      description: ui('Stop the current request', '停止当前请求')
     },
     {
       name: '/approve',
@@ -68,7 +82,7 @@ export const commands = () =>
       usage: '',
       description: ui('Leave the session running', '退出终端，后台继续运行')
     }
-  ] as const
+  ].filter(c => advanced || !['/tasks', '/diff', '/approve', '/decline', '/answer'].includes(c.name)), command => command.name)
 
 const commandHelp = () =>
   commands()
@@ -77,8 +91,8 @@ const commandHelp = () =>
     )
     .join('\n') +
   ui(
-    '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt.',
-    '\n\n/ 查看命令，@ 选择文件。Alt+Enter 换行，PgUp/PgDn 翻阅历史。输入框为空时按 Ctrl+D 退出。'
+    '\n\nType / for commands or @ for project files. Alt+Enter inserts a newline. Ctrl+D exits an empty prompt. Ctrl+C/Esc interrupts work. Ctrl+R searches history; Ctrl+S stashes a draft; Ctrl+L redraws. Alt+P opens models; Shift+Tab opens permissions.',
+    '\n\n/ 查看命令，@ 选择文件。Alt+Enter 换行，PgUp/PgDn 翻阅历史。输入框为空时按 Ctrl+D 退出。Ctrl+C/Esc 中断，Ctrl+R 搜索历史，Ctrl+S 暂存草稿，Ctrl+L 重绘。Alt+P 选模型，Shift+Tab 打开权限菜单。'
   )
 
 export function mentionedFiles(text: string, cwd: string) {
@@ -107,7 +121,15 @@ export async function command(client: TerminalClient, id: string, input: string)
   const [name, ...args] = input.trim().split(/\s+/),
     ticket = args[0],
     approval = args[1]
-  if (name === '/help') return commandHelp()
+  if (name === '/help') return args[0] === 'advanced'
+    ? commands(true).map(c => (c.name + ' ' + c.usage).padEnd(27) + c.description).join('\n')
+    : commandHelp()
+  if (name === '/files') {
+    const view = await client.view(id)
+    const files = view.deliveries.map(d => d.name + '\n  ' + client.base + '/api/chat/conversations/' + id + '/deliveries/' + d.id)
+    const attachments = view.messages.filter(publicMessage).flatMap(m => (m.attachments ?? []).map(f => f.name))
+    return [...files, ...new Set(attachments)].join('\n\n') || ui('No files shared yet. Attach one with @ or --file.', '还没有文件，可用 @ 或 --file 添加。')
+  }
   if (name === '/plan') {
     const { publicPlans, run } = await client.view(id)
     const plans = publicPlans.filter((p) => p.runId === run?.id)
@@ -172,7 +194,7 @@ export async function command(client: TerminalClient, id: string, input: string)
         [source, item.kind, item.status, item.version].filter(Boolean).join(' · '),
         item.description,
         ...(item.facts ?? []),
-        ...(item.tools ?? []).map(
+        ...byName(item.tools ?? [], tool => tool.name).map(
           (t) => '  ' + t.name + (t.description ? ' — ' + t.description : '')
         ),
         ...(item.steps ?? []),
@@ -185,7 +207,7 @@ export async function command(client: TerminalClient, id: string, input: string)
     }
     const query = args.join(' ').toLowerCase()
     const groups = new Map<string, string[]>()
-    for (const item of library.items) {
+    for (const item of byName(library.items, item => item.name)) {
       const source = item.sourceGroup ?? item.source
       const line = item.kind + '  ' + item.name + '  [' + item.status + ']'
       if (!(source + ' ' + line).toLowerCase().includes(query)) continue
@@ -193,9 +215,7 @@ export async function command(client: TerminalClient, id: string, input: string)
       entries.push(line)
       groups.set(source, entries)
     }
-    const names = [...groups.keys()].sort(
-      (a, b) => Number(b === 'Roppo') - Number(a === 'Roppo') || a.localeCompare(b)
-    )
+    const names = byName([...groups.keys()], name => name)
     return (
       [
         ...names.map((n) => n + '\n  ' + groups.get(n)!.join('\n  ')),
@@ -224,7 +244,7 @@ export async function command(client: TerminalClient, id: string, input: string)
     if (!run || !['running', 'queued', 'waiting', 'cancel_requested'].includes(run.state))
       return ui('No active run.', '当前没有运行中的任务。')
     await client.request('/api/chat/conversations/' + id + '/cancel', { runId: run.id })
-    return ui('Stopped ', '已停止 ') + run.id
+    return ui('Stop requested.', '已请求停止。')
   }
   if (!['/stop', '/approvals', '/approve', '/decline', '/answer', '/diff'].includes(name!))
     throw new CliError(ui('Unknown command. Type /help.', '未知命令，输入 /help 查看帮助。'))
@@ -271,12 +291,12 @@ export async function command(client: TerminalClient, id: string, input: string)
       : ui('No pending requests.', '没有待处理请求。')
   return action === 'stop'
     ? ui('Stopped ', '已停止 ') + ticket
-    : ui('Answered ', '已答复 ') + approval
+    : ui('Response submitted.', '已提交答复。')
 }
 
 export function runResult(view: Snapshot, runId: string, status: string) {
   const messages = view.messages.filter(
-    (m) => m.runId === runId && m.role === 'assistant' && !m.opening && !m.commentary && !m.imageShare && !m.recipient && m.status !== 'streaming'
+    (m) => m.runId === runId && m.role === 'assistant' && publicMessage(m) && !m.imageShare && m.status !== 'streaming'
   )
   const router = messages.filter((m) => m.speaker?.kind !== 'worker').at(-1)
   const deliveries = view.deliveries
@@ -297,12 +317,7 @@ export function runResult(view: Snapshot, runId: string, status: string) {
             .filter(Boolean)
             .join('\n')
         : '') ||
-      router?.text ||
-      messages.at(-1)?.text ||
-      view.tasks
-        .map((t) => t.summary)
-        .filter(Boolean)
-        .join('\n'),
+      router?.text || '',
     tasks: view.tasks,
     deliveries
   }

@@ -58,10 +58,11 @@ describe('appearance persistence and system preferences', () => {
     expect(boot(storage).writes).not.toHaveBeenCalled()
   })
 
-  it('keeps the existing light default and palette when the system requests dark', () => {
+  it('defaults to system mode and follows dark colors without persisting a preference', () => {
     const app = boot(undefined, true)
-    expect(app.runtime.getMode()).toBe('light')
-    expect(app.root.dataset.theme).toBe('light')
+    expect(app.runtime.getSnapshot().mode).toBe('system')
+    expect(app.runtime.getMode()).toBe('dark')
+    expect(app.root.dataset.theme).toBe('dark')
     expect(app.style.textContent).not.toContain('--c-bg:')
     expect(app.writes).not.toHaveBeenCalled()
   })
@@ -104,7 +105,7 @@ describe('appearance persistence and system preferences', () => {
     expect(app.runtime.getSnapshot()).toBe(snapshot)
     expect(app.changes).not.toHaveBeenCalled()
     app.receiveStorage(key, null)
-    expect(app.runtime.getSnapshot().mode).toBe('light')
+    expect(app.runtime.getSnapshot().mode).toBe('system')
     expect(app.root.dataset.theme).toBe('light')
     expect(app.writes).not.toHaveBeenCalled()
   })

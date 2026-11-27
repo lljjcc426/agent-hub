@@ -1,3 +1,5 @@
+import { WorkspaceTransportOwner } from './workspace-context.tsx'
+import { ConnectionAccess } from './connection-access.tsx'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, Check, ChevronRight, LoaderCircle, Search } from 'lucide-react'
 import { renderSVG } from 'uqr'
@@ -58,12 +60,12 @@ function ConnectorMark({ kind }: { kind: string }) {
   return <span className="connector-mark"><AppBrand kind={kind} category="source" size={23} /></span>
 }
 
-export function ConnectorsWorkspace({ language }: { language: Language }) {
+export function ConnectorsWorkspace({ language, initialTab='available' }: { language: Language; initialTab?: Tab }) {
   const L: Translate = (en, zh) => language === 'en' ? en : zh
   const [data, setData] = useState<Inventory>()
   const [failed, setFailed] = useState(false)
   const [version, setVersion] = useState(0)
-  const [tab, setTab] = useState<Tab>('available')
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [query, setQuery] = useState('')
   const [pairing, setPairing] = useState(false)
   const [githubDialog, setGithubDialog] = useState(false)
@@ -210,6 +212,7 @@ export function ConnectorsWorkspace({ language }: { language: Language }) {
           </li>
         })}
       </ul>}
+      {tab==='connected' && <WorkspaceTransportOwner language={language}><ConnectionAccess L={L} language={language}/></WorkspaceTransportOwner>}
     </section>
     {officeBot && <OfficeBotDialog input={officeBot} L={L} close={() => setOfficeBot(undefined)} finish={count => {
       setOfficeBot(undefined)

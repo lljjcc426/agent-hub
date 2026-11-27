@@ -4,7 +4,9 @@ import {z} from 'zod'
 import type {Runtime} from './runtime.ts'
 import type {ScopeContext,RouterRoute} from './router-scope.ts'
 import {stableDigest} from './sources.ts'
+import {isPreferenceException,preferenceCondition} from './preference-resolution.ts'
 import type {MemoryFact} from './router-memory.ts'
+import {externalCandidateCommand,externalMemoryCandidates} from './external-memory-candidates.ts'
 
 interface Context {id:string;label:string;conversationId?:string;context:ScopeContext}
 /** Resolve the signed-in owner's private Chat and manageable public entries anew
@@ -29,8 +31,9 @@ export function memoryContexts(host:Runtime,owner:string):Context[]{
  }
  return result
 }
-const command=z.object({entryId:z.string().min(1),action:z.enum(['edit','forget','confirm','dismiss','inspect','learning','consolidate','export','skill','skill-export','skill-read','import']),
+const command=z.object({entryId:z.string().min(1),action:z.enum(['edit','forget','confirm','dismiss','inspect','learning','consolidate','export','skill','skill-export','skill-read','import','exception.add','exception.revoke']),
  id:z.string().optional(),revision:z.number().int().nonnegative().optional(),content:z.string().min(1).max(16000).optional(),condition:z.string().max(300).optional(),
+ expiresAt:z.number().int().positive().optional(),matchPhrase:z.string().trim().min(1).max(200).optional(),
  enabled:z.boolean().optional(),file:z.enum(['USER.md','MEMORY.md','AGENTS.md','ALIGNMENT_SYNTHESIS.md']).optional(),skill:z.unknown().optional(),
  text:z.string().max(32000).optional(),operationId:z.string().uuid().optional(),
 }).strict()
@@ -68,6 +71,8 @@ export function memoryWorkspace(host:Runtime,owner:string){
   items:host.agentMemory.authorized(c,true).filter(f=>f.entryId===id),
   skills:host.skills.list(c.route.scopeId,c),
   goals:host.goals.list(c).filter(g=>g.state==='completed'&&g.nodes?.every(n=>n.workerId)).sort((a,b)=>b.at-a.at).map(g=>({id:g.id,title:g.title})),
+  canManageExceptions:!!conversationId,
+  preferenceDecisions:Object.fromEntries(host.agentMemory.selectedPreferences(c).decisions),
   cooperation:host.agentMemory.cooperation(c),
   reflection:host.agentMemory.reflection(c),
   learning:host.agentMemory.manage(c,{action:'inspect'}).adaptation,
@@ -75,6 +80,11 @@ export function memoryWorkspace(host:Runtime,owner:string){
 }
 
 export async function changeMemoryWorkspace(host:Runtime,owner:string,value:unknown){
+ if(value&&typeof value==='object'&&'action' in value&&typeof value.action==='string'&&value.action.startsWith('external-')){
+  const x=externalCandidateCommand.parse(value),entry=memoryContexts(host,owner).find(c=>c.id===x.entryId)
+  if(!entry)throw Error('Private Chat entry unavailable')
+  return externalMemoryCandidates(host,owner,entry.context,entry.conversationId,x)
+ }
  if(z.object({action:z.literal('refresh')}).strict().safeParse(value).success){
   for(const entry of memoryContexts(host,owner))host.agentMemory.settleNotes(entry.context)
   return memoryWorkspace(host,owner)
@@ -134,6 +144,13 @@ export async function changeMemoryWorkspace(host:Runtime,owner:string,value:unkn
  if(x.action==='inspect')return host.agentMemory.manage(c,{action:'inspect',id:x.id})
  const fact=host.agentMemory.authorized(c,true).find(f=>f.id===x.id&&f.entryId===entry.id)
  if(!fact||fact.revision!==x.revision)throw Error('Memory changed. Refresh before editing.')
+ if((x.action==='exception.add'||x.action==='exception.revoke')&&!entry.conversationId)throw Error('Exception changes require an owned Chat conversation')
+ if(x.action==='exception.add'){
+  if(fact.state!=='active'||fact.kind!=='preference'||isPreferenceException(fact)||fact.owner!==c.actor||
+      !x.content?.trim()||!x.expiresAt||x.expiresAt<=Date.now()||!x.operationId)throw Error('Active standing preference and a future expiry are required')
+  const edited=editMemory(fact,x.content,x.matchPhrase?preferenceCondition(x.matchPhrase):'')
+  return host.memory.command(c,{...edited,id:undefined,derivedFrom:[],sourceIds:[host.memory.ingest(c).id],operationId:'preference-exception:'+x.operationId,expectedRevision:0,expiresAt:x.expiresAt},true)
+ }
  if(x.action==='dismiss'){
   if(fact.state!=='candidate')throw Error('Only pending proposals can be dismissed')
   return host.agentMemory.manage(c,{action:'archive',id:fact.id,expectedRevision:fact.revision})

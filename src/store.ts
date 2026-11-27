@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { retainWebhookProtocol } from './webhook-schema.ts'
 import type { Repositories, Trigger, TriggerDisposition, Thread, Ticket, Decision, OutboundMessage } from './vendor/dsh-core/index.ts'
 import {RuntimeRevisions} from './runtime-revisions.ts'
 import {HistoryFence} from './history-fence.ts'
@@ -19,7 +20,8 @@ export const WORKER_INQUIRY_DB_SCHEMA=19
 export const CHAT_RESULT_REVIEW_DB_SCHEMA=20
 export const CHAT_INTERJECTION_DB_SCHEMA=21
 export const HISTORY_SCOPE_REPAIR_SCHEMA=22
-export const MAX_DB_SCHEMA=HISTORY_SCOPE_REPAIR_SCHEMA
+export const WORKFLOW_COMMITMENTS_DB_SCHEMA=24
+export const MAX_DB_SCHEMA=WORKFLOW_COMMITMENTS_DB_SCHEMA
 
 export interface Job { id: string; kind: string; payload: unknown; state: string; attempts: number; nextAt: number }
 export interface Delivery extends OutboundMessage { inquiryId?:string; inquiryReadback?:boolean; taskResult?:number; status: string; attempts: number; nextAt: number; error?: string }
@@ -136,6 +138,10 @@ export class Store implements Repositories {
   requireHistoryScopeRepairSchema(){this.db.exec('PRAGMA user_version='+Math.max(HISTORY_SCOPE_REPAIR_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   /** Older hosts cannot enforce pending result decisions or assignment-scoped Chat file reads. */
   requireChatResultReviewSchema(){this.db.exec('PRAGMA user_version='+Math.max(CHAT_RESULT_REVIEW_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
+  requireWorkflowCommitmentsSchema(){
+    retainWebhookProtocol(this.db)
+    this.db.exec('PRAGMA user_version='+WORKFLOW_COMMITMENTS_DB_SCHEMA)
+  }
   requireAsyncWorkerSchema(){this.db.exec('PRAGMA user_version='+Math.max(ASYNC_WORKER_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}
   /** Older hosts would send a correlated result to the task creator instead of the asking message. */
   requireWorkerInquirySchema(){this.db.exec('PRAGMA user_version='+Math.max(WORKER_INQUIRY_DB_SCHEMA,Number(this.db.prepare('PRAGMA user_version').get()!.user_version)))}

@@ -8,6 +8,7 @@ import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -16,8 +17,11 @@ import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-ENTER = b'\x1b7\x1b[?1047h\x1b[2J\x1b[H'
-LEAVE = b'\x1b[?1047l\x1b8'
+ENTER, LEAVE = b'\x1b[?1049h', b'\x1b[?1049l'
+
+
+def printable(data):
+    return re.sub(rb'\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|.)', b'', data)
 
 
 def check(mode):
@@ -27,10 +31,13 @@ def check(mode):
     command = [str(ROOT / 'node_modules/.bin/bun'), str(Path(__file__).with_name('terminal-exit-fixture.ts'))]
     if mode == 'startup error':
         command.append('--fail')
+    if mode == 'early /exit':
+        command.append('--slow')
     child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=ROOT,
                              env=dict(os.environ, TERM='xterm-256color', TERM_PROGRAM='Apple_Terminal'))
     output = b''
     sent = False
+    resized_at = None
     deadline = time.monotonic() + 12
     try:
         while time.monotonic() < deadline:
@@ -46,23 +53,31 @@ def check(mode):
                 output += chunk
             elif child.poll() is not None:
                 break
+            if resized_at is not None and not sent and b'\x1b[24;1H' in output[resized_at:]:
+                os.write(master, b'/exit\r')
+                sent = True
             if not sent and b'Ask Roppo' in output:
-                if mode == '/exit':
+                if mode in ['/exit', 'early /exit']:
                     os.write(master, b'/exit\r')
                 elif mode == 'SIGTERM':
                     child.send_signal(signal.SIGTERM)
+                elif mode == 'resize /exit':
+                    if resized_at is None:
+                        resized_at = len(output)
+                        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 90, 0, 0))
+                        child.send_signal(signal.SIGWINCH)
+                    continue
                 sent = True
         assert child.poll() == 0, (mode, child.poll(), output[-2000:])
         assert output.count(ENTER) == output.count(LEAVE) == 1, mode
         before, active = output.split(ENTER)
         active, after = active.split(LEAVE)
-        assert before == b'SHELL_BEFORE\r\n', (mode, before)
-        assert after == b'SHELL_RETURN raw=false\r\n', (mode, after)
-        # The screenshot's stray text comes from these two native probes.
-        assert b'+q4d73' in active and b'Gi=31337' in active, mode
-        assert active.count(b'\x1b[?1049h') == active.count(b'\x1b[?1049l') == 1, mode
+        assert printable(before) == b'SHELL_BEFORE\r\n', (mode, before)
+        assert printable(after) == b'SHELL_RETURN raw=false\r\n', (mode, after)
+        # Do not merely hide these in another buffer: never send them to Apple Terminal.
+        assert b'+q4d73' not in output and b'Gi=31337' not in output, mode
+        assert b'\x1bP' not in output and b'\x1b_' not in output and b'$p' not in output, mode
         assert b'\n' not in active, (mode, 'startup scrolled probes into terminal history')
-        assert active.index(b'Gi=31337') < active.index(b'\x1b[?1049h'), mode
         assert b'\x1b[?1000l' in active and b'\x1b[?2004l' in active, mode
         assert termios.tcgetattr(slave) == original, mode
         print(f'PASS {mode}: shell buffer isolated, input and mouse modes restored')
@@ -74,5 +89,5 @@ def check(mode):
         os.close(slave)
 
 
-for mode in ['/exit', 'SIGTERM', 'startup error']:
+for mode in ['/exit', 'early /exit', 'resize /exit', 'SIGTERM', 'startup error']:
     check(mode)

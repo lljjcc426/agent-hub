@@ -7,18 +7,21 @@ import { TerminalClient, type Conversation, type Snapshot } from './client.ts'
 import { mentionedFiles } from './commands.ts'
 import type { HostSettings } from './host-settings.ts'
 import type { TerminalSettings } from './settings.ts'
+import { AppleTerminalOutput } from './apple-terminal-output.ts'
 
 export async function interactiveTui(client: TerminalClient, conversation: Conversation, options: {
   cwd: string; preferences: TerminalSettings; settingsSources: string[]; prompt: string; files: string[]
 }): Promise<Conversation | undefined> {
-  // Isolate OpenTUI's pre-setup probes, saving the shell cursor in the main buffer.
-  // Keep its alternate-screen mode: main-screen setup emits rows of newlines,
-  // which push unsupported probes into Apple Terminal's scrollback.
-  await new Promise<void>(resolve => process.stdout.write('\x1b7\x1b[?1047h\x1b[2J\x1b[H', () => resolve()))
+  const appleOutput = process.env.TERM_PROGRAM === 'Apple_Terminal' ? new AppleTerminalOutput(process.stdout) : undefined
   let terminal: CliRenderer | undefined
+  const resize = () => terminal?.resize(process.stdout.columns, process.stdout.rows)
   try {
     const renderer = terminal = await createCliRenderer({ screenMode: 'alternate-screen', exitOnCtrlC: false,
+      ...(appleOutput ? { stdout: appleOutput as unknown as NodeJS.WriteStream, remote: false,
+        environment: { OPENTUI_GRAPHICS: '0' } } : {}),
       useMouse: true, targetFps: 30, maxFps: 30, consoleMode: 'disabled', openConsoleOnError: false })
+    // OpenTUI only installs SIGWINCH automatically for process.stdout itself.
+    if (appleOutput) process.on('SIGWINCH', resize)
     const abort = new AbortController()
     let view: Snapshot, next: Conversation | undefined, stopped = false, loadingOlder = false
     let watch: Promise<void> | undefined
@@ -82,6 +85,8 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
       watch = client.watch(conversation.id, abort.signal, refresh, message => { if (!stopped) { screen.connection(false); screen.notice(message, true) } })
       if (options.prompt || options.files.length) await send(options.prompt, options.files.map(file => resolve(options.cwd, file)))
       await done
+    } catch (error) {
+      if (!abort.signal.aborted) throw error
     } finally {
       stopped = true; abort.abort(); screen.close(); await watch
     }
@@ -89,6 +94,6 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
   } finally {
     terminal?.destroy()
     await terminal?.closed
-    process.stdout.write('\x1b[?1047l\x1b8')
+    if (appleOutput) { process.off('SIGWINCH', resize); appleOutput.destroy() }
   }
 }

@@ -5,8 +5,11 @@ import type { TerminalClient, Snapshot } from '../../src/terminal/client.ts'
 const view = { conversation: { id: 'personal', sequence: 0, contextVersion: 0 },
   workers: [], calls: [], browsers: [], messages: [], approvals: [], tasks: [], schedules: [], deliveries: [], run: null } as unknown as Snapshot
 const client = {
-  view: async () => {
+  view: async (_id: string, _run: unknown, signal: AbortSignal) => {
     if (process.argv.includes('--fail')) throw Error('Host unavailable')
+    if (process.argv.includes('--slow')) await new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(Error('Request cancelled')), { once: true })
+    })
     return view
   },
   request: async () => ({ approvalMode: 'ask', workers: [], connections: [] }),

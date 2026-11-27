@@ -7,10 +7,30 @@ import { StringDecoder } from 'node:string_decoder'
 export class AppleTerminalOutput extends Writable {
   private decoder = new StringDecoder('utf8')
   private pending = ''
-  constructor(private target: NodeJS.WriteStream) { super() }
+  private cursorReply = ''
+  private origin?: { row: number; column: number }
+  private initialRows: number
+  private initialColumns: number
+  constructor(private target: NodeJS.WriteStream) {
+    super()
+    this.initialRows = target.rows
+    this.initialColumns = target.columns
+  }
   get columns() { return this.target.columns }
   get rows() { return this.target.rows }
   get isTTY() { return this.target.isTTY }
+
+  // The first CPR answers OpenTUI's existing query on the shell screen.
+  // Observe it without consuming input or sending a second query.
+  rememberCursor = (chunk: Buffer) => {
+    if (this.origin) return
+    this.cursorReply += chunk.toString('utf8')
+    const match = /\x1b\[(\d+);(\d+)R/.exec(this.cursorReply)
+    if (match) {
+      this.origin = { row: Number(match[1]), column: Number(match[2]) }
+      this.cursorReply = ''
+    } else this.cursorReply = this.cursorReply.slice(-32)
+  }
 
   override _write(chunk: Buffer, _encoding: BufferEncoding, done: (error?: Error | null) => void) {
     const input = this.pending + this.decoder.write(chunk)
@@ -35,6 +55,14 @@ export class AppleTerminalOutput extends Writable {
         /^\x1b\[(?:\?[\d;]*\$p|\?u|>[\d;]*q)$/.test(sequence) ||
         sequence.startsWith('\x1b]66;')
       if (!unsupported) output += sequence
+      // Terminal.app 470.2 shifts the saved main-screen cursor down by the
+      // added rows when an alternate screen grows. Its contents stay put.
+      // Restore our measured position for growth; leave narrowing/reflow to
+      // the terminal because the shell's original lines may have wrapped.
+      if (sequence === '\x1b[?1049l' && this.origin &&
+        this.rows > this.initialRows && this.columns >= this.initialColumns) {
+        output += `\x1b[${this.origin.row};${this.origin.column}H`
+      }
       offset = end
     }
     if (output) this.target.write(output, done)

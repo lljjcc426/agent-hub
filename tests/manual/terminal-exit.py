@@ -38,6 +38,7 @@ def check(mode):
     output = b''
     sent = False
     resized_at = None
+    cursor_reported = False
     deadline = time.monotonic() + 12
     try:
         while time.monotonic() < deadline:
@@ -53,7 +54,11 @@ def check(mode):
                 output += chunk
             elif child.poll() is not None:
                 break
-            if resized_at is not None and not sent and b'\x1b[24;1H' in output[resized_at:]:
+            if mode == 'grow /exit' and not cursor_reported and b'\x1b[6n' in output:
+                os.write(master, b'\x1b[6;1R')
+                cursor_reported = True
+            last_row = b'\x1b[60;1H' if mode == 'grow /exit' else b'\x1b[24;1H'
+            if resized_at is not None and not sent and last_row in output[resized_at:]:
                 os.write(master, b'/exit\r')
                 sent = True
             if not sent and b'Ask Roppo' in output:
@@ -61,10 +66,11 @@ def check(mode):
                     os.write(master, b'/exit\r')
                 elif mode == 'SIGTERM':
                     child.send_signal(signal.SIGTERM)
-                elif mode == 'resize /exit':
+                elif mode in ['resize /exit', 'grow /exit']:
                     if resized_at is None:
                         resized_at = len(output)
-                        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 90, 0, 0))
+                        rows, columns = (60, 207) if mode == 'grow /exit' else (24, 90)
+                        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
                         child.send_signal(signal.SIGWINCH)
                     continue
                 sent = True
@@ -74,6 +80,8 @@ def check(mode):
         active, after = active.split(LEAVE)
         assert printable(before) == b'SHELL_BEFORE\r\n', (mode, before)
         assert printable(after) == b'SHELL_RETURN raw=false\r\n', (mode, after)
+        if mode == 'grow /exit':
+            assert after.startswith(b'\x1b[6;1H'), 'Restore the real shell cursor before returning to the shell'
         # Do not merely hide these in another buffer: never send them to Apple Terminal.
         assert b'+q4d73' not in output and b'Gi=31337' not in output, mode
         assert b'\x1bP' not in output and b'\x1b_' not in output and b'$p' not in output, mode
@@ -89,5 +97,5 @@ def check(mode):
         os.close(slave)
 
 
-for mode in ['/exit', 'early /exit', 'resize /exit', 'SIGTERM', 'startup error']:
+for mode in ['/exit', 'early /exit', 'resize /exit', 'grow /exit', 'SIGTERM', 'startup error']:
     check(mode)

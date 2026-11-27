@@ -15,6 +15,7 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
   const appleOutput = process.env.TERM_PROGRAM === 'Apple_Terminal' ? new AppleTerminalOutput(process.stdout) : undefined
   let terminal: CliRenderer | undefined
   const resize = () => terminal?.resize(process.stdout.columns, process.stdout.rows)
+  if (appleOutput) process.stdin.on('data', appleOutput.rememberCursor)
   try {
     const renderer = terminal = await createCliRenderer({ screenMode: 'alternate-screen', exitOnCtrlC: false,
       ...(appleOutput ? { stdout: appleOutput as unknown as NodeJS.WriteStream, remote: false,
@@ -94,6 +95,10 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
   } finally {
     terminal?.destroy()
     await terminal?.closed
-    if (appleOutput) { process.off('SIGWINCH', resize); appleOutput.destroy() }
+    if (appleOutput) {
+      process.off('SIGWINCH', resize)
+      process.stdin.off('data', appleOutput.rememberCursor)
+      appleOutput.destroy()
+    }
   }
 }

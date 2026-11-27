@@ -19,3 +19,30 @@ test('Apple Terminal output removes unsupported probes without altering text or 
     expect(output).toBe(visible)
   }
 })
+
+test('growing Apple Terminal restores the measured shell cursor, not its shifted save slot', async () => {
+  let output = ''
+  const sink = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done() } }),
+    { rows: 30, columns: 120 })
+  const filtered = new AppleTerminalOutput(sink as NodeJS.WriteStream)
+  // Captured from Terminal.app 470.2: shell CPR 6;1, then width-probe CPRs 2;1.
+  filtered.rememberCursor(Buffer.from('\x1b[6;'))
+  filtered.rememberCursor(Buffer.from('1R\x1b[2;1R\x1b[2;1R'))
+  filtered.write('\x1b[?1049h')
+  sink.rows = 60; sink.columns = 207
+  filtered.end('\x1b[?1049l')
+  await once(filtered, 'finish')
+  expect(output).toBe('\x1b[?1049h\x1b[?1049l\x1b[6;1H')
+})
+
+test('narrowing preserves the terminal cursor adjustment for reflowed shell lines', async () => {
+  let output = ''
+  const sink = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done() } }),
+    { rows: 30, columns: 120 })
+  const filtered = new AppleTerminalOutput(sink as NodeJS.WriteStream)
+  filtered.rememberCursor(Buffer.from('\x1b[6;1R'))
+  sink.rows = 60; sink.columns = 80
+  filtered.end('\x1b[?1049l')
+  await once(filtered, 'finish')
+  expect(output).toBe('\x1b[?1049l')
+})

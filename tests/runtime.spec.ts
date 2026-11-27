@@ -133,7 +133,7 @@ describe('source-independent host', () => {
     expect(model.requests.at(-1)!.workerMcp).toBeUndefined()
     expect(model.requests.at(-1)!.tools?.some(t=>t.name==='superagent_tools')).toBe(true)
     const changed=JSON.parse(model.requests.at(-1)!.input).toolsChanged
-    expect(changed.tools.find((t:any)=>t.name==='superagent_browser').description).toContain('screenshot exports a PNG')
+    expect(changed.tools).toContain('superagent_browser')
   })
   it('quarantines an ambiguous in-flight activation at restart', async () => {
     const config = configuration()

@@ -64,6 +64,46 @@ it.each(kinds)('%s integrates streaming text with the managed tool loop without 
  }
 })
 function results(kind:Kind,b:any){return kind==='openai-chat'?b.messages.filter((m:any)=>m.role==='tool'):kind==='anthropic'?b.messages.flatMap((m:any)=>Array.isArray(m.content)?m.content.filter((c:any)=>c.type==='tool_result'):[]):b.input.filter((i:any)=>i.type==='function_call_output')}
+it('loads Router and Worker built-in definitions on demand through ordinary Chat work',async()=>{
+ const kind='openai-responses',inspected:string[]=[]
+ const wire=await server(body=>{
+  if(body.instructions?.includes('Review the Worker report'))return output(kind,'{"reply":"Finished.","decision":"answer","nextStep":""}')
+  const router=body.tools?.some((tool:any)=>tool.name==='worker_manage'),name=router?'worker_manage':'superagent_tools'
+  const schema=body.tools?.find((tool:any)=>tool.name===name)?.parameters
+  expect(schema).toEqual({type:'object',properties:{},additionalProperties:true})
+  const replies=results(kind,body)
+  const call=(id:string,tool:string,args:object)=>({id,name:tool,args})
+  if(!replies.length)return output(kind,'',[
+   ...(router?[call('opening','chat_opening',{text:'I will ask the Worker to inspect its connections.'})]:[]),
+   call(router?'router-lookup':'worker-lookup','tool_describe',{name}),
+  ])
+  if(replies.some((value:any)=>value.call_id===(router?'assign':'list-connections'))){
+   return output(kind,router?'{"reply":"Assigned."}':JSON.stringify({state:'ready',summary:'Inspected available connections.',reply:'',question:null,askedBy:null,decision:null,handbacks:[],files:[]}))
+  }
+  const result=replies.find((value:any)=>value.call_id===(router?'router-lookup':'worker-lookup'))
+  const details=JSON.parse(result.output[0].text)
+  expect(details).toMatchObject({name,inputSchema:{properties:router?{action:{}}:{connection:{},tool:{}}}})
+  inspected.push(name)
+  return output(kind,'',router?[call('assign',name,{action:'assign',revision:0,requestId:'inspect-connections',id:'reader',text:'Inspect available connections'})]:
+   [call('list-connections',name,{})])
+ })
+ const root=mkdtempSync(join(tmpdir(),'roppo-progressive-chat-'));roots.push(root)
+ const host=new Runtime(configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled'},backends:{api:definition(kind,wire.url)},
+  execution:{backend:'api',router:{mode:'host',backend:'api'},management:{enabled:true},workers:[{id:'reader',backend:'api'}]},
+  sources:[{id:'local',kind:'local',cwd:root,allowedActors:['operator']}],
+ }));hosts.push(host)
+ const chat=host.chat.create('owner')
+ const {runId}=host.chat.send(chat.id,'owner',{clientMessageId:'progressive-chat',text:'Have a Worker inspect its available tool connections.',openingLocale:'en'})
+ for(let i=0;i<500&&!host.activity.list().some(call=>call.name==='superagent_tools'&&call.state==='completed');i++){
+  await host.tick();await new Promise(resolve=>setTimeout(resolve,5))
+ }
+ expect(inspected).toEqual(['worker_manage','superagent_tools'])
+ expect(host.chat.opening(runId)).toBeTruthy()
+ expect(host.activity.list().filter(call=>call.name==='worker_manage'&&call.state==='completed')).toHaveLength(1)
+ expect(host.activity.list().filter(call=>call.name==='superagent_tools'&&call.state==='completed')).toHaveLength(1)
+ expect(host.activity.list().some(call=>call.name==='tool_describe')).toBe(false)
+})
+
 it('admits up to 32 independent reads and preserves write order and provider result pairing',async()=>{
  const calls=[...Array.from({length:33},(_,i)=>({id:'read-'+i,name:'router_read',args:{path:'read-'+i}})),
   {id:'write',name:'write_marker',args:{path:'write'}},{id:'last',name:'router_read',args:{path:'last'}}]

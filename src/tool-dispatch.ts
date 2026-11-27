@@ -13,8 +13,9 @@ export function failedRead(tool:string,error:unknown):ToolResult {
 
 // These host tools only read scoped resources. Unclassified tools take the
 // exclusive path, including externally advertised MCP tools and browser input.
+export const toolDescriptionName = 'tool_describe'
 const independentReads = new Set([
-  'router_read', 'router_skill', 'superagent_read', 'superagent_tools', 'superagent_knowledge',
+  toolDescriptionName, 'router_read', 'router_skill', 'superagent_read', 'superagent_tools', 'superagent_knowledge',
   'goal_evidence', 'review_file', 'review_directory', 'review_revision', 'orchestrator_eval_read', 'orchestrator_followup_read', 'backend_recall', 'github_read', 'chat_artifact_find',
 ])
 

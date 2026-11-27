@@ -17,6 +17,7 @@ import {publicPlanTool,decisionTool} from './chat-workflow.ts'
 import {chatSendImagesTool} from './chat-images.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
+import {withProgressiveTools} from './progressive-tools.ts'
 import {isParallelRead,isReadOnlyOperation,ToolDispatch} from './tool-dispatch.ts'
 import {ChatToolTurn} from './chat-tool-turn.ts'
 import type {ChatRun,ChatConversation} from './chat.ts'
@@ -751,23 +752,6 @@ export class Runtime {
         return result
       }}
     }
-    const workerReader=role==='worker'&&context.ticketId&&receiptAssignment&&request.tools?.some(tool=>tool.name==='superagent_read')
-    const routerRebuild=request.tools?.some(tool=>tool.name==='router_read')?request.rebuildWorkingInput:undefined
-    const inputBudget=request.contextBudget?workingInputBudget(request.contextBudget.maxBytes,protocolBytes({instructions:request.instructions,tools:request.tools,schema:request.schema})):undefined
-    const workerInput=request.input
-    const workerProjection=(max:number)=>{
-      let value
-      try{value=JSON.parse(workerInput)}catch{value={request:workerInput}}
-      if(!value||typeof value!=='object')value={request:workerInput}
-      const id=activity+':worker-input'
-      this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result:value})
-      const latest=value.inputs?.at(-1),current=latest?.event?.text??latest?.text??value.mandate?.scope??value.request??request.title??''
-      const projected=projectWorkingInput(value,'model-tool-receipt/'+id,max-300,'superagent_read',typeof current==='string'?current:'')
-      projected.task={ticketId:context.ticketId,assignmentId:receiptAssignment,resource:'ticket/'+context.ticketId+'/assignment',inputs:'ticket/'+context.ticketId+'/inputs',jobs:'jobs',operations:'model-tool-receipts',toolCalls:'tool-calls'}
-      return JSON.stringify(projected)
-    }
-    if(workerReader&&inputBudget!==undefined&&Buffer.byteLength(workerInput)>inputBudget)
-      request.input=workerProjection(Math.max(512,inputBudget))
     const onBackend=request.onBackend,onModel=request.onModel,onTool=request.onTool
     request={...request,onBackend:id=>{this.activity.update(activity,{backend:id});this.usage.update(activity,{backend:id});onBackend?.(id)},onModel:model=>{this.activity.update(activity,{model});this.usage.update(activity,{model});onModel?.(model)},...(role==='router'&&onTool?{onTool:(name,args,callId)=>this.activity.tool(name,context,()=>onTool(name,args,callId),activity,chatToolDetails(name,args))}:{})}
     if(fullAccess&&request.onTool){
@@ -793,6 +777,24 @@ export class Runtime {
         })
       }}
     }
+    if(request.managed&&(role==='router'||role==='worker')&&this.model instanceof BackendRegistry)request=withProgressiveTools(request)
+    const workerReader=role==='worker'&&context.ticketId&&receiptAssignment&&request.tools?.some(tool=>tool.name==='superagent_read')
+    const routerRebuild=request.tools?.some(tool=>tool.name==='router_read')?request.rebuildWorkingInput:undefined
+    const inputBudget=request.contextBudget?workingInputBudget(request.contextBudget.maxBytes,protocolBytes({instructions:request.instructions,tools:request.tools,schema:request.schema})):undefined
+    const workerInput=request.input
+    const workerProjection=(max:number)=>{
+      let value
+      try{value=JSON.parse(workerInput)}catch{value={request:workerInput}}
+      if(!value||typeof value!=='object')value={request:workerInput}
+      const id=activity+':worker-input'
+      this.store.put('model-tool-receipt',id,{id,activity,...context,scopeId,assignmentId:receiptAssignment,contextId:manifest?.id,at:Date.now(),result:value})
+      const latest=value.inputs?.at(-1),current=latest?.event?.text??latest?.text??value.mandate?.scope??value.request??request.title??''
+      const projected=projectWorkingInput(value,'model-tool-receipt/'+id,max-300,'superagent_read',typeof current==='string'?current:'')
+      projected.task={ticketId:context.ticketId,assignmentId:receiptAssignment,resource:'ticket/'+context.ticketId+'/assignment',inputs:'ticket/'+context.ticketId+'/inputs',jobs:'jobs',operations:'model-tool-receipts',toolCalls:'tool-calls'}
+      return JSON.stringify(projected)
+    }
+    if(workerReader&&inputBudget!==undefined&&Buffer.byteLength(workerInput)>inputBudget)
+      request.input=workerProjection(Math.max(512,inputBudget))
     this.activity.update(activity,{backend:request.backendId,model:request.model})
     try{
     let threadId=request.threadId
@@ -2512,7 +2514,7 @@ export class Runtime {
           }
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
-        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(phaseInput?{phaseHandoff:phaseInput}:saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(phaseInputs(inputs,ticket.id,phaseInput?.inputId),fullAccess) }),
+        input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name})=>name)}}:{}),...(phaseInput?{phaseHandoff:phaseInput}:saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(phaseInputs(inputs,ticket.id,phaseInput?.inputId),fullAccess) }),
         signal: controller.signal,
         onHumanRequest:request=>{
           if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))return Promise.reject(Error('Assignment authority ended before approval'))

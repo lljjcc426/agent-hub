@@ -168,3 +168,46 @@ it('upgrades on the first inquiry and rejects a restore that would send an alrea
  await expect(restoreState(config,pending)).rejects.toThrow('Worker inquiries advanced')
  const kept=new Store(file);try{expect(kept.get('worker-inquiry',ask.id)).toMatchObject({delivered:true})}finally{kept.close()}
 })
+
+it('fences effect receipt downgrade, advancement and resurrection without blocking unchanged restore',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'restore-workflow-effects-'));roots.push(root)
+ const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]})
+ const file=join(config.stateDir,'state.sqlite'),legacy=new Store(file);legacy.requireCodeProjectSchema();legacy.close()
+ const old=join(root,'legacy');await backupState(config,old)
+ const current=new Store(file);current.requireWorkflowCommitmentsSchema();current.put('workflow-action','write',{id:'write',state:'uncertain',effectReceipt:{schema:1,state:'unknown'}});current.close()
+ await expect(restoreState(config,old)).rejects.toThrow('Downgrade cannot preserve effect receipt')
+ const captured=join(root,'captured');await backupState(config,captured);expect(verifyBackup(captured).schema).toBe(24)
+ await restoreState(config,captured)
+ const observed=new Store(file);observed.put('workflow-action','write',{id:'write',state:'observed',effectReceipt:{schema:1,state:'observed'}});observed.close()
+ await expect(restoreState(config,captured)).rejects.toThrow('Workflow effect receipts advanced')
+ const removed=new Store(file);removed.db.prepare("DELETE FROM records WHERE kind='workflow-action' AND id='write'").run();removed.close()
+ await expect(restoreState(config,captured)).rejects.toThrow('Workflow effect receipts advanced')
+ const reread=new Store(file);try{expect(reread.get('workflow-action','write')).toBeUndefined()}finally{reread.close()}
+})
+
+it.each([7,9,21,23])('retains the prior webhook protocol when reminders or effect receipts upgrade schema %s',async version=>{
+ const root=mkdtempSync(join(tmpdir(),'reminder-format-'));roots.push(root)
+ const file=join(root,'state.sqlite'),store=new Store(file)
+ try{
+  store.db.exec('PRAGMA user_version='+version)
+  store.requireWorkflowCommitmentsSchema()
+  expect(store.db.prepare('PRAGMA user_version').get()!.user_version).toBe(24)
+  expect(store.get('webhook-protocol','current')).toEqual({version:version>=9?2:1})
+  store.requireWorkflowCommitmentsSchema()
+  expect(store.get('webhook-protocol','current')).toEqual({version:version>=9?2:1})
+ }finally{store.close()}
+})
+it('preserves a cancelled reminder and its run when restoring a snapshot with the same schema',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'restore-commitment-'));roots.push(root)
+ const config=configSchema.parse({stateDir:join(root,'state'),sources:[{id:'local',kind:'local',allowedActors:['operator'],cwd:root}]})
+ const path=join(config.stateDir,'state.sqlite'),captured=join(root,'backup'),store=new Store(path)
+ const plan={id:'weekly',reminder:true,active:true,revision:1}
+ store.requireWorkflowCommitmentsSchema();store.put('router-schedule',plan.id,plan);store.close()
+ await backupState(config,captured);await restoreState(config,captured)
+ const changed=new Store(path)
+ changed.put('router-schedule',plan.id,{...plan,active:false,cancelledAt:123,revision:2});changed.close()
+ await expect(restoreState(config,captured)).rejects.toThrow('Reminder schedule or delivery advanced')
+ const delivered=new Store(path)
+ delivered.put('router-schedule',plan.id,plan);delivered.put('router-schedule-run','run',{spec:plan,state:'completed',delivery:'sent'});delivered.close()
+ await expect(restoreState(config,captured)).rejects.toThrow('Reminder schedule or delivery advanced')
+})

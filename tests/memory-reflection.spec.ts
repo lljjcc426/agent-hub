@@ -18,7 +18,7 @@ afterEach(async()=>{for(const close of cleanup.splice(0).reverse())await close()
 function fixture(output?:(input:any)=>unknown|Promise<unknown>){
  const root=mkdtempSync(join(tmpdir(),'memory-reflection-'));let now=Date.now(),sequence=0
  const calls:ModelRequest[]=[],config=configSchema.parse({stateDir:join(root,'state'),work:{sandboxDriver:'disabled'},execution:{router:{mode:'host'},management:{enabled:true},workers:[{id:'one',backend:'codex'}]},sources:[{id:'local',kind:'local',cwd:root,allowedActors:['alice','bob']}]})
- const model={async run(r:ModelRequest){calls.push(r);const input=JSON.parse(r.input);return {threadId:randomUUID(),turnId:randomUUID(),text:JSON.stringify(await output?.(input)??{points:[{section:'communication',content:'Give concise progress updates with concrete results.',condition:'Routine task updates',evidence:[{index:0,quote:input.notes[0].content}]}]})}}}
+ const model={async run(r:ModelRequest){calls.push(r);const input=JSON.parse(r.input);return {threadId:randomUUID(),turnId:randomUUID(),text:JSON.stringify(await output?.(input)??{points:[{section:'communication',content:'Give concise progress updates with concrete results.',condition:'request contains: 技术报告',evidence:[{index:0,quote:input.notes[0].content}]}]})}}}
  let h=new Runtime(config,{model,clock:()=>now})
  h.scopes.command({action:'scope.put',operationId:'setup',expectedRevision:0,scope:{id:'team',tenantId:'org',name:'Team',managers:[JSON.stringify(['local','alice'])],workerIds:['one'],sourceIds:['local'],backendIds:['codex']}})
  cleanup.push(async()=>{await h.close();rmSync(root,{recursive:true,force:true})})
@@ -27,7 +27,7 @@ function fixture(output?:(input:any)=>unknown|Promise<unknown>){
   const scopeId='@chat:'+stableDigest(owner)
   if(!h.store.get('memory-policy',scopeId)) h.store.put('memory-policy',scopeId,{revision:0,value:{writeMode:'explicit_only'}})
   const conversation=h.chat.create(owner);const run=h.chat.send(conversation.id,owner,{clientMessageId:randomUUID(),text:'请记住：平时简短回复，技术报告列出验证证据。'}),trigger=h.store.triggers.get(run.runId)!;return {conversation,c:h.scopes.context(trigger,'local:chat:'+conversation.id)!}}
- const remember=(c:ReturnType<typeof chat>['c'],content:string,extra:Partial<MemoryFact>={})=>h.memory.command(c,{action:'remember',operationId:'note-'+(++sequence),expectedRevision:0,subject:'Convention '+sequence,content,kind:'preference',candidate:false,sourceIds:[h.memory.ingest(c).id],visibility:'private',learning:{inferred:false,condition:'Routine task updates',quote:'平时简短回复'},...extra},true) as MemoryFact
+ const remember=(c:ReturnType<typeof chat>['c'],content:string,extra:Partial<MemoryFact>={})=>h.memory.command(c,{action:'remember',operationId:'note-'+(++sequence),expectedRevision:0,subject:'Convention '+sequence,content,kind:'preference',candidate:false,sourceIds:[h.memory.ingest(c).id],visibility:'private',learning:{inferred:false,condition:'request contains: 技术报告',quote:'平时简短回复'},...extra},true) as MemoryFact
  const learn=(c:ReturnType<typeof chat>['c'])=>h.agentMemory.manage(c,{action:'configure',expectedRevision:h.agentMemory.policyRevision(c),policy:{writeMode:'adaptive',delayMs:0,minIntervalMs:0}})
  return {get h(){return h},root,calls,chat,remember,learn,advance:(ms=100000)=>{now+=ms},reflect:(c:ReturnType<typeof chat>['c'])=>reflectMemories(h.agentMemory,c,AbortSignal.timeout(10000)),restart:async(snapshot?:string)=>{await h.close();if(snapshot)copyFileSync(snapshot,join(config.stateDir,'state.sqlite'));h=new Runtime(config,{model,clock:()=>now})}}
 }

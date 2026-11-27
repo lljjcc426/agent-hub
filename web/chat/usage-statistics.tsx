@@ -1,3 +1,5 @@
+import { WorkspaceTransportOwner } from './workspace-context.tsx'
+import { ResourceBreakdown } from './work-register.tsx'
 import { useEffect, useId, useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowUpRight, X } from 'lucide-react'
 import { Button, ChoiceGroup } from '../ui/controls.tsx'
@@ -330,6 +332,7 @@ export function UsageStatisticsPage({ language }: { language: Language }) {
           {retry}
         </div>}
       </div>
+      <WorkspaceTransportOwner language={language}><ResourceBreakdown L={L} language={language}/></WorkspaceTransportOwner>
     </section>
   )
 }

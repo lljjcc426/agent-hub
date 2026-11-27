@@ -7,6 +7,9 @@ import {ModelCapabilityCatalog} from './model-capabilities.ts'
 import {workerProfiles} from './worker-pool.ts'
 import {cliMcpPreview} from './cli-mcp-profile.ts'
 import {homedir} from 'node:os'
+import {workflowEffectSummary} from './effect-receipt.ts'
+import {peopleIndex} from './people-index.ts'
+import {assertConnectorResourceAccess} from './connector-resource-access.ts'
 import {LocalDiagnostics,LocalDiagnosticError} from './local-diagnostics.ts'
 import {artifactCatalog,ArtifactCatalogCursorError} from './artifact-catalog.ts'
 import {WorkerTemplates,WorkerTemplateError} from './worker-templates.ts'
@@ -402,6 +405,17 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/worker-templates/create'){send(res,200,await templates.create(input));return}
       send(res,404,{code:'not_found'});return
     }
+    if(path==='/api/people-index'){
+      requireCurrentOperator(req)
+      res.setHeader('cache-control','no-store')
+      if(options.configurationPreview){send(res,403,{code:'preview_restricted'});return}
+      if(req.method!=='GET'){send(res,405,{code:'method_not_allowed'});return}
+      const query=new URL(req.url!,requestOrigin).searchParams,entryId=query.get('entryId'),actorId=query.get('actorId')
+      if(!entryId||!/^[a-f0-9]{64}$/.test(entryId)||query.getAll('entryId').length!==1||
+        query.getAll('actorId').length>1||[...query.keys()].some(key=>key!=='entryId'&&key!=='actorId')||
+        actorId!==null&&(actorId.length<1||actorId.length>300)){send(res,400,{code:'people_index_query_invalid'});return}
+      send(res,200,peopleIndex(runtime,entryId,actorId??undefined));return
+    }
     if(path==='/api/local-diagnostics'||path==='/api/local-diagnostics/probe'){
       requireCurrentOperator(req)
       if(new URL(req.url!,requestOrigin).search!==''){send(res,400,{code:'local_diagnostics_query_invalid'});return}
@@ -470,6 +484,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/connectors/validate'){send(res,200,connectors.validate(input));return}
       if(path==='/api/connectors/plan'){const planned=connectors.plan(input);send(res,200,onboarding.sourcePlan(planned.revision,planned.source,planned.credentials));return}
       if(path==='/api/connectors/probe'){send(res,200,await connectors.probe(input));return}
+      if(path==='/api/connectors/resource-access'){send(res,200,connectors.setResourceAccess(input));return}
       if(path==='/api/connectors/control'){send(res,200,connectors.control(input));return}
       send(res,404,{code:'not_found'});return
     }
@@ -479,6 +494,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         const query=Object.fromEntries(new URL(req.url!,requestOrigin).searchParams)
         if(path==='/api/execution-trace'){send(res,200,trace.snapshot(query));return}
         if(path==='/api/execution-trace/events'){send(res,200,trace.events(query));return}
+        if(path==='/api/execution-trace/progress'){send(res,200,trace.progress(query));return}
       }
       if(path==='/api/execution-trace/recovery-package'&&req.method==='POST'){
         if(new URL(req.url!,requestOrigin).search){send(res,400,{code:'trace_query_unsupported'});return}
@@ -629,7 +645,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     }
     if(req.method==='POST'&&path==='/workflow-actions'){
       const operatorId=account.status(req).user?.id??'local-operator'
-      send(res,200,await runtime.workflows.decide(await body(req),{operatorId,authorize:()=>requireCurrentOperator(req)}));return
+      const result=await runtime.workflows.decide(await body(req),{operatorId,authorize:()=>requireCurrentOperator(req)});send(res,200,{...result,effectSummary:workflowEffectSummary(result)});return
     }
     if(req.method==='POST'&&path==='/router-skills/read'){send(res,200,runtime.skills.read(await operatorBody(req)));return}
     if(req.method==='POST'&&path==='/router-skills'){send(res,200,runtime.skills.command(await operatorBody(req)));return}
@@ -924,14 +940,26 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
     if(req.method==='POST'&&path==='/operator-link'){send(res,200,{url:sessions.link(runtime.config.http?.publicOrigin??endpoint),expiresIn:600});return}
 
     if(req.method==='GET'&&path==='/entry-setup'){send(res,200,await entries.info());return}
+    if(path==='/entry-workspace/attention/read'){
+      requireCurrentOperator(req)
+      if(req.method!=='POST'){send(res,405,{code:'method_not_allowed'});return}
+      if(req.headers.origin!==requestOrigin&&!authorized(req)){send(res,403,{code:'same_origin_required'});return}
+      const input=z.object({id:z.string().regex(/^[a-z_]+:[a-f0-9]{64}$/),observed:z.string().regex(/^[a-f0-9]{64}$/)}).strict().parse(await operatorBody(req))
+      const reader=account.status(req).user?.id??'local-operator'
+      const ok=new OperatorAttention(()=>runtime).markRead(reader,input.id,input.observed)
+      send(res,ok?200:409,ok?{read:true}:{code:'operator_attention_changed'});return
+    }
     if(path==='/entry-workspace/attention'){
       requireCurrentOperator(req)
       if(req.method!=='GET'){send(res,405,{code:'method_not_allowed'});return}
       const query=new URL(req.url!,requestOrigin).searchParams
+      const inbox=query.getAll('inbox')
+      if(inbox.length>1||inbox.length===1&&inbox[0]!=='1'){send(res,400,{code:'operator_attention_query_invalid'});return}
+      query.delete('inbox')
       if([...query].some(([key,value])=>!['offset','limit'].includes(key)||query.getAll(key).length!==1||!/^(0|[1-9][0-9]*)$/.test(value))){send(res,400,{code:'operator_attention_query_invalid'});return}
       const input=z.object({offset:z.coerce.number().int().min(0).max(1_000_000).default(0),limit:z.coerce.number().int().min(1).max(100).default(25)}).strict().safeParse(Object.fromEntries(query))
       if(!input.success){send(res,400,{code:'operator_attention_query_invalid'});return}
-      try{send(res,200,new OperatorAttention(()=>runtime).snapshot(input.data.offset,input.data.limit))}catch{send(res,503,{code:'operator_attention_unavailable'})};return
+      try{send(res,200,new OperatorAttention(()=>runtime).snapshot(input.data.offset,input.data.limit,Date.now(),inbox.length?account.status(req).user?.id??'local-operator':undefined))}catch{send(res,503,{code:'operator_attention_unavailable'})};return
     }
     if(req.method==='GET'&&path==='/entry-workspace'){
       const query=new URL(req.url!,'http://localhost').searchParams,input=z.object({offset:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().min(1).max(100).default(25),
@@ -1058,7 +1086,11 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(input.source==='$agent'){send(res,200,await runtime.resources.read({resource:input.thread}));return}
       const source=runtime.sources.get(input.source)
       if(!source?.context||!source.config.enabled||!source.config.capabilities.resources)throw Error('Source does not provide enabled context reading')
-      send(res,200,await source.context(input.thread));return
+      assertConnectorResourceAccess(source.config,'conversation')
+      const context=await source.context(input.thread)
+      const current=runtime.sources.get(input.source);if(!current)throw Error('Source is unavailable')
+      assertConnectorResourceAccess(current.config,'conversation')
+      send(res,200,context);return
     }
     if (req.method === 'GET' && path === '/status') {
       const client=String(req.headers['x-agenthub-client']??''),bridge=String(req.headers['x-agenthub-bridge']??''),query=new URL(req.url!,'http://localhost').searchParams

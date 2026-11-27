@@ -3,7 +3,7 @@ import {chatReviewInProgress} from './chat-result-review.ts'
 import {authorizedQuestion,type WorkerInquiry} from './worker-inquiry.ts'
 import type {InquiryTask,StatusQuestion} from './router-inquiry-context.ts'
 import {resourcePage} from './execution-limits.ts'
-import {chatScheduleCards,type ScheduleEdit} from './chat-schedules.ts'
+import {chatScheduleCards,type ChatScheduleChange} from './chat-schedules.ts'
 import {teamContext,contextReading} from './chat-team-context.ts'
 import {realpathSync} from 'node:fs'
 import {z} from 'zod'
@@ -168,7 +168,7 @@ export class ChatSessions {
     // Older Router traces carry an exact chat trigger. Never infer old Worker lineage from a reassigned ticket.
     for(const call of host.activity.list())if(!host.store.get('chat-call',call.id)&&call.triggerId&&host.store.get('chat-run',call.triggerId))this.recordCall(call)
     // Upgrade recovery: older hosts delivered batch questions without a chat row.
-    for(const message of host.store.deliveries())if(message.status==='sent')this.deliveredClarification(message)
+    for(const message of host.store.deliveries())if(message.status==='sent'&&message.id.startsWith('router-clarify:'))this.deliveredNotice(message)
   }
   subscribe(id:string,owner:string,listener:()=>void){this.get(id,owner);const set=this.listeners.get(id)??new Set();set.add(listener);this.listeners.set(id,set);return()=>{set.delete(listener);if(!set.size)this.listeners.delete(id)}}
   private changed(id:string){if(this.notifications.has(id))return;this.notifications.add(id);queueMicrotask(()=>{this.notifications.delete(id);this.revisions.delete(id);for(const listener of this.listeners.get(id)??[])listener()})}
@@ -1257,14 +1257,13 @@ export class ChatSessions {
     if(!c)return []
     return this.schedules(c).filter(s=>s.triggerId===triggerId).map(({id,name,timing,notification,createdAt,active})=>({id,name,timing,notification,createdAt,active}))
   }
-  changeSchedule(id:string,owner:string,input:{id:string;expectedRevision:number;operationId:string}&ScheduleEdit){
+  changeSchedule(id:string,owner:string,input:ChatScheduleChange){
     const c=this.get(id,owner),plan=this.schedules(c).find(p=>p.id===input.id)
     const trigger=plan&&this.host.store.triggers.get(plan.triggerId)
     const context=trigger&&this.host.scopes.context(trigger,c.discussion)
     if(!plan||!context)throw new ChatError('schedule_missing','Scheduled task unavailable.',404)
     try{
-      const change='timing' in input?{action:'schedule.retime',timing:input.timing}:{action:input.active?'schedule.resume':'schedule.pause'}
-      this.host.proactive.command({...change,scopeId:context.route.scopeId,id:plan.id,operationId:input.operationId,expectedRevision:input.expectedRevision},context)
+      this.host.proactive.editChatSchedule(input,context)
     }catch(error){
       const message=error instanceof Error?error.message:String(error)
       throw new ChatError(message.startsWith('Revision conflict')?'schedule_conflict':'schedule_change_failed',message)
@@ -1332,13 +1331,18 @@ export class ChatSessions {
     try{this.host.goals.context(goal);for(const manifest of owner.manifests)this.host.memory.validate(manifest)}catch{return}
     this.reply(message.id,run.id,message.text)
   }
-  deliveredClarification(message:{id:string;text:string}){
-    if(!message.id.startsWith('router-clarify:')||this.host.store.get('chat-message','reply:'+message.id))return
+  deliveredNotice(message:{id:string;text:string}){
+    const reminder=message.id.startsWith('schedule-reminder:')
+    if((!reminder&&!message.id.startsWith('router-clarify:'))||this.host.store.get('chat-message','reply:'+message.id))return
     const owner=this.host.store.get<{triggerId:string;inputs:string[];manifest?:ContextManifest}>('router-reply-owner',message.id)
-    if(!owner?.manifest||!this.host.store.get('chat-run',owner.triggerId))return
+    if(!owner)return
+    if(reminder){
+      const run=this.host.proactive.runForTrigger(owner.triggerId)
+      if(!run?.spec.reminder||message.id!=='schedule-reminder:'+run.id||!this.host.store.get('chat-run',run.spec.triggerId))return
+    }else if(!owner.manifest||!this.host.store.get('chat-run',owner.triggerId))return
     // Recheck after delivery, and on legacy recovery: cancellation or revoked
     // evidence must not expose a late answer in a local conversation.
-    try{this.host.memory.validate(owner.manifest);for(const id of owner.inputs)this.host.routerIngress.authority(id)}catch{return}
+    try{if(owner.manifest)this.host.memory.validate(owner.manifest);for(const id of owner.inputs)this.host.routerIngress.authority(id)}catch{return}
     this.host.store.atomic(()=>this.reply(message.id,owner.triggerId,message.text))
   }
   opening(triggerId:string){

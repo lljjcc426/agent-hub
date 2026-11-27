@@ -11,10 +11,11 @@ import {RouterScopes,scopeCommandSchema,type EntryBinding,type TaskOwnership} fr
 import {stableDigest} from './sources.ts'
 import {atomicPrivateFile} from './managed-config.ts'
 import {makePolicy} from './policy.ts'
+import {workflowEffectState} from './effect-receipt.ts'
 import {backupState,verifyBackup} from './backup.ts'
 
 // Persistent formats owned by this host. Unknown plugin kinds require an explicit migration adapter.
-export const migrationKinds=new Set(`skill-version skill-lifecycle trigger disposition thread ticket decision run clock settings settings-history settings-backends
+export const migrationKinds=new Set(`workflow-action webhook-protocol skill-version skill-lifecycle trigger disposition thread ticket decision run clock settings settings-history settings-backends
 browser-profile browser-session browser-receipt chat-call chat-context-input chat-conversation chat-delivery chat-file-inspection chat-message chat-plan chat-permission chat-revision chat-run
 router-cancelled router-candidate router-candidate-job router-followup router-followup-notice router-followup-stop-attempt router-followup-stopped router-handback
 approval asset backend-binding backend-thread capabilities entry-client-event entry-client-install entry-client-receipt entry-invite entry-label entry-plan entry-verification
@@ -63,7 +64,7 @@ export function previewScopeMigration(config:Config,value:unknown):MigrationPlan
   for(const item of items.filter(i=>i.kind==='work')){const work=lookup('work',item.id);let alive=false;if(work.kind==='shell'&&Number.isSafeInteger(work.pid)&&work.pid>0){try{process.kill(work.pid,0);alive=true}catch(error:any){if(error.code!=='ESRCH')alive=true}}if(['starting','running'].includes(work.state)||alive){item.status='held';item.reason='background_work_not_drained'}}
   for(const item of items){
    const value=lookup(item.kind,item.id)
-   if(item.kind==='browser-session'&&value.active||item.kind==='browser-receipt'&&['running','uncertain'].includes(value.state)||item.kind==='chat-call'&&value.state==='running'||item.kind==='chat-message'&&value.status==='streaming'){
+   if(item.kind==='workflow-action'&&['applying','uncertain'].includes(workflowEffectState(value))||item.kind==='browser-session'&&value.active||item.kind==='browser-receipt'&&['running','uncertain'].includes(value.state)||item.kind==='chat-call'&&value.state==='running'||item.kind==='chat-message'&&value.status==='streaming'){
     item.status='held';item.reason='Reconcile in-flight external effects'
    }
   }

@@ -5,6 +5,7 @@ import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {Store} from '../src/store.ts'
 import {HistoryCleanup,planChatHistory,type HistoryPlan} from '../src/history-cleanup.ts'
+import {externalCandidateKind} from '../src/external-memory-candidates.ts'
 
 it('preserves record, nested resource and scope boundaries across rollback, replacement and another connection',()=>{
  const dir=mkdtempSync(join(tmpdir(),'roppo-fence-')),file=join(dir,'state.sqlite')
@@ -51,6 +52,30 @@ it('reclaims restored bodies on the final pass and leaves already redacted recor
   expect(store.get('sample','restored')).toEqual({id:'restored',text:''})
   expect(store.get('sample','outside')).toEqual({id:'outside',text:'original'})
   expect(cleanup.receipts()[0]).toMatchObject({status:'completed',phase:'verified',local:'verified'})
+ }finally{store.close();rmSync(dir,{recursive:true,force:true})}
+})
+
+it('erases only the external memory candidates owned by the cleared conversation',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'roppo-candidate-cleanup-')),store=new Store(join(dir,'state.sqlite'))
+ const cleanup=new HistoryCleanup(store,dir)
+ const owned={conversationId:'own-chat',text:'private note'}
+ const foreign={conversationId:'other-chat',text:'own-chat'}
+ try{
+  store.put(externalCandidateKind,'own-note',owned)
+  store.put(externalCandidateKind,'other-note',foreign)
+  const plan=planChatHistory(store,dir,'account','reset',1,['own-chat'])
+  expect(plan.records).toEqual([[externalCandidateKind,'own-note']])
+  expect(plan.roots).toEqual(['own-chat'])
+  const writes:string[]=[]
+  store.recordObservers.set(externalCandidateKind,id=>writes.push(id))
+  cleanup.apply(plan)
+  await cleanup.process({async run(){throw Error('unexpected model call')}},async()=>true)
+  expect(cleanup.receipts()[0]?.status).toBe('completed')
+  expect(writes).toEqual(['own-note'])
+  expect(store.get(externalCandidateKind,'own-note')).toEqual({deleted:true})
+  expect(store.get(externalCandidateKind,'other-note')).toEqual(foreign)
+  const reopened=new HistoryCleanup(store,dir)
+  expect(reopened.blocked(externalCandidateKind,'other-note',foreign)).toBe(false)
  }finally{store.close();rmSync(dir,{recursive:true,force:true})}
 })
 

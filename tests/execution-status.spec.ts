@@ -1,3 +1,4 @@
+import {acceptedExampleMethod} from '../examples/fixtures/accepted-method-source.ts'
 import {mkdtempSync,rmSync,writeFileSync,appendFileSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
@@ -321,10 +322,7 @@ it('does not reuse a same-millisecond receipt after a second ready report on an 
 it('checks scheduled-skill acceptance without creating a missing original authority route',async()=>{
  const f=fixture();f.host.pause(true)
  const model=vi.spyOn(f.host.model,'run'),history=vi.spyOn(f.host.model,'history'),deliver=vi.spyOn(f.host.sources.get('local')!,'deliver')
- const skill={id:'status-local-fixture',version:1}
- // Local synthetic saved-method metadata and a retained passed round exercise
- // the actual schedule/goal/verifier chain without provider acceptance.
- f.host.store.put('skill-version',stableDigest([skill.id,skill.version]),{...skill,scopeId:'team',entryId:f.context.route.entryId,goalId:'fixture-seed',acceptanceId:'fixture-seed',template:{title:'Inspection',objective:'Inspect and report findings',criteria:[{id:'result',description:'Produce findings',files:[],documents:[]}],nodes:[{id:'build',title:'Inspect',instruction:'Inspect and report',workerId:'one',criterionIds:['result'],dependsOn:[]}]}})
+ const skill=await acceptedExampleMethod(f.host,f.context)
  const plan=f.host.proactive.command({action:'schedule.put',scopeId:'team',operationId:'skill-plan',expectedRevision:0,schedule:{id:'daily',name:'Check',triggerId:f.trigger.id,prompt:'Inspect scheduled work',skill,mode:'standalone',notification:'silent',timing:{kind:'once',startAt:new Date(Date.now()+60_000).toISOString(),timezone:'UTC'}}}) as {revision:number}
  const scheduled=f.host.proactive.command({action:'schedule.run',scopeId:'team',operationId:'skill-launch',expectedRevision:plan.revision,id:'daily'}) as {id:string;triggerId:string}
  f.host.proactive.runSkill(scheduled.id)
@@ -354,4 +352,15 @@ it('checks scheduled-skill acceptance without creating a missing original author
  expect(f.host.verification.current(round,goal,{readOnly:true})).toBe(true)
  expect(projectTaskStatus(f.host,current(f,ticket)).acceptance).toEqual({state:'passed',freshness:'current'});expect(dbState(f)).toBe(restored);expect(totalChanges()).toBe(restoredChanges)
  expect(model).not.toHaveBeenCalled();expect(history).not.toHaveBeenCalled();expect(deliver).not.toHaveBeenCalled()
+})
+
+it('treats missing or malformed new workflow receipts as unknown without repairing them',async()=>{
+ const f=fixture(),ticket=await task(f);run(f,ticket)
+ for(const receipt of [undefined,null,{schema:1,state:'confirmed'}]){
+  f.host.store.put('workflow-action','bad',{id:'bad',ticketId:ticket.id,state:'applied',effectReceiptVersion:1,...(receipt!==undefined?{effectReceipt:receipt}:{})})
+  const before=dbState(f)
+  expect(projectTaskStatus(f.host,current(f,ticket)).effects).toMatchObject({state:'unknown',receiptCount:1})
+  expect(f.trace.snapshot({ticketId:ticket.id}).tasks[0]).toMatchObject({unknownEffects:true,next:'reconcile'})
+  expect(dbState(f)).toBe(before)
+ }
 })

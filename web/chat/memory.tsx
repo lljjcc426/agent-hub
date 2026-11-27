@@ -21,6 +21,7 @@ import {
 import { NoteDetail, memoryTitle, type Note } from './memory-note.tsx';
 import { download, request, type Entry, type Labels } from './memory-api.ts';
 import { MemoryFile, personaRequest, type PersonaFile, type PersonaFiles } from './memory-files.tsx';
+import { ExternalMemoryCandidates } from './external-memory-candidates.tsx';
 import { Methods } from './memory-methods.tsx';
 import './memory.css';
 
@@ -330,6 +331,7 @@ export function MemorySettings({ L }: { L: Labels }) {
               onChange={() => void changeLearning()}
             />
           </label>
+          <section className="settings-group"><ExternalMemoryCandidates entries={all.filter(e=>e.conversationId)} L={L}/></section>
           <section className="settings-group">
             <div className="memory-section-title">
               <h2>{L('Saved memories', '记住的内容')}</h2>

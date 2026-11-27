@@ -8,18 +8,13 @@ import {pipeline} from 'node:stream/promises'
 import type {Runtime} from './runtime.ts'
 import {ChatError} from './chat-errors.ts'
 import {stableDigest} from './sources.ts'
+import {imagePreviewMime} from './chat-images.ts'
 
 export {chatUploadLimits} from './execution-limits.ts'
 export interface ChatAttachment {id:string;name:string;mimeType:string;bytes:number;url:string;previewUrl?:string;reference?:ChatArtifactReference;registration?:Extract<ArtifactRegistration,{kind:'chat-attachment'}>}
 interface Upload {id:string;kind:'chat-upload';conversationId:string;name:string;mimeType:string;bytes:number;path:string;createdAt:number;state:'uploading'|'ready';triggerId?:string;previewType?:string;sha256?:string}
 interface Conversation {id:string;owner:string;discussion:string;archived:boolean}
 
-function previewType(bytes:Buffer){
-  if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return 'image/png'
-  if(bytes[0]===255&&bytes[1]===216)return 'image/jpeg'
-  if(['GIF87a','GIF89a'].includes(bytes.subarray(0,6).toString()))return 'image/gif'
-  if(bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP')return 'image/webp'
-}
 export class ChatAttachments {
   constructor(private host:Runtime,private conversation:(id:string,owner:string)=>Conversation){
     for(const row of host.store.list<Upload>('asset'))if(row.kind==='chat-upload'&&row.state==='uploading')this.discard(row)
@@ -66,7 +61,7 @@ export class ChatAttachments {
       },output)
       authorize();this.conversation(conversationId,owner)
       if(!this.host.store.get('asset',id))throw new ChatError('attachment_missing','Upload was removed.',404)
-      row.previewType=previewType(header.subarray(0,headerBytes))
+      row.previewType=imagePreviewMime(header.subarray(0,headerBytes))
       if(row.previewType)row.mimeType=row.previewType
       row.sha256=hash.digest('hex');row.state='ready';this.host.store.put('asset',id,row)
       return this.public(row,true)

@@ -28,6 +28,14 @@ a.team-file { text-decoration:none; }
   color:var(--team-action,var(--rp-action));
 }
 .file-stamp > img { width:100%; height:100%; object-fit:cover; }
+.chat-image-preview {
+  display:inline-block;max-width:min(100%,320px);padding:0;overflow:hidden;vertical-align:top;
+  border:1px solid var(--team-line,var(--rp-line));border-radius:10px;background:var(--team-surface,var(--rp-panel));cursor:zoom-in;
+}
+.chat-image-preview img { display:block;max-width:100%;max-height:240px;object-fit:contain; }
+.chat-image-preview:focus-visible { outline:2px solid var(--team-action,var(--rp-action));outline-offset:2px; }
+.chat-image-preview + .chat-image-preview { margin-inline-start:7px; }
+.message-attachments > .chat-image-preview { margin:0; }
 .file-page {
   position:absolute; inset:7px 7px -8px 10px; padding:5px; border-radius:2px; overflow:hidden;
   background:var(--team-surface,var(--rp-panel)); color:var(--team-ink,var(--rp-ink)); box-shadow:0 1px 3px #0002;
@@ -46,11 +54,13 @@ a.team-file { text-decoration:none; }
   background:var(--team-paper,var(--rp-panel)); color:var(--team-ink,var(--rp-ink)); font:inherit;
 }
 .team-file-dialog::backdrop { background:#15151555; }
+.team-file-dialog[data-preview="image"] { width:min(1040px,calc(100vw - 24px)); }
 .team-file-dialog > section { display:flex; flex-direction:column; max-height:82dvh; }
 .team-file-dialog header,.team-file-dialog footer { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 18px; }
 .team-file-dialog h2 { overflow-wrap:anywhere; font-size:17px; margin:0; }
 .team-file-preview { min-height:56px; padding:18px; overflow:auto; background:var(--team-surface,var(--rp-panel)); border-block:1px solid var(--team-line,var(--rp-line)); }
 .team-file-preview img { display:block; max-width:100%; height:auto; margin:auto; }
+.team-file-dialog[data-preview="image"] .team-file-preview img { max-height:calc(82dvh - 110px);object-fit:contain; }
 .team-file-preview pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; line-height:1.6; }
 .delivery-download-only { display:grid; justify-items:center; align-content:center; gap:8px; min-height:92px; color:var(--team-muted,var(--rp-muted)); font-size:13px; }
 .team-file-dialog footer > span { font-size:12px; color:var(--team-muted,var(--rp-muted)); }

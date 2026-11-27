@@ -46,7 +46,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import type { ChatSessions } from "../../src/chat.ts";
-import {DeliveryFileCard,DeliveryFileViewer} from "../ui/delivery-files.tsx";
+import {DeliveryFileCard,DeliveryFileViewer,type DeliveryFile} from "../ui/delivery-files.tsx";
 import {deliveryFile} from "./delivery-links.ts";
 import {TeamOverview} from './team-view.tsx';
 import {BrowserPanel,type BrowserOpenRequest} from './browser.tsx';
@@ -168,6 +168,7 @@ const Context = createContext({
   workers: [] as Worker[],
   routerLabel: 'Roppo',
   openFile: (_file:ChatDelivery)=>{},
+  previewFile: (_file:DeliveryFile)=>{},
   openAgent: (_id:string)=>{},
   run: null as Snapshot['run'],
   showTranscriptDetails: true,
@@ -262,7 +263,7 @@ function runLabel(state: string, L: (en: string, zh: string) => string, waitingL
   return ({waiting:waitingLabel||L('Waiting for a task update','等待任务更新'),cancel_requested:L('Stopping…','正在停止…'),cancelled:L('Stopped','已停止')} as Record<string,string>)[state];
 }
 function UserMessage() {
-  const { L } = useUI(),
+  const { L, previewFile } = useUI(),
     id = useAuiState((s) => s.message.id),
     attachments = useAuiState((s) => s.message.metadata.custom?.attachments) as ChatAttachment[]|undefined,
     skill = useAuiState((s) => s.message.metadata.custom?.skill) as ChatSkillRef|undefined,
@@ -285,7 +286,7 @@ function UserMessage() {
         <div className="message-line" tabIndex={-1}>
           <div className="message-surface user-bubble">
             <MessageSkill skill={skill}/>
-            <MessageAttachments files={attachments??[]} L={L}/>
+            <MessageAttachments files={attachments??[]} L={L} onPreview={previewFile}/>
             {hasText && <div data-message-body><MessagePrimitive.Parts components={{Text:Markdown}}/></div>}
           </div>
           <MessageActions id={id}/>
@@ -328,7 +329,7 @@ function Markdown(){
   return <Suspense fallback={<PlainText/>}><RichMarkdown L={L} files={files}/></Suspense>
 }
 function AssistantMessage() {
-  const { L, run, runMessageId, waitingLabel, routerLabel, openFile,openAgent, showTranscriptDetails } = useUI(),
+  const { L, run, runMessageId, waitingLabel, routerLabel, openFile,previewFile,openAgent, showTranscriptDetails } = useUI(),
     deliveries=useAuiState(s=>s.message.metadata.custom?.deliveries) as ChatDelivery[]|undefined,
     decision=useAuiState(s=>s.message.metadata.custom?.decision) as Snapshot["messages"][number]["decision"],
     fileReview=useAuiState(s=>s.message.metadata.custom?.fileReview) as (NonNullable<Snapshot["messages"][number]["fileReview"]> & {name:string})|undefined,
@@ -340,6 +341,7 @@ function AssistantMessage() {
     recipient = useAuiState((s) => s.message.metadata.custom?.recipient) as Snapshot["participants"][number]|undefined,
     status = useAuiState((s) => s.message.status),
     commentary = useAuiState((s) => !!s.message.metadata.custom?.commentary),
+    sharedImages = useAuiState((s) => !!s.message.metadata.custom?.sharedImages),
     hasText = useAuiState((s) =>
       s.message.content.some((c) => c.type === "text" && !!c.text),
     ),
@@ -348,8 +350,10 @@ function AssistantMessage() {
   const continuedReview=useAuiState(s=>!!s.message.metadata.custom?.continuedReview);
   if ((streaming || commentary) && !hasText) return <WorkflowCards anchor={id}/>;
   let body: ReactNode;
-  if (deliveries?.length) {
-    body = <>{fileReview && <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} onOpen={()=>openFile(file)}/>)}</>;
+  if (sharedImages) {
+    body = hasText ? <div data-message-body><MessagePrimitive.Parts components={{ Text: Markdown }}/></div> : null;
+  } else if (deliveries?.length) {
+    body = <>{fileReview && <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>} {deliveries.map(file => <DeliveryFileCard key={file.id} L={L} file={deliveryFile(file)} compactImage onOpen={()=>openFile(file)}/>)}</>;
   } else if (fileReview) {
     body = <FileReviewCard id={id} name={fileReview.name} review={fileReview}/>;
   } else if (decision) {
@@ -361,6 +365,7 @@ function AssistantMessage() {
     <><MessagePrimitive.Root
       className="message assistant-message"
       data-commentary={commentary ? "true" : undefined}
+      data-shared-images={sharedImages ? "true" : undefined}
       data-arrival={arrival}
       data-streaming={streaming ? "true" : undefined}
     >
@@ -383,7 +388,7 @@ function AssistantMessage() {
             {recipient ? <div className="addressed-message">
               <button type="button" className="chat-mention" onClick={()=>openAgent(recipient.id)}>@{recipient.kind==='router'?teamName(recipient.label):recipient.label}</button>{' '}{body}
             </div> : body}
-            <MessageAttachments files={attachments??[]} L={L}/>
+            <MessageAttachments files={attachments??[]} L={L} onPreview={previewFile}/>
           </div>
           <MessageActions id={id}/>
         </div>
@@ -837,7 +842,7 @@ function Chat(p: ChatProps) {
   const [sidebarCards, setSidebarCards] = useState(emptySidebarCards);
   const panel = sidebarCards.revealing || teamPanelOpen;
   useEffect(() => { if (configuring) setSidebarCards(emptySidebarCards); }, [configuring]);
-  const [teamTab,setTeamTab]=useState<TeamTab>(initialPanel.tab),[file,setFile]=useState<ChatDelivery|null>(null);
+  const [teamTab,setTeamTab]=useState<TeamTab>(initialPanel.tab),[file,setFile]=useState<DeliveryFile|null>(null);
   useEffect(() => write(panelKey, teamPanelOpen ? teamTab : 'closed'), [panelKey, teamPanelOpen, teamTab]);
   const [selectedTask,setSelectedTask]=useState<string|null>(null);
   const taskOpener=useRef<HTMLButtonElement>(null);
@@ -1029,7 +1034,7 @@ function Chat(p: ChatProps) {
     if (readonly) return message.speaker?.id === selected.id || message.recipient?.id === selected.id;
     if (display === "group") return true;
     return !message.recipient && (
-      message.role === "user" || !message.speaker || message.speaker.id === selected.id || !!message.deliveries?.length
+      message.role === "user" || !message.speaker || message.speaker.id === selected.id || !!message.deliveries?.length || !!message.imageShare
     );
   });
   const latestMessage = showTranscriptDetails ? snapshot?.messages.at(-1) : visibleMessages.at(-1);
@@ -1071,7 +1076,7 @@ function Chat(p: ChatProps) {
   if (snapshot && arrivals.current.conversationId !== snapshot.conversation.id) arrivals.current = {
     conversationId:snapshot.conversation.id, since:Date.now(), seen:new Set(snapshot.messages.map(m=>m.id)),
   };
-  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.commentary && !m.recipient)?.id ?? '' : '';
+  const runMessageId = !readonly ? snapshot?.messages.findLast(m => m.runId === run?.id && m.role === 'assistant' && !m.opening && !m.commentary && !m.imageShare && !m.recipient)?.id ?? '' : '';
   const waitingLabel=snapshot ? pendingWaitLabel(snapshot,L,participantFilter) : undefined;
   const standaloneStatus = run && !(run.state==='waiting' && waitingLabel) && !readonly && !runMessageId
     ? runLabel(run.state,L,waitingLabel??'') : undefined;
@@ -1079,11 +1084,13 @@ function Chat(p: ChatProps) {
     if (alive.current)
       setError(e instanceof ApiError ? e.code : "network_error");
   };
+  const revealFile=(file:DeliveryFile)=>{
+    if(file.revealHref)void api(file.revealHref.slice('/api/chat'.length),{}).catch(fail);
+  };
   const openFile=(item:ChatDelivery)=>{
-    const link=deliveryFile(item)
-    if(link.revealHref){
-      void api(link.revealHref.slice('/api/chat'.length),{}).catch(fail)
-    }else setFile(item);
+    const link=deliveryFile(item);
+    if(link.revealHref&&link.preview!=='image')revealFile(link);
+    else setFile(link);
   };
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!id) return;
@@ -1242,7 +1249,7 @@ function Chat(p: ChatProps) {
   const blocks=groupWorkflow(snapshot,visibleMessages,display,participantFilter,showTranscriptDetails);
   const continuedReviews=new Set(visibleMessages.filter((m,i)=>{
     const before=visibleMessages[i-1];
-    return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient && !before.commentary;
+    return m.fileReview && before?.role==='assistant' && before.runId===m.runId && before.speaker?.id===m.speaker?.id && !before.recipient && !before.commentary && !before.imageShare;
   }).map(m=>m.id));
   const inlineAnswers = new Set<string>();
   for (const block of blocks.values()) {
@@ -1258,7 +1265,7 @@ function Chat(p: ChatProps) {
   const awaitingReply = new Set(snapshot?.replyRunIds);
   if (run?.state==='queued'||run?.state==='running') awaitingReply.add(run.id);
   for (const message of snapshot?.messages ?? []) {
-    if (message.role==='assistant' && !message.recipient && !message.commentary && message.opening!=='received') awaitingReply.delete(message.runId);
+    if (message.role==='assistant' && !message.recipient && !message.commentary && !message.imageShare && message.opening!=='received') awaitingReply.delete(message.runId);
   }
 
   const runtime = useExternalStoreRuntime({
@@ -1275,6 +1282,7 @@ function Chat(p: ChatProps) {
       metadata: { custom: {
         readReceipt: m.role==='user' && !readonly && !around && awaitingReply.has(m.runId),
         commentary: m.commentary,
+        sharedImages: !!m.imageShare,
         linkFiles: m.role === 'assistant' ? snapshot?.deliveries.filter(file =>
           file.createdAt <= m.createdAt && (m.ticketId ? file.ticketId === m.ticketId : file.runId === m.runId)
         ) : undefined,
@@ -1541,7 +1549,7 @@ function Chat(p: ChatProps) {
         L,
         workers,
         routerLabel:currentRouter.label,
-        openFile,openAgent:readAgent,
+        openFile,previewFile:setFile,openAgent:readAgent,
         run: showTranscriptDetails ? run ?? null : null,
         runMessageId,waitingLabel:waitingLabel??'',
         showTranscriptDetails,
@@ -1817,7 +1825,7 @@ function Chat(p: ChatProps) {
             </div></SwitchView>
           </main>
         </div>
-        {file?<DeliveryFileViewer key={file.id} file={deliveryFile(file)} L={L} onClose={()=>setFile(null)}/>:null}
+        {file?<DeliveryFileViewer key={file.href} file={file} L={L} onClose={()=>setFile(null)} onReveal={file.revealHref?()=>revealFile(file):undefined}/>:null}
         </InteractionProvider>
       </AssistantRuntimeProvider></WorkflowProvider>
     </Context.Provider>

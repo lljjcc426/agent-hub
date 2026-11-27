@@ -1,7 +1,7 @@
 import {browserCapacity} from './execution-limits.ts'
 import {abortable} from './abortable.ts'
 import { randomUUID, createHash } from "node:crypto";
-import { mkdirSync, rmSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, chmodSync, realpathSync, writeFileSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { evidenceBytes } from "./goal-artifacts.ts";
 import type { Runtime } from "./runtime.ts";
@@ -82,6 +82,7 @@ interface BrowserCapture {
   id:string;kind:'browser-screenshot'|'browser-recording';conversationId?:string;runId?:string;
   ticketId:string;assignmentId:string;path:string;name:string;bytes:number;mime:'image/png'|'video/mp4';
   resource:string;sha256:string;url?:string;title?:string;workspacePath?:string;
+  explicitChat?:true;
 }
 const isCapture = (item: BrowserCapture | undefined): item is BrowserCapture =>
   item?.kind === 'browser-screenshot' || item?.kind === 'browser-recording';
@@ -371,16 +372,31 @@ export class BrowserManager {
   waiting(ticketId: string, assignmentId: string) {
     return [...this.sessions.values()].find(s => !s.ended && !s.closing && s.owner?.ticketId === ticketId && s.owner.assignmentId === assignmentId && s.control !== 'worker');
   }
-  screenshots(conversationId:string): (ChatAttachment & {runId?:string;ticketId:string})[] {
+  private captureAttachment(a:BrowserCapture):ChatAttachment&{runId?:string;ticketId:string} {
+    const url='/api/browser/screenshots/'+a.id;
+    return {id:a.id,name:a.name,mimeType:a.mime??(a.kind==='browser-screenshot'?'image/png':'video/mp4'),bytes:a.bytes,runId:a.runId,ticketId:a.ticketId,url,previewUrl:url+'?preview=1'};
+  }
+  screenshots(conversationId:string,automaticOnly=false): (ChatAttachment & {runId?:string;ticketId:string})[] {
     return this.host.store.list<BrowserCapture>('asset')
-      .filter(a=>isCapture(a)&&a.conversationId===conversationId&&!this.host.memory.cleanup.blocked('asset',a.id,a))
-      .map(a=>({id:a.id,name:a.name,mimeType:a.mime,bytes:a.bytes,runId:a.runId,ticketId:a.ticketId,url:'/api/browser/screenshots/'+a.id,previewUrl:'/api/browser/screenshots/'+a.id+'?preview=1'}));
+      .filter(a=>isCapture(a)&&(!automaticOnly||!a.explicitChat)&&a.conversationId===conversationId&&!this.host.memory.cleanup.blocked('asset',a.id,a))
+      .map(a=>this.captureAttachment(a));
+  }
+  shareScreenshot(id:string,conversationId:string,runIds:readonly string[],ticketId?:string):ChatAttachment|undefined {
+    const asset=this.host.store.get<BrowserCapture>('asset',id);
+    if(asset?.kind!=='browser-screenshot'||asset.conversationId!==conversationId||
+       !asset.runId||!runIds.includes(asset.runId)||ticketId&&asset.ticketId!==ticketId||
+       this.host.memory.cleanup.blocked('asset',id,asset))return;
+    const file=lstatSync(asset.path,{throwIfNoEntry:false});
+    if(!file?.isFile()||file.size!==asset.bytes)return;
+    if(!asset.explicitChat)this.host.store.put('asset',id,{...asset,explicitChat:true});
+    const {name,mimeType,bytes,url,previewUrl}=this.captureAttachment(asset);
+    return {id,name,mimeType,bytes,url,previewUrl};
   }
   screenshot(user:string,id:string) {
     const asset=this.host.store.get<BrowserCapture>('asset',id);
     if(!isCapture(asset)||!asset.conversationId||this.host.memory.cleanup.blocked('asset',id,asset))throw new BrowserError('browser_missing','Capture is unavailable.');
     this.host.chat.view(asset.conversationId,user);
-    return asset;
+    return {...asset,mime:asset.mime??(asset.kind==='browser-screenshot'?'image/png':'video/mp4')};
   }
   saveCapture(owner: WorkOwner, mime: BrowserCapture['mime'], bytes: Buffer, page?: {url:string;title:string}) {
     const image = mime === 'image/png';
@@ -402,7 +418,7 @@ export class BrowserManager {
       }
       const asset:BrowserCapture={id,kind:image?'browser-screenshot':'browser-recording',conversationId:chat?.conversationId,
         runId,path,name,bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,
-        resource:'asset/'+id,mime,sha256:createHash('sha256').update(bytes).digest('hex'),workspacePath,...page};
+        resource:'asset/'+id,mime,sha256:createHash('sha256').update(bytes).digest('hex'),workspacePath,...(image?{explicitChat:true}:{}),...page};
       this.host.store.put('asset',id,asset);
       return asset;
     } catch(error) {
@@ -1268,7 +1284,7 @@ export class BrowserManager {
             const bytes=evidenceBytes(directory,"screenshot.png",32*1024*1024);
             if(!bytes||!bytes.subarray(0,8).equals(pngSignature))throw new BrowserError("browser_screenshot","Browser did not return a PNG screenshot.");
             chmodSync(path,0o400);
-            const screenshot:BrowserCapture={id,kind:'browser-screenshot',conversationId:s.conversationId,runId:this.host.taskAuthority(owner.ticketId)?.parentTrigger,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex"),url:s.url,title:s.title};
+            const screenshot:BrowserCapture={id,kind:'browser-screenshot',conversationId:s.conversationId,runId:this.host.taskAuthority(owner.ticketId)?.parentTrigger,path,name:"screenshot.png",bytes:bytes.length,ticketId:owner.ticketId,assignmentId:owner.assignmentId,resource:"asset/"+id,mime:"image/png",sha256:createHash("sha256").update(bytes).digest("hex"),explicitChat:true,url:s.url,title:s.title};
             const page=await this.snapshot(s);
             guard();
             // The native model's filesystem policy excludes host state. Deliver

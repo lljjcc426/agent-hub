@@ -33,6 +33,8 @@ import type {EntryBinding,RouterRoute,ScopeContext} from './router-scope.ts'
 import type {MessageBatch} from './router-proactive.ts'
 import type {ContextManifest} from './router-memory.ts'
 import {ChatAttachments,chatUploadLimits,type ChatAttachment} from './chat-attachments.ts'
+import {chatSendImagesInput,imagePreviewMime} from './chat-images.ts'
+import {evidenceBytes} from './goal-artifacts.ts'
 import {ChatDeliveries,routerFileInput,type ChatDelivery} from './chat-deliveries.ts'
 import {decisionSchema,goalPlan,publicApproval,publicPlanSchema,type ChatDecision,type ChatPlan} from './chat-workflow.ts'
 import type {Approval} from './approvals.ts'
@@ -63,7 +65,7 @@ interface Conversation {
 }
 interface Speaker {id:string;label:string;kind:'router'|'worker'}
 export interface FileReview {fileId:string;resolvedAt?:number;notice?:string;state:'pending'|'approved'|'denied'|'superseded'|'cancelled'}
-interface Message {commentary?:true;handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;skill?:ChatSkillRef;reactions?:string[];agentReactions?:AgentReaction[]}
+interface Message {commentary?:true;imageShare?:string;handoff?:'assignment'|'result'|'files';opening?:'received'|'introduced';decision?:ChatDecision;fileReview?:FileReview;id:string; conversationId:string; runId:string; sequence:number; role:'user'|'assistant'; text:string; attachments?:ChatAttachment[];deliveries?:ChatDelivery[];createdAt:number;clientMessageId?:string;status?:'streaming'|'complete'|'interrupted'|'failed';speaker?:Speaker;recipient?:Speaker;ticketId?:string;quote?:ChatQuote;skill?:ChatSkillRef;reactions?:string[];agentReactions?:AgentReaction[]}
 export type {Conversation as ChatConversation, Message as ChatMessage, ChatRun}
 type PendingCard =
   | {kind:'choice';id:string;createdAt:number;decision:ChatDecision}
@@ -720,6 +722,61 @@ export class ChatSessions {
     this.get(c.id,c.owner);this.host.routerIngress.authority(triggerId,c.discussion)
     return {run,c}
   }
+  sendImages(context:ExecutionContext,cwd:string,args:unknown,assignmentId?:string):ToolResult{
+    const result=(value:unknown,success=true):ToolResult=>({success,contentItems:[{type:'inputText',text:JSON.stringify(value)}]})
+    const parsed=chatSendImagesInput.safeParse(args)
+    if(!parsed.success)return result({code:'invalid_request',message:'Supply a requestId and one or more image references.'},false)
+    const {requestId,caption='',images}=parsed.data
+    const references=[...new Set(images)]
+    try{
+      const ticketId=context.ticketId,worker=ticketId?this.workerDestination(ticketId,{includeDelegated:true}):undefined
+      if(ticketId){
+        const task=this.host.store.tickets.get(ticketId),current=this.host.store.get<Run>('run',ticketId)
+        if(!worker||!assignmentId||!task||task.ended||task.assignments.at(-1)?.id!==assignmentId||
+           !current||current.assignmentId!==assignmentId||current.cwd!==cwd||!['starting','running','background'].includes(current.phase))
+          throw new ChatError('image_chat_unavailable','The current task has no active Chat destination.')
+      }
+      const {c,run}=worker??this.cardTarget(context.triggerId??'')
+      if(c.archived)throw new ChatError('image_chat_unavailable','The originating Chat is archived.')
+      const runId=worker?.displayRunId??run.id
+      const id='chat-images:'+stableDigest([c.id,runId,ticketId??null,requestId])
+      const fingerprint=stableDigest([references,caption])
+      const count=this.host.store.atomic(()=>{
+        const previous=this.host.store.get<Message>('chat-message',id)
+        if(previous){
+          if(this.host.memory.cleanup.blocked('chat-message',id,previous))throw new ChatError('image_chat_unavailable','The image message is no longer available.')
+          if(previous.imageShare!==fingerprint)throw new ChatError('image_request_reused','Use a new requestId for a different image message.')
+          return previous.attachments!.length
+        }
+        const deliveries:ChatDelivery[]=[]
+        const attachments=references.map(ref=>{
+          if(/^asset\/[a-f0-9-]{36}$/i.test(ref)){
+            const asset=this.host.browser.shareScreenshot(ref.slice(6),c.id,[run.id,runId],ticketId)
+            if(!asset)throw new ChatError('image_unavailable','Use a browser screenshot owned by the current Chat task.')
+            return asset
+          }
+          let bytes:Buffer|undefined
+          try{this.host.resources.workspacePath(cwd,ref);bytes=evidenceBytes(cwd,ref,chatUploadLimits.maxBytes)}
+          catch{throw new ChatError('image_unavailable','Use a readable image path inside the current workspace.')}
+          if(!bytes)throw new ChatError('image_unavailable','The workspace image is unavailable.')
+          const mime=imagePreviewMime(bytes)
+          if(!mime)throw new ChatError('image_unsupported','Use a PNG, JPEG, GIF or WebP image.')
+          const file=this.deliveries.image(c.id,{runId,ticketId,workerId:worker?.worker.id},basename(ref),bytes,mime)
+          deliveries.push(file)
+          const url='/api/chat/conversations/'+c.id+'/deliveries/'+file.id
+          return {id:file.id,name:file.name,mimeType:file.mime,bytes:file.size,url,previewUrl:url+'?preview=1'}
+        })
+        this.message(c,{id,runId,role:'assistant',text:caption,status:'complete',imageShare:fingerprint,
+          attachments,deliveries,speaker:worker?.worker,ticketId})
+        return attachments.length
+      })
+      this.changed(c.id)
+      return result({messageId:id,images:count})
+    }catch(error){
+      if(!(error instanceof ChatError))throw error
+      return result({code:error.code,message:error.message},false)
+    }
+  }
   requestDecision(triggerId:string,value:unknown){
     const {run,c}=this.cardTarget(triggerId)
     const {pendingNotice,...terms}=decisionSchema.parse(value)
@@ -1131,7 +1188,7 @@ export class ChatSessions {
     const run=this.host.store.get<ChatRun>('chat-run',triggerId)
     if(!run)return false
     return !!this.host.store.get<Message>('chat-message','user:'+triggerId)?.agentReactions?.length||
-      this.rows<Message>('chat-message','runId',triggerId).some(m=>m.role==='assistant'&&!m.opening&&!m.commentary&&(!!m.decision||m.status==='complete'&&!!m.text.trim()))
+      this.rows<Message>('chat-message','runId',triggerId).some(m=>m.role==='assistant'&&!m.opening&&!m.commentary&&!m.imageShare&&(!!m.decision||m.status==='complete'&&!!m.text.trim()))
   }
   reply(jobId:string,triggerId:string,text:string){
     const stream=this.streams.get(jobId);if(stream?.timer)clearTimeout(stream.timer);this.streams.delete(jobId)
@@ -1640,9 +1697,10 @@ export class ChatSessions {
     const pendingCards=withPending?this.pendingCards(c,closedRuns,requests,managedRequests):[]
     const handoffs=withPending?this.handoffs(id):[]
     const result={handoffs,pendingCards,approvals,plans,publicPlans,sessionRouterPlans,conversation:this.publicConversation(c),messages:messages.slice(-100).map(m=>({...m,text:transcriptText(m.id,m.text),quote:m.quote?this.resolveQuote(c,m.quote):undefined,agentReactions:m.agentReactions?.map(r=>({...r,actor:{...r.actor,label:displaySpeaker(r.actor).label}})),...(m.speaker?{speaker:displaySpeaker(m.speaker)}:{}),...(m.recipient?{recipient:displaySpeaker(m.recipient)}:{})})),hasMore:messages.length>100,hasLater:!!before&&before<=c.sequence,run:last?{id:last.id,state,...(heldTargets?.size?{questionTicketIds:runGoals.filter(g=>heldTargets.has(g.id)).flatMap(g=>g.taskIds)}:{}),createdAt:last.createdAt,...(last.recovery?{recovery:last.recovery}:{})}:null,workers,calls,routerId:router.id,participants:agents,readiness:this.readiness()}
-    const screenshots=this.host.browser.screenshots(id)
+    // Older captures had no publication event. Keep their historical presentation.
+    const screenshots=this.host.browser.screenshots(id,true)
     for(const message of [...result.messages].reverse()){
-      if(message.role!=='assistant'||message.opening||message.commentary||message.status==='streaming')continue
+      if(message.role!=='assistant'||message.opening||message.commentary||message.imageShare||message.status==='streaming')continue
       const files=screenshots.filter(a=>a.runId===message.runId&&(!participant||a.ticketId===message.ticketId))
       if(files.length){message.attachments=[...(message.attachments??[]),...files];for(const file of files)screenshots.splice(screenshots.indexOf(file),1)}
     }

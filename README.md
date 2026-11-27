@@ -63,13 +63,15 @@ Up to **32 files per message, 100 MiB each**. Understanding a particular format 
 
 ### Let it learn how you work
 
-Start with a task, then express preferences naturally as you go. Roppo can retain useful preferences and working context for later tasks. Saved memories live in **Settings**, with just **Edit** and **Delete** when you need to adjust them.
+Start with a task, then express preferences naturally as you go. Roppo can retain useful preferences and working context for later tasks. In **Settings**, you can edit or delete saved memories. For a temporary exception to a preference, set its expiry date and optionally enter the exact phrase that triggers it.
 
 ![Saved memories with Edit and Delete controls in Settings, shown in Chinese](docs/images/memory-settings-light.png)
 
 Give your Router and Workers their own names, models and tools. Use **Behavior rules** for shared preferences and role instructions, and preview the assembled instructions before saving. Chat display and clearing built-in Chat memory and context also live in Settings.
 
 Use **Settings → Appearance** for light, dark or system mode, theme presets, custom colors and contrast, interface/content/code sizes, reduced motion, smart punctuation, full-width conversations and diff indicators. Copy or import a theme to share its colors. Preferences stay in this browser and apply across its Roppo pages; existing light/dark choices are retained when upgrading.
+
+Save all appearance settings as a named **skin**, rename or delete saved skins, and share complete light/dark profiles and advanced options through `.roppo-skin.json` import/export. The reset icon beside **Visual style** restores the selected skin; temporary edits never overwrite it. New browsers follow the system color mode by default.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/appearance-settings-dark.jpg">
@@ -81,6 +83,8 @@ Use **Settings → Appearance** for light, dark or system mode, theme presets, c
 Connect **Feishu, Slack, Linear and GitHub** through the available source adapters and plugins. Extend the toolset with **MCP** and app integrations. Keep each task connected to its source conversation or issue.
 
 For repeatable workflows, use schedules or signed event automations. Inspect incoming events, task outcomes and delivery receipts in the workspace. The host must stay running for scheduled work. [Integrations](docs/PLUGINS.md) · [Schedules](docs/PROACTIVE_ROUTER.md) · [Event automations](docs/WEBHOOKS.md)
+
+In Chat, open **Session panel → Schedules** to pause a reminder, change its timing or jump to its last delivery. A lightweight reminder posts its text directly into the original conversation. In Settings, **Reminders and methods** shows schedules, goals and saved methods for the selected workspace.
 
 ![The event automations workspace with enabled workflows, shown in Chinese](docs/images/automation-workspace-light.jpg)
 

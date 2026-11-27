@@ -19,6 +19,7 @@ const active = () => {
   const { pathname, hash } = location;
   if (!["/configure", "/configure/", "/"].includes(pathname)) return false;
   if (["", "#general", "#appearance", "#workspace", "#automations", "#prompts/memory", "#tasks/statistics"].includes(hash)) return false;
+  if (['#attention','#methods','#worker-templates','#execution-trace','#connectors','#connectors/access'].includes(hash) || hash.startsWith('#execution-trace/')) return false;
   if (hash.startsWith("#plugin/")) return false;
   return !/^#integrations(?:\/|$)/.test(hash) || hash === "#integrations/tools";
 };
@@ -44,6 +45,10 @@ async function prepare() {
         throw error;
       });
   await pending;
+}
+export async function getConfigurationTransport() {
+  await prepare();
+  return controller!.transport;
 }
 export function Configuration({
   visible,
@@ -86,6 +91,16 @@ export function Configuration({
         setBrowserTarget(browserElement!);
         if (latest.current.visible) {
           controller!.activate(latest.current.language);
+          const task = location.hash === '#tasks/attention' && new URLSearchParams(location.search).get('focusTask');
+          if (task) {
+            const isCurrent = () => alive && latest.current.visible && location.hash === '#tasks/attention';
+            void controller!.openTask(task, isCurrent).then(opened => {
+              if (!opened || !isCurrent()) return;
+              const url = new URL(location.href);
+              url.searchParams.delete('focusTask');
+              history.replaceState(history.state, '', url);
+            });
+          }
           if (pickerRequest > pickerHandled.current) {
             pickerHandled.current = pickerRequest;
             void controller!.workspace();

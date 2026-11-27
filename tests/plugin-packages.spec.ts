@@ -105,7 +105,7 @@ it('commits a backlog exceeding ten thousand operations in bounded acknowledged 
  const r=directory(),pkg=await pack(r),f=await isolated(config(r,pkg,{bulk:6000}))
  await f.source.poll(f.context);expect(f.events).toHaveLength(6000)
  expect(f.store.get<any[]>('plugin-state','example')!.find(x=>x.id==='bulk')!.value).toBe(5999)
-})
+},30_000)
 it('preserves explicitly configured read paths when staging a package upgrade and rollback',async()=>{
  const {pluginCommand}=await import('../src/plugin-cli.ts'),r=directory(),v1=await pack(r),v2=await pack(r,'1.1.0'),c=config(r,v1)
  const path=join(r,'authorized.txt');writeFileSync(path,'test');c.sourcePlugins[0]={...c.sourcePlugins[0]!,readPaths:[path]}

@@ -1,3 +1,4 @@
+import {acceptedExampleMethod} from '../examples/fixtures/accepted-method-source.ts'
 import {appendFileSync,mkdtempSync,readFileSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
@@ -41,11 +42,8 @@ function goalWake(f:Fixture,anchor=f.original){
  expect(wake).toBeDefined();const trigger=f.host.store.triggers.get(wake.triggerId)!
  return {goal,anchor:{trigger,context:f.host.scopes.context(trigger,goal.discussion)!}}
 }
-function scheduledSkill(f:Fixture){
- const skill={id:'local-readonly-fixture',version:1},entryId=f.original.context.route.entryId
- // Synthetic local saved-method metadata; actual host scheduling creates the
- // derived trigger and goal. No model, remote provider or message is involved.
- f.host.store.put('skill-version',stableDigest([skill.id,skill.version]),{...skill,scopeId:'team',entryId,goalId:'fixture-seed',acceptanceId:'fixture-seed',template:{title:'Inspection',objective:'Inspect and report findings',criteria:[{id:'result',description:'Report findings',files:[],documents:[]}],nodes:[{id:'build',title:'Inspect',instruction:'Inspect and report',workerId:'one',criterionIds:['result'],dependsOn:[]}]}})
+async function scheduledSkill(f:Fixture){
+ const skill=await acceptedExampleMethod(f.host,f.original.context)
  const plan=f.host.proactive.command({action:'schedule.put',scopeId:'team',operationId:'plan',expectedRevision:0,schedule:{id:'daily',name:'Check',triggerId:f.original.trigger.id,prompt:'Inspect scheduled work',skill,mode:'standalone',notification:'silent',timing:{kind:'once',startAt:new Date(Date.now()+60_000).toISOString(),timezone:'UTC'}}}) as {revision:number}
  const run=f.host.proactive.command({action:'schedule.run',scopeId:'team',operationId:'launch',expectedRevision:plan.revision,id:'daily'}) as ScheduledRun
  f.host.proactive.runSkill(run.id)
@@ -92,7 +90,7 @@ it.each(['scheduled_skill','goal_wake','scheduled_dependency_goal_wake'] as cons
    const human=f.receive('nested-human','other'),wake=goalWake(f,human);missing=human.trigger
    f.host.store.put('router-input-set',f.original.trigger.id,{triggerIds:[wake.anchor.trigger.id]})
   }
-  derived=scheduledSkill(f)
+  derived=await scheduledSkill(f)
  }
  const ticket=await task(f,derived),http=await listen(f),detail='/entry-workspace/task/'+encodeURIComponent(ticket.id)
  const verify=async(contractAvailability=scenario==='goal_wake'?'not_captured':'available')=>{
@@ -130,7 +128,7 @@ it('preserves existing authentication, methods, query validation and missing-tas
 })
 
 it('returns a fixed sanitized unavailable response and restores both scopes after a projection throws',async()=>{
- const f=fixture(),derived=scheduledSkill(f),ticket=await task(f,derived),http=await listen(f),before=state(f)
+ const f=fixture(),derived=await scheduledSkill(f),ticket=await task(f,derived),http=await listen(f),before=state(f)
  const fail=vi.spyOn(f.host.goals,'snapshot').mockImplementation(()=>{throw Error('SECRET_INTERNAL_FAILURE')})
  for(const path of ['/entry-workspace','/entry-workspace/task/'+encodeURIComponent(ticket.id)]){
   const response=await http.get(path);expect(response.status).toBe(503);expect(await response.json()).toEqual({code:'operator_workspace_unavailable'});unchanged(f,before)

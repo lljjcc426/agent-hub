@@ -32,15 +32,15 @@ function fixture(output?:(input:any,request:ModelRequest)=>unknown|Promise<unkno
 function decision(input:any,extra:any={}){return {action:'add',target:null,kind:'preference',topic:'回答风格',content:'回答先给结论',importance:4,source:0,quote:input.messages[0].text,expiresAt:null,inferred:false,...extra}}
 
 it('applies stated adaptive preferences, revises them across sessions and preserves provenance after restart',async()=>{
- const f=fixture(input=>({memories:[decision(input,input.existing.length?{action:'update',target:0,content:'报告先列未验证项',condition:'技术报告'}:{condition:'技术报告'})],topics:[]}));f.configure({writeMode:'adaptive'})
+ const f=fixture(input=>({memories:[decision(input,input.existing.length?{action:'update',target:0,content:'报告先列未验证项',condition:'request contains: 技术报告'}:{condition:'request contains: 技术报告'})],topics:[]}));f.configure({writeMode:'adaptive'})
  const first=f.send('以后技术报告先给结论','first');await f.learn()
  const old=f.h.agentMemory.applicable(first)[0]!
- expect(old).toMatchObject({state:'active',protected:false,learning:{inferred:false,condition:'技术报告',quote:'以后技术报告先给结论'}})
+ expect(old).toMatchObject({state:'active',protected:false,learning:{inferred:false,condition:'request contains: 技术报告',quote:'以后技术报告先给结论'}})
  const next=f.send('改一下，以后技术报告先列未验证项','second');await f.learn()
  expect(f.h.memory.fact(old.id)?.state).toBe('superseded')
  expect(f.h.agentMemory.applicable(next).map(f=>f.content)).toEqual(['报告先列未验证项'])
  await f.restart();const current=f.context(next.trigger.id),packet=f.h.memory.build(current,{},'test')
- expect(JSON.parse(packet.input).memory).toMatchObject({learning:{mode:'adaptive',coldStart:false},facts:[{learning:{inferred:false,condition:'技术报告'}}]})
+ expect(JSON.parse(packet.input).memory).toMatchObject({learning:{mode:'adaptive',coldStart:false},facts:[{learning:{inferred:false,condition:'request contains: 技术报告'}}]})
  f.h.memory.validate(packet.manifest)
 })
 
@@ -662,3 +662,18 @@ it('O25 limits live task metadata to management inspection, not model memory inp
  expect(JSON.stringify(JSON.parse(packet.input).memory)).not.toContain('taskRecord');
  expect(f.h.agentMemory.applicable(c)[0]).not.toHaveProperty('taskRecord');
 });
+
+it('keeps historical conditions editable while selecting only the matching preference for a request',()=>{
+ const f=fixture(),plain=f.send('请给我一份进度更新')
+ const standard=f.remember(plain,'简短更新',{kind:'preference'})
+ const legacy=f.remember(plain,'使用旧格式',{kind:'preference',learning:{inferred:false,condition:'旧版项目约定'}})
+ const special=f.remember(plain,'逐项列出验证记录',{kind:'preference',learning:{inferred:false,condition:'request contains: 验收周报'}})
+ const selected=(c:typeof plain)=>f.h.agentMemory.recall(c,c.trigger.text).items.map(n=>n.id)
+ expect(f.h.agentMemory.applicable(plain).map(n=>n.id)).toEqual(expect.arrayContaining([standard.id,legacy.id,special.id]))
+ expect(selected(plain)).toEqual([standard.id])
+ const report=f.send('请整理验收周报')
+ expect(selected(report)).toEqual([special.id])
+ f.h.memory.command(report,{action:'exception.revoke',operationId:'remove-temporary',id:special.id,expectedRevision:special.revision},true)
+ expect(selected(report)).toEqual([standard.id])
+ expect(f.h.agentMemory.selectedPreferences(report).decisions.get(legacy.id)).toBe('condition_unmatched')
+})

@@ -42,6 +42,8 @@ type AppearanceRuntime = {
   setAppearance(next: AppearanceUpdate): void
   presets: AppearancePreset[]
   defaultSettings(): AppearanceSettings
+  copySettings(value: AppearanceSettings): AppearanceSettings
+  parseSettings(value: unknown): AppearanceSettings
   exportTheme(mode: AppearanceMode): string
   importTheme(value: string, mode: AppearanceMode): void
   isTheme(value: string): boolean
@@ -63,6 +65,8 @@ export const appearancePresets = runtime.presets
 export const defaultAppearanceSettings = runtime.defaultSettings
 export const setAppearance = runtime.setAppearance
 export const getAppearance = runtime.getSnapshot
+export const copyAppearanceSettings = runtime.copySettings
+export const parseAppearanceSettings = runtime.parseSettings
 
 export function useAppearance(): [AppearanceSettings, (next: AppearanceUpdate) => void] {
   return [useSyncExternalStore(subscribe, runtime.getSnapshot), runtime.setAppearance]

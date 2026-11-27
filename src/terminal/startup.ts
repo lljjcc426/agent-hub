@@ -1,5 +1,5 @@
 import { RGBA, type OptimizedBuffer } from '@opentui/core'
-import { companionBody, brailleCells, companionWidth } from './companion.ts'
+import { companionBody, brailleCells, companionWidth, fitCompanionProportions } from './companion.ts'
 
 export const tideDuration = 2000
 export const greetingDuration = 1400
@@ -20,7 +20,7 @@ export function entryPixels(time: number, greeting: boolean) {
     const hand = 3 + Math.round(Math.sin(time / 42))
     dot(21, hand); dot(22, hand + 1)
   }
-  return pixels
+  return fitCompanionProportions(pixels)
 }
 
 /** Paint only the unrevealed cells and the wavefront; the conversation remains live underneath. */

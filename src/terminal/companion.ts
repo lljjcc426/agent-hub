@@ -3,7 +3,7 @@ import type {Snapshot} from './client.ts'
 import {ui} from './language.ts'
 
 // Alpha silhouette sampled at 12×12 from src/ui/assets/agents/roppo-body.webp.
-// Braille cells hold 2×4 dots, keeping the web's small character at 6 columns × 3 rows.
+// Braille cells hold 2×4 dots; the shared output transform broadens this silhouette.
 export const companionBody=[
  '............','.....##.....','...######...','..########..',
  '..########..','..########..','..#######...','..#######...',
@@ -13,6 +13,10 @@ export type CompanionFrame={pixels:number[][];label:string;phase:CompanionPhase}
 type Handoff=Snapshot['handoffs'][number]
 const smooth=(t:number)=>{const x=Math.max(0,Math.min(1,t));return x*x*(3-2*x)}
 export const companionWidth=16
+/** Keep round dots on the grid, with a broader body and a small upward stretch. */
+export function fitCompanionProportions(pixels:number[][]):number[][]{
+ return pixels.map((row,y)=>row.map((_,x)=>pixels[Math.round(10+(y-10)/1.1)]![Math.round(16+(x-16)/1.5)]!))
+}
 export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,handoff?:{progress:number;worker:boolean},worker=false):number[][]{
  const pixels=Array.from({length:12},()=>Array<number>(companionWidth*2).fill(0))
  const dot=(x:number,y:number,color=1)=>{x=Math.round(x);y=Math.round(y);if(pixels[y]?.[x]!==undefined)pixels[y]![x]=color}
@@ -55,7 +59,7 @@ export function drawCompanion(phase:CompanionPhase,time:number,greeting=false,ha
   character(10+receiver-camera,'idle',handoff.worker?1:4)
   if(t<.9){const x=10+(sender+10)*(1-pass)+(receiver-1)*pass-camera;rect(x,7-Math.sin(Math.PI*pass),3,3,3)}
  }else character(10,phase,worker?4:1,greeting)
- return pixels
+ return fitCompanionProportions(pixels)
 }
 /** Web phase selection and gesture durations, with terminal-owned playback and no history replay. */
 export class TerminalCompanion {

@@ -68,3 +68,9 @@ macOS Terminal 截图中每四排点之间的整行间隙属于终端盲文字�
 CoreText 验证所有点阵字符均由新字体直接绘制，没有字体回退；三行满点阵得到连续的十二排圆点，2× 渲染的相邻排中心距离为 7.91–8.27 像素，原来的两处大间隙不再出现。这个验证覆盖系统字体渲染；Terminal.app 的实际窗口仍需选用新配置后确认。
 
 本次新增 `assets/terminal/` 下的字体、OFL 授权、独立 Terminal 配置与使用说明，新增 `tools/fonts/build-roppo-mono.py`（字体构建源代码）及 `bin/install-terminal-font.mjs`（本机安装），修改 `package.json`（安装命令）、`docs/TERMINAL.md` 和本文。没有删除项目文件，也没有修改角色绘制代码。
+
+## 角色比例调整
+
+在原版点阵轮廓上加宽 50%、增高约 10%，静止身体的实际点阵范围由 8 列 × 10 排变为 12 列 × 11 排。圆点字形不变，顶部区域仍占三行字符和一行状态文字。使用同一个输出采样调整顶部状态、交接道具和启动行走/招手，保持两处角色比例一致。
+
+修改 `src/terminal/companion.ts`（共享比例采样）、`src/terminal/startup.ts`（启动动画复用采样）、`tests/terminal-companion.spec.ts`（更新尺寸及漏点回归位置）和本文。没有删除文件。点阵测试、原生 TUI/启动测试和 TypeScript 检查通过，并用 macOS CoreText 检查了实际圆点字形的渲染效果。

@@ -413,6 +413,57 @@ it('keeps a completed waiting Worker and its active goal across maintenance, wit
  expect(inspect().blockers).toEqual(expect.arrayContaining([{kind:'jobs',count:1},{kind:'goals',count:1}]))
 })
 
+it('preserves a held Worker after its completed turn could not be applied, including its pending input wakes',async()=>{
+ const h=host(),s=h.store,id='blocked-ticket',assignmentId='assignment',turnId='turn',attemptId='attempt'
+ const error="Error: A question must name the person's message that raised it, which reached this ticket"
+ const goal={id:'goal',objective:'Prepare a local handoff',state:'held',managed:true,scopeId:'scope',entryId:'entry',nextAt:Date.now(),
+  actor:'owner',discussion:'local:chat:private',triggerId:'origin',taskIds:[id],
+  nodes:[{id:'delivery',ticketId:id,state:'held',dependsOn:[],failure:{kind:'uncertain'}}]}
+ const identity={ticketId:id,assignmentId}
+ const ticket={id,inputs:[{id:'already-delivered',kind:'note'}],undelivered:[],
+  assignments:[{id:assignmentId,state:'running',report:{state:'blocked',summary:error}}]}
+ const thread={id:'plugin:completed',backendId:'native',cwd:h.config.stateDir,turnId,state:'completed',effectIds:['effect']}
+ const run={...identity,phase:'uncertain',prepared:true,threadId:thread.id,turnId,backendId:thread.backendId,cwd:thread.cwd,error}
+ const basis={taskId:id,assignmentId,goalId:goal.id,ownerEpoch:1,dataRevision:null,bindingRevision:1,contractDigest:null}
+ const event={...identity,id:'blocked',attemptId,kind:'blocked',source:'host_worker_report',causationRef:attemptId,
+  disposition:'applied',reason:'current',nativeTurnDigest:stableDigest(turnId),payloadDigest:stableDigest(error),basis}
+ const effect={state:'complete',result:{success:true}},wake='execute:'+assignmentId+':'+stableDigest(ticket.inputs)
+ s.put('router-goal',goal.id,goal);s.put('chat-run','origin',{conversationId:'private'})
+ s.put('chat-conversation','private',{sourceId:'local',discussion:goal.discussion})
+ s.put('entry-binding','entry',{privateActor:'owner',active:true,revision:1})
+ s.put('task-ownership',id,{originEntry:'entry',scopeId:'scope',discussion:goal.discussion,state:'active',ownerEpoch:1})
+ s.put('ticket',id,ticket);s.put('run',id,run)
+ s.put('backend-plugin-thread',thread.id,thread);s.put('model-session',thread.id,{ticketId:id})
+ s.put('backend-plugin-tool','effect',effect)
+ s.put('async-worker-current',id,{...identity,attemptId});s.put('async-worker-attempt',attemptId,{...identity,id:attemptId,causeJobId:'execute',basis})
+ s.put('async-worker-terminal',attemptId,{...identity,attemptId,eventId:event.id});s.put('async-worker-event',event.id,event)
+ s.enqueue('execute','execute',identity);s.jobState('execute','done')
+ s.enqueue(wake,'execute',identity)
+ const inspect=()=>inspectDeployment(s,0,h.config.stateDir)
+ const jobs=()=>s.db.prepare('SELECT * FROM jobs ORDER BY id').all()
+ const originalJobs=jobs(),operationId=randomUUID()
+ expect(inspect()).toMatchObject({blockers:[],heldGoals:[{goalId:goal.id,taskIds:[id]}]})
+ await prepare(h,operationId)
+ expect(h.schedulingPaused).toBe(true)
+ expect(jobs()).toEqual(originalJobs)
+ expect(s.get('router-goal',goal.id)).toEqual(goal)
+ expect(s.get('ticket',id)).toEqual(ticket);expect(s.get('run',id)).toEqual(run)
+ await deploymentMaintenance(h,{action:'finish',operationId})
+ function blocks(kind:string,key:string,original:object,changes:object){
+  s.put(kind,key,{...original,...changes})
+  expect(inspect().blockers).toContainEqual({kind:'goals',count:1})
+  s.put(kind,key,original)
+ }
+ blocks('ticket',id,ticket,{undelivered:['already-delivered']})
+ blocks('async-worker-event',event.id,event,{payloadDigest:stableDigest('different failure')})
+ blocks('backend-plugin-tool','effect',effect,{result:{permission:'uncertain'}})
+ s.jobState(wake,'running')
+ expect(inspect().blockers).toEqual(expect.arrayContaining([{kind:'jobs',count:1},{kind:'goals',count:1}]))
+ s.jobState(wake,'pending')
+ s.put('browser-receipt','unsettled',{ticketId:id,state:'uncertain'})
+ expect(inspect().blockers).toContainEqual({kind:'goals',count:1})
+})
+
 it('recovers only supported stopped callbacks and leaves the original command fenced after upgrade',async()=>{
  const dir=root(),h=host(dir),plan={title:'Original plan',steps:[{id:'one',title:'Read retained data',state:'running'}]}
  const published=stoppedCallback(h,'superagent_plan',plan,'router')

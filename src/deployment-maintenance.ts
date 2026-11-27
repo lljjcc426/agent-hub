@@ -17,7 +17,7 @@ import type {Ticket} from './vendor/dsh-core/index.ts'
 import type {ChatDelivery} from './chat-deliveries.ts'
 import type {ReplanRound} from './goal-replanning.ts'
 import type {VerificationRound} from './goal-verification.ts'
-import type {TaskOwnership} from './router-scope.ts'
+import type {EntryBinding,TaskOwnership} from './router-scope.ts'
 import {bodyDigest,stableDigest} from './sources.ts'
 import {sourceHeldNode} from './goal-source-checkpoint.ts'
 import {restoreRetainedFiles,retainedFileHandoffSchema} from './chat-file-handoff.ts'
@@ -90,36 +90,62 @@ function rejectedOverallRound(store:DeploymentStore,goal:RouterGoal){
  return node
 }
 
+function completedWorkerTerminal(store:DeploymentStore,ticketId:string,run:Run){
+ if(!run.threadId||!run.turnId)return
+ const assignmentId=run.assignmentId
+ const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
+ const session=store.get<{ticketId?:string}>('model-session',run.threadId)
+ if(thread?.state!=='completed'||thread.id!==run.threadId||thread.turnId!==run.turnId||
+  thread.backendId!==run.backendId||thread.cwd!==run.cwd||session?.ticketId!==ticketId||
+  !Array.isArray(thread.effectIds)||thread.effectIds.some(id=>{
+   const effect=store.get<PluginToolEffect>('backend-plugin-tool',id)
+   return effect?.state!=='complete'||!effect.result||effect.result.permission==='uncertain'||
+    effect.children?.some(child=>child.state!=='complete'||child.permission==='uncertain')
+  }))return
+ const current=store.get<{ticketId:string;assignmentId:string;attemptId:string}>('async-worker-current',ticketId)
+ if(current?.ticketId!==ticketId||current.assignmentId!==assignmentId||!current.attemptId)return
+ const attempt=store.get<WorkerAttempt>('async-worker-attempt',current.attemptId)
+ const terminal=store.get<{eventId:string;attemptId:string;ticketId:string;assignmentId:string}>('async-worker-terminal',current.attemptId)
+ if(!attempt?.causeJobId||!attempt.basis||attempt.id!==current.attemptId||attempt.ticketId!==ticketId||attempt.assignmentId!==assignmentId||
+  terminal?.attemptId!==attempt.id||terminal.ticketId!==ticketId||terminal.assignmentId!==assignmentId||!terminal.eventId||
+  store.get('async-worker-revoked',attempt.id))return
+ const event=store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
+ if(event?.id!==terminal.eventId||event.attemptId!==attempt.id||event.ticketId!==ticketId||event.assignmentId!==assignmentId||
+  event.disposition!=='applied'||event.nativeTurnDigest!==stableDigest(run.turnId)||
+  stableDigest(event.basis)!==stableDigest(attempt.basis))return
+ if(!store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='execute' AND state='done' AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?").get(attempt.causeJobId,ticketId,assignmentId)||
+  !repositoryEffectsSettled(store,ticketId))return
+ return event
+}
+
 // The graph keeps ownership while a Worker waits. Its last applied result and
 // the native turn must agree before that running node can survive a cutover.
 function completedWaitingTurn(store:DeploymentStore,goal:RouterGoal,ticket:Ticket,run:Run,owner:TaskOwnership){
  const assignment=ticket.assignments.at(-1)
  if(!assignment||assignment.id!==run.assignmentId||assignment.report?.state!=='waiting'||ticket.attention||
-  ticket.undelivered.length||run.phase!=='idle'||run.failure||!run.threadId||!run.turnId)return false
- const thread=store.get<PluginThread>('backend-plugin-thread',run.threadId)
- const session=store.get<{ticketId?:string}>('model-session',run.threadId)
- if(thread?.state!=='completed'||thread.id!==run.threadId||thread.turnId!==run.turnId||
-  thread.backendId!==run.backendId||thread.cwd!==run.cwd||session?.ticketId!==ticket.id||
-  !Array.isArray(thread.effectIds)||thread.effectIds.some(id=>{
-   const effect=store.get<PluginToolEffect>('backend-plugin-tool',id)
-   return effect?.state!=='complete'||!effect.result||effect.result.permission==='uncertain'||
-    effect.children?.some(child=>child.state!=='complete'||child.permission==='uncertain')
-  }))return false
- const current=store.get<{ticketId:string;assignmentId:string;attemptId:string}>('async-worker-current',ticket.id)
- if(current?.ticketId!==ticket.id||current.assignmentId!==assignment.id||!current.attemptId)return false
- const attempt=store.get<WorkerAttempt>('async-worker-attempt',current.attemptId)
- const terminal=store.get<{eventId:string;attemptId:string;ticketId:string;assignmentId:string}>('async-worker-terminal',current.attemptId)
- if(!attempt?.causeJobId||!attempt.basis||attempt.id!==current.attemptId||attempt.ticketId!==ticket.id||attempt.assignmentId!==assignment.id||
-  terminal?.attemptId!==attempt.id||terminal.ticketId!==ticket.id||terminal.assignmentId!==assignment.id||!terminal.eventId||
-  store.get('async-worker-revoked',attempt.id))return false
- const event=store.get<WorkerEventReceipt>('async-worker-event',terminal.eventId)
- if(event?.id!==terminal.eventId||event.attemptId!==attempt.id||event.ticketId!==ticket.id||event.assignmentId!==assignment.id||
-  event.kind!=='result'||event.disposition!=='applied'||event.nativeTurnDigest!==stableDigest(run.turnId)||
-  event.basis?.goalId!==goal.id||event.basis.dataRevision!==(owner.dataRevision??1)||stableDigest(event.basis)!==stableDigest(attempt.basis))return false
- if(!store.db.prepare("SELECT 1 FROM jobs WHERE id=? AND kind='execute' AND state='done' AND json_extract(payload,'$.ticketId')=? AND json_extract(payload,'$.assignmentId')=?").get(attempt.causeJobId,ticket.id,assignment.id))return false
+  ticket.undelivered.length||run.phase!=='idle'||run.failure)return false
+ const event=completedWorkerTerminal(store,ticket.id,run)
+ if(event?.kind!=='result'||event.basis.goalId!==goal.id||event.basis.dataRevision!==(owner.dataRevision??1))return false
  return !store.db.prepare(`SELECT 1 FROM jobs WHERE state IN ('pending','running','blocked','uncertain')
-  AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(ticket.id,assignment.id)&&
-  repositoryEffectsSettled(store,ticket.id)
+  AND (json_extract(payload,'$.ticketId')=? OR json_extract(payload,'$.assignmentId')=?) LIMIT 1`).get(ticket.id,assignment.id)
+}
+
+// Applying a Worker response can fail after the provider and its tools have
+// finished. Pending input wakes carry no work when every input was delivered.
+function blockedWorkerWakes(store:DeploymentStore,goal:RouterGoal,ticket:Ticket,run:Run,owner:TaskOwnership){
+ const assignment=ticket.assignments.at(-1)
+ if(run.phase!=='uncertain'||!run.prepared||run.failure||!run.error||ticket.undelivered.length||ticket.attention||
+  assignment?.id!==run.assignmentId||assignment.report?.state!=='blocked'||assignment.report.summary!==run.error)return
+ const event=completedWorkerTerminal(store,ticket.id,run)
+ if(event?.kind!=='blocked'||event.source!=='host_worker_report'||event.reason!=='current'||
+  event.causationRef!==event.attemptId||event.payloadDigest!==stableDigest(run.error)||
+  store.get('async-worker-paused',event.attemptId))return
+ const binding=store.get<EntryBinding>('entry-binding',goal.entryId)
+ const basis=event.basis
+ if(!binding?.active||basis.taskId!==ticket.id||basis.assignmentId!==assignment.id||basis.goalId!==goal.id||
+  basis.ownerEpoch!==owner.ownerEpoch||basis.dataRevision!==(owner.dataRevision??null)||basis.bindingRevision!==binding.revision||
+  basis.contractDigest!==(goal.contract?stableDigest(goal.contract):null))return
+ return retainedInputWakes(store,run)
 }
 
 // An idle Chat task may still be waiting on a user or a prerequisite. A
@@ -155,12 +181,14 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
   const assignment=ticket?.assignments.at(-1)
   const waitingOnDependency=node.state==='waiting_dependency'&&node.dependsOn.some(dep=>nodes.some(item=>item.id===dep&&item.state!=='passed'))
   if(node.state==='waiting_dependency'&&!waitingOnDependency)return
+  const blockedWakes=run&&ticket&&owner&&!goal.project&&!goal.replanId&&node.state==='held'&&node.failure?.kind==='uncertain'&&
+   node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?blockedWorkerWakes(store,goal,ticket,run,owner):undefined
   const refused=run&&node.state==='held'&&node.failure?.kind==='uncertain'?refusedWorkerJobReads(store,stateDir,run):undefined
   const shell=run&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?unstartedWorkerShell(store,stateDir,run):undefined
   const provider=run&&!shell&&!refused&&!goal.project&&!goal.replanId&&(node===activeNode||node.state==='held'&&node.failure?.kind==='uncertain')&&
    node.dependsOn.every(dep=>nodes.some(n=>n.id===dep&&n.state==='passed'))?settledProviderTurn(store,stateDir,run):undefined
-  const stopped=shell||provider
+  const stopped=shell||provider||blockedWakes
   if(node.failure?.kind==='uncertain'&&!refused&&!stopped)return
   if(!ticket||ticket.ended||!assignment||!run||run.ticketId!==id||run.phase!=='idle'&&!refused&&!stopped||run.waitingForWriter||
    !owner||owner.scopeId!==goal.scopeId||owner.discussion!==goal.discussion||unsettledTaskEffects(store,id,0))return
@@ -207,11 +235,13 @@ function heldChatTasks(store:DeploymentStore,goal:RouterGoal,stateDir:string){
     if(!trigger||!trigger.human||!trigger.actor||JSON.stringify([trigger.actor.source,trigger.actor.id])!==goal.actor)return
    }
    if(shell)receipts.push({id:shell.callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_shell'})
-   else{
+   else if(blockedWakes){
+    jobs.push(...blockedWakes);hasProviderCheckpoint=true
+   }else if(provider){
     const wakes=retainedInputWakes(store,run)
     if(!attempt||!wakes)return
-    for(const receiptId of provider!.settledBatches.keys())receipts.push({id:receiptId,threadId:run.threadId,turnId:run.turnId,tool:'code_mode'})
-    for(const callback of provider!.undispatched)receipts.push({id:callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_desktop'})
+    for(const receiptId of provider.settledBatches.keys())receipts.push({id:receiptId,threadId:run.threadId,turnId:run.turnId,tool:'code_mode'})
+    for(const callback of provider.undispatched)receipts.push({id:callback.id,threadId:run.threadId,turnId:run.turnId,tool:'superagent_desktop'})
     jobs.push(...wakes);hasProviderCheckpoint=true
    }
    continue

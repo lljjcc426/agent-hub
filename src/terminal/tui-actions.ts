@@ -16,7 +16,7 @@ import { isApprovalPending } from '../chat-workflow.ts'
 import { saveTerminalSetting, type TerminalSettings } from './settings.ts'
 import { configureLanguage, ui } from './language.ts'
 import type { HostSettings } from './host-settings.ts'
-import type { ModelCapabilities } from '../reasoning-effort.ts'
+import { reasoningEfforts, type ModelCapabilities } from '../reasoning-effort.ts'
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
 export const personalCommands = () => byName([
@@ -268,10 +268,9 @@ export class TuiCommands {
       }
       if (action === 'effort') {
         const catalog = await this.client.request<ModelCapabilities>('/api/terminal/models?' + new URLSearchParams({ backend: selected.backend, ...(selected.model ? { model: selected.model } : {}) }))
-        this.screen.menu({ title: label + ' · ' + ui('Reasoning effort', '思考强度'), items: [
-          { label: 'default', run: () => save({ effort: null }) },
-          ...catalog.reasoning.efforts.map(effort => ({ label: effort, detail: selected.effort === effort ? '✓' : '', run: () => save({ effort }) }))
-        ] }); return
+        this.screen.effortSlider(label + ' · ' + ui('Reasoning effort', '思考强度'),
+          reasoningEfforts.filter(effort=>catalog.reasoning.efforts.includes(effort)),selected.effort??null,
+          effort=>save({effort}),catalog.reasoning.defaultEffort); return
       }
       this.screen.menu({ title: label + ' · ' + ui('Model connection', '模型连接'), items: settings.connections.map(connection => ({
         label: connection.label, detail: connection.id === selected.backend ? '✓' : connection.kind, run: async () => {

@@ -8,6 +8,7 @@ import { configureLanguage } from '../src/terminal/language.ts'
 function fixture() {
   configureLanguage('en')
   let menu: TuiMenu, prompt: { initial: string; submit: (value: string) => Promise<void> }, notice = ''
+  let slider: Parameters<TuiScreen['effortSlider']>
   const requests: { path: string; body?: any }[] = []
   const settings = { revision: 7, backend: 'codex', model: 'router-model', effort: 'low', connections: [{ id: 'codex', label: 'Codex', kind: 'codex' }], workers: [
     { id: 'one', label: 'Research', backend: 'codex', model: 'worker-model', effort: 'high' },
@@ -16,12 +17,13 @@ function fixture() {
   const client = { link: (id: string) => 'http://127.0.0.1:4319/chat#conversation/' + id, request: async (path: string, body?: any) => {
     requests.push({ path, body })
     if (path === '/api/terminal/settings') return settings
-    if (path.startsWith('/api/terminal/models')) return { models: ['router-model', 'worker-model'], reasoning: { efforts: ['low', 'high'] } }
+    if (path.startsWith('/api/terminal/models')) return { models: ['router-model', 'worker-model'], reasoning: { efforts: ['high', 'low'], defaultEffort: 'low' } }
     if (path.endsWith('/compact')) return {settings:{automatic:true,threshold:0.8},last:null,running:false,status:'unchanged'}
     if (path === '/api/terminal/tasks') return { diff: '+new text' }
     return {}
   } } as unknown as TerminalClient
   const screen = { setLoading() {}, menu(value: TuiMenu) { menu = value }, prompt(_title: string, initial: string, submit: (value: string) => Promise<void>) { prompt = { initial, submit } },
+    effortSlider(...args: Parameters<TuiScreen['effortSlider']>) { slider = args },
     notice(value: string) { notice = value }, document(_title: string, text: string) { notice = text }, setDraft() {}
   } as unknown as TuiScreen
   const view = { conversation: { id: 'chat', sequence: 12, mode: 'act' }, workers: settings.workers, messages: [], tasks: [
@@ -29,7 +31,7 @@ function fixture() {
     { id: 'writing-task', workerId: 'two', title: 'Writing change', state: 'completed', updatedAt: 1 }
   ] } as unknown as Snapshot
   const commands = new TuiCommands(client, view.conversation, screen, { cwd: '.', preferences: {}, settingsSources: [] }, () => view, async () => {}, () => {}, async () => {})
-  return { commands, requests, view, menu: () => menu, prompt: () => prompt, notice: () => notice,
+  return { commands, requests, view, menu: () => menu, prompt: () => prompt, notice: () => notice, slider: () => slider,
     choose: async (label: string) => { const item = menu.items.find(i => i.label === label); expect(item, label).toBeDefined(); await item!.run() } }
 }
 it('narrows slash suggestions by command prefix as the user types and deletes', async () => {
@@ -52,10 +54,17 @@ it('selects an explicit Worker for model and effort changes and keeps Router as 
   await f.commands.execute('/model'); expect(f.menu().items.map(i => i.label)).toEqual(['Router', 'Worker'])
   await f.choose('Worker'); await f.choose('Research'); await f.choose('Codex'); await f.choose('worker-model')
   expect(f.requests.at(-1)?.body).toEqual({ action: 'model', revision: 7, worker: 'one', backend: 'codex', model: 'worker-model' })
-  await f.commands.execute('/effort'); await f.choose('Worker'); await f.choose('Writing'); await f.choose('high')
+  await f.commands.execute('/effort'); await f.choose('Worker'); await f.choose('Writing')
+  expect(f.slider().slice(1,3)).toEqual([['low','high'],null])
+  expect(f.slider()[4]).toBe('low')
+  await f.slider()[3]('high')
   expect(f.requests.at(-1)?.body).toEqual({ action: 'effort', revision: 7, worker: 'two', effort: 'high' })
-  await f.commands.execute('/effort'); await f.choose('Router'); await f.choose('low')
+  await f.commands.execute('/effort'); await f.choose('Router')
+  expect(f.slider()[2]).toBe('low')
+  await f.slider()[3]('low')
   expect(f.requests.at(-1)?.body).toEqual({ action: 'effort', revision: 7, effort: 'low' })
+  await f.slider()[3](null)
+  expect(f.requests.at(-1)?.body).toEqual({ action: 'effort', revision: 7, effort: null })
 })
 it('renames a selected Worker and filters changes to that Worker’s tasks', async () => {
   const f = fixture()

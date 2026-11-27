@@ -55,6 +55,7 @@ export class TuiScreen {
   private attachments: DraftAttachment[] = []
   private sending = false
   private model: TextRenderable
+  private effort: TextRenderable
   private permissions: TextRenderable
   private footer: TextRenderable
   private commandShortcut: TextRenderable
@@ -68,6 +69,7 @@ export class TuiScreen {
   private modalSearch?: InputRenderable
   private modalRows?: ScrollBoxRenderable
   private modalCancel?: () => void
+  private modalRedraw?: () => void
   private modalMenu?: TuiMenu
   private modalItems: TuiItem[] = []
   private modalIndex = 0
@@ -145,11 +147,16 @@ export class TuiScreen {
       flexShrink: 0, scrollX: false, marginBottom: 1, verticalScrollbarOptions: { showArrows: false } })
     this.compose.add(this.attachmentList); this.compose.add(this.draft)
     const meta = new BoxRenderable(renderer, { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, flexShrink: 0 })
-    this.model = this.text('Router', { fg: p.accent, height: 1, flexGrow: 1, flexShrink: 1, minWidth: 0, onMouseDown: () => this.run(this.actions.command('/model')) })
+    const modelControls = new BoxRenderable(renderer, { flexDirection:'row',flexGrow:1,flexShrink:1,minWidth:0,marginRight:2 })
+    this.model = this.text('Router', { id:'composer-model',fg:p.accent,height:1,flexShrink:1,minWidth:0,selectable:false,
+      onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/model')) } })
+    this.effort = this.text('', { id:'composer-effort',fg:p.accent,height:1,selectable:false,
+      onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/effort')) } })
+    modelControls.add(this.model); modelControls.add(this.effort)
     this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
     this.attachButton = this.text(ui('+ Attach', '+ 附件'), { id: 'attach-files', fg: p.muted, height: 1, marginRight: 2,
       selectable: false, onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/attach')) } })
-    meta.add(this.model); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
+    meta.add(modelControls); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
     const footerRow = new BoxRenderable(renderer, { width: '100%', height: 1, marginTop: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between', gap: 2 })
     this.footer = this.text('', { id: 'sync-status', height: 1, fg: p.muted, flexShrink: 1, minWidth: 0, selectable: false,
       onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/open')) } })
@@ -200,10 +207,14 @@ export class TuiScreen {
       : ui('Open web ↗ · reconnecting', '打开网页版 ↗ · 正在重连')
     this.footer.visible = this.renderer.width >= 46
     this.commandShortcut.content = ui('Commands · ctrl+p', '命令 · ctrl+p')
-    if (this.host) this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend) + (narrow ? '' : ' · ' + (this.host.effort ?? 'default'))
+    this.effort.visible = !narrow && !!this.host
+    if (this.host) {
+      this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend)
+      this.effort.content = ' · ' + (this.host.effort ?? 'default')
+    }
     this.syncCompanion()
     this.sizeCompletions()
-    if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu(false) }
+    if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu(false); this.modalRedraw?.() }
   }
 
   preferences(prefs: TerminalSettings) {
@@ -214,7 +225,7 @@ export class TuiScreen {
     this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
     this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
     this.attachButton.content = ui('+ Attach', '+ 附件'); this.attachButton.fg = p.muted; this.drawAttachments()
-    this.model.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.fg; this.permissions.fg = p.muted
+    this.model.fg = p.accent; this.effort.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.fg; this.permissions.fg = p.muted
     this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
     this.completions.backgroundColor = p.panel
     this.style.registerStyle('default', { fg: p.fg })
@@ -455,6 +466,51 @@ export class TuiScreen {
     panel.add(this.text(menu.detail ?? ui('scroll to browse · click to choose · ↑↓ enter · esc back', '滚轮浏览 · 点击选择 · ↑↓ enter · esc 返回'), { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
     this.filterMenu(); this.modalSearch.focus()
   }
+  effortSlider(title:string, levels:string[], current:string|null, save:(value:string|null)=>Promise<void>, defaultEffort?:string) {
+    if (!levels.length) {
+      this.document(title,ui('This model has no adjustable reasoning levels.','当前模型没有可调节的思考档位。'),[
+        {label:ui('Use model default','使用模型默认值'),run:()=>save(null)}
+      ]); return
+    }
+    const panel=this.modal(title)
+    let selected=levels.includes(current??'')?current:null
+    let index=Math.max(0,levels.indexOf(selected??defaultEffort??''))
+    let columns=1
+    const value=this.text('',{id:'effort-value',height:1,fg:this.palette.accent})
+    const choose=(next:number)=>{index=Math.max(0,Math.min(levels.length-1,next));selected=levels[index]!;draw()}
+    const submit=()=>{this.closeModal(false);this.run(save(selected))}
+    const track=this.text('',{id:'effort-slider',height:1,marginTop:1,selectable:false,
+      onMouseDown:event=>{if(event.button===0){event.preventDefault();choose(Math.round((event.x-track.x)/(columns-1)*(levels.length-1)));track.focus()}},
+      onMouseDrag:event=>{event.preventDefault();choose(Math.round((event.x-track.x)/(columns-1)*(levels.length-1)))},
+      onKeyDown:key=>{
+        if(!['left','right','up','down','home','end','d','return'].includes(key.name)||key.ctrl||key.meta)return
+        key.preventDefault();key.stopPropagation()
+        if(key.name==='return')submit()
+        else if(key.name==='d'){selected=null;index=Math.max(0,levels.indexOf(defaultEffort??''));draw()}
+        else choose(key.name==='home'?0:key.name==='end'?levels.length-1:index+(['right','up'].includes(key.name)?1:-1))
+      }
+    })
+    const range=this.text('',{height:1,fg:this.palette.muted})
+    const draw=()=>{
+      columns=Math.max(2,Math.min(74,this.renderer.width-8))
+      track.width=columns
+      value.content=selected??ui('Model default','模型默认')+(defaultEffort?' · '+defaultEffort:'')
+      const knob=Math.round(index/Math.max(1,levels.length-1)*(columns-1))
+      const stops=new Set(levels.map((_,i)=>Math.round(i/Math.max(1,levels.length-1)*(columns-1))))
+      track.content=new StyledText(Array.from({length:columns},(_,x)=>({__isChunk:true as const,
+        text:x===knob?'●':stops.has(x)?'◆':'━',fg:RGBA.fromHex(x<=knob?this.palette.accent:this.palette.muted)})))
+      range.content=levels[0]+'  →  '+levels.at(-1)
+    }
+    panel.add(value);panel.add(track);panel.add(range)
+    const actions=new BoxRenderable(this.renderer,{flexDirection:'row',gap:3,marginTop:1})
+    actions.add(this.text(ui('Default (D)','默认 (D)'),{id:'effort-default',height:1,selectable:false,onMouseDown:event=>{
+      if(event.button===0){selected=null;index=Math.max(0,levels.indexOf(defaultEffort??''));draw();track.focus()}
+    }}))
+    actions.add(this.text(ui('Confirm ↵','确认 ↵'),{id:'effort-confirm',fg:this.palette.accent,height:1,selectable:false,onMouseDown:event=>{if(event.button===0)submit()}}))
+    panel.add(actions)
+    panel.add(this.text(ui('drag / ← → adjust · enter save · esc cancel','拖动 / ← → 调节 · enter 保存 · esc 取消'),{fg:this.palette.muted,marginTop:1,wrapMode:'word'}))
+    this.modalRedraw=draw;track.focusable=true;draw();track.focus()
+  }
   private filterMenu() {
     const query = this.modalSearch?.value.toLowerCase() ?? ''
     this.modalItems = this.modalMenu?.items.filter(i => (i.label + ' ' + (i.detail ?? '') + ' ' + (i.search ?? '')).toLowerCase().includes(query)) ?? []
@@ -541,6 +597,7 @@ export class TuiScreen {
   }
   closeModal(cancelled = true) {
     const cancel = this.modalCancel; this.modalCancel = undefined
+    this.modalRedraw = undefined
     this.overlay?.destroyRecursively(); this.overlay = undefined; this.modalSearch = undefined
     this.modalPanel = undefined; this.modalRows = undefined; this.modalMenu = undefined; this.modalItems = []; this.draft?.focus()
     if (cancelled) cancel?.()

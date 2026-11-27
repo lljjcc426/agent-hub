@@ -73,7 +73,7 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | `/animation` | Toggle the small top-center companion; on by default, preference saved between launches |
 | `/compact` | Compact older context now, toggle automatic compaction, or change its threshold |
 | `/model` | Choose Router or Worker, then a specific Worker if needed, a connection and model |
-| `/effort` | Choose Router or Worker, then a supported reasoning level or `default` |
+| `/effort` | Choose Router or Worker, then click or drag a stepped reasoning slider; ←/→ also adjusts, Enter confirms, Esc cancels, and Default (D) selects the model default for confirmation |
 | `/plan` | Choose Plan (clarify requirements, then produce a detailed plan) or Act (normal conversation) |
 | `/permissions` | Select `ask` or `full` for the **shared account**; existing source sandbox limits still apply |
 | `/status` | Connection, shared conversation, model, permissions and loaded preference files |
@@ -86,6 +86,8 @@ Type a slash command to open a searchable picker. Arrow keys move, Enter selects
 | `/schedules` | Read, pause and resume scheduled actions |
 | `/history` | Search this conversation and load older messages |
 | `/approvals` | Review and answer pending permission requests without entering task IDs |
+
+Click the model name below the draft to open `/model`, or the adjacent reasoning level to open `/effort`. The reasoning slider includes only levels supported by the selected model, ordered from lowest to highest intensity. Dragging previews a change; Confirm or Enter saves it. Default (D), followed by confirmation, removes the explicit override. Models without adjustable levels show an explanation instead of a slider.
 
 Model and effort changes apply to the selected Router or Worker and are shared with the web. Router turns already accepted retain their captured model binding. Worker renaming changes its display name and preserves its identity and tasks. Permission changes affect the account's web and terminal sessions. The permission picker spells out this scope; full access requires a confirmation in the new interface. Terminal credentials use narrow settings endpoints and cannot submit arbitrary host configuration patches.
 

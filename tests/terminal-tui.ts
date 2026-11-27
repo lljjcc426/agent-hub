@@ -1,7 +1,7 @@
 // Run with the bundled Bun: npm run test:tui. The host suite remains on Node 22+.
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import type { ScrollBoxRenderable } from '@opentui/core'
+import type { ScrollBoxRenderable, TextRenderable } from '@opentui/core'
 import { createTestRenderer } from '@opentui/core/testing'
 import { TuiScreen, type TuiItem } from '../src/terminal/tui-screen.ts'
 import type { Snapshot } from '../src/terminal/client.ts'
@@ -63,6 +63,48 @@ try {
   assert.equal(commands.length, commandCount + 1, 'footer whitespace has no action')
   await test.mockMouse.click(commandNode.x + 1, commandNode.y)
   assert.equal(commands.at(-1), '/commands', 'only the Commands shortcut opens the palette')
+
+  screen.settings({model:'gpt-6-luna',effort:'xhigh',approvalMode:'ask'} as Parameters<TuiScreen['settings']>[0])
+  await test.renderOnce()
+  const modelNode=test.renderer.root.findDescendantById('composer-model')!
+  const effortNode=test.renderer.root.findDescendantById('composer-effort')!
+  await test.mockMouse.click(modelNode.x+10,modelNode.y)
+  assert.equal(commands.at(-1),'/model','model name opens model selection')
+  await test.mockMouse.click(effortNode.x+3,effortNode.y)
+  assert.equal(commands.at(-1),'/effort','reasoning level opens effort selection')
+  const afterSettingsClicks=commands.length
+  await test.mockMouse.click(effortNode.x+effortNode.width+1,effortNode.y)
+  assert.equal(commands.length,afterSettingsClicks,'space after reasoning level has no action')
+
+  const savedEfforts:(string|null)[]=[]
+  const openEffort=()=>screen.effortSlider('Router · Reasoning effort',['low','medium','high','xhigh'],'medium',async value=>{savedEfforts.push(value)},'high')
+  openEffort(); await capture('effort-slider')
+  const track=test.renderer.root.findDescendantById('effort-slider')!
+  await test.mockMouse.drag(track.x,track.y,track.x+track.width-1,track.y)
+  await test.renderOnce()
+  const effortValue=()=> (test.renderer.root.findDescendantById('effort-value') as TextRenderable).content.chunks.map(chunk=>chunk.text).join('')
+  assert.equal(effortValue(),'xhigh')
+  assert.equal(savedEfforts.length,0,'dragging previews the value without saving')
+  test.mockInput.pressKey('ARROW_LEFT');await test.renderOnce()
+  assert.equal(effortValue(),'high')
+  test.mockInput.pressEnter();await test.renderOnce()
+  assert.deepEqual(savedEfforts,['high'],'keyboard confirmation saves the chosen step')
+  openEffort();await test.renderOnce()
+  const reset=test.renderer.root.findDescendantById('effort-default')!
+  await test.mockMouse.click(reset.x+1,reset.y);await test.renderOnce()
+  assert.match(test.captureCharFrame(),/Model default · high/)
+  const confirm=test.renderer.root.findDescendantById('effort-confirm')!
+  await test.mockMouse.click(confirm.x+1,confirm.y);await test.renderOnce()
+  assert.deepEqual(savedEfforts,['high',null],'default clears the explicit reasoning override')
+  openEffort();await test.renderOnce()
+  test.resize(48,20);await test.renderOnce()
+  const narrowTrack=test.renderer.root.findDescendantById('effort-slider')!
+  assert.ok(narrowTrack.x+narrowTrack.width<=48,'slider fits a resized terminal')
+  await test.mockMouse.click(narrowTrack.x+narrowTrack.width-1,narrowTrack.y);await test.renderOnce()
+  assert.equal(effortValue(),'xhigh','resized slider keeps mouse positions aligned with steps')
+  test.mockInput.pressKey('ARROW_RIGHT');test.mockInput.pressKey('ESCAPE');await test.renderOnce()
+  assert.equal(savedEfforts.length,2,'Escape discards the preview')
+  test.resize(120,34);await test.renderOnce()
 
   await test.mockInput.pasteBracketedText('中文草稿 👩‍💻\n/permissions full')
   assert.equal(sent.length, 0, 'pasted commands are draft text')

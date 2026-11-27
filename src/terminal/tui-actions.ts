@@ -58,8 +58,8 @@ export class TuiCommands {
   }
   async complete(text: string): Promise<TuiItem[]> {
     if (/^\/[\w-]*$/.test(text)) {
-      const term = text.slice(1).toLowerCase()
-      return personalCommands().filter(c => (c.name + ' ' + c.label + ' ' + c.detail).toLowerCase().includes(term))
+      const prefix = text.toLowerCase()
+      return personalCommands().filter(c => c.name.startsWith(prefix))
         .map(c => ({ label: c.name, detail: c.detail, run: () => { this.screen.setDraft(''); return this.execute(c.name) } }))
     }
     const mention = /(?:^|\s)@(?:"([^"\n]*)|([^\s"@]*))$/.exec(text)

@@ -32,6 +32,21 @@ function fixture() {
   return { commands, requests, view, menu: () => menu, prompt: () => prompt, notice: () => notice,
     choose: async (label: string) => { const item = menu.items.find(i => i.label === label); expect(item, label).toBeDefined(); await item!.run() } }
 }
+it('narrows slash suggestions by command prefix as the user types and deletes', async () => {
+  const { commands } = fixture()
+  for (const [input, expected] of [
+    ['/', personalCommands().map(c => c.name)],
+    ['/e', ['/effort', '/exit']],
+    ['/ex', ['/exit']],
+    ['/exit', ['/exit']],
+    ['/exitx', []],
+    ['/ex', ['/exit']],
+    ['/e', ['/effort', '/exit']],
+    ['/', personalCommands().map(c => c.name)]
+  ] as const) {
+    expect((await commands.complete(input)).map(item => item.label), input).toEqual(expected)
+  }
+})
 it('selects an explicit Worker for model and effort changes and keeps Router as a separate target', async () => {
   const f = fixture()
   await f.commands.execute('/model'); expect(f.menu().items.map(i => i.label)).toEqual(['Router', 'Worker'])

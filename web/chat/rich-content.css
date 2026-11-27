@@ -27,9 +27,6 @@
 .assistant-body .message-attachments{justify-content:flex-start}
 .message-attachments .chat-attachment{max-width:320px;min-width:200px;text-decoration:none}
 .message-attachments .chat-attachment:hover{background:var(--c-hover)}
-.message-attachments .image-attachment{display:grid;grid-template-columns:minmax(0,1fr) auto;padding:6px;max-width:260px;min-width:120px}
-.image-attachment>img{grid-column:1/-1;width:100%;max-height:200px;object-fit:contain;border-radius:8px;background:var(--c-hover)}
-.image-attachment>.attachment-info{padding:4px 6px}.image-attachment>svg{margin-right:6px}
 .composer[data-dragging=true]{border-color:var(--c-text);background:var(--c-hover)}
 .attach-button{margin-right:2px}
 @media(max-width:700px){.draft-attachment{width:100%}.message-attachments .chat-attachment{min-width:0;width:100%;max-width:280px}.message th,.message td{padding:8px 10px}.composer-toolbar .model-link{max-width:calc(100% - 82px)}}

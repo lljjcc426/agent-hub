@@ -276,7 +276,7 @@ export async function command(client: TerminalClient, id: string, input: string)
 
 export function runResult(view: Snapshot, runId: string, status: string) {
   const messages = view.messages.filter(
-    (m) => m.runId === runId && m.role === 'assistant' && !m.opening && !m.commentary && !m.recipient && m.status !== 'streaming'
+    (m) => m.runId === runId && m.role === 'assistant' && !m.opening && !m.commentary && !m.imageShare && !m.recipient && m.status !== 'streaming'
   )
   const router = messages.filter((m) => m.speaker?.kind !== 'worker').at(-1)
   const deliveries = view.deliveries

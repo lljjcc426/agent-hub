@@ -18,22 +18,23 @@ function fileSize(bytes: number) {
       ? Number((bytes / 1024).toFixed(1)) + ' KB'
       : Number((bytes / 1024 ** 2).toFixed(1)) + ' MB'
 }
-export function DeliveryFileCard({ file, onOpen, L }: {
+export function ImagePreviewButton({ file, onOpen, L }: {file:DeliveryFile;onOpen:()=>void;L:Localize}) {
+  return <button type="button" className="chat-image-preview" onClick={onOpen} aria-label={L('Preview image ', '预览图片 ')+file.name}>
+    <img loading="lazy" alt={file.name} src={file.previewHref ?? file.href} />
+  </button>
+}
+export function DeliveryFileCard({ file, onOpen, L, compactImage=false }: {
   file: DeliveryFile
   onOpen: () => void
   L: Localize
+  compactImage?:boolean
 }) {
+  if(compactImage&&file.preview==='image')return <ImagePreviewButton file={file} onOpen={onOpen} L={L}/>
   const download=L('Download ', '下载 ')+file.name
   const label=(file.revealHref?L('Show in Finder ', '在 Finder 中显示 '):L('Open file ', '打开文件 '))+file.name
   const content=<>
       <span className="file-stamp" aria-hidden="true">
-        {file.preview === 'image' ? (
-          <img
-            loading="lazy"
-            alt=""
-            src={file.previewHref ?? file.href}
-          />
-        ) : file.excerpt ? (
+        {file.preview==='image' ? <img loading="lazy" alt="" src={file.previewHref ?? file.href}/> : file.excerpt ? (
           <span className="file-page">
             <b>{file.name.split('.').at(-1)?.toUpperCase()}</b>
             {file.excerpt}
@@ -93,9 +94,10 @@ function FileContents({ file, L }: { file: DeliveryFile; L: Localize }) {
   return <pre>{content}</pre>
 }
 
-export function DeliveryFileViewer({ file, onClose, L }: {
+export function DeliveryFileViewer({ file, onClose, onReveal, L }: {
   file: DeliveryFile
   onClose: () => void
+  onReveal?:()=>void
   L: Localize
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -109,6 +111,7 @@ export function DeliveryFileViewer({ file, onClose, L }: {
     <dialog
       ref={dialog}
       className="team-file-dialog"
+      data-preview={file.preview ?? undefined}
       onCancel={onClose}
       onKeyDown={(e) => {
         if (e.key === 'Escape') e.stopPropagation()
@@ -135,6 +138,7 @@ export function DeliveryFileViewer({ file, onClose, L }: {
         </div>
         <footer>
           <span>{fileSize(file.size)}</span>
+          {onReveal&&<button type="button" className="rp-icon-button icon-button" title={L('Show in Finder', '在 Finder 中显示')} aria-label={L('Show in Finder', '在 Finder 中显示')} onClick={onReveal}><FolderOpen size={16}/></button>}
           <a className="delivery-download" href={file.href} download={file.name}>
             <ArrowDownToLine size={16} />
             {L('Download', '下载')}

@@ -2,6 +2,7 @@ import {useState} from 'react'
 import {useAui,useAuiState,type AttachmentAdapter,type CompleteAttachment,type PendingAttachment} from '@assistant-ui/react'
 import {Download,FileText,LoaderCircle,X} from 'lucide-react'
 import type {ChatAttachment} from '../../src/chat-attachments.ts'
+import {ImagePreviewButton,type DeliveryFile} from '../ui/delivery-files.tsx'
 
 type Localize=(en:string,zh:string)=>string
 export function attachmentParts(file:ChatAttachment):CompleteAttachment {
@@ -47,12 +48,17 @@ export function createAttachmentAdapter(conversation:()=>Promise<string>,maxByte
     },
   }
 }
-export function MessageAttachments({files,L}:{files:ChatAttachment[];L:Localize}){
+export function MessageAttachments({files,L,onPreview}:{files:ChatAttachment[];L:Localize;onPreview:(file:DeliveryFile)=>void}){
   if(!files.length)return null
-  return <div className="message-attachments">{files.map(file=><a key={file.id} className={'chat-attachment'+(file.previewUrl?' image-attachment':'')} href={file.url} download={file.name} title={L('Download ','下载 ')+file.name}>
-    {file.previewUrl?<img src={file.previewUrl} alt={file.name} loading="lazy"/>:<FileText size={22}/>}
-    <span className="attachment-info"><strong>{file.name}</strong><span>{file.bytes<1024?file.bytes+' B':file.bytes<1048576?Math.ceil(file.bytes/1024)+' KB':(file.bytes/1048576).toFixed(1)+' MB'}</span></span><Download size={15}/>
-  </a>)}</div>
+  return <div className="message-attachments">{files.map(file=>{
+    if(file.previewUrl&&file.mimeType?.startsWith('image/')){
+      const preview:DeliveryFile={name:file.name,size:file.bytes,preview:'image',href:file.url,previewHref:file.previewUrl}
+      return <ImagePreviewButton key={file.id} file={preview} onOpen={()=>onPreview(preview)} L={L}/>
+    }
+    return <a key={file.id} className="chat-attachment" href={file.url} download={file.name} title={L('Download ','下载 ')+file.name}>
+      <FileText size={22}/><span className="attachment-info"><strong>{file.name}</strong><span>{file.bytes<1024?file.bytes+' B':file.bytes<1048576?Math.ceil(file.bytes/1024)+' KB':(file.bytes/1048576).toFixed(1)+' MB'}</span></span><Download size={15}/>
+    </a>
+  })}</div>
 }
 export function DraftAttachment({L}:{L:Localize}){
   const aui=useAui(),attachment=useAuiState(s=>s.attachment),[removing,setRemoving]=useState(false),[error,setError]=useState('')

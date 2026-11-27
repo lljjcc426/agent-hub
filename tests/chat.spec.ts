@@ -1243,6 +1243,84 @@ it('stops commentary after cancellation without changing the previously visible 
  await settle(h,()=>h.chat.view(c.id,'owner').messages.some(m=>m.commentary&&m.status==='interrupted'))
  expect(h.chat.view(c.id,'owner').messages.slice(1)).toMatchObject([{commentary:true,text:'Checking the result.',status:'interrupted'}])
 })
+const chatImage=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE9sAAAAASUVORK5CYII=','base64')
+
+it('publishes image-only and captioned Router messages in order before its final answer',async()=>{
+ let finish!:()=>void
+ const pending=new Promise<void>(resolve=>{finish=resolve})
+ const f=fixture(async r=>{
+  const send=(args:unknown)=>r.onTool!('chat_send_images',args,randomUUID())
+  expect(r.tools?.some(tool=>tool.name==='chat_send_images')).toBe(true)
+  const rejected=await send({requestId:'invalid',images:['panel.png','not-an-image.png']})
+  expect(rejected.success).toBe(false)
+  expect(f.h.store.list('chat-delivery')).toHaveLength(0)
+  const first={requestId:'panel',images:['panel.png'],caption:'The **header** is ready.'}
+  const sent=await send(first)
+  expect(sent.success).toBe(true)
+  expect(await send(first)).toEqual(sent)
+  expect((await send({...first,caption:'A different message'})).success).toBe(false)
+  expect((await send({requestId:'without-text',images:['panel.png']})).success).toBe(true)
+  await pending
+  return {reply:'Layout checked.'}
+ }),c=f.h.chat.create('owner')
+ writeFileSync(join(f.root,'panel.png'),chatImage)
+ writeFileSync(join(f.root,'not-an-image.png'),'plain text')
+ const {runId}=send(f.h,c.id,'Check the page layout')
+ let positions:{id:string;sequence:number}[]=[]
+ try{
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.filter(m=>m.imageShare).length===2)
+  const visible=f.h.chat.view(c.id,'owner').messages.filter(m=>m.imageShare)
+  expect(visible).toMatchObject([
+   {text:'The **header** is ready.',runId,attachments:[{name:'panel.png',mimeType:'image/png',bytes:chatImage.length}]},
+   {text:'',runId,attachments:[{name:'panel.png',mimeType:'image/png'}]},
+  ])
+  expect(f.h.chat.hasVisibleAnswer(runId)).toBe(false)
+  positions=visible.map(({id,sequence})=>({id,sequence}))
+ }finally{finish()}
+ await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.at(-1)?.text==='Layout checked.')
+ expect(f.h.chat.view(c.id,'owner').messages.filter(m=>m.imageShare).map(({id,sequence})=>({id,sequence}))).toEqual(positions)
+ expect(f.h.chat.view(c.id,'owner').messages.at(-1)?.attachments).toBeUndefined()
+ hosts.splice(hosts.indexOf(f.h),1);await f.h.close()
+ const restarted=new Runtime(f.config,{model:f.model});hosts.push(restarted)
+ expect(restarted.chat.view(c.id,'owner').messages.filter(m=>m.imageShare).map(({id,sequence})=>({id,sequence}))).toEqual(positions)
+})
+
+it('only publishes the screenshot the active Worker explicitly sends into its own Chat',async()=>{
+ let finish!:()=>void
+ const pending=new Promise<void>(resolve=>{finish=resolve})
+ let sharedId='',privateId=''
+ const f=fixture(async r=>{
+  if(r.role==='worker'){
+   const ticketId=r.activity!.ticketId!,assignmentId=f.h.store.tickets.get(ticketId)!.assignments.at(-1)!.id
+   const browserOwner={ticketId,assignmentId,cwd:r.cwd,sandbox:'read-only' as const,depth:0}
+   const screenshot=f.h.browser.saveCapture(browserOwner,'image/png',chatImage)
+   sharedId=screenshot.id
+   privateId=f.h.browser.saveCapture(browserOwner,'image/png',chatImage).id
+   const forged={...screenshot,id:randomUUID(),conversationId:other.id}
+   f.h.store.put('asset',forged.id,forged)
+   expect((await r.onTool!('chat_send_images',{requestId:'wrong-chat',images:[forged.resource.replace(screenshot.id,forged.id)]},'wrong')).success).toBe(false)
+   expect((await r.onTool!('chat_send_images',{requestId:'current-page',images:[screenshot.resource]},'publish')).success).toBe(true)
+   await pending
+   return report
+  }
+  if(JSON.parse(r.input).kind==='worker_result')return {reply:'Research finished.'}
+  await assignFileWork(r,'Check the page layout')
+  return {reply:'Research is checking the layout.'}
+ }),c=f.h.chat.create('owner'),other=f.h.chat.create('another-owner')
+ send(f.h,c.id,'Check the page layout with Research')
+ try{
+  await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.some(m=>m.imageShare))
+  expect(f.h.chat.view(c.id,'owner').messages.filter(m=>m.imageShare)).toMatchObject([
+   {text:'',speaker:{id:'research',kind:'worker'},attachments:[{id:sharedId,mimeType:'image/png'}]},
+  ])
+  expect(f.h.chat.view(other.id,'another-owner').messages).toEqual([])
+  expect(f.h.chat.view(c.id,'owner').messages.some(m=>m.attachments?.some(a=>a.id===privateId))).toBe(false)
+ }finally{finish()}
+ await settle(f.h,()=>f.h.chat.view(c.id,'owner').messages.some(m=>m.text==='Worker result'))
+ const visible=f.h.chat.view(c.id,'owner').messages
+ expect(visible.filter(m=>m.attachments?.some(a=>a.id===sharedId))).toHaveLength(1)
+ expect(visible.some(m=>m.attachments?.some(a=>a.id===privateId))).toBe(false)
+})
 it('mutes a buffered commentary as soon as its conversation owner switches modes',async()=>{
  const {h}=fixture(),c=h.chat.create('owner'),{runId}=send(h,c.id)
  h.chat.setProgressMode('owner','autonomous')

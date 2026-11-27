@@ -100,9 +100,11 @@ export class ChatDeliveries {
     published: boolean,
     origin: { runId: string; ticketId?: string; workerId?: string },
     originalPath?: string,
+    imageMime?: string,
   ) {
     const ext = extname(name).toLowerCase(),
-      preview = images[ext] ? 'image' : textFiles.has(ext) ? 'text' : null
+      mime = imageMime ?? images[ext],
+      preview = mime ? 'image' : textFiles.has(ext) ? 'text' : null
     const item: ChatDelivery = {
       id: randomUUID(),
       conversationId,
@@ -111,7 +113,7 @@ export class ChatDeliveries {
       size: bytes.length,
       preview,
       ...(preview === 'text' ? { excerpt: bytes.subarray(0, 800).toString('utf8').slice(0, 240) } : {}),
-      mime: images[ext] ?? (preview === 'text' ? 'text/plain' : 'application/octet-stream'),
+      mime: mime ?? (preview === 'text' ? 'text/plain' : 'application/octet-stream'),
       createdAt: Date.now(),
     }
     this.host.store.put('chat-delivery', item.id, { ...item, published, ...(originalPath ? {originalPath, sha256:createHash('sha256').update(bytes).digest('hex')} : {}) })
@@ -120,6 +122,9 @@ export class ChatDeliveries {
   }
   text(conversationId: string, runId: string, name: string, content: string, published = true) {
     return this.save(conversationId, name, Buffer.from(content), published, { runId })
+  }
+  image(conversationId:string,origin:{runId:string;ticketId?:string;workerId?:string},name:string,bytes:Buffer,mime:string) {
+    return this.save(conversationId,name,bytes,true,origin,undefined,mime)
   }
   retain(conversationId:string,runId:string,source:{name:string;size:number},reference:RetainedChatFile,local:boolean){
     const item:ChatDelivery={id:randomUUID(),conversationId,runId,name:source.name,size:source.size,preview:null,retained:true,

@@ -5,6 +5,7 @@ import type {IncomingMessage,ServerResponse} from 'node:http'
 import type {ChatSessions} from './chat.ts'
 import {basename} from 'node:path'
 import {ChatError} from './chat-errors.ts'
+import {imagePreviewMime} from './chat-images.ts'
 
 type RetainedDelivery=NonNullable<Awaited<ReturnType<ChatSessions['retainedDelivery']>>>
 const run=promisify(execFile)
@@ -24,7 +25,7 @@ function byteRange(header:string,size:number){
  return {start:offset,end}
 }
 
-export async function sendRetainedDelivery(req:IncomingMessage,res:ServerResponse,entry:RetainedDelivery){
+export async function sendRetainedDelivery(req:IncomingMessage,res:ServerResponse,entry:RetainedDelivery,preview=false){
  const file='file' in entry?entry.file:undefined
  const size=entry.item.size,etag='"'+entry.reference.sha256+'"'
  try{
@@ -35,10 +36,19 @@ export async function sendRetainedDelivery(req:IncomingMessage,res:ServerRespons
    'content-security-policy':"default-src 'none'; sandbox",
   }
   if(requested&&!range){res.writeHead(416,{...headers,'content-range':'bytes */'+size}).end();return}
+  let mime:string|undefined
+  if(preview){
+   if('bytes' in entry&&entry.bytes)mime=imagePreviewMime(entry.bytes)
+   else if(file){
+    const header=Buffer.alloc(12),{bytesRead}=await file.handle.read(header,0,header.length,0)
+    await file.verify()
+    mime=imagePreviewMime(header.subarray(0,bytesRead))
+   }
+  }
   const start=range?.start??0,end=range?.end??size-1
   res.writeHead(range?206:200,{
-   ...headers,'content-length':end-start+1,'content-type':'application/octet-stream',
-   'content-disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(entry.item.name),
+   ...headers,'content-length':end-start+1,'content-type':mime??'application/octet-stream',
+   'content-disposition':(mime?'inline':'attachment')+"; filename*=UTF-8''"+encodeURIComponent(entry.item.name),
    ...(range?{'content-range':`bytes ${start}-${end}/${size}`}:{}),
   })
   if(req.method==='HEAD'||size===0){res.end();return}

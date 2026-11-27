@@ -14,6 +14,7 @@ import {chatReactionSpec} from './chat-interactions.ts'
 import {chatReplyPreferences} from './chat-personalization.ts'
 import {collectFeishuGroupMessage,flushDueFeishuGroupMessages} from './feishu-group-inbox.ts'
 import {publicPlanTool,decisionTool} from './chat-workflow.ts'
+import {chatSendImagesTool} from './chat-images.ts'
 import {chatOpeningSchema,chatOpeningTool,chatStatusTool,firstReplyInstructions,firstReplySchema} from './chat-status.ts'
 import {codeModeTool,withCodeMode} from './code-mode.ts'
 import {isParallelRead,isReadOnlyOperation,ToolDispatch} from './tool-dispatch.ts'
@@ -923,7 +924,7 @@ export class Runtime {
     if(item.agentId)this.store.put('agent-input',item.id,{agentId:item.agentId,...message,read:false})
     else {const prior=this.store.tickets.get(item.ticketId)?.inputs.map(i=>i.id)??[];this.engine.note(item.ticketId,JSON.stringify(message));allowNewTaskInputs(this.store,item.ticketId,prior)}
   }
-  routerToolCatalog(){return [chatStatusTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
+  routerToolCatalog(){return [chatStatusTool,chatSendImagesTool,...managementSpecs,routerReadSpec,chatReactionSpec,...chatArtifactSpecs,...(this.config.execution.teamTargets?.length?teamSpecs:[]),...candidateSpecs,...followupSpecs,...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]}
   availableWorkerSpecs({githubConnector=true,network=true,localOutputs=false}:{githubConnector?:boolean;network?:boolean;localOutputs?:boolean}={}){
     return workerSpecs.filter(s=>(this.config.work.sandboxDriver!=='disabled'||s.name!=='superagent_shell')&&
       (s.name!=='superagent_artifact'||localOutputs||this.delegation.enabled)&&
@@ -1441,7 +1442,7 @@ export class Runtime {
     if(browserRun&&scoped&&admittedMandate?.strength==='explicit'&&!permissionId&&!fileReviewId&&!teamResultId)this.revalidateChatWorkerHolds(scoped)
     const replyPreferences = browserOwner ? chatReplyPreferences(this.store,browserOwner) : undefined
     const tools=(followups?followupSpecs:[...(candidates?candidateSpecs:[]),...managementSpecs,routerReadSpec,...artifactTools,
-      ...(chatBinding?[chatReactionSpec,decisionTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),
+      ...(chatBinding?[chatReactionSpec,decisionTool,chatSendImagesTool]:[]),...(this.config.execution.teamTargets?.length?teamSpecs:[]),
       ...(scoped?[...memoryToolSpecs,...skillSpecs,...proactiveSpecs,...knowledgeSpecs,...journalSpecs,...goalSpecs]:[])])
       .map(fullAccess?withoutPendingNotice:withPendingNotice)
     const allowedTools=new Set(tools.map(tool=>tool.name))
@@ -1620,6 +1621,10 @@ export class Runtime {
             if(packet)this.memory.validate(packet.manifest)
             if(artifactTools.some(spec=>spec.name===name))
               return this.chat.artifactTool(triggerId,name,args,validateReplyContext,controller.signal)
+            if(name===chatSendImagesTool.name&&chatBinding){
+              validateReplyContext()
+              return this.chat.sendImages({triggerId},source.cwd,args)
+            }
             if(name===decisionTool.name&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.requestDecision(triggerId,args))}]}
             if(name==='chat_react'&&chatBinding)return {success:true,contentItems:[{type:'inputText',text:JSON.stringify(this.chat.reactAsRouter(triggerId,args))}]}
             if(name==='router_read'){
@@ -2424,6 +2429,7 @@ export class Runtime {
       const specs=this.taskWorkerSpecs({localOutputs,delegatedTask:!!delegatedTask,builtInChat,managedGoal:!!projectGoal?.managed,
         workspaceBrowser:builtInChat&&!!this.chat.taskWorkspaceBrowser(ticket.id),githubConnector:!!chatActor&&this.github.connected(),
         network:owner.network!==false&&!delegatedTask})
+      if(chatDelivery)specs.push(chatSendImagesTool)
       const toolsDigest=digest(JSON.stringify(fullAccess?specs.map(withoutPendingNotice):specs))
       const toolsChanged=!!saved?.threadId&&(run.toolsVersion!==5||run.toolsDigest!==toolsDigest)
       if(!this.validWork(owner))throw Error('Assignment authority ended before model execution')
@@ -2496,9 +2502,14 @@ export class Runtime {
         model:saved?.threadId?undefined:saved?.rebuild?saved.model:dispatch?.profile.model??(this.config.execution.workers?undefined:this.config.models.worker),
         title: ticket.title, cwd: run.cwd, sandbox: source.sandbox, threadId: saved?.threadId, schema: delegated?.mode==='client'?{...schema,properties:{...schema.properties,handbacks:{...schema.properties.handbacks,maxItems:0}}}:schema,archiveOnComplete:true,
         webFetchReplay:saved?.webFetchReplay,
-        instructions:builtInChat?instructions+(fullAccess?'':'\n'+permissionInstructions+' '+nativePermissionInstructions)+'\nNative questions return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Use chatFiles for uploaded originals and read-only files assigned by the Router. Check missingChatFiles for any selected inputs the host could not open. If an input is missing, give the Router its exact file ID or source task and relative path. Use available evidence to continue when possible. Use superagent_shell for binary inputs. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. Scheduling and user notifications belong to the Router.':instructions,
-        managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path),...readableFiles.map(file=>file.path)],tools:specs,onTool:(name,args)=>{
+        instructions:builtInChat?instructions+(fullAccess?'':'\n'+permissionInstructions+' '+nativePermissionInstructions)+'\nNative questions return empty answers while their card is pending. On a native_question_answer input request that same question to receive the answer without redoing earlier work.\nFor writes outside the task sandbox, use superagent_shell with the exact existing parent directory in writePaths on the initial call. If the OS rejects a plain workspace-only attempt, request that directory through writePaths. Use chatFiles for uploaded originals and read-only files assigned by the Router. Check missingChatFiles for any selected inputs the host could not open. If an input is missing, give the Router its exact file ID or source task and relative path. Use available evidence to continue when possible. Use superagent_shell for binary inputs. Create the final files in the task workspace, check the shell exit status and confirm that each file exists there before returning its relative path in files. This files field is the handoff to Chat; the host retains the exact bytes and publishes them after acceptance. For an image or image with text you explicitly want the user to see during the task, use chat_send_images when available. The Router handles scheduling and other user notifications.':instructions,
+        managed:true,privateState:this.config.stateDir,attachments:[...this.chat.uploads.taskPaths(ticket.id),...handoffFiles.map(file=>file.path),...readableFiles.map(file=>file.path)],tools:specs,onTool:async(name,args)=>{
           if(!isParallelRead(name)&&name!=='superagent_status')toolInvoked=true
+          if(name===chatSendImagesTool.name&&chatDelivery){
+            controller.signal.throwIfAborted()
+            if(!currentWorkerAttempt(this,attempt)||!this.validWork(owner))throw Error('Assignment authority ended before sending images')
+            return this.chat.sendImages({ticketId:ticket.id},run.cwd,args,assignmentId)
+          }
           return this.workerTools.call(owner,name,args,undefined,attempt,controller.signal,true)
         },onCapabilities:cap=>{if(currentWorkerAttempt(this,attempt))this.store.put('capabilities',ticket.id,{ticketId:ticket.id,...cap})},
         input: JSON.stringify({...(previousInquiries.length?{unansweredInquiries:previousInquiries}:{}),...(handoffInput?{chatFileHandoffEvidence:handoffInput}:{}),...(permissionReceipts.length?(fullAccess?{operationResults:permissionReceipts.map(operationResult)}:{permissionReceipts}):{}),...(chatFiles.length?{chatFiles}:{}),...(missingChatFiles.length?{missingChatFiles}:{}),...(recentFiles.length?{recentChatFiles:{openWith:'chat_artifact_open',files:recentFiles,usage:'Open a matching ID directly. For a diagnostic, trace the visible error through the failing entry point to its actual inputs and build-specific configuration. Test the explanation against another observation. For archives, use the shell to read selected app-owned members in place; avoid dumping the full archive index or vendor dependencies.'}}:{}),...(toolsChanged?{toolsChanged:{notice:'This activation has updated tools and schemas. Reassess earlier capability blockers using the current tool definitions before asking for user intervention. Continue the retained task; do not repeat completed effects.',tools:specs.map(({name,description})=>({name,description}))}}:{}),...(phaseInput?{phaseHandoff:phaseInput}:saved?.rebuild?{handoff:this.store.get('context-handoff',saved.rebuild),notice:'Explicit context rebuild. This is the same task and reviewed workspace. Only the current authorized mandate and permitted inputs are included. Retained effect identities prevent duplicate execution; old text is quarantined when permissions changed.'}:{}), ...(saved?.migration?{migration:this.store.get('worker-migration',saved.migration),notice:'Continue this logical task in a new backend session. Inspect prior results and artifacts; never repeat completed effects blindly.'}:{}),sourceContext, mandate: ticket.mandate, connectionCheck:this.connectionCheck(ticket.origin.triggerIds.map(id=>this.store.triggers.get(id)).filter((t):t is Trigger=>!!t)), relatedThreads:ticket.follows, ...(!saved ? { origin: ticket.origin.triggerIds.map(id => this.store.triggers.get(id)) } : {}), inputs:this.workerModelInputs(phaseInputs(inputs,ticket.id,phaseInput?.inputId),fullAccess) }),

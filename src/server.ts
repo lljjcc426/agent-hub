@@ -753,7 +753,7 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
         const acceptance=z.string().min(1).max(500).optional().parse(query.get('acceptance')??undefined)
         const retained=!acceptance&&await runtime.chat.retainedDelivery(delivery[1]!,owner,delivery[2]!)
         if(retained){
-          try{await sendRetainedDelivery(req,res,retained)}catch(error){if(!res.headersSent)throw error;res.destroy()}
+          try{await sendRetainedDelivery(req,res,retained,query.get('preview')==='1')}catch(error){if(!res.headersSent)throw error;res.destroy()}
           return
         }
         const {item,bytes}=runtime.chat.delivery(delivery[1]!,owner,delivery[2]!,acceptance)

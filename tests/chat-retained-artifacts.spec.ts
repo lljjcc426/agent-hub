@@ -435,3 +435,31 @@ it('captures Worker downloads beyond the upload limit with their exact version',
  expect(h.store.get('chat-delivery',file!.id)).toMatchObject({originalPath:'large.zip',size:100*1024*1024+1,sha256:expect.stringMatching(/^[a-f0-9]{64}$/)})
  expect(h.store.db.prepare('SELECT length(bytes) n FROM chat_delivery_bytes WHERE id=?').get(file!.id)?.n).toBe(100*1024*1024+1)
 })
+
+it('previews the verified original of a retained raster image and keeps the separate download',async()=>{
+ const {h,chat,owner,send,assign}=fixture(async()=>({reply:'Done'}))
+ const build=send('Prepare the panel'),{ticketId}=await assign(build.runId,'build','Prepare the panel')
+ const cwd=managedWorkspacePath(h.config.stateDir,ticketId),name='panel.png'
+ const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE9sAAAAASUVORK5CYII=','base64')
+ mkdirSync(cwd,{recursive:true});writeFileSync(join(cwd,name),image)
+ h.store.put('run',ticketId,{ticketId,assignmentId:h.store.tickets.get(ticketId)!.assignments.at(-1)!.id,cwd,phase:'idle',workerId:'build'})
+ const deliveries=new ChatDeliveries(h),[source]=deliveries.capture(chat.id,build.runId,ticketId,'build',cwd,[name])
+ h.chat.publishFiles(ticketId,[source!.id])
+ h.engine.stopTicket(ticketId,'Image already delivered')
+ h.store.jobState('router:'+build.runId,'done')
+ const request=send('Inspect the composition')
+ const lookup=h.chat.retained.find(request.runId,{query:name}).items.find(item=>item.name===name)!
+ expect((await h.chat.artifactTool(request.runId,'chat_artifact_deliver',{id:lookup.id},()=>{})).success).toBe(true)
+ const file=deliveries.list(chat.id).find(item=>item.runId===request.runId&&item.retained)!
+ const host=await serve(h);listeners.push(host)
+ const headers={authorization:'Bearer '+readFileSync(join(h.config.stateDir,'access-token'),'utf8').trim()}
+ const url=host.url+'/api/chat/conversations/'+chat.id+'/deliveries/'+file.id
+ const preview=await fetch(url+'?preview=1',{headers})
+ expect(preview.headers.get('content-type')).toBe('image/png')
+ expect(preview.headers.get('content-disposition')).toMatch(/^inline;/)
+ expect(Buffer.from(await preview.arrayBuffer())).toEqual(image)
+ const download=await fetch(url,{headers})
+ expect(download.headers.get('content-disposition')).toMatch(/^attachment;/)
+ expect(Buffer.from(await download.arrayBuffer())).toEqual(image)
+ expect(h.chat.view(chat.id,owner).messages.some(message=>message.deliveries?.some(item=>item.id===file.id))).toBe(true)
+})

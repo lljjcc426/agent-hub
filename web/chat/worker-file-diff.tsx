@@ -137,7 +137,7 @@ function PatchVersion({file,conversationId,expanded,split,wrap,L}:{
 const patchUrl=(conversation:string,id:string)=>'/api/chat/conversations/'+encodeURIComponent(conversation)+'/patches/'+encodeURIComponent(id)
 
 export function DetailedFile({change,conversationId,initial,focus,openFile,L}:{
-  change:ChangedFile;conversationId:string;initial:boolean;focus?:number;openFile:(path:string)=>void;L:Localize
+  change:ChangedFile;conversationId:string;initial:boolean;focus?:number;openFile:(path:string,patch?:string)=>void;L:Localize
 }){
   const [expanded,setExpanded]=useState(initial),[wrap,setWrap]=useState(true),[split,setSplit]=useState(false)
   const [picked,setPicked]=useState<number>(),[error,setError]=useState('')
@@ -150,12 +150,12 @@ export function DetailedFile({change,conversationId,initial,focus,openFile,L}:{
   },[focus])
   const openWith=async(action:string)=>{
     setError('')
-    if(action==='files'){openFile(file.path);return}
+    if(action==='files'){openFile(file.path,file.id);return}
     const href=file.id?patchUrl(conversationId,file.id):undefined
     if(action==='finder'||action==='textedit'){
       try{
         const url=action==='finder'?'/api/chat/conversations/'+encodeURIComponent(conversationId)+'/workbench/reveal':href+'/open'
-        const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(action==='finder'?{path:file.path}:{})})
+        const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(action==='finder'?{path:file.path,patch:file.id}:{})})
         if(!res.ok)throw Error()
       }catch{setError(L('Could not open this file.','未能打开此文件。'))}
       return

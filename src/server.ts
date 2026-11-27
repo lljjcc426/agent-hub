@@ -70,7 +70,8 @@ import {PersonalAccount,AccountError,setupAccountSchema,loginAccountSchema,recov
 import {accountPage} from './ui/account.ts'
 import {chatPage,chatAsset} from './ui/chat-page.ts'
 import {ChatError} from './chat.ts'
-import {openWorkerPatch,sendWorkerPatch,revealRetainedDelivery,sendRetainedDelivery} from './chat-file-http.ts'
+import {listWorkbenchFiles,readWorkbenchFile} from './chat-workbench-files.ts'
+import {openWorkerPatch,sendWorkerPatch,revealLocalFile,revealRetainedDelivery,sendRetainedDelivery} from './chat-file-http.ts'
 import {heartbeatChange} from './heartbeat.ts'
 import {changeChatPersonalization,chatPersonalizationChange} from './chat-personalization.ts'
 import {chatUploadLimits} from './chat-attachments.ts'
@@ -723,6 +724,21 @@ export async function serve(runtime: Runtime,options:{configurationPreview?:bool
       if(path==='/api/chat/conversations'){
         if(req.method==='GET'){send(res,200,{conversations:runtime.chat.list(owner,query.get('archived')==='true')});return}
         if(req.method==='POST'){send(res,201,runtime.chat.create(owner));return}
+      }
+      const workbench=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/workbench\/(files|file|reveal)$/)
+      if(workbench){
+        const id=workbench[1]!,action=workbench[2]!
+        if(req.method!==(action==='reveal'?'POST':'GET')){send(res,405,{code:'method_not_allowed'});return}
+        if(action==='files'){send(res,200,await listWorkbenchFiles(runtime.chat.workbenchRoot(id,owner)));return}
+        if(action==='reveal'&&(!local||process.platform!=='darwin'||req.headers.origin!==requestOrigin||req.headers.forwarded||req.headers['x-forwarded-for']||req.headers['x-real-ip'])){
+          send(res,403,{code:'local_host_required'});return
+        }
+        const input=z.object({path:z.string().min(1).max(4096),patch:z.string().uuid().optional()}).strict()
+          .parse(action==='reveal'?await operatorBody(req):Object.fromEntries(query))
+        const file=await runtime.chat.workbenchFile(id,owner,input.path,input.patch)
+        if(action==='reveal'){await revealLocalFile(file);send(res,200,{revealed:true})}
+        else send(res,200,await readWorkbenchFile(file))
+        return
       }
       const patch=path.match(/^\/api\/chat\/conversations\/([a-f0-9-]{36})\/patches\/([a-f0-9-]{36})(\/open)?$/)
       if(patch){

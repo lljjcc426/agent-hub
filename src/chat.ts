@@ -47,7 +47,12 @@ import {messageText,normalizeExcerpt,isReaction,chatReactionSchema,type AgentRea
 import {taskActivities,type ChatTask} from './chat-task-activity.ts'
 import {taskExecutionDetail,type TaskExecutionDetail} from './chat-task-detail.ts'
 import {retainedGoalDelivery} from './goal-acceptance.ts'
-import {basename,join} from 'node:path'
+import {basename,isAbsolute,join,relative,resolve,sep} from 'node:path'
+import {setupWorkspace} from './onboarding.ts'
+import {managedWorkspacePath} from './workspace.ts'
+import {projectWorkspace} from './project-code.ts'
+import {openWorkbenchFile,unavailableFile,withinWorkspace} from './chat-workbench-files.ts'
+import type {WorkItem} from './work.ts'
 import {splitWorkerPatch,type WorkerFilePatch} from './worker-patch.ts'
 export type {WorkerFilePatch} from './worker-patch.ts'
 import {commitRepository,localCommitHistory,type ChatCommitHistory} from './chat-commit-trail.ts'
@@ -1108,12 +1113,44 @@ export class ChatSessions {
   }
   workerPatch(conversationId:string,owner:string,id:string){
     const conversation=this.get(conversationId,owner)
-    const patch=this.host.store.get<{conversationId:string;messageId:string;path:string;text:string}>('chat-worker-patch',id)
+    const patch=this.host.store.get<{conversationId:string;messageId:string;ticketId:string;path:string;text:string}>('chat-worker-patch',id)
     if(!patch||patch.conversationId!==conversationId||this.host.memory.cleanup.blocked('chat-worker-patch',id,patch))
       throw new ChatError('patch_missing','File diff unavailable.',404)
     const message=this.sourceMessage(conversation,patch.messageId)
     if(!message.fileChanges?.some(file=>file.id===id))throw new ChatError('patch_missing','File diff unavailable.',404)
     return patch
+  }
+  workbenchRoot(id:string,owner:string){
+    const c=this.get(id,owner),source=this.source(c.sourceId)?.source
+    if(!source?.allowedActors.includes(c.actor))throw unavailableFile()
+    const root=setupWorkspace(this.host.config,source.cwd)
+    if(c.project&&root!==c.project)throw unavailableFile()
+    return root
+  }
+  workbenchFile(id:string,owner:string,path:string,patchId?:string){
+    const source=this.workbenchRoot(id,owner)
+    if(!patchId)return openWorkbenchFile(source,path)
+    const patch=this.workerPatch(id,owner,patchId)
+    if(patch.path!==path)throw unavailableFile()
+    const state=this.host.config.stateDir,run=this.host.store.get<Run>('run',patch.ticketId)
+    if(!isAbsolute(path)){
+      if(!run||this.host.memory.cleanup.blocked('run',patch.ticketId,run))throw unavailableFile()
+      const managed=[managedWorkspacePath(state,run.workspaceId??patch.ticketId),projectWorkspace(state,patch.ticketId)]
+      const root=resolve(run.cwd)
+      if(root!==source&&!managed.some(dir=>resolve(dir)===root))throw unavailableFile()
+      const canonical=root===source?root:join(realpathSync(state),'work',basename(root))
+      return openWorkbenchFile(canonical,path)
+    }
+    if(withinWorkspace(source,path))return openWorkbenchFile(source,relative(source,path).split(sep).join('/'))
+    // Additional writable directories belong to one approved shell operation and its exact receipt.
+    for(const job of this.rows<WorkItem>('work','ticketId',patch.ticketId)){
+      if(this.host.memory.cleanup.blocked('work',job.id,job))continue
+      for(const root of job.patchRoots??[]){
+        if(withinWorkspace(root,path)&&patch.messageId==='worker-diff:'+stableDigest([job.ticketId,'shell:'+job.id+':'+root]))
+          return openWorkbenchFile(setupWorkspace(this.host.config,root),relative(root,path).split(sep).join('/'))
+      }
+    }
+    throw unavailableFile()
   }
   canDeliverWorkerFiles(ticketId:string){return !!this.workerDestination(ticketId,{includeDelegated:true})}
   captureFiles(ticketId:string,cwd:string,paths:string[]){

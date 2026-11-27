@@ -1831,6 +1831,32 @@ it('protects settings/reset HTTP mutations with authentication and origin checks
  expect(h.chat.view(same.conversation.id,'local-operator').messages).toEqual([])
 })
 
+it('lists the bound workspace and reads the specific Worker file visible to the conversation',async()=>{
+ const {h,root}=fixture(),project=join(realpathSync(root),'project')
+ mkdirSync(project);h.config.sources[0]!.cwd=project
+ writeFileSync(join(project,'example.txt'),'source file')
+ writeFileSync(join(project,'binary.bin'),Buffer.from([0,127]))
+ writeFileSync(join(project,'.env'),'hidden');symlinkSync(join(root,'state'),join(project,'elsewhere'))
+ const host=await serve(h);servers.push(host.server)
+ const headers={authorization:'Bearer '+readFileSync(join(root,'state/access-token'),'utf8').trim()}
+ const chat=h.chat.create('local-operator'),other=h.chat.create('someone-else')
+ const base=host.url+'/api/chat/conversations/'+chat.id+'/workbench/'
+ const ticketId=randomUUID(),messageId=randomUUID(),patch=randomUUID()
+ const {managedWorkspacePath}=await import('../src/workspace.ts')
+ const cwd=managedWorkspacePath(h.config.stateDir,ticketId);mkdirSync(cwd,{recursive:true});writeFileSync(join(cwd,'example.txt'),'worker file')
+ h.store.put('run',ticketId,{ticketId,cwd})
+ h.store.put('chat-worker-patch',patch,{id:patch,conversationId:chat.id,messageId,ticketId,path:'example.txt',text:'patch'})
+ h.store.put('chat-message',messageId,{id:messageId,conversationId:chat.id,fileChanges:[{id:patch}]})
+ expect((await (await fetch(base+'files',{headers})).json()).files.map((f:{path:string})=>f.path).sort()).toEqual(['binary.bin','example.txt'])
+ expect(await (await fetch(base+'file?path=example.txt',{headers})).json()).toMatchObject({text:'source file'})
+ expect(await (await fetch(base+'file?path=example.txt&patch='+patch,{headers})).json()).toMatchObject({text:'worker file'})
+ expect(await (await fetch(base+'file?path=binary.bin',{headers})).json()).toEqual({binary:true})
+ for(const path of ['.env','../state/access-token','elsewhere/access-token','/etc/passwd'])expect((await fetch(base+'file?'+new URLSearchParams({path}),{headers})).status).toBe(404)
+ expect((await fetch(base+'file?path=binary.bin&patch='+patch,{headers})).status).toBe(404)
+ expect((await fetch(base.replace(chat.id,other.id)+'files',{headers})).status).toBe(404)
+ expect((await fetch(base+'reveal',{method:'POST',headers:{...headers,origin:host.url,'content-type':'application/json','x-forwarded-for':'203.0.113.1'},body:JSON.stringify({path:'example.txt'})})).status).toBe(403)
+})
+
 it('saves Chat detail mode per account independently of task permissions and layout',async()=>{
  const {h,root}=fixture(),host=await serve(h);servers.push(host.server)
  const owner='local-operator',conversation=h.chat.space(owner,true).conversation!

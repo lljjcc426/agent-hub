@@ -310,15 +310,15 @@ export class ManagedBrowserDriver implements BrowserDriver {
     return channel
   }
 
-  private async initialFrame(view:View,page:Page) {
+  private async captureFrame(view:View,page:Page) {
     const channel=await this.channel(view,page)
     const {width,height,x,y,dpr,pinch}=await page.evaluate(()=>({
       width:innerWidth,height:innerHeight,x:scrollX,y:scrollY,dpr:devicePixelRatio,pinch:visualViewport?.scale??1,
     }))
-    if(![width,height,dpr].every(value=>Number.isFinite(value)&&value>0)||pinch!==1)return
-    const scale=Math.min(view.external?dpr:streamScale,streamPixels.width/width,streamPixels.height/height)/dpr
+    if(![width,height,dpr].every(value=>Number.isFinite(value)&&value>0))return
+    const scale=Math.min(streamScale,streamPixels.width/width,streamPixels.height/height)/dpr
     const {data}=await channel.send('Page.captureScreenshot',{
-      format:'jpeg',quality:streamQuality,captureBeyondViewport:false,clip:{x,y,width,height,scale},
+      format:'jpeg',quality:streamQuality,captureBeyondViewport:false,...(pinch===1?{clip:{x,y,width,height,scale}}:{}),
     })
     return {data,width,height}
   }
@@ -343,16 +343,46 @@ export class ManagedBrowserDriver implements BrowserDriver {
         if(target!==generation)return
         let previous:{bytes:Buffer;width:number;height:number}|undefined
         let lastSurfaceCorrection=0
+        let capturedSize:ViewportSize|undefined
         const emit=(bytes:Buffer,width:number,height:number)=>{
           if(target!==generation)return
           if(previous?.width===width&&previous.height===height&&previous.bytes.equals(bytes))return
           clearTimeout(initialTimer)
+          capturedSize={width,height}
           previous={bytes,width,height}
           callback({data:bytes.toString('base64'),width,height,tab,detail:true,seq:++sequence,at:Date.now()})
+        }
+        // An attached browser owns its native display density. Use its damage frames to
+        // trigger a full-density capture without changing the browser window or input coordinates.
+        let damage:Buffer|undefined,dirty=false,capturing=false
+        const captureDamage=()=>{
+          dirty=true
+          if(capturing)return
+          capturing=true
+          void this.displayOperation(view,page,async()=>{
+            dirty=false
+            if(target!==generation)return
+            const frame=await this.captureFrame(view,page)
+            if(frame)emit(Buffer.from(frame.data,'base64'),frame.width,frame.height)
+          }).catch(()=>{/* Navigation can invalidate an in-flight capture. */}).finally(()=>{
+            capturing=false
+            if(dirty&&target===generation)captureDamage()
+          })
         }
         stop=await page.screencast.start({quality:streamQuality,size:streamPixels,onFrame:frame=>{
           if(target!==generation)return
           const fitted=view.displays.get(page)?.size
+          if(view.external){
+            // A scaled snapshot can itself generate a damage frame at its capture dimensions.
+            // Other sizes still signal real changes, e.g. a platform's minimum window width.
+            const size=fitted??capturedSize
+            if(size){
+              const scale=Math.min(streamScale,streamPixels.width/size.width,streamPixels.height/size.height)
+              if(scale!==1&&Math.abs(frame.viewportWidth-size.width*scale)<1&&Math.abs(frame.viewportHeight-size.height*scale)<1)return
+            }
+            if(!damage?.equals(frame.data)){damage=frame.data;captureDamage()}
+            return
+          }
           if(fitted&&(frame.viewportWidth!==fitted.width||frame.viewportHeight!==fitted.height)){
             // A native window resize can finish after emulation and reset the compositor to its
             // platform minimum width. Reapply the CSS-sized surface before accepting more frames.
@@ -375,7 +405,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
             if(target!==generation||previous)return
             void this.displayOperation(view,page,async()=>{
               if(target!==generation||previous)return
-              const frame=await this.initialFrame(view,page)
+              const frame=await this.captureFrame(view,page)
               if(frame&&!previous)emit(Buffer.from(frame.data,'base64'),frame.width,frame.height)
             }).catch(()=>{/* The native stream can still paint after a transient snapshot failure. */})
           },160)

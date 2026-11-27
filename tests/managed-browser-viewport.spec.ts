@@ -1,5 +1,5 @@
 import {existsSync} from 'node:fs'
-import {mkdtemp,rm} from 'node:fs/promises'
+import {mkdtemp,readFile,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {chromium} from 'playwright-core'
@@ -9,10 +9,13 @@ import {ManagedBrowserDriver} from '../src/managed-browser-driver.ts'
 
 const executablePath=chromium.executablePath()
 
-it.skipIf(!existsSync(executablePath))('streams live repaints at a stable pixel density across viewport and tab changes',async()=>{
+it.skipIf(!existsSync(executablePath)).each(['managed','attached'] as const)('streams live repaints at a stable density across viewport and tab changes (%s)',async mode=>{
   const directory=await mkdtemp(join(tmpdir(),'roppo-page-fit-'))
   const driver=new ManagedBrowserDriver(browserConfigSchema.parse({executablePath}))
-  const session={id:'viewport-test',directory,persistent:true}
+  const profile=join(directory,'external')
+  const external=mode==='attached'?await chromium.launchPersistentContext(profile,{executablePath,args:['--remote-debugging-port=0']}):undefined
+  const cdpPort=external?Number((await readFile(join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0]):undefined
+  const session={id:'viewport-test',directory:join(directory,'managed'),persistent:true,cdpPort}
   const documentUrl='data:text/html,<meta name="viewport" content="width=device-width"><h1>Responsive page</h1>'
   const measure=()=>driver.evaluate(session,'[innerWidth,innerHeight,matchMedia("(min-width:800px)").matches]')
   let stop:(()=>void)|undefined
@@ -31,7 +34,7 @@ it.skipIf(!existsSync(executablePath))('streams live repaints at a stable pixel 
     // A caret-sized repaint used to replace the whole page with a 1x JPEG on every blink.
     await driver.evaluate(session,`new Promise(resolve=>{
       const mark=document.createElement('i')
-      mark.style.cssText='position:fixed;left:10px;top:10px;width:12px;height:12px;background:black'
+      mark.style.cssText='position:fixed;left:10px;top:10px;width:12px;height:12px;background:black;opacity:0'
       document.body.append(mark)
       let ticks=0
       const timer=setInterval(()=>{
@@ -39,7 +42,7 @@ it.skipIf(!existsSync(executablePath))('streams live repaints at a stable pixel 
         if(ticks===6){clearInterval(timer);resolve(true)}
       },350)
     })`)
-    expect(samples.length).toBeGreaterThanOrEqual(4)
+    await expect.poll(()=>samples.length,{timeout:2000}).toBeGreaterThanOrEqual(4)
     // Read actual JPEG pixels, independently of the stream's CSS coordinate metadata.
     const rendered=await driver.evaluate(session,`Promise.all(${JSON.stringify(samples.map(f=>f.data))}.map(async data=>{
       const img=new Image()
@@ -66,6 +69,7 @@ it.skipIf(!existsSync(executablePath))('streams live repaints at a stable pixel 
   }finally{
     stop?.()
     await driver.shutdown()
+    await external?.close()
     await rm(directory,{recursive:true,force:true})
   }
 },25000)

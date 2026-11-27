@@ -1,11 +1,11 @@
-import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState} from 'react'
+import {useCallback,useEffect,useId,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {ChevronRight,FileCode2,FolderOpen,GitCompareArrows,Globe,Maximize2,Minimize2,PanelRightClose,Plus,Search,TerminalSquare,X} from 'lucide-react'
 import {BrowserPanel,type BrowserOpenRequest,type BrowserPageControls,type BrowserPageStrip} from './browser.tsx'
 import {browserUrl} from './browser-url.ts'
 import {SidebarSeparator} from './sidebar-separator.tsx'
 import {DetailedFile,FilePath} from './worker-file-diff.tsx'
 import type {DiffTarget,WorkerReports} from './worker-report-groups.ts'
-import {FileManager,WorkTerminal,type WorkFile} from './workbench-files.tsx'
+import {displayFilePath,FileManager,WorkTerminal,type WorkFile} from './workbench-files.tsx'
 import type {Localize} from './composer-commands.tsx'
 import './chat-workbench.css'
 
@@ -25,13 +25,26 @@ export function ChatWorkbench({request,conversation,reports,overlay,expanded,set
   setExpanded:(value:boolean)=>void;close:()=>void;createConversation:()=>Promise<void>;L:Localize
 }){
   const [tabs,setTabs]=useState<Entry[]>(['home']),[active,setActive]=useState<Tab>('home'),[query,setQuery]=useState('')
-  const [path,setPath]=useState<string>(),[focus,setFocus]=useState<{target:DiffTarget;serial:number}>()
+  const [selection,setSelection]=useState<{path:string;patch?:string}>(),[focus,setFocus]=useState<{target:DiffTarget;serial:number}>()
   const [browserRequest,setBrowserRequest]=useState<BrowserOpenRequest>()
   const [browser,setBrowser]=useState<BrowserPageStrip>()
   const browserControls=useRef<BrowserPageControls>(null)
-  const [files,setFiles]=useState<WorkFile[]>([]),[loading,setLoading]=useState(false),[error,setError]=useState(false),[reload,setReload]=useState(0)
+  const [sourceFiles,setFiles]=useState<WorkFile[]>([]),[limited,setLimited]=useState(false),[loading,setLoading]=useState(false),[error,setError]=useState(false),[reload,setReload]=useState(0)
   const panel=useRef<HTMLElement>(null),search=useRef<HTMLInputElement>(null),serial=useRef(0),tabPrefix=useId()
   const names=titles(L),open=!!request,revision=reports.flatMap(r=>r.files.map(f=>f.versions.at(-1)?.id??f.path)).join(',')
+  const files=useMemo(()=>{
+    const indexed=new Map(sourceFiles.map(file=>[file.path,file]))
+    for(const report of reports){
+      if(report.conversationId!==conversation)continue
+      for(const change of report.files){
+        const latest=change.versions.at(-1)
+        if(!latest?.id)continue
+        const path=displayFilePath(change.path)
+        indexed.set(path,{...indexed.get(path),path,originalPath:change.path,patch:latest.id})
+      }
+    }
+    return [...indexed.values()]
+  },[sourceFiles,reports,conversation])
   const hasBrowser=tabs.some(isWeb)
   const pages=new Map(browser?.pages.map(page=>[webKey(browser.id,page.id),page]))
   const currentPage=browser?.pages.find(page=>page.active)??browser?.pages[0]
@@ -70,7 +83,7 @@ export function ChatWorkbench({request,conversation,reports,overlay,expanded,set
     if(tab==='home')setQuery('')
     if(focusTab)requestAnimationFrame(()=>panel.current?.querySelector<HTMLElement>('[role=tab][aria-selected=true]')?.focus({preventScroll:true}))
   }
-  function openFile(next:string){setPath(next);activate('files',active==='home')}
+  function openFile(next:string,patch?:string){setSelection({path:displayFilePath(next),patch});activate('files',active==='home')}
   function browse(url?:string,existing?:BrowserOpenRequest){
     if(!conversation){void createConversation();return}
     if(existing?.id)setBrowserRequest(existing)
@@ -107,8 +120,8 @@ export function ChatWorkbench({request,conversation,reports,overlay,expanded,set
     setLoading(true);setError(false)
     fetch('/api/chat/conversations/'+encodeURIComponent(conversation)+'/workbench/files',{signal:ctrl.signal}).then(async res=>{
       if(!res.ok)throw Error()
-      const result=await res.json() as {files:WorkFile[]}
-      if(!ctrl.signal.aborted)setFiles(result.files)
+      const result=await res.json() as {files:WorkFile[];truncated?:boolean}
+      if(!ctrl.signal.aborted){setFiles(result.files);setLimited(!!result.truncated)}
     }).catch(()=>{if(!ctrl.signal.aborted)setError(true)}).finally(()=>{if(!ctrl.signal.aborted)setLoading(false)})
     return ()=>ctrl.abort()
   },[open,conversation,revision,reload])
@@ -161,8 +174,9 @@ export function ChatWorkbench({request,conversation,reports,overlay,expanded,set
             {!!reports.length&&<section className="bench-recent"><h3>{L('Recently changed','最近改动')}</h3>{reports.slice(-1)[0]!.files.slice(-3).map(f=><button key={f.path} onClick={()=>inspect({group:reports.at(-1)!.messageId,path:f.path})}><FileCode2 size={15}/><FilePath path={f.path}/><ChevronRight size={14}/></button>)}</section>}
           </>}
         </div></div>}
-        {tab==='files'&&(stateNote??<FileManager files={files} path={path} select={setPath} reload={()=>setReload(n=>n+1)} L={L}/>)}
-        {tab==='terminal'&&(stateNote??<WorkTerminal files={files} L={L}/>)}
+        {tab==='files'&&limited&&<p className="bench-hint">{L('Large workspace · showing the first 5,000 entries','工作区较大，已索引前 5,000 项')}</p>}
+        {tab==='files'&&(stateNote??<FileManager reloadToken={reload} files={files} conversation={conversation??''} path={selection?.path} patch={selection?.patch} select={path=>setSelection(path?{path}:undefined)} reload={()=>setReload(n=>n+1)} L={L}/>)}
+        {tab==='terminal'&&(stateNote??<WorkTerminal files={files} conversation={conversation??''} L={L}/>)}
         {tab==='diff'&&<div className="bench-diffs">{reports.map((group,index)=><section className="bench-diff-group" key={group.messageId}>
           <div className="bench-diff-summary"><span><GitCompareArrows size={15}/>{group.label}</span><small>{L(group.files.length+' files',group.files.length+' 个文件')}</small></div>
           {group.files.map((change,i)=><DetailedFile key={change.path} change={change} conversationId={group.conversationId}

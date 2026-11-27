@@ -1,6 +1,7 @@
 import {execFile,spawn} from 'node:child_process'
 import {promisify} from 'node:util'
 import {pipeline} from 'node:stream/promises'
+import type {FileHandle} from 'node:fs/promises'
 import type {IncomingMessage,ServerResponse} from 'node:http'
 import type {ChatSessions} from './chat.ts'
 import {basename} from 'node:path'
@@ -66,7 +67,10 @@ export async function sendRetainedDelivery(req:IncomingMessage,res:ServerRespons
 
 export async function revealRetainedDelivery(entry:RetainedDelivery|undefined){
  if(!entry||!('file' in entry)||!entry.file)throw new ChatError('delivery_missing','Local file unavailable.',404)
- const file=entry.file
+ return revealLocalFile(entry.file)
+}
+
+export async function revealLocalFile(file:{path:string;handle:FileHandle;verify:()=>Promise<void>}){
  try{
   await file.verify()
   try{await run('/usr/bin/open',['-R',file.path],{timeout:5000})}

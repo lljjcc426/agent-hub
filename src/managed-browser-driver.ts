@@ -12,11 +12,15 @@ import {inputMessages,type BrowserInput} from './browser-input.ts'
 import {prepareChromium,prepareScreencastEncoder} from './browser-runtime.ts'
 
 type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
+type ViewportSize = {width:number;height:number}
+type PageDisplay = {pending:Promise<void>;size?:ViewportSize}
 type View = {
   context: BrowserContext
   close: () => Promise<void>
   tabs: Map<string,Page>
   active?: string
+  viewport?: ViewportSize
+  displays: WeakMap<Page,PageDisplay>
   nextTab: number
   changed: Set<()=>void>
   cdps: Map<Page,Promise<CDPSession>>
@@ -101,7 +105,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
       if(persistent&&!legacyProfile)await writeFile(join(session.directory,browserProfileMarker),'roppo\n',{mode:0o600})
       context.setDefaultTimeout(this.settings.timeoutMs)
       context.setDefaultNavigationTimeout(this.settings.timeoutMs)
-      const view:View={context,close,tabs:new Map(),nextTab:0,changed:new Set(),cdps:new Map(),downloads:new WeakMap(),buttons:0}
+      const view:View={context,close,tabs:new Map(),nextTab:0,changed:new Set(),cdps:new Map(),displays:new WeakMap(),downloads:new WeakMap(),buttons:0}
       const add=(page:Page)=>{
         const id=asTab(++view.nextTab)
         view.tabs.set(id,page)
@@ -112,6 +116,12 @@ export class ManagedBrowserDriver implements BrowserDriver {
           if(view.active===id){view.active=view.tabs.keys().next().value;for(const changed of view.changed)changed()}
         })
         if(!view.active){view.active=id;for(const changed of view.changed)changed()}
+        page.on('popup',popup=>{
+          if(view.active!==id)return
+          const next=[...view.tabs].find(([,item])=>item===popup)?.[0]
+          if(next)this.select(view,next)
+        })
+        if(view.viewport)void this.fitPage(view,page,view.viewport).catch(()=>{})
       }
       for(const page of context.pages())add(page)
       context.on('page',add)
@@ -176,13 +186,17 @@ export class ManagedBrowserDriver implements BrowserDriver {
       }
       if(arg==='new'){
         const page=await view.context.newPage()
+        if(view.viewport)await this.fitPage(view,page,view.viewport)
         const id=[...view.tabs].find(([,item])=>item===page)?.[0]
         if(id)this.select(view,id)
         if(value&&value!=='about:blank')await page.goto(value,{waitUntil:'domcontentloaded',signal})
       }else if(arg==='close'){
         if(view.tabs.size===1)await view.context.newPage()
         await this.page(view,value).close()
-      }else this.select(view,arg!)
+      }else{
+        if(view.viewport)await this.fitPage(view,this.page(view,arg),view.viewport)
+        this.select(view,arg!)
+      }
       return {}
     }
     const page=this.page(view)
@@ -219,10 +233,44 @@ export class ManagedBrowserDriver implements BrowserDriver {
       case 'forward':await page.goForward({waitUntil:'domcontentloaded',signal});return {}
       case 'reload':await page.reload({waitUntil:'domcontentloaded',signal});return {}
       case 'screenshot':await page.screenshot({path:arg,type:'png',fullPage:value==='--full',signal});return {}
-      case 'set':await page.setViewportSize({width:Number(value),height:Number(extra)});return {}
+      case 'set':{
+        const size={width:Number(value),height:Number(extra)}
+        const before=view.displays.get(page)?.size
+        view.viewport=size
+        await Promise.all([...view.tabs.values()].map(tab=>this.fitPage(view,tab,size)))
+        // Static pages may never invalidate a frame after Chromium drops an in-flight resize.
+        if(before?.width!==size.width||before.height!==size.height)
+          for(const changed of view.changed)changed()
+        return {}
+      }
       case 'upload':await page.locator(arg!).setInputFiles(value!,{signal});return {}
       default:throw new BrowserError('browser_action','Unsupported managed browser operation.',400)
     }
+  }
+
+  private displayOperation<T>(view:View,page:Page,work:(state:PageDisplay)=>Promise<T>){
+    const state=view.displays.get(page)??{pending:Promise.resolve()}
+    view.displays.set(page,state)
+    const next=state.pending.then(()=>work(state))
+    state.pending=next.then(()=>{},()=>{})
+    return next
+  }
+
+  private fitPage(view:View,page:Page,size:ViewportSize){
+    return this.displayOperation(view,page,async state=>{
+      if(page.isClosed()||(state.size?.width===size.width&&state.size.height===size.height))return
+      try{
+        const deviceScaleFactor=await page.evaluate(()=>devicePixelRatio)
+        await page.setViewportSize(size)
+        // Chromium restores the capturing CDP session's metrics after a scaled screenshot.
+        // Give that session the same viewport so a detail frame cannot undo responsive layout.
+        const channel=await this.channel(view,page)
+        await channel.send('Emulation.setDeviceMetricsOverride',{
+          ...size,screenWidth:size.width,screenHeight:size.height,mobile:false,deviceScaleFactor,
+        })
+        state.size=size
+      }catch(error){if(!page.isClosed())throw error}
+    })
   }
 
   async evaluate(session:DriverSession,expression:string,signal?:AbortSignal){
@@ -292,7 +340,7 @@ export class ManagedBrowserDriver implements BrowserDriver {
             capturing=true
             const basedOn=preview
             try{
-              const frame=await this.detailedFrame(view,page)
+              const frame=await this.displayOperation(view,page,()=>this.detailedFrame(view,page))
               if(target===generation&&basedOn===preview&&frame)
                 callback({...frame,tab,detail:true,seq:++sequence,at:Date.now()})
             }catch{/* A transient capture failure leaves the live stream available. */}
@@ -311,10 +359,16 @@ export class ManagedBrowserDriver implements BrowserDriver {
           scheduleDetail()
         }
         // A blank or static tab may not produce a damage frame immediately.
-        const size=page.viewportSize()??await page.evaluate(()=>({width:innerWidth,height:innerHeight}))
-        emit(await page.screenshot({type:'jpeg',quality:75,scale:'css'}),size.width,size.height)
+        await this.displayOperation(view,page,async()=>{
+          const size=await page.evaluate(()=>({width:innerWidth,height:innerHeight}))
+          emit(await page.screenshot({type:'jpeg',quality:75,scale:'css'}),size.width,size.height)
+        })
         if(target!==generation)return
         stop=await page.screencast.start({quality:80,size:{width:1920,height:1200},onFrame:frame=>{
+          // A scaled detail capture can itself produce a screencast frame at twice the CSS size.
+          // Ignore it and any late frames from before a resize. Pointer coordinates use CSS pixels.
+          const fitted=view.displays.get(page)?.size
+          if(fitted&&(frame.viewportWidth!==fitted.width||frame.viewportHeight!==fitted.height))return
           emit(frame.data,frame.viewportWidth,frame.viewportHeight)
         }})
         if(target===generation)status?.(true)

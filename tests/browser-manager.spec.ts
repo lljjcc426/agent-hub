@@ -624,6 +624,30 @@ it("revokes Worker authority while retaining the ended page for human inspection
   ).rejects.toThrow();
   expect(personal.personal).toBe(true);
 });
+it('lets the returning window resize a displayed page until another window takes control', async()=>{
+  const {host}=await fixture();
+  const manager=host.browser, first=randomUUID(), second=randomUUID();
+  const profile=manager.saveProfile('alice',{name:'Preview',allowedWorkers:[]});
+  const held=await manager.openPersonal('alice',profile.id,first);
+  const stopSecond=await manager.subscribe('alice',held.id,undefined,second);
+  const stopFirst=await manager.subscribe('alice',held.id,undefined,first);
+  const released=await manager.release('alice',held.id,first,held.epoch);
+  expect(released.controlledByYou).toBe(false);
+  expect(released.displayOwnedByYou).toBe(true);
+  await manager.resize('alice',held.id,first,released.epoch,440,730);
+  await expect(manager.resize('alice',held.id,first,held.epoch,440,730)).rejects.toThrow();
+  await expect(manager.resize('alice',held.id,second,released.epoch,440,730)).rejects.toThrow();
+  await expect(manager.action('alice',held.id,first,released.epoch,{action:'reload'})).rejects.toThrow();
+  const next=await manager.takeover('alice',held.id,second);
+  await expect(manager.resize('alice',held.id,first,next.epoch,440,730)).rejects.toThrow();
+  const closed=await manager.release('alice',held.id,second,next.epoch);
+  expect(closed.displayOwnedByYou).toBe(true);
+  stopSecond();
+  await expect(manager.resize('alice',held.id,second,closed.epoch,440,730)).rejects.toThrow();
+  await manager.resize('alice',held.id,first,closed.epoch,440,730);
+  stopFirst();
+  await expect(manager.resize('alice',held.id,first,closed.epoch,440,730)).rejects.toThrow();
+});
 it("HTTP browser routes require authentication and same-origin writes; password responses are metadata only", async () => {
   const { host } = await fixture(),
     server = await serve(host);

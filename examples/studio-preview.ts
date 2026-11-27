@@ -244,8 +244,17 @@ host.server.on('request', (req, res) => {
       if(match){void workbench.handle(req,res,match[1]!,match[2]!).catch(error=>{console.error('Preview request failed',error instanceof Error?error.message:'unknown');if(!res.headersSent)res.writeHead(500);res.end()});return}
       if(req.method==='GET'&&path==='/workbench-example'){
         const result=req.url?.includes('result');
+        const title=result?'组合表情验证':'摘要工具';
         res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"});
-        res.end('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>摘要工具 · Roppo</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-content:center;font:16px/1.65 system-ui;color:#333;background:#fafafa}main{max-width:440px;padding:30px}h1{font-size:24px;font-weight:600}p{color:#676767}a{color:#354e69;text-underline-offset:4px}</style><main><h1>'+ (result?'组合表情验证':'摘要工具')+'</h1><p>'+ (result?'A👩‍💻B 保留前两个字符后得到 A👩‍💻。':'按用户可见的字符截断文本，保留完整的组合表情。')+'</p><a href="'+(result?'/workbench-example':'/workbench-example?result')+'">'+(result?'返回摘要工具':'查看组合表情示例')+'</a></main></html>');return
+        res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>${title} · Roppo</title><style>
+          *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.65 system-ui;color:#333;background:#fafafa}
+          main{width:min(100%,520px);padding:30px}h1{font-size:24px;font-weight:600}p,dt{color:#676767}a{color:#354e69;text-underline-offset:4px}
+          dl{display:grid;gap:8px}dl div{padding:12px 16px;background:#fff;border:1px solid #dedede;border-radius:10px}dt{font-size:13px}dd{margin:2px 0 0}
+          @media(min-width:760px){dl{grid-template-columns:1fr 1fr}}
+          </style><main><h1>${title}</h1>${result
+            ?'<p>保留前两个可见字符</p><dl><div><dt>输入</dt><dd>A👩‍💻B</dd></div><div><dt>输出</dt><dd>A👩‍💻</dd></div></dl><a href="/workbench-example">返回摘要工具</a>'
+            :'<p>按用户可见的字符截断文本，保留完整的组合表情。</p><a href="/workbench-example?result" target="_blank" rel="noopener">在新标签页查看组合表情示例</a>'}</main></html>`);return
       }
     }
     if (req.url?.split('?')[0] === login.path && req.method === 'GET') {

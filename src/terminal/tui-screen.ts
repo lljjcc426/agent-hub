@@ -16,11 +16,14 @@ import { byName } from './list-order.ts'
 import { readAttachment, attachmentSize, type DraftAttachment } from './attachments.ts'
 import { chatUploadLimits } from '../execution-limits.ts'
 import { effortTideColors, effortTideFrame } from './effort-tide.ts'
+import { routerProcessing, type InputMode, type QueuedInput } from './input-queue.ts'
 
 export interface TuiItem { label: string; detail?: string; search?: string; run: () => void | Promise<void> }
 export interface TuiMenu { order?: 'name' | 'source'; cancel?: () => void; title: string; items: TuiItem[]; detail?: string }
 export interface TuiActions {
-  send(text: string, files?: string[]): Promise<void>
+  send(text: string, files?: string[], mode?: InputMode): Promise<void>
+  inputMode?(mode:InputMode): void
+  queue?(action:'steer'|'edit'|'delete'|'up'|'down'|'pause'|'hold'|'release',id?:string,text?:string): Promise<void>
   command(text: string): Promise<void>
   complete(text: string): Promise<TuiItem[]>
   interrupt(): Promise<void>
@@ -52,6 +55,11 @@ export class TuiScreen {
   private attachButton: TextRenderable
   private attachments: DraftAttachment[] = []
   private sending = false
+  private queueBox: ScrollBoxRenderable
+  private inputModeLabel: TextRenderable
+  private queuedInputs: QueuedInput[] = []
+  private queuePaused = false
+  private queueSending?: string
   private model: TextRenderable
   private effort: TextRenderable
   private permissions: TextRenderable
@@ -132,6 +140,8 @@ export class TuiScreen {
     this.frame.add(this.activity)
     this.completions = new ScrollBoxRenderable(renderer, { id: 'command-completions', visible: false, flexShrink: 0, width: '100%', scrollX: false, backgroundColor: p.panel, verticalScrollbarOptions: { showArrows: false } })
     this.frame.add(this.completions)
+    this.queueBox=new ScrollBoxRenderable(renderer,{id:'input-queue',width:'100%',height:0,visible:false,flexShrink:0,scrollX:false,verticalScrollbarOptions:{showArrows:false}})
+    this.frame.add(this.queueBox)
     this.compose = new BoxRenderable(renderer, { width: '100%', border: ['left'], borderColor: p.accent,
       backgroundColor: p.panel, paddingX: 1, paddingY: 1, flexShrink: 0, marginTop: 1 })
     this.draft = new TextareaRenderable(renderer, {
@@ -145,6 +155,8 @@ export class TuiScreen {
     this.attachmentList = new ScrollBoxRenderable(renderer, { id: 'draft-attachments', width: '100%', visible: false,
       flexShrink: 0, scrollX: false, marginBottom: 1, verticalScrollbarOptions: { showArrows: false } })
     this.compose.add(this.attachmentList); this.compose.add(this.draft)
+    this.inputModeLabel=this.text('',{id:'input-mode',height:1,visible:false,selectable:false,fg:p.accent,onMouseDown:event=>{if(event.button===0)this.toggleInputMode()}})
+    this.compose.add(this.inputModeLabel)
     const meta = new BoxRenderable(renderer, { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, flexShrink: 0 })
     const modelControls = new BoxRenderable(renderer, { flexDirection:'row',flexGrow:1,flexShrink:1,minWidth:0,marginRight:2 })
     this.model = this.text('Router', { id:'composer-model',fg:p.accent,height:1,flexShrink:1,minWidth:0,selectable:false,
@@ -181,6 +193,7 @@ export class TuiScreen {
   private themeChanged = () => { if (this.prefs.theme === 'system') this.preferences(this.prefs) }
   private resize = () => {
     const narrow = this.renderer.width < 65
+    this.queueBox.height=this.queuedInputs.length?Math.min(this.queuedInputs.length+1,Math.max(2,Math.min(5,Math.floor(this.renderer.height/5)))):0
     this.frame.paddingX = narrow ? 1 : 3
     const branded = !this.home.visible && !this.noticeTimer
     this.header.visible = branded || !!this.noticeTimer
@@ -191,7 +204,7 @@ export class TuiScreen {
     }
     this.header.width = '100%'
     const companionOffset = this.noticeTimer || (branded && narrow) ? 1 : 0
-    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+companionOffset+companionRows
+    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+companionOffset+companionRows+(this.queuedInputs.length?this.queueBox.height+1:0)
     const topHeight = Math.max(this.header.visible ? this.header.height : 0,(this.companionBox.visible ? companionRows+1 : 0) + companionOffset)
     this.companionBox.marginTop = companionOffset
     this.topArea.height = topHeight
@@ -212,6 +225,7 @@ export class TuiScreen {
       this.effort.content = ' · ' + (this.host.effort ?? 'default')
     }
     this.syncCompanion()
+    this.drawInputMode()
     this.sizeCompletions()
     if (this.modalPanel) { this.modalPanel.width = Math.min(78, this.renderer.width - 4); this.modalPanel.maxHeight = this.renderer.height - 2; this.drawMenu(false); this.modalRedraw?.() }
   }
@@ -289,7 +303,7 @@ export class TuiScreen {
     const release = prepend && first ? this.transcript.anchor(first) : undefined
     this.view = view
     const visible = view.messages.filter(publicMessage)
-    this.home.visible = visible.length === 0; this.transcript.visible = visible.length > 0
+    this.home.visible = visible.length === 0 && !routerProcessing(view) && !this.queuedInputs.length; this.transcript.visible = !this.home.visible
     const ids = new Set(visible.map(m => m.id))
     for (const [id, node] of this.messageNodes) if (!ids.has(id)) { node.box.destroyRecursively(); this.messageNodes.delete(id) }
     visible.forEach((message, index) => {
@@ -444,7 +458,7 @@ export class TuiScreen {
     this.draft.setText(''); this.dismissCompletions()
     const command = text.startsWith('/') && !text.includes('\n')
     if (!command) { this.sending = true; this.drawAttachments() }
-    this.run((command ? this.actions.command(text) : this.actions.send(text, this.attachments.map(file => file.path))).then(() => {
+    this.run((command ? this.actions.command(text) : this.actions.send(text, this.attachments.map(file => file.path),this.prefs.inputMode??'queue')).then(() => {
       if (!command) this.attachments = []
     }).catch(error => {
       if (!this.closed && !this.draft.plainText) this.setDraft(text)
@@ -452,6 +466,51 @@ export class TuiScreen {
     }).finally(() => {
       if (!command) { this.sending = false; if (!this.closed) this.drawAttachments() }
     }))
+  }
+
+  private toggleInputMode() {
+    const mode=this.prefs.inputMode==='steer'?'queue':'steer'
+    this.actions.inputMode?.(mode);this.prefs={...this.prefs,inputMode:mode};this.drawInputMode()
+  }
+  private drawInputMode() {
+    this.inputModeLabel.visible=routerProcessing(this.view)||this.queuedInputs.length>0
+    this.inputModeLabel.content=(this.prefs.inputMode==='steer'?'Steer':'Queue')+' · enter submit · tab switch'
+    this.inputModeLabel.fg=this.palette.accent
+  }
+  inputQueue(items:QueuedInput[],paused:boolean,sending?:string) {
+    this.queuedInputs=items.map(item=>({...item}));this.queuePaused=paused;this.queueSending=sending
+    for(const child of this.queueBox.getChildren())child.destroyRecursively()
+    this.queueBox.visible=items.length>0;this.queueBox.height=Math.min(items.length+1,Math.max(2,Math.min(5,Math.floor(this.renderer.height/5))))
+    this.queueBox.add(this.text(`Queued · ${items.length}${paused?' · paused':''} · click to manage`,{height:1,fg:this.palette.muted,selectable:false,onMouseDown:()=>this.openQueue()}))
+    items.forEach((item,i)=>this.queueBox.add(this.text(`${i+1}. ${item.error?'! ':''}${item.id===sending?'Sending… ':''}${item.text.replace(/\s+/g,' ')||'[attachments]'}${item.files.length?' · '+item.files.length+' files':''}`,{id:'queued-'+item.id,height:1,width:'100%',wrapMode:'none',selectable:false,fg:item.error?this.palette.warm:this.palette.fg,onMouseDown:event=>{if(event.button===0)this.queueItem(item.id)}})))
+    if(this.view){this.home.visible=!this.view.messages.length&&!routerProcessing(this.view)&&!items.length;this.transcript.visible=!this.home.visible}
+    this.resize()
+  }
+  openQueue() {
+    this.menu({title:'Queued messages · '+(this.queuePaused?'paused':'automatic'),order:'source',items:[
+      {label:this.queuePaused?'Resume queue':'Pause queue',run:()=>this.actions.queue?.('pause')},
+      ...this.queuedInputs.map((item,i)=>({label:`${i+1}. ${item.text.replace(/\s+/g,' ')||'[attachments]'}`,detail:item.error??(item.files.length?item.files.length+' attached files':undefined),run:()=>this.queueItem(item.id)}))
+    ],detail:'Local drafts · sent in this order after Router finishes'})
+  }
+  private queueItem(id:string) {
+    const item=this.queuedInputs.find(item=>item.id===id)
+    if(!item)return
+    if(this.queueSending===id){this.notice('This message is being sent.');return}
+    this.closeModal()
+    this.run(this.actions.queue?.('hold',id)??Promise.resolve())
+    const release=()=>{this.run(this.actions.queue?.('release',id)??Promise.resolve())}
+    const act=async(action:'steer'|'delete'|'up'|'down')=>{try{await this.actions.queue?.(action,id)}finally{release()}}
+    this.menu({title:'Queued message',cancel:release,items:[
+      {label:'Steer now',run:()=>act('steer')},
+      {label:'Edit',run:async()=>{
+        await this.actions.queue?.('hold',id)
+        this.prompt('Edit queued message',item.text,async text=>{try{await this.actions.queue?.('edit',id,text)}finally{await this.actions.queue?.('release',id)}},true)
+        this.modalCancel=()=>{this.run(this.actions.queue?.('release',id)??Promise.resolve())}
+      }},
+      {label:'Delete',run:()=>act('delete')},
+      {label:'Move up',run:()=>act('up')},
+      {label:'Move down',run:()=>act('down')}
+    ],detail:item.error??item.text})
   }
 
   menu(menu: TuiMenu) {
@@ -653,6 +712,7 @@ export class TuiScreen {
       else this.run(key.name === 'y' ? this.actions.review() : this.actions.command(key.name === 'o' ? '/attach' : key.name === 'p' ? '/commands' : '/history'))
       return
     }
+    if(key.name==='tab'&&!this.completionItems.length&&(routerProcessing(this.view)||this.queuedInputs.length)){consume();this.toggleInputMode();return}
     if (key.name === 'f2') { consume(); this.run(this.actions.command('/model')); return }
     if (key.ctrl && key.name === 'end') { consume(); this.latest(); return }
     if (['pageup', 'pagedown'].includes(key.name)) {

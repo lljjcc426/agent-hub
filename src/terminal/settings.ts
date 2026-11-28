@@ -7,6 +7,7 @@ import { terminalProfileDirectory } from './profile.ts'
 import { CliError } from './client.ts'
 
 export const terminalSettingsSchema = z.object({
+  inputMode: z.enum(['queue','steer']).optional(),
   theme: z.enum(themeNames).optional(),
   verbose: z.boolean().optional(),
   animation: z.boolean().optional(),

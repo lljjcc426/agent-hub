@@ -20,6 +20,8 @@ import { reasoningEfforts, type ModelCapabilities } from '../reasoning-effort.ts
 import type { memoryWorkspace } from '../memory-workspace.ts'
 
 export const personalCommands = () => byName([
+  { name: '/input', label: 'Input mode', detail: 'Choose Queue or Steer for messages sent while Router is working' },
+  { name: '/queue', label: 'Queued messages', detail: 'Edit, remove, reorder or steer pending input' },
   { name: '/attach', label: 'Attach files', detail: 'Choose local files to send · ctrl+o' },
   { name: '/connect', label: 'Model connections', detail: 'Add a provider or model connection and test it' },
   { name: '/workers', label: 'Workers', detail: 'Create, copy, pause, resume or remove' },
@@ -84,6 +86,12 @@ export class TuiCommands {
       })
   }
   async execute(input: string): Promise<void> {
+    if(input==='/queue'){this.screen.openQueue();return}
+    if(input==='/input'){
+      this.screen.menu({title:'Input mode',items: ['queue','steer'].map(mode=>({label:mode==='queue'?'Queue':'Steer',detail:mode==='queue'?'Wait for Router to finish':'Send an update to the current conversation',run:()=>{
+        saveTerminalSetting(this.options.cwd,'inputMode',mode,'user');this.options.preferences={...this.options.preferences,inputMode:mode as 'queue'|'steer'};this.screen.preferences(this.options.preferences)
+      }}))});return
+    }
     this.screen.setLoading(true)
     try { await this.dispatch(input) } finally { this.screen.setLoading(false) }
   }

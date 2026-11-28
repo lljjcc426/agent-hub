@@ -116,7 +116,7 @@ type PendingCard =
 type ChatRouterBinding=Pick<ModelRequest,'backendId'|'model'|'options'|'useConnectionDefault'>
 interface ChatRun {contextVersion?:number;mode?:'act'|'plan';namedParticipants?:import('./chat-supplied-evidence.ts').EvidenceGroup;suppliedEvidence?:import('./chat-supplied-evidence.ts').EvidenceGroup;interjection?:ChatInterjection;inquiryIds?:string[];textReplyAttempt?:{jobId:string;threadId:string;turnId:string};openingLocale?:'zh-CN'|'en';permissionEpoch?:number;decisionTicketId?:string;id:string; conversationId:string; triggerId:string; clientMessageId:string; locale?:string; timeZone?:string; createdAt:number; cancelRequested?:boolean; cancelled?:boolean;feedback?:ReactionChange[];skill?:SelectedChatSkill;router?:ChatRouterBinding;recovery?:import('./chat-status.ts').ChatRecovery;planningId?:string;startPlan?:true;planApproval?:PlanApproval}
 interface PlanApproval {messageId:string;turns:string[]}
-interface ChatSendInput {clientMessageId:string;text:string;locale?:string;timeZone?:string;openingLocale?:'zh-CN'|'en';attachments?:string[];quote?:ChatQuote;skillId?:string;startPlan?:true;planningId?:string}
+interface ChatSendInput {steer?:boolean;clientMessageId:string;text:string;locale?:string;timeZone?:string;openingLocale?:'zh-CN'|'en';attachments?:string[];quote?:ChatQuote;skillId?:string;startPlan?:true;planningId?:string}
 type ResolveChatSkill = (skillId:string,project:string)=>SelectedChatSkill|undefined
 interface ReactionChange {messageId:string;before:string[];after:string[]}
 interface PendingReactions {timeZone?:string;id:string;conversationId:string;changes:ReactionChange[];createdAt:number;dueAt:number}
@@ -1575,7 +1575,7 @@ export class ChatSessions {
           JSON.stringify(message.attachments?.map(a=>a.id)??[])!==JSON.stringify(input.attachments??[])||
           message.quote?.messageId!==input.quote?.messageId||message.quote?.excerpt!==input.quote?.excerpt||message.skill?.id!==input.skillId)
           throw new ChatError('message_conflict','Message identity was reused with different content.')
-        return {runId:previous.id,duplicate:true}
+        return {runId:previous.id,duplicate:true,...(input.steer?{delivery:['update','applied','stop'].includes(previous.interjection?.state??'')?'steered':'next-turn'}:{})}
       }
       const sourceMessage=input.quote&&this.sourceMessage(c,input.quote.messageId)
       if(sourceMessage&&input.quote?.excerpt&&!normalizeExcerpt(messageText(sourceMessage.text)).includes(normalizeExcerpt(input.quote.excerpt)))throw new ChatError('quote_changed','The selected text is no longer in this message. Select it again.',409)
@@ -1592,8 +1592,10 @@ export class ChatSessions {
       if(!approval){
         if(input.planningId&&(!activePlanning(planning)||planning.id!==input.planningId))
           throw new ChatError('plan_closed','This planning session has closed.')
-        if(input.startPlan||activePlanning(planning))
-          return this.queuePlanning(c,input,attachments,skill,planning,sourceMessage)
+        if(input.startPlan||activePlanning(planning)){
+          const queued=this.queuePlanning(c,input,attachments,skill,planning,sourceMessage)
+          return {...queued,...(input.steer?{delivery:'next-turn'}:{})}
+        }
       }
       this.bindEntry(c)
       const eventId='chat:'+id+':'+input.clientMessageId
@@ -1621,9 +1623,9 @@ export class ChatSessions {
       }
       if(run.mode!=='plan'&&!approval&&!attachments.length&&!skill&&!sourceMessage?.decision&&!sourceMessage?.fileReview&&!existingFileRequest(text)&&
         !this.host.store.get('project-review-input',run.id)&&!this.host.store.db.prepare("SELECT 1 FROM jobs WHERE id=?").get('workflow-decision:'+run.id))
-        this.host.chatToolTurns.get(c.id)?.offer(run,sourceMessage?.runId)
+        this.host.chatToolTurns.get(c.id)?.offer(run,sourceMessage?.runId,input.steer)
       this.changed(c.id)
-      return {runId:run.id,duplicate:false}
+      return {runId:run.id,duplicate:false,...(input.steer?{delivery:['update','applied','stop'].includes(this.host.store.get<ChatRun>('chat-run',run.id)?.interjection?.state??'')?'steered':'next-turn'}:{})}
     })
   }
   businessDecisions(id:string, owner:string, query?:{runIds?:Set<string>; questionId?:string; workerId?:string; currentOnly?:boolean}) {

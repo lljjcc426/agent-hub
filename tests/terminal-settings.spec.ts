@@ -45,6 +45,13 @@ it('reports invalid settings before connecting and refuses permission keys in pr
     outputFormat: 'stream-json', json: true, prompt: 'hello', preferences: { theme: 'mono', verbose: true }
   })
 })
+it('persists the processing input mode without changing appearance preferences',()=>{
+ const {project}=fixture()
+ saveTerminalSetting(project,'theme','light');saveTerminalSetting(project,'inputMode','steer')
+ expect(loadTerminalSettings(project).settings).toMatchObject({theme:'light',inputMode:'steer'})
+ saveTerminalSetting(project,'inputMode','queue')
+ expect(loadTerminalSettings(project).settings.inputMode).toBe('queue')
+})
 it('emits replacements only for changed public messages in the requested run', () => {
   const events: unknown[] = []
   const output = new PrintEvents(event => events.push(event))

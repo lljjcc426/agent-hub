@@ -277,8 +277,8 @@ export class TerminalClient {
   link(id: string) {
     return this.base + '/chat#conversation/' + id
   }
-  async send(id: string, text: string, files: string[], locale: string) {
-    const unique = [...new Set(files)]
+  async send(id: string, text: string, files: string[], locale: string, options: { steer?: boolean; clientMessageId?: string; attachments?: string[]; uploaded?: (ids:string[])=>void } = {}) {
+    const unique = options.attachments ? [] : [...new Set(files)]
     if (unique.length > chatUploadLimits.maxFiles)
       throw new CliError('Attach up to 32 files.')
     for (const file of unique) {
@@ -288,7 +288,7 @@ export class TerminalClient {
           'Choose a regular file under 100 MiB: ' + file
         )
     }
-    const attachments: string[] = [],
+    const attachments: string[] = [...(options.attachments??[])],
       base = '/api/chat/conversations/' + id
     try {
       for (const file of unique) {
@@ -308,12 +308,13 @@ export class TerminalClient {
       )
       throw error
     }
-    const input = { text, attachments, locale, clientMessageId: randomUUID() }
+    options.uploaded?.(attachments)
+    const input = { text, attachments, locale, ...(options.steer?{steer:true}:{}), clientMessageId: options.clientMessageId??randomUUID() }
     try {
-      return await this.request<{ runId: string }>(base + '/messages', input)
+      return await this.request<{ runId: string; delivery?: 'steered'|'next-turn' }>(base + '/messages', input)
     } catch (e) {
       if (!(e instanceof CliError && e.code === 'host_unavailable')) throw e
-      return this.request<{ runId: string }>(base + '/messages', input)
+      return this.request<{ runId: string; delivery?: 'steered'|'next-turn' }>(base + '/messages', input)
     }
   }
 }

@@ -4,7 +4,7 @@ import { TuiScreen } from '../src/terminal/tui-screen.ts'
 import type { Snapshot } from '../src/terminal/client.ts'
 import type { InputMode } from '../src/terminal/input-queue.ts'
 
-const test=await createTestRenderer({width:100,height:30,kittyKeyboard:true,useMouse:true})
+const test=await createTestRenderer({width:120,height:30,kittyKeyboard:true,useMouse:true})
 const sent:{text:string;mode?:InputMode}[]=[],actions:{action:string;id?:string;text?:string}[]=[]
 const screen=new TuiScreen(test.renderer,{theme:'dark',motion:'reduced'}, {
  send:async(text,_files,mode)=>{sent.push({text,mode})},command:async()=>{},complete:async()=>[],
@@ -18,6 +18,12 @@ async function clickText(text:string){
 }
 try{
  screen.update(view);await test.renderOnce()
+ const modeLabel=test.renderer.root.findDescendantById('input-mode')!
+ const modelLabel=test.renderer.root.findDescendantById('composer-model')!
+ const attachLabel=test.renderer.root.findDescendantById('attach-files')!
+ assert.equal(modeLabel.y,modelLabel.y)
+ assert.equal(modeLabel.y,attachLabel.y)
+ assert.ok(modeLabel.x>=modelLabel.x+modelLabel.width&&modeLabel.x+modeLabel.width<=attachLabel.x)
  assert.match(test.captureCharFrame(),/Queue · enter submit/)
  await test.mockInput.pasteBracketedText('first');test.mockInput.pressEnter();await test.renderOnce()
  assert.deepEqual(sent,[{text:'first',mode:'queue'}])

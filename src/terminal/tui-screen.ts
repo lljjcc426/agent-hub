@@ -156,7 +156,6 @@ export class TuiScreen {
       flexShrink: 0, scrollX: false, marginBottom: 1, verticalScrollbarOptions: { showArrows: false } })
     this.compose.add(this.attachmentList); this.compose.add(this.draft)
     this.inputModeLabel=this.text('',{id:'input-mode',height:1,visible:false,selectable:false,fg:p.accent,onMouseDown:event=>{if(event.button===0)this.toggleInputMode()}})
-    this.compose.add(this.inputModeLabel)
     const meta = new BoxRenderable(renderer, { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, flexShrink: 0 })
     const modelControls = new BoxRenderable(renderer, { flexDirection:'row',flexGrow:1,flexShrink:1,minWidth:0,marginRight:2 })
     this.model = this.text('Router', { id:'composer-model',fg:p.accent,height:1,flexShrink:1,minWidth:0,selectable:false,
@@ -167,7 +166,9 @@ export class TuiScreen {
     this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
     this.attachButton = this.text('+ Attach', { id: 'attach-files', fg: p.muted, height: 1, marginRight: 2,
       selectable: false, onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/attach')) } })
-    meta.add(modelControls); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
+    const inputModeSlot=new BoxRenderable(renderer,{flexDirection:'row',justifyContent:'center',flexGrow:1,flexShrink:1,minWidth:0,marginRight:2})
+    inputModeSlot.add(this.inputModeLabel)
+    meta.add(modelControls); meta.add(inputModeSlot); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
     const footerRow = new BoxRenderable(renderer, { width: '100%', height: 1, marginTop: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between', gap: 2 })
     this.footer = this.text('', { id: 'sync-status', height: 1, fg: p.muted, flexShrink: 1, minWidth: 0, selectable: false,
       onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/open')) } })
@@ -474,7 +475,7 @@ export class TuiScreen {
   }
   private drawInputMode() {
     this.inputModeLabel.visible=routerProcessing(this.view)||this.queuedInputs.length>0
-    this.inputModeLabel.content=(this.prefs.inputMode==='steer'?'Steer':'Queue')+' · enter submit · tab switch'
+    this.inputModeLabel.content=(this.prefs.inputMode==='steer'?'Steer':'Queue')+(this.renderer.width>=110?' · enter submit · tab switch':this.renderer.width>=80?' · tab switch':' · tab')
     this.inputModeLabel.fg=this.palette.accent
   }
   inputQueue(items:QueuedInput[],paused:boolean,sending?:string) {

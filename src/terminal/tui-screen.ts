@@ -672,10 +672,10 @@ export class TuiScreen {
     const input = new TextareaRenderable(this.renderer, { width: '100%', height: multiline ? Math.max(3, Math.min(8, this.renderer.height - 10)) : 1,
       initialValue: initial, backgroundColor: this.palette.selected, focusedBackgroundColor: this.palette.selected,
       textColor: this.palette.fg, focusedTextColor: this.palette.fg,
-      keyBindings: [{ name: 'return', ctrl: multiline && !options.submitOnEnter, action: 'submit' }, ...(options.submitOnEnter ? [{ name: 'j', ctrl: true, action: 'newline' as const }] : [])],
+      keyBindings: [{ name: 'return', ctrl: multiline && !options.submitOnEnter, action: 'submit' }, ...(options.submitOnEnter ? [{ name: 'return', shift: true, action: 'newline' as const }, { name: 'return', meta: true, action: 'newline' as const }, { name: 'j', ctrl: true, action: 'newline' as const }] : [])],
       onSubmit: () => { const value = input.plainText.trim(); if (!value && !options.allowEmpty) return; this.closeModal(false); this.run(submit(value)) }
     })
-    panel.add(input); panel.add(this.text(options.submitOnEnter ? 'enter save · ctrl+j newline · esc cancel' : multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
+    panel.add(input); panel.add(this.text(options.submitOnEnter ? 'enter save · shift+enter newline · esc cancel' : multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
     input.focus(); input.gotoBufferEnd()
   }
   closeModal(cancelled = true) {

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 const args = process.argv.slice(2)
 const interactive = process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb' &&
-  process.env.ROPPO_LEGACY_TUI !== '1' && !args.some(arg => ['-p', '--print', '--json', '--output-format', '-h', '--help', '-V', '--version', 'login', 'logout', 'init', 'lang'].includes(arg))
+  process.env.ROPPO_LEGACY_TUI !== '1' && !args.some(arg => ['-p', '--print', '--json', '--output-format', '-h', '--help', '-V', '--version', 'login', 'logout', 'lang'].includes(arg))
 if (interactive && !process.versions.bun) {
   const require = createRequire(import.meta.url)
   const bun = require.resolve('bun/bin/bun.exe')

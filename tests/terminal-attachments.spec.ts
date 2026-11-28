@@ -4,14 +4,12 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { attachmentPath, readAttachment } from '../src/terminal/attachments.ts'
 import { TerminalClient } from '../src/terminal/client.ts'
-import { configureLanguage } from '../src/terminal/language.ts'
 
 const directories: string[] = []
 const directory = () => { const path = mkdtempSync(join(tmpdir(), 'roppo-attachments-')); directories.push(path); return path }
 afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }) })
 
 it('accepts quoted and escaped local paths and rejects folders and oversized files', async () => {
-  configureLanguage('en')
   const dir = directory(), file = join(dir, '旅行 notes.txt')
   writeFileSync(file, 'travel notes')
   for (const input of ['"旅行 notes.txt"', "'旅行 notes.txt'", '旅行\\ notes.txt']) {

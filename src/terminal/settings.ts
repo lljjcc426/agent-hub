@@ -1,3 +1,4 @@
+import {themeNames} from './themes.ts'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -6,8 +7,7 @@ import { terminalProfileDirectory } from './profile.ts'
 import { CliError } from './client.ts'
 
 export const terminalSettingsSchema = z.object({
-  theme: z.enum(['system', 'dark', 'light', 'mono']).optional(),
-  language: z.enum(['en', 'zh']).optional(),
+  theme: z.enum(themeNames).optional(),
   verbose: z.boolean().optional(),
   animation: z.boolean().optional(),
   motion: z.enum(['full', 'reduced']).optional(),
@@ -33,11 +33,13 @@ function read(path: string): TerminalSettings {
   let value: unknown
   try { value = JSON.parse(readFileSync(path, 'utf8')) }
   catch (error) { throw new CliError(path + ': ' + (error as Error).message, 'invalid_settings', 2) }
+  // Ignore the retired interface language in existing settings files.
+  if (value && typeof value === 'object' && 'language' in value) delete value.language
   return parse(value, path)
 }
 export function loadTerminalSettings(cwd: string, extra?: string, overrides: TerminalSettings = {}) {
   const sources: string[] = []
-  let settings: TerminalSettings = { ...defaultSettings }
+  let settings: TerminalSettings = {}
   for (const path of Object.values(settingsPaths(cwd))) {
     if (!existsSync(path)) continue
     settings = { ...settings, ...read(path) }
@@ -57,7 +59,7 @@ export function loadTerminalSettings(cwd: string, extra?: string, overrides: Ter
       sources.push(path)
     }
   }
-  return { settings: { ...settings, ...overrides }, sources }
+  return { settings: { ...defaultSettings, ...settings, ...overrides }, sources, hasTheme: !!(overrides.theme ?? settings.theme) }
 }
 export function saveTerminalSetting(cwd: string, key: string, raw: string, scope: 'user' | 'project' | 'local' = 'user') {
   const value = (key === 'verbose' || key === 'animation') ? (raw === 'true' ? true : raw === 'false' ? false : raw)

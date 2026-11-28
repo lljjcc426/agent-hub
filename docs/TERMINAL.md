@@ -22,7 +22,7 @@ For a new installation, run `roppo`. The terminal starts the local service when 
 
 The CLI can read a launcher connection file through `ROPPO_CONNECTION_FILE`. It uses the URL in that file. `--host` and `ROPPO_HOST` take precedence. Credentials are stored per host in private files under `~/.roppo/terminal`. Set `ROPPO_CLI_HOME` to use a separate terminal profile and `ROPPO_HOME` to select the personal service directory (default `~/.agent-hub`). The automatically started service writes logs under that directory’s `logs/terminal-service.log` and continues after the terminal exits; OS login startup remains a separate host setting.
 
-Choose `roppo lang zh` for Chinese or `roppo lang en` for English. This preference applies to future launches. Use `--lang zh` or `--lang en` for a single invocation. The setting controls the terminal interface. Replies follow the host’s existing language policy.
+The CLI interface uses English. Replies follow the host’s existing language policy.
 
 ## Your personal conversation
 
@@ -108,19 +108,19 @@ Terminal preferences load from these sources, from lowest to highest priority:
 3. `.roppo/settings.json` in the selected `--cwd` directory, or launch directory.
 4. `.roppo/settings.local.json` in that directory.
 5. `--settings '{"theme":"mono"}'` or `--settings path/to/settings.json`.
-6. Dedicated launch flags such as `--theme`, `--verbose`, `--lang` and `--timeout`.
+6. Dedicated launch flags such as `--theme`, `--verbose` and `--timeout`.
 
-Supported keys are `theme` (`system`, `dark`, `light`, `mono`), `language` (`en`, `zh`), `verbose` (boolean), `motion` (`full` or `reduced`), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
+Supported keys are `theme` (`black-blue`, `black-red`, `mono`, `white-blue`, `white-red`, `system`, `dark`, `light`), `verbose` (boolean), `motion` (`full` or `reduced`), `outputFormat` (`text`, `json`, `stream-json`) and `timeout` (seconds, greater than zero and at most 86400). Unknown keys and invalid JSON produce an error with the source path. `--help` and `--version` work independently of these settings files. Project preferences cannot grant permissions, change the host or inject credentials. Add `.roppo/settings.local.json` to your project's `.gitignore` when using local preferences.
 
 ```sh
 roppo --theme dark --verbose
-roppo --settings '{"language":"zh","theme":"mono"}'
+roppo --settings '{"theme":"mono"}'
 # Inside a session:
 /config verbose=true
 /config theme=light local
 ```
 
-A `/config` edit takes effect immediately in the current session, and saves to `user` scope unless another scope is specified. On the next launch, normal file/flag precedence applies again. `roppo lang zh|en` writes the user language preference and retains the legacy language file for older clients.
+A `/config` edit takes effect immediately in the current session, and saves to `user` scope unless another scope is specified. On the next launch, normal file/flag precedence applies again.
 
 | Shortcut | Action |
 | --- | --- |

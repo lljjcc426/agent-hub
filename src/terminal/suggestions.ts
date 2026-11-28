@@ -1,5 +1,4 @@
 import { byName } from './list-order.ts'
-import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { execFile } from 'node:child_process'
 import { readdir } from 'node:fs/promises'
@@ -79,10 +78,10 @@ function candidates(
 
     return {
       kind: 'commands',
-      title: ui('Commands', '命令'),
+      title: 'Commands',
       start: 0,
       end: cursor,
-      empty: ui('No matching commands', '没有匹配的命令'),
+      empty: 'No matching commands',
       items: matches.map((c) => ({
         label: c.name,
         detail: c.description,
@@ -107,14 +106,14 @@ function candidates(
 
     return {
       kind: 'capabilities',
-      title: ui('Capabilities', '能力库'),
+      title: 'Capabilities',
       start: 0,
       end: cursor,
       empty:
         library?.warnings[0] ??
         (library
-          ? ui('No matching capabilities', '没有匹配的能力')
-          : ui('Loading workspace capabilities…', '正在加载工作区能力…')),
+          ? 'No matching capabilities'
+          : 'Loading workspace capabilities…'),
       items: matches.map((item) => ({
         label: item.name,
         detail: (item.sourceGroup ?? item.source) + ' · ' + item.kind,
@@ -141,11 +140,11 @@ function candidates(
       title:
         pending.length === 1
           ? pending[0]!.decision!.question
-          : ui('Open questions', '待回答的问题'),
+          : 'Open questions',
       items,
       start: 0,
       end: cursor,
-      empty: ui('No matching choices', '没有匹配的选项')
+      empty: 'No matching choices'
     }
   }
   const approval = /^\/(approve|decline|answer)\s+(\S+)\s+(\S*)$/.exec(before)
@@ -165,11 +164,11 @@ function candidates(
       }))
       .filter((a) => (a.label + ' ' + a.value).toLowerCase().includes(approval[3]!.toLowerCase()))
     return {
-      title: ui('Pending requests', '待处理请求'),
+      title: 'Pending requests',
       items,
       start: 0,
       end: cursor,
-      empty: ui('No matching pending requests', '没有匹配的待处理请求')
+      empty: 'No matching pending requests'
     }
   }
   const match = /^\/(diff|approvals|stop|approve|decline|answer)\s+(\S*)$/.exec(before)
@@ -204,12 +203,12 @@ function candidates(
       }))
     return {
       title: showRequests
-        ? ui('Tasks and requests', '任务与请求')
-        : ui('Worker tasks', 'Worker 任务'),
+        ? 'Tasks and requests'
+        : 'Worker tasks',
       items,
       start: 0,
       end: cursor,
-      empty: ui('No matching tasks', '没有匹配的任务')
+      empty: 'No matching tasks'
     }
   }
   const mention = /(?:^|\s)@(?:"([^"\n]*)|([^\s"@]*))$/.exec(before)
@@ -236,13 +235,13 @@ function candidates(
   }
   return {
     kind: 'files',
-    title: ui('Project files', '项目文件'),
+    title: 'Project files',
     items,
     start,
     end: cursor + (tail?.[0].length ?? 0),
     empty: files
-      ? ui('No matching files', '没有匹配的文件')
-      : ui('Finding project files…', '正在查找项目文件…')
+      ? 'No matching files'
+      : 'Finding project files…'
   }
 }
 

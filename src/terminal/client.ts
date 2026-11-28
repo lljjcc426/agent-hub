@@ -1,5 +1,4 @@
 import {chatUploadLimits} from '../execution-limits.ts'
-import { ui } from './language.ts'
 import { terminalProfileDirectory } from './profile.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -45,10 +44,7 @@ export function localOrigin(input: string) {
     u.hash
   )
     throw new CliError(
-      ui(
-        'Choose a local HTTP host, for example http://127.0.0.1:4390.',
-        '请输入本机 HTTP 地址，例如 http://127.0.0.1:4390。'
-      )
+      'Choose a local HTTP host, for example http://127.0.0.1:4390.'
     )
   return u.origin
 }
@@ -70,10 +66,7 @@ function discoverHost() {
     process.env.ROPPO_CONNECTION_FILE ?? join(process.env.ROPPO_HOME ?? join(homedir(), '.agent-hub'), 'state', 'connection.json')
   if (!existsSync(path))
     throw new CliError(
-      ui(
-        'No local host found. Run roppo init or set ROPPO_HOST.',
-        '未找到本机实例，请运行 roppo init 或设置 ROPPO_HOST。'
-      ), 'host_not_found'
+      'No local host found. Run roppo init or set ROPPO_HOST.', 'host_not_found'
     )
   return JSON.parse(readFileSync(path, 'utf8')).url as string
 }
@@ -105,7 +98,7 @@ export class TerminalClient {
     if (!native) {
       if (!this.token)
         throw new CliError(
-          ui('Sign in with roppo login on this host.', '请先运行 roppo login 连接此实例。'),
+          'Sign in with roppo login on this host.',
           'login_required'
         )
       headers.authorization = 'Roppo-CLI ' + this.token
@@ -126,10 +119,7 @@ export class TerminalClient {
       })
     } catch {
       throw new CliError(
-        ui(
-          'Cannot reach Roppo at ' + this.base + '. Check the local host.',
-          '无法连接 ' + this.base + '，请检查本机实例。'
-        ),
+        ('Cannot reach Roppo at ' + this.base + '. Check the local host.'),
         'host_unavailable'
       )
     }
@@ -138,7 +128,7 @@ export class TerminalClient {
     if (!response.ok)
       throw new CliError(
         response.status === 401
-          ? ui('Sign in with roppo login on this host.', '请先运行 roppo login 连接此实例。')
+          ? 'Sign in with roppo login on this host.'
           : (result.error ?? result.code ?? response.statusText),
         result.code
       )
@@ -165,16 +155,13 @@ export class TerminalClient {
         })
         if (response.status === 401) {
           failed(
-            ui(
-              'Sign-in expired. Reconnect with roppo login.',
-              '登录已过期，请运行 roppo login 重新连接。'
-            )
+            'Sign-in expired. Reconnect with roppo login.'
           )
           return
         }
         if (!response.ok || !response.body)
           throw Error(
-            ui('The host event stream is unavailable.', '暂时无法接收本机实例的活动更新。')
+            'The host event stream is unavailable.'
           )
         const decoder = new TextDecoder()
         let buffer = ''
@@ -186,10 +173,7 @@ export class TerminalClient {
             buffer = buffer.slice(end + 2)
             if (frame.includes('event: reset')) {
               failed(
-                ui(
-                  'This conversation was reset. Exit and start a new session.',
-                  '当前对话已重置，请退出后重新打开 roppo。'
-                )
+                'This conversation was reset. Exit and start a new session.'
               )
               return
             }
@@ -232,10 +216,7 @@ export class TerminalClient {
     )
     const url = this.base + '/terminal/pair#' + pair.id
     process.stderr.write(
-      ui(
-        '\nRoppo CLI  ·  Connect your account\n\nConnect code ',
-        '\nRoppo CLI  ·  连接你的账号\n\n配对码 '
-      ) +
+      '\nRoppo CLI  ·  Connect your account\n\nConnect code ' +
         pair.id.slice(-8).toUpperCase() +
         '  ' +
         url +
@@ -244,14 +225,8 @@ export class TerminalClient {
     const browser = await openLocalBrowser(url)
     process.stderr.write(
       (browser.opened
-        ? ui(
-            'In your browser, match the code and choose Connect terminal.',
-            '请在浏览器中核对配对码，再选择连接终端。'
-          )
-        : ui(
-            'Open the link above, match the code and choose Connect terminal.',
-            '请打开上方链接，核对配对码后选择连接终端。'
-          )) + '\n'
+        ? 'In your browser, match the code and choose Connect terminal.'
+        : 'Open the link above, match the code and choose Connect terminal.') + '\n'
     )
     for (;;) {
       const { token } = await this.request<{ token?: string }>('/api/terminal/pair/claim', pair, {
@@ -305,12 +280,12 @@ export class TerminalClient {
   async send(id: string, text: string, files: string[], locale: string) {
     const unique = [...new Set(files)]
     if (unique.length > chatUploadLimits.maxFiles)
-      throw new CliError(ui('Attach up to 32 files.', '最多可添加 32 个附件。'))
+      throw new CliError('Attach up to 32 files.')
     for (const file of unique) {
       const stat = statSync(file)
       if (!stat.isFile() || stat.size > chatUploadLimits.maxBytes)
         throw new CliError(
-          ui('Choose a regular file under 100 MiB: ', '请选择不超过 100 MiB 的普通文件：') + file
+          'Choose a regular file under 100 MiB: ' + file
         )
     }
     const attachments: string[] = [],

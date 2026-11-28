@@ -1,6 +1,5 @@
 import { byName } from './list-order.ts'
 import {messageCharacters} from '../execution-limits.ts'
-import { ui } from './language.ts'
 import type { CapabilitySnapshot } from '../capability-types.ts'
 import { EventEmitter } from 'node:events'
 import { emitKeypressEvents, type Key } from 'node:readline'
@@ -66,7 +65,7 @@ export class TerminalEditor extends EventEmitter {
     this.cursor = 0
     this.choices = (query) => ({ title, start: 0, end: query.length,
       items: items.filter(item => (item.label + ' ' + item.detail).toLowerCase().includes(query.toLowerCase())),
-      empty: ui('No matches', '没有匹配项') })
+      empty: 'No matches' })
     this.updateMenu()
     this.emit('change')
   }
@@ -119,7 +118,7 @@ export class TerminalEditor extends EventEmitter {
           this.view,
           this.library
         )
-    if (next && this.choices && next.title !== ui('Search history', '搜索输入历史')) next.items = byName(next.items, item => item.label)
+    if (next && this.choices && next.title !== 'Search history') next.items = byName(next.items, item => item.label)
     const previous = this.menu?.items[this.menu.selected]?.value
     this.menu = next
       ? {
@@ -176,7 +175,7 @@ export class TerminalEditor extends EventEmitter {
   private edit(value: string, start = this.cursor, end = this.cursor) {
     const room = messageCharacters - (this.line.length - end + start)
     if (value.length > room) {
-      this.emit('notice', ui('Draft exceeds 256,000 characters.', '输入内容超过256,000 字符。'))
+      this.emit('notice', 'Draft exceeds 256,000 characters.')
       return
     }
     this.line = this.line.slice(0, start) + value + this.line.slice(end)
@@ -227,7 +226,7 @@ export class TerminalEditor extends EventEmitter {
       if (item && !tab) {
         if (this.pickerDraft) {
           this.dismissPicker()
-          if (menu?.title === ui('Search history', '搜索输入历史')) {
+          if (menu?.title === 'Search history') {
             this.line = item.value
             this.cursor = item.value.length
           } else this.queue.push(item.value)
@@ -283,7 +282,7 @@ export class TerminalEditor extends EventEmitter {
       const parts = this.paste
       this.paste = undefined
       if (this.pastedLength > messageCharacters)
-        this.emit('notice', ui('Paste exceeds 256,000 characters.', '粘贴内容超过256,000 字符。'))
+        this.emit('notice', 'Paste exceeds 256,000 characters.')
       else this.edit(clean(parts.join('').replace(/\r\n?/g, '\n')).replace(/\t/g, '  '))
       if (!this.choices) this.menu = undefined
     } else if (key.name === 'paste-start') {
@@ -303,7 +302,7 @@ export class TerminalEditor extends EventEmitter {
       else if (key.ctrl && this.line) { this.edit('', 0, this.line.length); this.menu = undefined }
       else if (key.ctrl) {
         if (Date.now() - this.lastInterrupt < 1000) this.close()
-        else { this.lastInterrupt = Date.now(); this.emit('notice', ui('Press Ctrl+C again to exit.', '再次按 Ctrl+C 退出。')) }
+        else { this.lastInterrupt = Date.now(); this.emit('notice', 'Press Ctrl+C again to exit.') }
       } else this.emit('interrupt')
     } else if (key.ctrl && key.name === 'd' && !this.line) this.close()
     else if (key.name === 'pageup' || key.name === 'pagedown')
@@ -317,7 +316,7 @@ export class TerminalEditor extends EventEmitter {
       }
       this.updateMenu()
     }
-    else if (key.ctrl && key.name === 'r' && !this.choices) this.pick(ui('Search history', '搜索输入历史'),
+    else if (key.ctrl && key.name === 'r' && !this.choices) this.pick('Search history',
       [...new Set(this.history)].reverse().map(value => ({label: value, detail: '', value})))
     else if (key.meta && key.name === 'p' && !this.choices) this.queue.push('/model')
     else if ((seq === '\x1b[Z' || key.name === 'tab' && key.shift) && !this.choices) this.queue.push('/permissions')

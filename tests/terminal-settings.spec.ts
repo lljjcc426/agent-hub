@@ -29,8 +29,8 @@ it('merges user, project, local, supplied settings and launch flags without repl
   const loaded = loadTerminalSettings(project, '{"theme":"light","timeout":30}', { timeout: 5 })
   expect(loaded.settings).toMatchObject({ theme: 'light', timeout: 5, verbose: true })
   expect(loaded.sources).toEqual([paths.user, paths.project, paths.local, '--settings (JSON)'])
-  saveTerminalSetting(project, 'language', 'zh')
-  expect(JSON.parse(readFileSync(paths.user, 'utf8'))).toEqual({ theme: 'light', verbose: true, motion: 'reduced', language: 'zh' })
+  expect(() => saveTerminalSetting(project, 'language', 'zh')).toThrow()
+  expect(JSON.parse(readFileSync(paths.user, 'utf8'))).toEqual({ theme: 'light', verbose: true, motion: 'reduced' })
   expect(JSON.parse(readFileSync(paths.project, 'utf8'))).toEqual({ theme: 'dark', timeout: 120 })
 })
 it('reports invalid settings before connecting and refuses permission keys in project preferences', () => {

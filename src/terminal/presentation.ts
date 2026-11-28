@@ -1,5 +1,4 @@
 import type { Theme } from './settings.ts'
-import { ui } from './language.ts'
 import { basename } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { Menu } from './editor.ts'
@@ -68,13 +67,13 @@ const codes: Record<Tone, string> = {
   selected: '1;38;5;173'
 }
 const runLabels = (): Record<string, string> => ({
-  queued: ui('Queued', '排队中'),
-  running: ui('Running', '进行中'),
-  completed: ui('Completed', '已完成'),
-  waiting: ui('Needs input', '等待你的回复'),
-  failed: ui('Failed', '执行失败'),
-  cancel_requested: ui('Stopping', '正在停止'),
-  cancelled: ui('Stopped', '已停止')
+  queued: 'Queued',
+  running: 'Running',
+  completed: 'Completed',
+  waiting: 'Needs input',
+  failed: 'Failed',
+  cancel_requested: 'Stopping',
+  cancelled: 'Stopped'
 })
 export class TerminalLayout {
   readonly margin: string
@@ -100,7 +99,7 @@ export class TerminalLayout {
   }
   private context(view: Snapshot) {
     const { conversation, readiness } = view
-    const path = oneLine(conversation.project || ui('Personal chat', '个人对话'))
+    const path = oneLine(conversation.project || 'Personal chat')
     const project = basename(path) || path
     const model = oneLine(
       conversation.model ||
@@ -137,11 +136,11 @@ export class TerminalLayout {
     const content = [
       this.ink('Roppo CLI', 'accent') + '  ' + this.ink('v' + version, 'quiet'),
       '',
-      this.ink(ui('Welcome back', '欢迎回来'), 'title'),
+      this.ink('Welcome back', 'title'),
       fit(team, width - 4),
-      fit(view.conversation.project || ui('Personal chat · shared with the web workspace', '个人对话 · 与网页端同步'), width - 4),
+      fit(view.conversation.project || 'Personal chat · shared with the web workspace', width - 4),
       '',
-      ui('/help commands  ·  /config settings  ·  /files your files', '/help 命令  ·  /config 设置  ·  /files 你的文件')
+      '/help commands  ·  /config settings  ·  /files your files'
     ]
     if (rows < 20) return this.header(view)
     return ['', this.margin + this.ink('╭' + '─'.repeat(width - 2) + '╮', 'rule'),
@@ -285,18 +284,18 @@ export class TerminalLayout {
     const state = view.run?.state
     if (state === 'cancel_requested') return runLabels()[state]!
     if (!details) {
-      if (view.approvals.some(a => isApprovalPending(a))) return ui('Your permission is needed', '需要你的授权')
+      if (view.approvals.some(a => isApprovalPending(a))) return 'Your permission is needed'
       if (state === 'waiting') return runLabels()[state]!
       if (view.messages.some(m => m.runId === view.run?.id && !m.recipient && m.speaker?.kind !== 'worker' && m.status === 'streaming'))
-        return ui('Writing reply', '正在回复')
+        return 'Writing reply'
       const router = view.calls.findLast(c => c.runId === view.run?.id && c.kind === 'router' && c.state === 'running')
       if (router?.status?.label) return router.status.label
       const working = state === 'running' || state === 'queued' || view.tasks.some(t => ['running', 'queued'].includes(t.state))
       if (working) {
         const step = view.publicPlans?.filter(p => p.runId === view.run?.id).flatMap(p => p.steps).find(s => s.state === 'running')
-        return step?.title ?? ui('Working on your request', '正在处理你的请求')
+        return step?.title ?? 'Working on your request'
       }
-      return state ? (runLabels()[state] ?? state) : ui('Ready', '就绪')
+      return state ? (runLabels()[state] ?? state) : 'Ready'
     }
     const tasks = view.tasks.filter((t) => t.state === 'running' || t.state === 'queued')
     const calls = view.calls.filter(
@@ -329,12 +328,12 @@ export class TerminalLayout {
         role +
         ' · ' +
         (call.name.startsWith('memory.')
-          ? ui('Updating memory', '正在整理记忆')
+          ? 'Updating memory'
           : view.messages?.some(
                 (m) => m.runId === call.runId && !m.recipient && m.status === 'streaming' && m.text
               )
-            ? ui('Writing reply', '正在回复')
-            : [ui('Calling model', '正在调用模型'), call.model].filter(Boolean).join(' '))
+            ? 'Writing reply'
+            : ['Calling model', call.model].filter(Boolean).join(' '))
       )
     }
     const task = tasks.find((t) => t.state === 'running') ?? tasks[0]
@@ -343,33 +342,33 @@ export class TerminalLayout {
         'Worker ' +
         (view.workers.find((w) => w.id === task.workerId)?.label ?? task.workerId) +
         ' · ' +
-        (task.state === 'queued' ? ui('Queued', '排队中') + ' · ' : '') +
+        (task.state === 'queued' ? 'Queued' + ' · ' : '') +
         task.title
       )
     if (state === 'queued' || state === 'running')
       return view.reply?.state === 'running'
-        ? ui('Router · Processing message', 'Router · 正在处理消息')
-        : ui('Waiting for Router', '等待 Router 接手')
-    return state ? (runLabels()[state] ?? state) : ui('Ready', '就绪')
+        ? 'Router · Processing message'
+        : 'Waiting for Router'
+    return state ? (runLabels()[state] ?? state) : 'Ready'
   }
   private toolLabel(call: Snapshot['calls'][number]) {
     if (call.trace) {
       const names = {
-        read: ui('Reading file', '正在读文件'),
-        resource: ui('Reading resource', '正在读资源'),
-        search: ui('Searching', '正在搜索'),
-        command: ui('Running command', '正在执行命令')
+        read: 'Reading file',
+        resource: 'Reading resource',
+        search: 'Searching',
+        command: 'Running command'
       }
       return [names[call.trace.kind], call.trace.label].filter(Boolean).join(' · ')
     }
     if (call.name === 'worker_manage' && call.action === 'assign')
-      return [ui('Assigning Worker', '正在分派任务'), call.target].filter(Boolean).join(' → ')
+      return ['Assigning Worker', call.target].filter(Boolean).join(' → ')
     return [call.name, call.action, call.target].filter(Boolean).join(' · ')
   }
   activity(call: Snapshot['calls'][number]) {
     const assignment = call.name === 'worker_manage' && call.action === 'assign'
     const desc = assignment
-      ? ui('Assign Worker', '分派 Worker') + (call.target ? '  →  ' + oneLine(call.target) : '')
+      ? 'Assign Worker' + (call.target ? '  →  ' + oneLine(call.target) : '')
       : oneLine([call.name, call.action, call.target].filter(Boolean).join(' · '))
     return (
       this.margin +
@@ -409,12 +408,12 @@ export class TerminalLayout {
     const busy = options.sending || options.loading || !waiting && (live || tasks.some((t) => t.state === 'running' || t.state === 'queued'))
     const showWork = maxRows >= 10 && !options.picker
     if (showWork && view && (options.sending || options.loading || state || tasks.length)) {
-      const label = options.sending ? ui('Sending message', '正在发送消息') : options.loading ? ui('Loading', '正在加载') : this.workStatus(view, expanded)
+      const label = options.sending ? 'Sending message' : options.loading ? 'Loading' : this.workStatus(view, expanded)
       const elapsed = Math.max(0, Math.floor((now - (view.run?.createdAt ?? now)) / 1000))
       const time =
         elapsed >= 60
-          ? Math.floor(elapsed / 60) + ui('m ', ' 分 ') + (elapsed % 60) + ui('s', ' 秒')
-          : elapsed + ui('s', ' 秒')
+          ? Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's'
+          : elapsed + 's'
       const glyph = busy
         ? options.motion === 'reduced' ? '·' : ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 150) % 10]
         : state === 'failed'
@@ -454,13 +453,13 @@ export class TerminalLayout {
       lines.push(
         '',
         this.margin +
-          this.ink(ui('Project  ', '工作区  '), 'quiet') +
+          this.ink('Project  ', 'quiet') +
           fit(
-            oneLine(view.conversation.project || ui('Personal chat', '个人对话')),
+            oneLine(view.conversation.project || 'Personal chat'),
             this.width - 9
           ),
         this.margin +
-          this.ink(ui('Workers  ', '执行成员  '), 'quiet') +
+          this.ink('Workers  ', 'quiet') +
           fit(team.join(' · ') || '0', this.width - 9)
       )
     }
@@ -480,8 +479,8 @@ export class TerminalLayout {
     for (const [i, line] of draft.slice(start, start + limit).entries()) {
       const marker = i + start === 0 ? (options.picker ? '⌕ ' : continuation ? '… ' : '❯ ') : '  '
       const hint = options.picker
-        ? ui('Search…', '搜索…')
-        : ui('Message Roppo…', '给 Roppo 发消息…')
+        ? 'Search…'
+        : 'Message Roppo…'
       const content =
         line || (!text && !continuation ? ' ' + this.ink(fit(hint, fieldWidth - 1), 'quiet') : '')
       const pad = Math.max(0, this.width - 6 - stringWidth(content))
@@ -508,31 +507,31 @@ export class TerminalLayout {
     const needsApproval = view?.approvals.some((a) => isApprovalPending(a, now))
     const actions = menu
       ? options.picker
-        ? ui('↑↓ select    Enter choose', '↑↓ 选择    Enter 确认')
-        : ui('↑↓ select    Enter choose', '↑↓ 选择    Enter 确认')
+        ? '↑↓ select    Enter choose'
+        : '↑↓ select    Enter choose'
       : pending
-        ? ui('/choose answer question', '/choose 回答问题')
+        ? '/choose answer question'
         : needsApproval
-          ? ui('/approvals review request', '/approvals 查看请求')
+          ? '/approvals review request'
           : options.loading
-            ? ui('Loading command…', '正在加载命令…')
+            ? 'Loading command…'
           : options.sending
-            ? ui('Sending…', '正在发送…')
+            ? 'Sending…'
           : busy
-            ? (live ? ui('Esc interrupt', 'Esc 中断') : ui('Background activity', '后台处理中')) +
-              ui('    Ctrl+O activity', '    Ctrl+O 查看活动')
+            ? (live ? 'Esc interrupt' : 'Background activity') +
+              '    Ctrl+O activity'
             : this.width < 40
-              ? ui('/help   @ files', '/help   @ 文件')
-              : ui('/ commands    @ files', '/ 命令    @ 文件')
+              ? '/help   @ files'
+              : '/ commands    @ files'
     const secondary = menu
       ? options.picker
-        ? ui('Esc back', 'Esc 返回')
-        : ui('Tab complete    Esc close', 'Tab 补全    Esc 关闭')
+        ? 'Esc back'
+        : 'Tab complete    Esc close'
       : busy
         ? ''
         : this.width >= 72
-          ? ui('Ctrl+O details    Alt+Enter newline', 'Ctrl+O 详情    Alt+Enter 换行')
-          : ui('Alt+Enter newline', 'Alt+Enter 换行')
+          ? 'Ctrl+O details    Alt+Enter newline'
+          : 'Alt+Enter newline'
     lines.push(
       this.margin +
         '  ' +
@@ -540,7 +539,7 @@ export class TerminalLayout {
           this.across(
             fit(actions, this.width - 4),
             (options.history && !menu && this.width >= 95
-              ? ui('PgUp/PgDn history    ', 'PgUp/PgDn 历史    ')
+              ? 'PgUp/PgDn history    '
               : '') + secondary,
             this.width - 4
           ),

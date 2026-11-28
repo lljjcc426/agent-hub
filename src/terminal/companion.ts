@@ -1,6 +1,5 @@
 import {companionStatus,type CompanionPhase,type CompanionStatus} from '../../web/chat/companion-state.ts'
 import type {Snapshot} from './client.ts'
-import {ui} from './language.ts'
 
 // Alpha silhouette sampled at 12×12 from src/ui/assets/agents/roppo-body.webp.
 // Braille cells hold 2×4 dots; scale the original silhouette equally on both axes.
@@ -106,7 +105,7 @@ export class TerminalCompanion {
    this.cursor=next
   }
   const actor=this.queue[0]?.to??this.holder
-  const next=companionStatus(view??null,ui,{connected,loading,participantId:actor?.kind==='worker'?actor.id:undefined})
+  const next=companionStatus(view??null,english => english,{connected,loading,participantId:actor?.kind==='worker'?actor.id:undefined})
   if(next.runId===this.status.runId&&['thinking','working','reviewing'].includes(next.phase)&&now-this.publishedAt<1400){this.pendingStatus=next;return}
   this.publish(next,now)
  }
@@ -124,7 +123,7 @@ export class TerminalCompanion {
   if(event&&!this.eventStart)this.eventStart=now
   if(event&&now-this.eventStart>=6000){this.holder=event.to;this.queue.shift();this.eventStart=0;return this.frame(now,reduced)}
   const phase=this.status.phase==='completed'&&now>=this.celebrateUntil?'idle':this.status.phase
-  const label=event?event.from.label+ui(' → ',' → ')+event.to.label:this.status.label
+  const label=event?event.from.label+' → '+event.to.label:this.status.label
   return {phase,label,pixels:drawCompanion(phase,reduced?0:now-this.phaseStart,false,event?{progress:(now-this.eventStart)/6000,worker:event.from.kind==='worker'}:undefined,this.holder?.kind==='worker')}
  }
 }

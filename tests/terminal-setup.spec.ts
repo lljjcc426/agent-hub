@@ -9,12 +9,10 @@ import {Runtime} from '../src/runtime.ts'
 import {serve} from '../src/server.ts'
 import {TerminalClient} from '../src/terminal/client.ts'
 import {accountSetup,configureConnection,SetupCancelled,type SetupUI} from '../src/terminal/setup.ts'
-import {configureLanguage} from '../src/terminal/language.ts'
 
 const cleanup:(()=>Promise<void>)[]=[]
 afterEach(async()=>{for(const close of cleanup.splice(0).reverse())await close();vi.unstubAllEnvs()})
-async function fixture(){
- configureLanguage('en')
+async function fixture(invalidUsername?:string){
  const root=mkdtempSync(join(tmpdir(),'roppo-terminal-setup-'))
  cleanup.push(async()=>rmSync(root,{recursive:true,force:true}))
  vi.stubEnv('ROPPO_CLI_HOME',join(root,'cli'))
@@ -23,6 +21,7 @@ async function fixture(){
  cleanup.push(async()=>{host.server.closeAllConnections();await new Promise<void>(r=>host.server.close(()=>r()));await host.closeRuntime()})
  const client=new TerminalClient(host.url),notes:string[]=[]
  const answers=['test-user','Test User','synthetic-password-123','synthetic-password-123','']
+ if(invalidUsername)answers.unshift(invalidUsername)
  await accountSetup(client,{text:async()=>answers.shift()!,choose:async()=>{throw Error('Unexpected retry')},note:m=>notes.push(m)})
  return {root,host,client,notes}
 }
@@ -39,9 +38,10 @@ async function provider(){
  return {url:'http://127.0.0.1:'+(server.address() as {port:number}).port+'/v1',requests,reject:()=>{fail=true}}
 }
 it('onboards a new local account and checked model, enables memory, and manages Workers through paired CLI access',async()=>{
- const f=await fixture(),api=await provider()
+ const f=await fixture('cc'),api=await provider()
+ expect(f.notes[1]).toContain('3–40 characters')
  expect(f.client.signedIn).toBe(true);expect(f.notes.join('\n')).toContain('recovery code')
- const choices=[0,2,0,0,0],answers=[api.url,'synthetic-api-key','My test connection']
+ const choices=[0,6,1,0,0],answers=[api.url,'synthetic-api-key','My test connection']
  const dialog:SetupUI={choose:async()=>choices.shift()!,text:async(_m,o)=>answers.shift()??o?.initial??'',note:m=>f.notes.push(m)}
  await configureConnection(f.client,dialog)
  expect(api.requests).toContainEqual({path:'/v1/chat/completions',authorization:'Bearer synthetic-api-key'})

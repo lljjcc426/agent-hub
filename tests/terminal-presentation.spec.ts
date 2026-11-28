@@ -1,4 +1,3 @@
-import { configureLanguage } from '../src/terminal/language.ts'
 import { SessionDisplay } from '../src/terminal/session-display.ts'
 import { describe, expect, it } from 'vitest'
 import { stripVTControlCharacters } from 'node:util'
@@ -186,43 +185,39 @@ it('positions the first message near the left edge and keeps the input at the bo
 })
 
 it('uses the active actor, public status and tool trace, ignoring finished and unrelated calls', () => {
-  configureLanguage('zh')
-  try {
-    const layout = new TerminalLayout(246, false)
-    const view = {
-      run: { id: 'r', state: 'running' },
-      workers: [{ id: 'w', label: '审阅员' }],
-      tasks: [],
-      approvals: [],
-      messages: [],
-      calls: [
-        {
-          id: 'router',
-          kind: 'router',
-          runId: 'r',
-          state: 'running',
-          name: 'router',
-          status: { label: '正在核对需求', updatedAt: 10 }
-        },
-        { id: 'other', kind: 'tool', runId: 'unrelated', state: 'running', name: 'stale' },
-        { id: 'finished', kind: 'tool', runId: 'r', state: 'completed', name: 'done' }
-      ]
-    } as unknown as Snapshot
-    expect(layout.workStatus(view)).toBe('正在核对需求')
-    view.calls.push({
-      id: 't',
-      state: 'running',
-      kind: 'tool',
-      name: 'superagent_read',
-      workerId: 'w',
-      runId: 'r',
-      trace: { kind: 'read', label: 'notes.md' },
-      startedAt: 1,
-      conversationId: 'chat'
-    })
-    expect(layout.workStatus(view)).toBe('正在核对需求')
-    expect(layout.workStatus(view, true)).toBe('Worker 审阅员 · 正在读文件 · notes.md')
-  } finally {
-    configureLanguage('en')
-  }
+  const layout = new TerminalLayout(246, false)
+  const view = {
+    run: { id: 'r', state: 'running' },
+    workers: [{ id: 'w', label: '审阅员' }],
+    tasks: [],
+    approvals: [],
+    messages: [],
+    calls: [
+      {
+        id: 'router',
+        kind: 'router',
+        runId: 'r',
+        state: 'running',
+        name: 'router',
+        status: { label: '正在核对需求', updatedAt: 10 }
+      },
+      { id: 'other', kind: 'tool', runId: 'unrelated', state: 'running', name: 'stale' },
+      { id: 'finished', kind: 'tool', runId: 'r', state: 'completed', name: 'done' }
+    ]
+  } as unknown as Snapshot
+  expect(layout.workStatus(view)).toBe('正在核对需求')
+  view.calls.push({
+    id: 't',
+    state: 'running',
+    kind: 'tool',
+    name: 'superagent_read',
+    workerId: 'w',
+    runId: 'r',
+    trace: { kind: 'read', label: 'notes.md' },
+    startedAt: 1,
+    conversationId: 'chat'
+  })
+  expect(layout.workStatus(view)).toBe('正在核对需求')
+  expect(layout.workStatus(view, true)).toBe('Worker 审阅员 · Reading file · notes.md')
+
 })

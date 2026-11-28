@@ -1,4 +1,4 @@
-import { createCliRenderer, type CliRenderer } from '@opentui/core'
+import { withTerminalRenderer } from './renderer-session.ts'
 import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { TuiScreen } from './tui-screen.ts'
@@ -7,22 +7,11 @@ import { TerminalClient, type Conversation, type Snapshot } from './client.ts'
 import { mentionedFiles } from './commands.ts'
 import type { HostSettings } from './host-settings.ts'
 import type { TerminalSettings } from './settings.ts'
-import { AppleTerminalOutput } from './apple-terminal-output.ts'
 
 export async function interactiveTui(client: TerminalClient, conversation: Conversation, options: {
   cwd: string; preferences: TerminalSettings; settingsSources: string[]; prompt: string; files: string[]
 }): Promise<Conversation | undefined> {
-  const appleOutput = process.env.TERM_PROGRAM === 'Apple_Terminal' ? new AppleTerminalOutput(process.stdout) : undefined
-  let terminal: CliRenderer | undefined
-  const resize = () => terminal?.resize(process.stdout.columns, process.stdout.rows)
-  if (appleOutput) process.stdin.on('data', appleOutput.rememberCursor)
-  try {
-    const renderer = terminal = await createCliRenderer({ screenMode: 'alternate-screen', exitOnCtrlC: false,
-      ...(appleOutput ? { stdout: appleOutput as unknown as NodeJS.WriteStream, remote: false,
-        environment: { OPENTUI_GRAPHICS: '0' } } : {}),
-      useMouse: true, targetFps: 30, maxFps: 30, consoleMode: 'disabled', openConsoleOnError: false })
-    // OpenTUI only installs SIGWINCH automatically for process.stdout itself.
-    if (appleOutput) process.on('SIGWINCH', resize)
+  return withTerminalRenderer(async renderer => {
     const abort = new AbortController()
     let view: Snapshot, next: Conversation | undefined, stopped = false, loadingOlder = false
     let watch: Promise<void> | undefined
@@ -92,13 +81,5 @@ export async function interactiveTui(client: TerminalClient, conversation: Conve
       stopped = true; abort.abort(); screen.close(); await watch
     }
     return next
-  } finally {
-    terminal?.destroy()
-    await terminal?.closed
-    if (appleOutput) {
-      process.off('SIGWINCH', resize)
-      process.stdin.off('data', appleOutput.rememberCursor)
-      appleOutput.destroy()
-    }
-  }
+  })
 }

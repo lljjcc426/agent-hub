@@ -1,3 +1,4 @@
+import {paletteFor} from './themes.ts'
 import { entryPixels, paintStartupTide, tideDuration, startupDuration } from './startup.ts'
 import {TerminalCompanion,brailleCells,companionWidth,companionRows} from './companion.ts'
 import {
@@ -10,7 +11,6 @@ import { publicMessage } from './conversation.ts'
 import { isApprovalPending } from '../chat-workflow.ts'
 import type { HostSettings } from './host-settings.ts'
 import type { TerminalSettings } from './settings.ts'
-import { ui } from './language.ts'
 import stringWidth from 'string-width'
 import { byName } from './list-order.ts'
 import { readAttachment, attachmentSize, type DraftAttachment } from './attachments.ts'
@@ -29,9 +29,6 @@ export interface TuiActions {
   copy?(text: string): Promise<void>
   quit(): void
 }
-
-const dark = { bg: '#0b0b0b', panel: '#1c1c1c', selected: '#333333', fg: '#e3e3e3', muted: '#939393', accent: '#a795ff', warm: '#e2ae76' }
-const light = { bg: '#fafafa', panel: '#eeeeee', selected: '#dadada', fg: '#252525', muted: '#656565', accent: '#6553be', warm: '#946322' }
 
 /** Stable native nodes keep the draft, selection and scroll position independent of host events. */
 export class TuiScreen {
@@ -81,7 +78,7 @@ export class TuiScreen {
   private completionTimer?: ReturnType<typeof setTimeout>
   private messageNodes = new Map<string, { box: BoxRenderable; body: MarkdownRenderable | TextRenderable; value: string }>()
   private style: SyntaxStyle
-  private palette = dark
+  private palette = paletteFor()
   private view?: Snapshot
   private host?: HostSettings
   private prefs: TerminalSettings
@@ -101,7 +98,7 @@ export class TuiScreen {
     this.palette = this.colors()
     const p = this.palette
     this.style = SyntaxStyle.fromStyles({
-      default: { fg: p.fg }, 'markup.heading': { fg: p.warm, bold: true },
+      keyword: { fg: p.accent }, string: { fg: p.warm }, function: { fg: p.accent }, default: { fg: p.fg }, 'markup.heading': { fg: p.warm, bold: true },
       'markup.strong': { fg: p.warm, bold: true }, 'markup.link': { fg: p.accent },
       'markup.raw': { fg: p.warm }, comment: { fg: p.muted }
     }, renderer.nativeScene)
@@ -109,7 +106,7 @@ export class TuiScreen {
     renderer.root.add(this.frame)
     this.topArea = new BoxRenderable(renderer, {width:'100%',height:companionRows+1,flexShrink:0})
     this.frame.add(this.topArea)
-    this.header = this.text('', { id:'header-wordmark',position:'absolute',left:0,top:0,width:19,height:2,flexShrink:0,fg:p.fg })
+    this.header = this.text('', { id:'header-notice',position:'absolute',left:0,top:0,width:19,height:2,flexShrink:0,fg:p.fg })
     this.topArea.add(this.header)
     this.companionBox = new BoxRenderable(renderer, {height:companionRows+1,flexShrink:0,width:'100%',alignItems:'center',flexDirection:'column'})
     this.companionArt = this.text('', {id:'header-companion',width:companionWidth,height:companionRows,selectable:false})
@@ -117,7 +114,7 @@ export class TuiScreen {
     this.companionBox.add(this.companionArt);this.companionBox.add(this.companionLabel);this.topArea.add(this.companionBox)
     this.home = new BoxRenderable(renderer, { flexGrow: 1, minHeight: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 1, paddingBottom: 2 })
     this.home.add(this.text('█▀▀▄ █▀▀█ █▀▀█ █▀▀█ █▀▀█\n█▄▄▀ █  █ █▄▄█ █▄▄█ █  █\n█  █ ▀▀▀▀ █    █    ▀▀▀▀'))
-    this.home.add(this.text(ui('A little more room for your life.', '给生活留一点空间。'), { fg: p.muted }))
+    this.home.add(this.text('A little more room for your life.', { fg: p.muted }))
     this.frame.add(this.home)
     this.transcript = new ScrollBoxRenderable(renderer, {
       flexGrow: 1, flexBasis: 0, minHeight: 0, width: '100%', visible: false,
@@ -126,7 +123,7 @@ export class TuiScreen {
       contentOptions: { gap: 1, paddingBottom: 1 }
     })
     this.frame.add(this.transcript)
-    this.jump = this.text(ui('↓ Back to latest · ctrl+end', '↓ 回到最新 · ctrl+end'), { visible: false, height: 1, fg: p.accent,
+    this.jump = this.text('↓ Back to latest · ctrl+end', { visible: false, height: 1, fg: p.accent,
       onMouseDown: () => this.latest() })
     this.frame.add(this.jump)
     this.pending = this.text('', { height: 1, visible: false, fg: p.warm, onMouseDown: () => this.run(this.actions.review()) })
@@ -140,7 +137,7 @@ export class TuiScreen {
     this.draft = new TextareaRenderable(renderer, {
       width: '100%', height: 2, textColor: p.fg, focusedTextColor: p.fg,
       backgroundColor: p.panel, focusedBackgroundColor: p.panel, cursorColor: p.accent,
-      placeholder: ui('Ask Roppo anything…', '和 Roppo 聊聊…'), placeholderColor: p.muted,
+      placeholder: 'Ask Roppo anything…', placeholderColor: p.muted,
       keyBindings: [{ name: 'return', action: 'submit' }, { name: 'return', shift: true, action: 'newline' },
         { name: 'return', meta: true, action: 'newline' }, { name: 'j', ctrl: true, action: 'newline' }],
       onSubmit: () => this.submit(), onContentChange: () => this.changed()
@@ -156,7 +153,7 @@ export class TuiScreen {
       onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/effort')) } })
     modelControls.add(this.model); modelControls.add(this.effort)
     this.permissions = this.text('ask', { fg: p.muted, height: 1, onMouseDown: () => this.run(this.actions.command('/permissions')) })
-    this.attachButton = this.text(ui('+ Attach', '+ 附件'), { id: 'attach-files', fg: p.muted, height: 1, marginRight: 2,
+    this.attachButton = this.text('+ Attach', { id: 'attach-files', fg: p.muted, height: 1, marginRight: 2,
       selectable: false, onMouseDown: event => { if (event.button === 0) this.run(this.actions.command('/attach')) } })
     meta.add(modelControls); meta.add(this.attachButton); meta.add(this.permissions); this.compose.add(meta); this.frame.add(this.compose)
     const footerRow = new BoxRenderable(renderer, { width: '100%', height: 1, marginTop: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between', gap: 2 })
@@ -175,8 +172,7 @@ export class TuiScreen {
   }
 
   private colors() {
-    if (this.prefs.theme === 'mono') return { ...dark, accent: dark.fg, warm: dark.fg }
-    return this.prefs.theme === 'light' || this.prefs.theme === 'system' && this.renderer.themeMode === 'light' ? light : dark
+    return paletteFor(this.prefs.theme, this.renderer.themeMode === 'light')
   }
   private text(content: string, options: ConstructorParameters<typeof TextRenderable>[1] = {}) {
     return new TextRenderable(this.renderer, { content: clean(content), fg: this.palette.fg, flexShrink: 0, ...options })
@@ -186,16 +182,17 @@ export class TuiScreen {
   private resize = () => {
     const narrow = this.renderer.width < 65
     this.frame.paddingX = narrow ? 1 : 3
-    this.header.height = this.renderer.height >= 20 && this.renderer.width >= 24 ? 2 : 1
-    if (!this.noticeTimer) {
-      this.header.content = this.header.height === 2 ? '█▀█ █▀█ █▀█ █▀█ █▀█\n█▀▄ █▄█ █▀▀ █▀▀ █▄█' : 'roppo'
+    const branded = !this.home.visible && !this.noticeTimer
+    this.header.visible = branded || !!this.noticeTimer
+    this.header.height = branded && !narrow ? 2 : 1
+    if (branded) {
+      this.header.content = narrow ? 'ROPPO' : '█▀█ █▀█ █▀█ █▀█ █▀█\n█▀▄ █▄█ █▀▀ █▀▀ █▄█'
       this.header.fg = this.palette.fg
     }
-    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+this.header.height+companionRows
-    // Stack only when the centered character/status would collide with the wordmark or a notice.
-    this.header.width = this.noticeTimer ? '100%' : 19
-    const companionOffset = this.renderer.width < 76 || this.noticeTimer ? this.header.height : 0
-    const topHeight = this.companionBox.visible ? companionRows+1+companionOffset : this.header.height
+    this.header.width = '100%'
+    const companionOffset = this.noticeTimer || (branded && narrow) ? 1 : 0
+    this.companionBox.visible = this.prefs.animation !== false && this.renderer.height >= 14+companionOffset+companionRows
+    const topHeight = Math.max(this.header.visible ? this.header.height : 0,(this.companionBox.visible ? companionRows+1 : 0) + companionOffset)
     this.companionBox.marginTop = companionOffset
     this.topArea.height = topHeight
     this.companionLabel.width = Math.min(32,this.renderer.width-4)
@@ -205,10 +202,10 @@ export class TuiScreen {
     this.draft.height = Math.min(Math.max(2, this.draft.plainText.split('\n').length), Math.max(2, Math.min(6, this.renderer.height - 14)))
     this.attachmentList.height = Math.min(this.attachments.length, Math.max(1, Math.min(3, Math.floor(this.renderer.height / 6))))
     this.footer.content = this.connected
-      ? ui('Open web ↗', '打开网页版 ↗')
-      : ui('Open web ↗ · reconnecting', '打开网页版 ↗ · 正在重连')
+      ? 'Open web ↗'
+      : 'Open web ↗ · reconnecting'
     this.footer.visible = this.renderer.width >= 46
-    this.commandShortcut.content = ui('Commands · ctrl+p', '命令 · ctrl+p')
+    this.commandShortcut.content = 'Commands · ctrl+p'
     this.effort.visible = !narrow && !!this.host
     if (this.host) {
       this.model.content = (this.view?.conversation.mode === 'plan' ? 'Plan · Router · ' : 'Router · ') + (this.host.model ?? this.host.backend)
@@ -225,11 +222,12 @@ export class TuiScreen {
     this.compose.backgroundColor = p.panel; this.compose.borderColor = p.accent
     this.draft.backgroundColor = p.panel; this.draft.focusedBackgroundColor = p.panel
     this.draft.textColor = p.fg; this.draft.focusedTextColor = p.fg; this.draft.placeholderColor = p.muted
-    this.draft.placeholder = ui('Ask Roppo anything…', '和 Roppo 聊聊…')
-    this.attachButton.content = ui('+ Attach', '+ 附件'); this.attachButton.fg = p.muted; this.drawAttachments()
+    this.draft.placeholder = 'Ask Roppo anything…'
+    this.attachButton.content = '+ Attach'; this.attachButton.fg = p.muted; this.drawAttachments()
     this.model.fg = p.accent; this.effort.fg = p.accent; this.footer.fg = p.muted; this.commandShortcut.fg = p.muted; this.header.fg = p.fg; this.permissions.fg = p.muted
     this.activity.fg = p.accent; this.pending.fg = p.warm; this.jump.fg = p.accent
     this.completions.backgroundColor = p.panel
+    for (const scope of ['keyword','function','string','markup.raw','markup.link']) this.style.registerStyle(scope, { fg: p.accent })
     this.style.registerStyle('default', { fg: p.fg })
     this.style.registerStyle('markup.heading', { fg: p.warm, bold: true })
     this.style.registerStyle('markup.strong', { fg: p.warm, bold: true })
@@ -242,7 +240,7 @@ export class TuiScreen {
     this.home.getChildren().forEach((child, index) => {
       if (child instanceof TextRenderable) {
         child.fg = index ? p.muted : p.fg
-        if (index) child.content = ui('A little more room for your life.', '给生活留一点空间。')
+        if (index) child.content = 'A little more room for your life.'
       }
     })
     for (const card of this.requestCards.values()) card.box.destroyRecursively()
@@ -250,16 +248,16 @@ export class TuiScreen {
     if (this.view) this.update(this.view)
     this.syncActivity(); this.resize()
   }
-  settings(host: HostSettings) { this.host = host; this.permissions.content = host.approvalMode + ' · ' + ui('permissions', '权限'); this.resize() }
+  settings(host: HostSettings) { this.host = host; this.permissions.content = host.approvalMode + ' · ' + 'permissions'; this.resize() }
   connection(connected: boolean) { this.connected = connected; this.resize() }
   setLoading(value: boolean) { if (!this.closed) { this.loading = value; this.syncActivity() } }
   attachmentFiles(): readonly DraftAttachment[] { return this.attachments }
   async addAttachment(path: string) {
     const file = await readAttachment(path)
     if (this.closed) return
-    if (this.sending) throw Error(ui('Wait for the current message to finish sending.', '请等待当前消息发送完成。'))
+    if (this.sending) throw Error('Wait for the current message to finish sending.')
     if (this.attachments.some(item => item.path === file.path)) return
-    if (this.attachments.length >= chatUploadLimits.maxFiles) throw Error(ui('Attach up to 32 files.', '最多可添加 32 个附件。'))
+    if (this.attachments.length >= chatUploadLimits.maxFiles) throw Error('Attach up to 32 files.')
     this.attachments = byName([...this.attachments, file], item => item.name)
     this.drawAttachments()
   }
@@ -317,11 +315,11 @@ export class TuiScreen {
     const messageCards = [...view.messages, ...(view.earlierCards ?? []).filter(c => !view.messages.some(m => m.id === c.id))]
     const requests = view.approvals.filter(a => isApprovalPending(a)).length + messageCards.filter(m => m.fileReview?.state === 'pending' || m.decision && !m.decision.replyRunId && !m.decision.closed).length + (view.decisions ?? []).filter(d => d.status === 'pending').length
     this.pending.visible = requests > 0
-    this.pending.content = ui(`${requests} awaiting your reply · ctrl+y review`, `${requests} 项等待你处理 · ctrl+y 查看`)
+    this.pending.content = (`${requests} awaiting your reply · ctrl+y review`)
     const cards = view.approvals.filter(a => isApprovalPending(a)).map(a => ({ id: a.id,
-      text: [ui('Permission or reply needed', '需要授权或回答'), a.questions.map(q => q.question).join('\n'), ...Object.values(a.facts)].filter(Boolean).join('\n') }))
+      text: ['Permission or reply needed', a.questions.map(q => q.question).join('\n'), ...Object.values(a.facts)].filter(Boolean).join('\n') }))
     for (const m of messageCards) {
-      if (m.fileReview?.state === 'pending') cards.push({ id: m.id, text: ui('Review file delivery', '确认文件交付') + ('text' in m ? ': ' + m.text : '') })
+      if (m.fileReview?.state === 'pending') cards.push({ id: m.id, text: 'Review file delivery' + ('text' in m ? ': ' + m.text : '') })
       else if (m.decision && !m.decision.replyRunId && !m.decision.closed) cards.push({ id: m.id, text: m.decision.question + '\n' + m.decision.options.map(o => '· ' + o.label).join('\n') })
     }
     for (const d of view.decisions ?? []) if (d.status === 'pending') cards.push({ id: d.id, text: d.question })
@@ -333,7 +331,7 @@ export class TuiScreen {
       const box = new BoxRenderable(this.renderer, { border: ['left'], borderColor: this.palette.warm,
         padding: 1, width: '100%', backgroundColor: this.palette.panel, flexShrink: 0 })
       box.add(this.text(card.text, { wrapMode: 'word', width: '100%' }))
-      box.add(this.text(ui('› Review and respond · ctrl+y', '› 查看并处理 · ctrl+y'), { fg: this.palette.accent, marginTop: 1,
+      box.add(this.text('› Review and respond · ctrl+y', { fg: this.palette.accent, marginTop: 1,
         onMouseDown: () => this.run(this.actions.review()) }))
       this.transcript.add(box); this.requestCards.set(card.id, { box, value: card.text })
     }
@@ -364,7 +362,7 @@ export class TuiScreen {
   private paintCompanion() {
     const elapsed = this.startupAt === undefined ? undefined : Date.now() - this.startupAt
     const frame = elapsed !== undefined && elapsed < startupDuration
-      ? { pixels: elapsed < tideDuration ? Array.from({length:companionRows*4},()=>Array<number>(companionWidth*2).fill(0)) : entryPixels(elapsed-tideDuration,true), label: elapsed < tideDuration ? '' : ui('Hello again.', '又见面了。') }
+      ? { pixels: elapsed < tideDuration ? Array.from({length:companionRows*4},()=>Array<number>(companionWidth*2).fill(0)) : entryPixels(elapsed-tideDuration,true), label: elapsed < tideDuration ? '' : 'Hello again.' }
       : this.companion.frame(Date.now(),this.prefs.motion==='reduced')
     const colors=[this.palette.bg,this.palette.fg,this.palette.muted,this.palette.warm,this.palette.accent].map(c=>RGBA.fromHex(c))
     this.companionArt.content=new StyledText(brailleCells(frame.pixels).flatMap((row,index)=>[
@@ -404,9 +402,9 @@ export class TuiScreen {
   private paintActivity() {
     const seconds = Math.floor((Date.now() - this.started) / 1000), head = Math.floor((Date.now() - this.started) / 125) % 12
     const bar = this.prefs.motion === 'reduced' ? '········' : Array.from({ length: 8 }, (_, i) => i <= head && i > head - 3 ? '■' : '⬝').join('')
-    const label = this.loading ? ui('Connecting', '连接中') : this.view?.run?.state === 'cancel_requested' ? ui('Stopping', '停止中')
-      : this.view?.reply ? ui('Writing reply', '正在回复') : ui('Working', '处理中')
-    this.activity.content = `${bar}  ${label}  ${seconds}s  · esc ${ui('interrupt', '中断')}`
+    const label = this.loading ? 'Connecting' : this.view?.run?.state === 'cancel_requested' ? 'Stopping'
+      : this.view?.reply ? 'Writing reply' : 'Working'
+    this.activity.content = `${bar}  ${label}  ${seconds}s  · esc ${'interrupt'}`
   }
   private changed() {
     if (this.draft?.plainText && !this.startupFinished) this.finishStartup()
@@ -459,19 +457,19 @@ export class TuiScreen {
   menu(menu: TuiMenu) {
     const panel = this.modal(menu.title)
     this.modalMenu = { ...menu, items: menu.order === 'source' ? menu.items : byName(menu.items, item => item.label) }; this.modalCancel = menu.cancel; this.modalIndex = 0
-    this.modalSearch = new InputRenderable(this.renderer, { width: '100%', placeholder: ui('Search…', '搜索…'),
+    this.modalSearch = new InputRenderable(this.renderer, { width: '100%', placeholder: 'Search…',
       backgroundColor: this.palette.panel, focusedBackgroundColor: this.palette.panel, textColor: this.palette.fg, focusedTextColor: this.palette.fg })
     this.modalSearch.on('input', () => { this.modalIndex = 0; this.filterMenu() })
     panel.add(this.modalSearch)
     this.modalRows = new ScrollBoxRenderable(this.renderer, { id: 'menu-items', width: '100%', marginTop: 1, minHeight: 1, flexShrink: 1, scrollX: false, verticalScrollbarOptions: { showArrows: false } })
     panel.add(this.modalRows)
-    panel.add(this.text(menu.detail ?? ui('scroll to browse · click to choose · ↑↓ enter · esc back', '滚轮浏览 · 点击选择 · ↑↓ enter · esc 返回'), { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
+    panel.add(this.text(menu.detail ?? 'scroll to browse · click to choose · ↑↓ enter · esc back', { fg: this.palette.muted, marginTop: 1, wrapMode: 'word' }))
     this.filterMenu(); this.modalSearch.focus()
   }
   effortSlider(title:string, levels:string[], current:string|null, save:(value:string|null)=>Promise<void>, defaultEffort?:string) {
     if (!levels.length) {
-      this.document(title,ui('This model has no adjustable reasoning levels.','当前模型没有可调节的思考档位。'),[
-        {label:ui('Use model default','使用模型默认值'),run:()=>save(null)}
+      this.document(title,'This model has no adjustable reasoning levels.',[
+        {label:'Use model default',run:()=>save(null)}
       ]); return
     }
     const panel=this.modal(title)
@@ -508,9 +506,9 @@ export class TuiScreen {
       columns=Math.max(2,Math.min(74,this.renderer.width-8))
       rows=this.renderer.height>=20?5:this.renderer.height>=16?3:1
       track.width=columns;track.height=rows;range.width=columns
-      tones=effortTideColors(levels[index]!,this.prefs.theme==='mono'?'mono':this.palette===light?'light':'dark').map(color=>RGBA.fromHex(color))
+      tones=effortTideColors(levels[index]!,this.prefs.theme==='mono'?'mono':this.palette.bg===paletteFor('light').bg?'light':'dark').map(color=>RGBA.fromHex(color))
       value.fg=tones[0]!;confirm.fg=tones[0]!
-      value.content=selected??ui('Model default','模型默认')+(defaultEffort?' · '+defaultEffort:'')
+      value.content=selected??'Model default'+(defaultEffort?' · '+defaultEffort:'')
       const labels=Array<string>(columns).fill(' ')
       let end=-1
       levels.forEach((level,i)=>{
@@ -526,13 +524,13 @@ export class TuiScreen {
     }
     panel.add(value);panel.add(track);panel.add(range)
     const actions=new BoxRenderable(this.renderer,{flexDirection:'row',gap:3,marginTop:1})
-    actions.add(this.text(ui('Default (D)','默认 (D)'),{id:'effort-default',height:1,selectable:false,onMouseDown:event=>{
+    actions.add(this.text('Default (D)',{id:'effort-default',height:1,selectable:false,onMouseDown:event=>{
       if(event.button===0){selected=null;index=Math.max(0,levels.indexOf(defaultEffort??''));draw();track.focus()}
     }}))
-    const confirm=this.text(ui('Confirm ↵','确认 ↵'),{id:'effort-confirm',fg:this.palette.accent,height:1,selectable:false,onMouseDown:event=>{if(event.button===0)submit()}})
+    const confirm=this.text('Confirm ↵',{id:'effort-confirm',fg:this.palette.accent,height:1,selectable:false,onMouseDown:event=>{if(event.button===0)submit()}})
     actions.add(confirm)
     panel.add(actions)
-    const help=this.text(ui('drag / ← → adjust · enter save · esc cancel','拖动 / ← → 调节 · enter 保存 · esc 取消'),{fg:this.palette.muted,marginTop:1,wrapMode:'word'})
+    const help=this.text('drag / ← → adjust · enter save · esc cancel',{fg:this.palette.muted,marginTop:1,wrapMode:'word'})
     panel.add(help)
     this.modalRedraw=draw;track.focusable=true;draw();track.focus()
   }
@@ -546,7 +544,7 @@ export class TuiScreen {
     for (const child of this.modalRows.getChildren()) child.destroyRecursively()
     const lines = this.modalItems.reduce((total, item) => total + (item.detail ? 2 : 1), 0)
     this.modalRows.height = Math.max(1, Math.min(lines, 20, this.renderer.height - 11))
-    if (!this.modalItems.length) this.modalRows.add(this.text(ui('No matching items', '没有匹配项'), { fg: this.palette.muted }))
+    if (!this.modalItems.length) this.modalRows.add(this.text('No matching items', { fg: this.palette.muted }))
     this.modalItems.forEach((item, index) => {
       const row = new BoxRenderable(this.renderer, { width: '100%', height: item.detail ? 2 : 1, flexShrink: 0,
         backgroundColor: index === this.modalIndex ? this.palette.selected : this.palette.panel,
@@ -587,7 +585,7 @@ export class TuiScreen {
       this.modalItems = byName(actions, item => item.label); this.modalMenu = { title, items: this.modalItems }; this.modalIndex = 0
       this.modalRows = new ScrollBoxRenderable(this.renderer, { id: 'menu-items', marginTop: 1, width: '100%', minHeight: 1, flexShrink: 1, scrollX: false, verticalScrollbarOptions: { showArrows: false } })
       panel.add(this.modalRows); this.drawMenu()
-      panel.add(this.text(ui('tab actions · enter choose', 'tab 切换操作 · enter 确认'), { fg: this.palette.muted }))
+      panel.add(this.text('tab actions · enter choose', { fg: this.palette.muted }))
     }
     scroll.focus()
   }
@@ -608,7 +606,7 @@ export class TuiScreen {
         onPaste: event => { event.preventDefault(); event.stopPropagation(); value += new TextDecoder().decode(event.bytes).replace(/[\r\n]/g, ''); input.content = '•'.repeat(Array.from(value).length) }
       })
       input.focusable = true; panel.add(input)
-      panel.add(this.text(ui('enter confirm · ctrl+u clear · esc cancel', 'enter 确认 · ctrl+u 清空 · esc 取消'), { fg: this.palette.muted, marginTop: 1 }))
+      panel.add(this.text('enter confirm · ctrl+u clear · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
       input.focus(); return
     }
     const input = new TextareaRenderable(this.renderer, { width: '100%', height: multiline ? Math.max(3, Math.min(8, this.renderer.height - 10)) : 1,

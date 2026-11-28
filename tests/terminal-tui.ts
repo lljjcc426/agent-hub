@@ -5,11 +5,8 @@ import type { ScrollBoxRenderable, TextRenderable } from '@opentui/core'
 import { createTestRenderer } from '@opentui/core/testing'
 import { TuiScreen, type TuiItem } from '../src/terminal/tui-screen.ts'
 import type { Snapshot } from '../src/terminal/client.ts'
-import { configureLanguage } from '../src/terminal/language.ts'
 import { drawCompanion, companionRows } from '../src/terminal/companion.ts'
 import { entryPixels, greetingDuration } from '../src/terminal/startup.ts'
-
-configureLanguage('en')
 const test = await createTestRenderer({ width: 120, height: 34, kittyKeyboard: true, useMouse: true })
 const sent: string[] = [], commands: string[] = []
 let chosen = '', interrupted = 0
@@ -36,9 +33,8 @@ try {
   assert.match(home, /Commands · ctrl\+p/)
   assert.equal(screen.transcript.scrollHeight, 0)
   assert.match(home, /Ready when you are/)
-  const wordmark=test.renderer.root.findDescendantById('header-wordmark')!
+  assert.equal(test.renderer.root.findDescendantById('header-notice')!.visible,false)
   const companionArt=test.renderer.root.findDescendantById('header-companion')!
-  assert.equal(companionArt.y,wordmark.y,'companion and wordmark share the top row')
   assert.equal(companionArt.x+companionArt.width/2,test.renderer.width/2,'companion stays centered')
   assert.equal(home.split('\n').filter(line=>/[\u2800-\u28ff]/.test(line)).length,companionRows,'enlarged companion fits all its text rows')
   assert.deepEqual(entryPixels(greetingDuration,true),drawCompanion('idle',0),'startup settles to the same enlarged silhouette')
@@ -291,7 +287,7 @@ try {
       const initial = preview.captureCharFrame()
       const middle = await advance(1000, 'startup-tide')
       assert.notEqual(middle, initial)
-      assert.match(middle, /█▀█ █▀█/, 'the left side reveals the larger header wordmark')
+      assert.doesNotMatch(middle, /█▀█ █▀█/, 'the duplicate wordmark stays hidden')
       entry.update(view)
       preview.resize(60, 20); entry.preferences({theme:'light',motion:'full'})
       await advance(1400, 'startup-small')

@@ -3,10 +3,8 @@ import { expect, it, vi } from 'vitest'
 import { TuiCommands, personalCommands } from '../src/terminal/tui-actions.ts'
 import type { TuiMenu, TuiScreen } from '../src/terminal/tui-screen.ts'
 import type { TerminalClient, Snapshot } from '../src/terminal/client.ts'
-import { configureLanguage } from '../src/terminal/language.ts'
 
 function fixture() {
-  configureLanguage('en')
   let menu: TuiMenu, prompt: { initial: string; submit: (value: string) => Promise<void> }, notice = ''
   let slider: Parameters<TuiScreen['effortSlider']>
   const requests: { path: string; body?: any }[] = []

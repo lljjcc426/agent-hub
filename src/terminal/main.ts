@@ -1,5 +1,8 @@
+import {chooseSetupTheme,withSetupPages} from './setup-welcome.ts'
+import {themeNames} from './themes.ts'
+import {saveTerminalSetting} from './settings.ts'
 import {accountSetup,configureConnection,setupClient,terminalSetupUI,SetupCancelled} from './setup.ts'
-import { saveTerminalSetting, loadTerminalSettings, type TerminalSettings, type OutputFormat } from './settings.ts'
+import { loadTerminalSettings, type TerminalSettings, type OutputFormat } from './settings.ts'
 import { controlCommand } from './controls.ts'
 import { PrintEvents } from './output.ts'
 import {messageCharacters} from '../execution-limits.ts'
@@ -17,11 +20,9 @@ import { createInterface as promptInterface } from 'node:readline/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { TerminalClient, CliError, clean, type Snapshot, type Conversation } from './client.ts'
 import { command, mentionedFiles, runResult } from './commands.ts'
-import { configureLanguage, parseLanguage, saveLanguage, ui, type Language } from './language.ts'
 
 const help = () =>
-  ui(
-    `Roppo — your personal agent, shared with web Chat.
+  `Roppo — your personal agent, shared with web Chat.
 
   roppo [prompt]                  Continue the conversation shared with web Chat
   roppo -c                        Continue your personal conversation
@@ -33,42 +34,16 @@ const help = () =>
   --output-format FORMAT         text, json or stream-json (print mode)
   --json                         Alias for --output-format json
   --settings JSON_OR_FILE        Override terminal preferences for this launch
-  --theme system|dark|light|mono  Terminal color theme
+  --theme NAME                    Terminal color theme
   --verbose                      Expand tool activity by default
   --file PATH                    Attach a file (repeatable)
   --trust-project                Register the project on first use
   --timeout SECONDS              Wait limit for print mode (default 600)
   --cwd DIRECTORY                Explicit project mode (optional)
   --host URL                     Select a local Roppo instance
-  roppo lang zh | en              Save the interface language
-  --lang zh | en                  Interface language for this invocation
   --help, --version
 
-  In a conversation, type /help for settings, files and pending requests.`,
-    `Roppo — 与网页端同步的个人助手。
-
-  roppo [消息]                 打开网页端的同一段对话，自动加载历史
-  roppo --cwd 目录             显式进入项目模式（可选）
-  roppo -c                     继续个人对话
-  roppo -r [会话 ID]           选择已有个人对话
-  roppo -p "消息"              运行一次并输出回复，可接收管道输入
-  roppo login | logout | init  登录、退出账号或初始化本机实例
-  roppo lang zh | en           保存界面语言
-
-  --lang zh | en               仅切换此次运行的界面语言
-  --file 路径                  添加附件，可重复使用
-  --output-format 格式         text、json 或 stream-json（单次输出）
-  --json                       等同于 --output-format json
-  --settings JSON或文件        覆盖此次运行的终端设置
-  --theme system|dark|light|mono 终端配色
-  --verbose                    默认展开工具活动
-  --trust-project              首次使用时注册项目
-  --timeout 秒                 单次运行的等待时限（默认 600 秒）
-  --host URL                   选择本机实例
-  --help, --version            查看帮助或版本
-
-  对话中输入 /help 查看命令。`
-  )
+  In a conversation, type /help for settings, files and pending requests.`
 interface Options {
   settings?: string
   preferences: TerminalSettings
@@ -82,7 +57,6 @@ interface Options {
   timeout: number
   cwd: string
   explicitProject?: boolean
-  language?: Language
   host?: string
   files: string[]
   prompt: string
@@ -106,7 +80,7 @@ export function parseArgs(args: string[]): Options {
     const a = args[i]!,
       value = () => {
         if (i + 1 >= args.length || args[i + 1]!.startsWith('--'))
-          throw new CliError(ui('Missing value for ', '该选项缺少参数：') + a, 'usage', 2)
+          throw new CliError('Missing value for ' + a, 'usage', 2)
         return args[++i]!
       }
     if (a === '--') {
@@ -128,14 +102,14 @@ export function parseArgs(args: string[]): Options {
     else if (a === '--verbose') o.preferences.verbose = true
     else if (a === '--theme') {
       const theme = value()
-      if (!['system', 'dark', 'light', 'mono'].includes(theme)) throw new CliError('Choose --theme system|dark|light|mono', 'usage', 2)
+      if (!themeNames.some(name => name === theme)) throw new CliError('Choose a theme: ' + themeNames.join(', '), 'usage', 2)
       o.preferences.theme = theme as TerminalSettings['theme']
     }
     else if (a === '--continue' || a === '-c') o.latest = true
     else if (a === '--resume' || a === '-r')
       o.resume = args[i + 1] && !args[i + 1]!.startsWith('-') ? args[++i] : ''
     else if (a === '--trust-project') o.trust = true
-    else if (a === '--lang') { o.language = parseLanguage(value()); o.preferences.language = o.language }
+    else if (a === '--lang') throw new CliError('The Roppo CLI uses English. Remove --lang to continue.')
     else if (a === '--cwd') {
       o.cwd = resolve(value())
       o.explicitProject = true
@@ -145,22 +119,19 @@ export function parseArgs(args: string[]): Options {
       o.preferences.timeout = o.timeout
       if (!Number.isFinite(o.timeout) || o.timeout <= 0 || o.timeout > 86400)
         throw new CliError(
-          ui(
-            'Choose a timeout between 0 and 86400 seconds.',
-            '等待时限须大于 0 秒且不超过 86400 秒。'
-          ),
+          'Choose a timeout between 0 and 86400 seconds.',
           'usage',
           2
         )
     } else if (a === '--file') o.files.push(value())
     else if (a.startsWith('-'))
-      throw new CliError(ui('Unknown option ', '未知选项：') + a, 'usage', 2)
+      throw new CliError('Unknown option ' + a, 'usage', 2)
     else if (!words.length && !o.action && ['init', 'login', 'logout', 'lang'].includes(a))
       o.action = a
     else words.push(a)
   }
   if (o.latest && o.resume !== undefined)
-    throw new CliError(ui('Choose either -c or -r.', '-c 与 -r 只能使用一个。'), 'usage', 2)
+    throw new CliError('Choose either -c or -r.', 'usage', 2)
   o.prompt = words.join(' ')
   return o
 }
@@ -186,36 +157,30 @@ async function selectConversation(
   const list = await client.list(project)
   if (!list.length)
     throw new CliError(
-      ui(
-        'No saved conversations here. Start one with roppo.',
-        '还没有保存的对话，可用 roppo 开始。'
-      )
+      'No saved conversations here. Start one with roppo.'
     )
   if (o.latest) return list[0]!
   if (o.resume) {
     const match = list.find((c) => c.id === o.resume)
     if (match) return match
-    throw new CliError(project ? ui('Conversation not found in this project.', '这个项目中找不到该会话。') : ui('Personal conversation not found.', '找不到该个人对话。'))
+    throw new CliError(project ? 'Conversation not found in this project.' : 'Personal conversation not found.')
   }
   if (!tty)
     throw new CliError(
-      ui(
-        'Pass a conversation ID with -r when running a script.',
-        '在脚本中使用 -r 时请提供会话 ID。'
-      ),
+      'Pass a conversation ID with -r when running a script.',
       'usage',
       2
     )
   if (process.env.TERM !== 'dumb') {
     const input = new TerminalEditor(process.stdin, process.stderr, project ?? o.cwd, (query) => ({
-      title: ui('Resume conversation', '继续对话'),
+      title: 'Resume conversation',
       start: 0,
       end: query.length,
-      empty: ui('No matching conversations', '没有匹配的会话'),
+      empty: 'No matching conversations',
       items: list
         .filter((c) => (c.title + ' ' + c.id).toLowerCase().includes(query.toLowerCase()))
         .map((c) => ({
-          label: c.title || ui('New conversation', '新会话'),
+          label: c.title || 'New conversation',
           detail: new Date(c.updatedAt).toLocaleString(),
           value: c.id,
           submit: true
@@ -240,21 +205,21 @@ async function selectConversation(
     !!process.stderr.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
   )
   const choices = [
-    ...layout.result(ui('Resume a conversation · ', '继续对话 · ') + (project ? basename(project) : ui('Personal chat', '个人对话')))
+    ...layout.result('Resume a conversation · ' + (project ? basename(project) : 'Personal chat'))
   ]
   for (const [i, c] of list.entries()) {
     choices.push(
       ...layout.message(
-        String(i + 1) + '. ' + (c.title || ui('New conversation', '新会话')),
+        String(i + 1) + '. ' + (c.title || 'New conversation'),
         c.id,
         true
       )
     )
   }
   process.stderr.write(choices.join('\n') + '\n\n')
-  const n = Number(await ask(ui('Resume number › ', '输入会话序号 › ')))
+  const n = Number(await ask('Resume number › '))
   if (!Number.isInteger(n) || !list[n - 1])
-    throw new CliError(ui('Invalid selection.', '选择无效。'))
+    throw new CliError('Invalid selection.')
   return list[n - 1]!
 }
 const locale = () => Intl.DateTimeFormat().resolvedOptions().locale
@@ -498,7 +463,6 @@ async function interactive(client: TerminalClient, c: Conversation, o: Options) 
             if (control.next) { nextConversation = control.next; break }
             if (control.preferences) {
               Object.assign(o.preferences, control.preferences)
-              if (control.preferences.language) configureLanguage(control.preferences.language)
               if (control.preferences.theme) display.setTheme(control.preferences.theme)
               if (control.preferences.motion) display.motion = control.preferences.motion
               if (editor && control.preferences.verbose !== undefined) editor.expanded = control.preferences.verbose
@@ -546,16 +510,8 @@ export async function main(args: string[]): Promise<number> {
   let json = args.includes('--json') || ['json', 'stream-json'].includes(args[args.indexOf('--output-format') + 1] ?? '')
   let streaming = args[args.indexOf('--output-format') + 1] === 'stream-json'
   try {
-    configureLanguage()
     const o = parseArgs(args)
-    if (o.language) configureLanguage(o.language)
-    if (o.action === 'lang') {
-      const language = parseLanguage(o.prompt)
-      saveLanguage(language)
-      saveTerminalSetting(o.cwd, 'language', language)
-      console.log(ui('Interface language: English', '界面语言已设为中文'))
-      return 0
-    }
+    if (o.action === 'lang') { console.log('The Roppo CLI uses English.'); return 0 }
     json = o.json
     if (o.action === 'help') {
       console.log(help())
@@ -570,7 +526,6 @@ export async function main(args: string[]): Promise<number> {
     const loaded = loadTerminalSettings(o.cwd, o.settings, o.preferences)
     o.preferences = loaded.settings
     o.settingsSources = loaded.sources
-    if (o.preferences.language) configureLanguage(o.preferences.language)
     o.timeout = o.preferences.timeout ?? 600
     o.outputFormat ??= o.preferences.outputFormat ?? 'text'
     const session = async (conversation: Conversation): Promise<number> => {
@@ -590,17 +545,12 @@ export async function main(args: string[]): Promise<number> {
     const screen = tty && process.env.TERM !== 'dumb' && !o.print && !o.json
     const clearScreen = '\x1b[2J\x1b[H'
     if (screen && process.env.ROPPO_LEGACY_TUI === '1' && o.action !== 'logout') process.stdout.write(clearScreen)
-    if (o.action === 'init' && !tty) throw new CliError(ui('Run roppo init in an interactive terminal.','请在交互终端运行 roppo init。'),'usage',2)
+    if (o.action === 'init' && !tty) throw new CliError('Run roppo init in an interactive terminal.','usage',2)
     const dialog = !print || o.action === 'init' ? terminalSetupUI() : undefined
     const client = dialog ? await setupClient(o.host,dialog) : new TerminalClient(o.host)
-    if (o.action === 'init') {
-      await accountSetup(client,dialog!)
-      await configureConnection(client,dialog!)
-      return 0
-    }
     if (o.action === 'login') {
       await client.login()
-      process.stderr.write(ui('Connected to ', '已连接 ') + client.base + '\n')
+      process.stderr.write('Connected to ' + client.base + '\n')
       return 0
     }
     if (o.action === 'logout') {
@@ -614,7 +564,7 @@ export async function main(args: string[]): Promise<number> {
         bytes += chunk.length
         if (bytes > messageCharacters * 4)
           throw new CliError(
-            ui('Input exceeds 256,000 characters.', '输入内容超过256,000 字符。'),
+            'Input exceeds 256,000 characters.',
             'usage',
             2
           )
@@ -625,18 +575,25 @@ export async function main(args: string[]): Promise<number> {
     }
     if (o.prompt.length > messageCharacters || (print && !o.prompt && !o.files.length))
       throw new CliError(
-        ui(
-          'Provide a prompt or file (up to 256,000 characters).',
-          '请提供消息或文件，消息最多256,000 字符。'
-        ),
+        'Provide a prompt or file (up to 256,000 characters).',
         'usage',
         2
       )
     const needsLogin = !client.signedIn && !print
-    if (needsLogin) await accountSetup(client,dialog!)
-    if (!print) {
-      const setup = await client.request<{ready:boolean}>('/api/terminal/setup')
-      if (!setup.ready) await configureConnection(client,dialog!)
+    if (dialog) {
+      const needsConnection = o.action === 'init' || needsLogin ||
+        !(await client.request<{ready:boolean}>('/api/terminal/setup')).ready
+      if (needsConnection) await withSetupPages(dialog,o.preferences,async pages => {
+        await accountSetup(client,pages)
+        if (o.action === 'init' || !needsLogin || !(await client.request<{ready:boolean}>('/api/terminal/setup')).ready)
+          await configureConnection(client,pages)
+      })
+      if (!loaded.hasTheme) {
+        const appearance = await chooseSetupTheme(dialog,o.preferences)
+        for (const [key,value] of Object.entries(appearance)) saveTerminalSetting(o.cwd,key,String(value))
+        Object.assign(o.preferences,appearance)
+      }
+      if (o.action === 'init') return 0
     }
     if (!o.explicitProject && !o.trust) {
       if (screen && needsLogin) process.stdout.write(clearScreen)
@@ -649,19 +606,13 @@ export async function main(args: string[]): Promise<number> {
     if (!project.registered) {
       if (print)
         throw new CliError(
-          ui(
-            'First use of this project. Run roppo --cwd . or pass --trust-project.',
-            '项目尚未注册，请先运行 roppo --cwd . 或使用 --trust-project。'
-          ),
+          'First use of this project. Run roppo --cwd . or pass --trust-project.',
           'project_trust_required'
         )
       if (
         !/^y(es)?$/i.test(
           await ask(
-            ui(
-              'Register ' + project.cwd + ' with ' + project.sandbox + ' access? [y/N] ',
-              '以 ' + project.sandbox + ' 权限注册 ' + project.cwd + '？[y/N] '
-            )
+            ('Register ' + project.cwd + ' with ' + project.sandbox + ' access? [y/N] ')
           )
         )
       )

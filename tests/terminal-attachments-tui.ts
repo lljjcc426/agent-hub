@@ -7,9 +7,6 @@ import { createTestRenderer } from '@opentui/core/testing'
 import { TuiScreen } from '../src/terminal/tui-screen.ts'
 import { TuiCommands } from '../src/terminal/tui-actions.ts'
 import type { TerminalClient, Snapshot } from '../src/terminal/client.ts'
-import { configureLanguage } from '../src/terminal/language.ts'
-
-configureLanguage('en')
 const dir = mkdtempSync(join(tmpdir(), 'roppo-attachment-ui-'))
 const alpha = join(dir, 'alpha.png'), beta = join(dir, 'Beta notes.txt')
 writeFileSync(alpha, Buffer.from([137,80,78,71,13,10,26,10])); writeFileSync(beta, 'notes')

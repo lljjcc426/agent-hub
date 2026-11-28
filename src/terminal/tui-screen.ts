@@ -505,7 +505,7 @@ export class TuiScreen {
       {label:'Steer now',run:()=>act('steer')},
       {label:'Edit',run:async()=>{
         await this.actions.queue?.('hold',id)
-        this.prompt('Edit queued message',item.text,async text=>{try{await this.actions.queue?.('edit',id,text)}finally{await this.actions.queue?.('release',id)}},true)
+        this.prompt('Edit queued message',item.text,async text=>{try{await this.actions.queue?.('edit',id,text)}finally{await this.actions.queue?.('release',id)}},true,false,{submitOnEnter:true})
         this.modalCancel=()=>{this.run(this.actions.queue?.('release',id)??Promise.resolve())}
       }},
       {label:'Delete',run:()=>act('delete')},
@@ -649,7 +649,7 @@ export class TuiScreen {
     }
     scroll.focus()
   }
-  prompt(title: string, initial: string, submit: (value: string) => Promise<void>, multiline = false, secret = false, options: { allowEmpty?: boolean; cancel?: () => void } = {}) {
+  prompt(title: string, initial: string, submit: (value: string) => Promise<void>, multiline = false, secret = false, options: { allowEmpty?: boolean; cancel?: () => void; submitOnEnter?: boolean } = {}) {
     const panel = this.modal(title)
     this.modalCancel = options.cancel
     if (secret) {
@@ -672,10 +672,10 @@ export class TuiScreen {
     const input = new TextareaRenderable(this.renderer, { width: '100%', height: multiline ? Math.max(3, Math.min(8, this.renderer.height - 10)) : 1,
       initialValue: initial, backgroundColor: this.palette.selected, focusedBackgroundColor: this.palette.selected,
       textColor: this.palette.fg, focusedTextColor: this.palette.fg,
-      keyBindings: [{ name: 'return', ctrl: multiline, action: 'submit' }],
+      keyBindings: [{ name: 'return', ctrl: multiline && !options.submitOnEnter, action: 'submit' }, ...(options.submitOnEnter ? [{ name: 'j', ctrl: true, action: 'newline' as const }] : [])],
       onSubmit: () => { const value = input.plainText.trim(); if (!value && !options.allowEmpty) return; this.closeModal(false); this.run(submit(value)) }
     })
-    panel.add(input); panel.add(this.text(multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
+    panel.add(input); panel.add(this.text(options.submitOnEnter ? 'enter save · ctrl+j newline · esc cancel' : multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
     input.focus(); input.gotoBufferEnd()
   }
   closeModal(cancelled = true) {

@@ -675,7 +675,12 @@ export class TuiScreen {
       keyBindings: [{ name: 'return', ctrl: multiline && !options.submitOnEnter, action: 'submit' }, ...(options.submitOnEnter ? [{ name: 'return', shift: true, action: 'newline' as const }, { name: 'return', meta: true, action: 'newline' as const }, { name: 'j', ctrl: true, action: 'newline' as const }] : [])],
       onSubmit: () => { const value = input.plainText.trim(); if (!value && !options.allowEmpty) return; this.closeModal(false); this.run(submit(value)) }
     })
-    panel.add(input); panel.add(this.text(options.submitOnEnter ? 'enter save · shift+enter newline · esc cancel' : multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
+    panel.add(input)
+    const newlineKey = process.env.TERM_PROGRAM === 'Apple_Terminal' ? 'ctrl+j' : 'shift+enter'
+    panel.add(this.text(options.submitOnEnter ? `enter save · ${newlineKey} newline · esc cancel` : multiline ? 'ctrl+enter save · esc cancel' : 'enter confirm · esc cancel', { fg: this.palette.muted, marginTop: 1 }))
+    if (options.submitOnEnter) panel.add(this.text('Insert newline', { fg: this.palette.accent, selectable: false, height: 1,
+      onMouseDown: event => { if (event.button === 0) { event.preventDefault(); input.newLine(); input.focus() } }
+    }))
     input.focus(); input.gotoBufferEnd()
   }
   closeModal(cancelled = true) {
